@@ -23,13 +23,16 @@ Python 3.12 is deliberate: `python` on a typical Windows box may point at a newe
 - [x] **0 — Groundwork.** Pinned environment, sdc11073 API verified, networking settled.
 - [x] **1 — Core.** Create data sources at runtime, publish them, remote-control them. Headless, with a console front end and an acceptance test.
 - [x] **2 — Provider UI.** Metric list with live values, "New data source" dialog.
-- [ ] **3 — Consumer UI.** Discovery, MDIB browser, editors for controllable metrics. Works against foreign devices, not just our own.
+- [x] **3 — Consumer UI.** Discovery, MDIB browser, editors for controllable metrics. Works against foreign devices, not just our own.
 - [ ] **4 — Extras.** Alerts, waveforms, saved configurations, TLS.
 
 ## Try it
 
+Start it twice. Each instance publishes a device and can discover the other.
+
 ```powershell
 .venv\Scripts\python.exe run_toolbox.py --name alpha
+.venv\Scripts\python.exe run_toolbox.py --name beta
 ```
 
 The **My device** panel is the device you publish. *New data source…* creates a number, text
@@ -37,13 +40,26 @@ or choice; the checkbox in the last column decides whether other devices may wri
 value column is live — it updates whether you edit it here or somebody changes it over the
 network.
 
-The **Network** panel arrives with the next milestone. Until then, drive the other side from
-a console in a second terminal:
+The **Network** panel is everybody else's. *Scan* finds providers, *Connect* loads one, and
+you get its containment tree above and its metrics below. Rows the device will accept writes
+for are marked writable; select one and the editor underneath adapts to it — a combo box for
+a choice, a plain field with the permitted range for a number. The result of a write is
+reported as the provider's own `InvocationState`.
 
 Press **Alt** for the menu bar. *View → Split view* (F8) swaps between the two panels sitting
 side by side with a movable divider, and the same two stacked as tabs.
 
+Two things worth doing, because they are what makes SDC interesting:
+
+- Add a data source in one instance while the other is connected to it. It appears in the
+  other's table straight away, with no reconnect.
+- Untick its checkbox and try to set it from the other side. The write is refused and the
+  value stays put.
+
+The same is available as a text console, which is easier to script:
+
 ```powershell
+.venv\Scripts\python.exe examples\console.py provider
 .venv\Scripts\python.exe examples\console.py consumer
 ```
 ```
@@ -60,15 +76,7 @@ consumer> set m.zoom_level 9
 accepted, m.zoom_level is now 9
 consumer> set m.zoom_level 500
 refused by the provider (Fail)
-consumer> set m.mode RUN
-refused by the provider (Fail)
 ```
-
-Two things worth doing, because they are what makes SDC interesting:
-
-- Add a data source in the GUI while the consumer is connected, then `list` again. It is
-  there, with no reconnect.
-- Untick its checkbox and try to `set` it. The provider refuses and the value stays put.
 
 Numbers can carry limits. Those become two different things in BICEPS, because the standard
 separates what a device can produce from what a caller may ask for:
@@ -98,7 +106,8 @@ descriptor creation at runtime.
 ```
 
 The GUI has its own smoke test, which builds the real window on Qt's offscreen backend and
-drives the actual widgets. 30 checks, no display needed.
+drives the actual widgets, including a live connection to a provider in another process.
+111 checks, no display needed.
 
 ```powershell
 .venv\Scripts\python.exe tests\gui_smoke.py

@@ -42,19 +42,24 @@ class MdibBridge(QObject):
     operations_changed = Signal(dict)
     #: handle -> state, for alerts (unused until alerts are implemented)
     alerts_changed = Signal(dict)
+    #: The peer restarted: its sequence or instance id changed and the cached MDIB is stale.
+    peer_restarted = Signal()
 
     def __init__(self, mdib: MdibBase, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._mdib = mdib
-        observableproperties.bind(
-            mdib,
-            metrics_by_handle=self._on_metrics,
-            new_descriptors_by_handle=self._on_descriptors_added,
-            updated_descriptors_by_handle=self._on_descriptors_updated,
-            deleted_descriptors_by_handle=self._on_descriptors_deleted,
-            operation_by_handle=self._on_operations,
-            alert_by_handle=self._on_alerts,
-        )
+        bindings = {
+            "metrics_by_handle": self._on_metrics,
+            "new_descriptors_by_handle": self._on_descriptors_added,
+            "updated_descriptors_by_handle": self._on_descriptors_updated,
+            "deleted_descriptors_by_handle": self._on_descriptors_deleted,
+            "operation_by_handle": self._on_operations,
+            "alert_by_handle": self._on_alerts,
+        }
+        # Only a ConsumerMdib reports that the far end restarted; a provider has no peer.
+        if hasattr(type(mdib), "sequence_or_instance_id_changed_event"):
+            bindings["sequence_or_instance_id_changed_event"] = self._on_peer_restarted
+        observableproperties.bind(mdib, **bindings)
 
     # The callbacks below may run on any thread. They must do nothing but emit.
 
@@ -75,3 +80,7 @@ class MdibBridge(QObject):
 
     def _on_alerts(self, values: dict) -> None:
         self.alerts_changed.emit(dict(values))
+
+    def _on_peer_restarted(self, changed: bool) -> None:  # noqa: FBT001 - the observable is a flag
+        if changed:
+            self.peer_restarted.emit()

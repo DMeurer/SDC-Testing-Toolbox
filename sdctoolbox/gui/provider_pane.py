@@ -248,6 +248,16 @@ class ProviderPane(QWidget):
         super().resizeEvent(event)
         self._fit_columns()
 
+    def showEvent(self, event) -> None:  # noqa: ANN001, N802 - Qt naming
+        """Refit on becoming visible.
+
+        Moving the pane between the splitter and the tab widget changes how much room it
+        has without necessarily producing a resize event, so the widths have to be
+        recalculated when it reappears.
+        """
+        super().showEvent(event)
+        self._fit_columns()
+
     def _on_values_changed(self, states_by_handle: dict) -> None:
         """Update just the value cells. Cheaper than a rebuild and keeps the selection."""
         self._refreshing = True

@@ -28,8 +28,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .consumer_pane import ConsumerPane
 from .provider_pane import ProviderPane
-from .styling import mute
 
 if TYPE_CHECKING:
     from ..provider_service import ProviderService
@@ -76,21 +76,6 @@ class TitledPanel(QWidget):
         self.rule.setVisible(visible)
 
 
-class PlaceholderPane(QWidget):
-    """Stands in for a panel that is not implemented yet."""
-
-    def __init__(self, message: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        label = QLabel(message)
-        label.setWordWrap(True)
-        label.setAlignment(Qt.AlignTop)
-        mute(label)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(label)
-        layout.addStretch(1)
-
-
 class MainWindow(QMainWindow):
     """Hosts the provider and consumer panels in whichever layout is selected."""
 
@@ -101,11 +86,7 @@ class MainWindow(QMainWindow):
         self.resize(1100, 560)
 
         self.provider_pane = ProviderPane(service, self)
-        self.network_pane = PlaceholderPane(
-            "Discovery and browsing other devices lands here next.\n\n"
-            "Until then, use the console consumer:\n"
-            "    examples/console.py consumer",
-        )
+        self.network_pane = ConsumerPane(service.ip, self)
 
         self.provider_panel = TitledPanel(PROVIDER_TITLE, self.provider_pane)
         self.network_panel = TitledPanel(NETWORK_TITLE, self.network_pane)
@@ -228,3 +209,8 @@ class MainWindow(QMainWindow):
             event.accept()
             return
         super().keyReleaseEvent(event)
+
+    def closeEvent(self, event) -> None:  # noqa: ANN001, N802 - Qt naming
+        """Drop the consumer's subscriptions and discovery socket on the way out."""
+        self.network_pane.shutdown()
+        super().closeEvent(event)

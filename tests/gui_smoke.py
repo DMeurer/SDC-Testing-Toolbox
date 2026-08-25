@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -35,7 +36,10 @@ from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QMessageBox  # 
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 from sdc11073.xml_types import pm_types  # noqa: E402
 
-from sdctoolbox.constants import CODE_DIMENSIONLESS  # noqa: E402
+from sdctoolbox.constants import CODE_DIMENSIONLESS, epr_for  # noqa: E402
+from sdctoolbox.gui.consumer_pane import COL_RANGE as COL_R_RANGE  # noqa: E402
+from sdctoolbox.gui.consumer_pane import COL_VALUE as COL_R_VALUE  # noqa: E402
+from sdctoolbox.gui.consumer_pane import COL_WRITABLE as COL_R_WRITABLE  # noqa: E402
 from sdctoolbox.gui.main_window import MainWindow  # noqa: E402
 from sdctoolbox.gui.new_metric_dialog import NewMetricDialog  # noqa: E402
 from sdctoolbox.gui.provider_pane import (  # noqa: E402
@@ -49,6 +53,7 @@ from sdctoolbox.gui.provider_pane import (  # noqa: E402
     MIN_LABEL_WIDTH,
     NO_VALUE,
 )
+from sdctoolbox.gui.styling import mute  # noqa: E402
 from sdctoolbox.model import MetricKind  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
@@ -83,6 +88,27 @@ def pump(app: QApplication, seconds: float = 0.4) -> None:
     while time.monotonic() < deadline:
         app.processEvents()
         time.sleep(0.02)
+
+
+def wait_for(app: QApplication, predicate, timeout: float = 30.0) -> bool:  # noqa: ANN001
+    """Pump the event loop until predicate() is true or the time runs out."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        app.processEvents()
+        time.sleep(0.05)
+    return predicate()
+
+
+def cell_of(table, handle: str, column: int) -> str | None:  # noqa: ANN001
+    """Text of one cell, found by the handle in the first column."""
+    for row in range(table.rowCount()):
+        item = table.item(row, 0)
+        if item is not None and item.text() == handle:
+            got = table.item(row, column)
+            return got.text() if got else None
+    return None
 
 
 def fill_dialog(
@@ -583,6 +609,124 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             "selection stays flat when the window loses focus",
         )
 
+        print("\n10b. Network panel against a real peer")
+        consumer = window.network_pane
+        peer = subprocess.Popen(  # noqa: S603
+            [sys.executable, str(ROOT / "tests" / "acceptance_provider.py"), "--seconds", "120"],
+            cwd=str(ROOT),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            report.check(not consumer.disconnect_button.isEnabled(), "disconnect is off before connecting")
+            report.check(consumer.tree.topLevelItemCount() == 0, "tree starts empty")
+
+            consumer._on_scan()  # noqa: SLF001 - driving the button's slot
+            found = wait_for(app, lambda: bool(consumer.devices), timeout=40)
+            report.check(found, "the peer is discovered", f"{len(consumer.devices)} device(s)")
+
+            # Our own provider is on the network too, so pick the peer by EPR rather than
+            # trusting the order of the list.
+            peer_epr = epr_for("alpha").urn
+            peer_row = next(
+                (i for i, d in enumerate(consumer.devices) if d.epr == peer_epr),
+                None,
+            )
+            report.check(
+                peer_row is not None,
+                "the acceptance provider is among them",
+                f"{[d.epr for d in consumer.devices]}",
+            )
+
+            if peer_row is not None:
+                consumer.device_list.setCurrentRow(peer_row)
+                pump(app)
+                report.check(consumer.connect_button.isEnabled(), "connect becomes available")
+
+                consumer._on_connect()  # noqa: SLF001
+                connected = wait_for(app, lambda: consumer.remote is not None, timeout=40)
+                report.check(connected, "connection established")
+
+            if consumer.remote is not None:
+                wait_for(app, lambda: consumer.table.rowCount() > 0, timeout=20)
+                report.check(consumer.tree.topLevelItemCount() > 0, "the MDIB tree is populated")
+                report.check(consumer.table.rowCount() >= 4, "metrics are listed", str(consumer.table.rowCount()))  # noqa: PLR2004
+                report.check(consumer.disconnect_button.isEnabled(), "disconnect becomes available")
+
+                remote_cell = lambda h, c: cell_of(consumer.table, h, c)  # noqa: E731
+                report.check(
+                    remote_cell("m.zoom_level", COL_R_RANGE) == "1 to 100",
+                    "the peer's range is shown",
+                    str(remote_cell("m.zoom_level", COL_R_RANGE)),
+                )
+                report.check(
+                    remote_cell("m.zoom_level", COL_R_WRITABLE) == "yes",
+                    "an enabled control reads as writable",
+                    str(remote_cell("m.zoom_level", COL_R_WRITABLE)),
+                )
+                report.check(
+                    remote_cell("m.locked_setting", COL_R_WRITABLE) == "disabled",
+                    "a disabled control is marked as such rather than writable",
+                    str(remote_cell("m.locked_setting", COL_R_WRITABLE)),
+                )
+
+                consumer.select_handle("m.mode")
+                pump(app)
+                report.check(
+                    consumer.editor_stack.currentIndex() == 1,
+                    "a choice on the peer gets a combo box",
+                )
+                report.check(
+                    [consumer.choice_box.itemText(i) for i in range(consumer.choice_box.count())]
+                    == ["IDLE", "RUN", "PAUSE"],
+                    "filled from the peer's AllowedValue",
+                )
+
+                consumer.select_handle("m.locked_setting")
+                pump(app)
+                report.check(
+                    not consumer.apply_button.isEnabled(),
+                    "the editor is refused for a disabled control",
+                )
+
+                consumer.select_handle("m.zoom_level")
+                pump(app)
+                report.check(consumer.apply_button.isEnabled(), "and offered for an enabled one")
+                consumer.value_edit.setText("55")
+                consumer._on_apply()  # noqa: SLF001
+                accepted = wait_for(
+                    app,
+                    lambda: "accepted" in consumer.invocation_label.text(),
+                    timeout=30,
+                )
+                report.check(accepted, "a remote write is accepted", consumer.invocation_label.text())
+                wait_for(app, lambda: remote_cell("m.zoom_level", COL_R_VALUE) == "55", timeout=20)
+                report.check(
+                    remote_cell("m.zoom_level", COL_R_VALUE) == "55",
+                    "and the new value comes back",
+                    str(remote_cell("m.zoom_level", COL_R_VALUE)),
+                )
+
+                consumer.value_edit.setText("500")
+                consumer._on_apply()  # noqa: SLF001
+                refused = wait_for(
+                    app,
+                    lambda: "refused" in consumer.invocation_label.text(),
+                    timeout=30,
+                )
+                report.check(refused, "an out-of-range write is refused", consumer.invocation_label.text())
+
+                consumer._on_disconnect()  # noqa: SLF001
+                pump(app)
+                report.check(consumer.remote is None, "disconnect clears the connection")
+                report.check(consumer.table.rowCount() == 0, "and empties the table")
+        finally:
+            peer.terminate()
+            try:
+                peer.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                peer.kill()
+
         print("\n11. Legibility on a dark theme")
         dark = QPalette()
         dark.setColor(QPalette.ColorRole.Window, QColor("#1e1e1e"))
@@ -591,17 +735,18 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         dark.setColor(QPalette.ColorRole.Text, QColor("#e0e0e0"))
         app.setPalette(dark)
 
-        dark_window = MainWindow(service)
-        dark_label = dark_window.network_pane.findChild(QLabel)
-        text_colour = dark_label.palette().color(QPalette.ColorRole.WindowText)
         background = QColor("#1e1e1e")
+        muted_label = QLabel("secondary text")
+        mute(muted_label)
+        text_colour = muted_label.palette().color(QPalette.ColorRole.WindowText)
         contrast = abs(text_colour.lightness() - background.lightness())
         report.check(
             contrast > 60,  # noqa: PLR2004
-            "network tab text is legible on a dark background",
+            "muted text stays legible on a dark background",
             f"text {text_colour.name()} on {background.name()}, lightness gap {contrast}",
         )
 
+        dark_window = MainWindow(service)
         dark_dialog = NewMetricDialog(dark_window)
         preview_colour = dark_dialog.handle_preview.palette().color(QPalette.ColorRole.WindowText)
         report.check(
@@ -616,9 +761,11 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             f"{error_col.name()}, lightness {error_col.lightness()}",
         )
         dark_dialog.deleteLater()
+        dark_window.network_pane.shutdown()
         dark_window.close()
         dark_window.deleteLater()
 
+        window.network_pane.shutdown()
         window.close()
     finally:
         service.stop()
