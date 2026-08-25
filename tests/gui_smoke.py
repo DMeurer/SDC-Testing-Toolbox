@@ -45,6 +45,7 @@ from sdctoolbox.gui.provider_pane import (  # noqa: E402
     COL_LABEL,
     COL_UNIT,
     COL_VALUE,
+    MIN_LABEL_WIDTH,
     NO_VALUE,
 )
 from sdctoolbox.model import MetricKind  # noqa: E402
@@ -314,20 +315,80 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             "every column is draggable",
             ", ".join(str(m) for m in modes),
         )
-        before = pane.table.columnWidth(COL_LABEL)
-        pane.table.setColumnWidth(COL_LABEL, before + 60)
+        report.check(
+            pane.table.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff,
+            "horizontal scrolling is off",
+        )
+
+        def total_width() -> int:
+            return sum(pane.table.columnWidth(c) for c in range(pane.table.columnCount()))
+
+        def viewport_width() -> int:
+            return pane.table.viewport().width()
+
+        window.resize(900, 520)
         pump(app)
         report.check(
-            pane.table.columnWidth(COL_LABEL) == before + 60,
-            "a resized column keeps its width",
-            f"{before} -> {pane.table.columnWidth(COL_LABEL)}",
+            total_width() <= viewport_width(),
+            "columns fit the viewport",
+            f"{total_width()} <= {viewport_width()}",
         )
+        report.check(
+            total_width() >= viewport_width() - 2,  # noqa: PLR2004
+            "and leave no empty gap on the right",
+            f"{total_width()} vs {viewport_width()}",
+        )
+        report.check(
+            pane.table.columnWidth(COL_LABEL) > pane.table.columnWidth(COL_KIND),
+            "Label absorbs the slack, other columns stay narrow",
+            f"label={pane.table.columnWidth(COL_LABEL)} kind={pane.table.columnWidth(COL_KIND)}",
+        )
+
+        for width in (1400, 620, 420):
+            window.resize(width, 520)
+            pump(app, seconds=0.3)
+            report.check(
+                total_width() <= viewport_width(),
+                f"still fits after resizing the window to {width}px",
+                f"{total_width()} <= {viewport_width()}",
+            )
+
+        window.resize(900, 520)
+        pump(app)
+        before_label = pane.table.columnWidth(COL_LABEL)
+        pane.table.setColumnWidth(COL_HANDLE, pane.table.columnWidth(COL_HANDLE) + 80)
+        pump(app)
+        report.check(
+            total_width() <= viewport_width(),
+            "widening a column does not push the table past the edge",
+            f"{total_width()} <= {viewport_width()}",
+        )
+        report.check(
+            pane.table.columnWidth(COL_LABEL) < before_label,
+            "Label gives up the room instead",
+            f"{before_label} -> {pane.table.columnWidth(COL_LABEL)}",
+        )
+
+        # Dragging one column absurdly wide must not be allowed to overflow either.
+        pane.table.setColumnWidth(COL_HANDLE, viewport_width() + 400)
+        pump(app)
+        report.check(
+            total_width() <= viewport_width(),
+            "an oversized drag is clamped back",
+            f"{total_width()} <= {viewport_width()}",
+        )
+        report.check(
+            pane.table.columnWidth(COL_LABEL) >= MIN_LABEL_WIDTH,
+            "Label never drops below its minimum",
+            str(pane.table.columnWidth(COL_LABEL)),
+        )
+
         pane.refresh()
         pump(app)
         report.check(
-            pane.table.columnWidth(COL_LABEL) == before + 60,
-            "and a refresh does not undo it",
-            str(pane.table.columnWidth(COL_LABEL)),
+            total_width() <= viewport_width(),
+            "a refresh keeps the fit",
+            f"{total_width()} <= {viewport_width()}",
         )
 
         print("\n10. Selection is one flat band")
