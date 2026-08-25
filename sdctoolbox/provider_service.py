@@ -17,7 +17,6 @@ from sdc11073.provider import SdcProvider
 from sdc11073.provider.baseproduct import BaseProduct
 from sdc11073.provider.providerimpl import RoleProviderComponents
 from sdc11073.wsdiscovery import WSDiscovery
-from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types import pm_types
 from sdc11073.xml_types.dpws_types import ThisDeviceType, ThisModelType
 
@@ -44,10 +43,10 @@ class ProviderService:
     """
 
     def __init__(
-        self,
-        ip: str = constants.DEFAULT_IP,
-        instance_name: str = constants.DEFAULT_INSTANCE_NAME,
-        friendly_name: str | None = None,
+            self,
+            ip: str = constants.DEFAULT_IP,
+            instance_name: str = constants.DEFAULT_INSTANCE_NAME,
+            friendly_name: str | None = None,
     ) -> None:
         self.ip = ip
         self.instance_name = instance_name

@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("sdctoolbox.consumer")
 
-# Descriptor node types we recognise as metrics, mapped to our own kind enum.
+# Descriptor node types we recognize as metrics, mapped to our own kind enum.
 METRIC_NODE_TYPES = {
     pm.NumericMetricDescriptor: MetricKind.NUMBER,
     pm.StringMetricDescriptor: MetricKind.TEXT,
@@ -175,10 +175,10 @@ class RemoteDevice:
     # -- writing -------------------------------------------------------------------
 
     def set_value(
-        self,
-        metric_handle: str,
-        value: Decimal | str,
-        timeout: float = 10.0,
+            self,
+            metric_handle: str,
+            value: Decimal | str,
+            timeout: float = 10.0,
     ) -> msg_types.InvocationState:
         """Remote-control a metric on the peer and wait for the final InvocationState.
 

@@ -67,9 +67,9 @@ DEFAULT_LOCATION = {"fac": "HOSP", "poc": "CU1", "bed": "Toolbox"}
 # DPWS device metadata
 # --------------------------------------------------------------------------------------
 
-MANUFACTURER = "SDC-testing-toolbox"
-MANUFACTURER_URL = "https://example.invalid"
-MODEL_NAME = "VirtualDevice"
+MANUFACTURER = "Dominik Meurer"
+MANUFACTURER_URL = "https://d-meurer.com"
+MODEL_NAME = "SDC Toolbox"
 MODEL_NUMBER = "0.1"
 FIRMWARE_VERSION = "0.1"
 

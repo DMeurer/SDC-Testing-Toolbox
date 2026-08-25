@@ -1,8 +1,6 @@
 # SDC-testing-toolbox
 
-A desktop tool for understanding **IEEE 11073 SDC**: create data sources with a few clicks,
-publish them on the network, discover other SDC devices, subscribe to their data sources and
-remote-control them.
+A desktop tool for understanding **IEEE 11073 SDC**: create data sources with a few clicks, publish them on the network, discover other SDC devices, subscribe to their data sources and remote-control them.
 
 Built on [sdc11073](https://github.com/Draegerwerk/sdc11073) (Draeger, MIT) and PySide6.
 
@@ -18,9 +16,7 @@ py -3.12 -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Python 3.12 is deliberate: `python` on a typical Windows box may point at a newer release,
-and an explicit `py -3.12` keeps the environment reproducible. Both dependencies also work on
-3.13 and 3.14 if you prefer.
+Python 3.12 is deliberate: `python` on a typical Windows box may point at a newer release, and an explicit `py -3.12` keeps the environment reproducible. Both dependencies also work on 3.13 and 3.14 if you prefer.
 
 ## Milestones
 
@@ -38,6 +34,7 @@ Two terminals. The first publishes a device, the second finds it and controls it
 # terminal 1
 .venv\Scripts\python.exe examples\console.py provider
 ```
+
 ```
 provider> add number Zoom level
 created m.zoom_level  (number)
@@ -51,6 +48,7 @@ m.mode now refuses remote writes
 # terminal 2
 .venv\Scripts\python.exe examples\console.py consumer
 ```
+
 ```
 consumer> scan
   [0] urn:uuid:053b9f8f-0aa5-5290-8797-351f901ebd74
@@ -68,15 +66,11 @@ consumer> set m.mode RUN
 refused by the provider (Fail)
 ```
 
-Things worth trying: add a data source in terminal 1 while terminal 2 is already connected,
-then run `list` again there — it appears without reconnecting. `watch` in the consumer prints
-changes as they arrive. `help` lists every command.
+Things worth trying: add a data source in terminal 1 while terminal 2 is already connected, then run `list` again there — it appears without reconnecting. `watch` in the consumer prints changes as they arrive. `help` lists every command.
 
 ## Acceptance test
 
-Runs a provider in one process and checks it from a consumer in another. 34 checks covering
-discovery, all three controllable metric kinds, value rejection, disabled controls and
-descriptor creation at runtime.
+Runs a provider in one process and checks it from a consumer in another. 34 checks covering discovery, all three controllable metric kinds, value rejection, disabled controls and descriptor creation at runtime.
 
 ```powershell
 .venv\Scripts\python.exe tests\acceptance_core.py
@@ -100,7 +94,7 @@ with ProviderService(instance_name="alpha") as provider:
         )
     )
     provider.set_value(handle, Decimal("5"))
-    provider.disable_control(handle)   # keeps the operation, refuses writes
+    provider.disable_control(handle)  # keeps the operation, refuses writes
 ```
 
 ```python
@@ -117,8 +111,7 @@ with ConsumerService() as service:
 
 ## Diagnostics
 
-`diagnostics/` holds standalone scripts that use none of this project's own code. When
-something breaks, they answer the first question: is it us or is it the environment?
+`diagnostics/` holds standalone scripts that use none of this project's own code. When something breaks, they answer the first question: is it us or is it the environment?
 
 ```powershell
 # Does the installed sdc11073 still have the API we build on?
@@ -134,8 +127,6 @@ something breaks, they answer the first question: is it us or is it the environm
 
 ## Networking note
 
-WS-Discovery in sdc11073 binds to a **single IPv4 address**. On a machine with several
-adapters (VPN, Hyper-V, Wi-Fi Direct, Bluetooth PAN) you have to say which one, hence the
-`--ip` argument everywhere. Loopback is the default so two instances on one machine can talk
-without involving the network.
+WS-Discovery in sdc11073 binds to a **single IPv4 address**. On a machine with several adapters (VPN, Hyper-V, Wi-Fi Direct, Bluetooth PAN) you have to say which one, hence the
+`--ip` argument everywhere. Loopback is the default so two instances on one machine can talk without involving the network.
 

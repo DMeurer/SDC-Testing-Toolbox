@@ -91,7 +91,8 @@ def make_set_handler(mdib: ProviderMdib) -> Callable[[ExecuteParameters], Execut
                 )
             value: object = str(requested)
         elif hasattr(descriptor, "Resolution"):
-            # Numeric target. Decimal, never float, so values survive the wire exactly.
+            # Numeric target. Only Integers, no Floats, because of precision issues.
+            # The Resolution attribute is basically "how many decimal places are allowed", so it is present on all numeric metrics.
             try:
                 value = requested if isinstance(requested, Decimal) else Decimal(str(requested))
             except (InvalidOperation, ValueError):
