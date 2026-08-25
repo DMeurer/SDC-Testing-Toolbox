@@ -13,14 +13,17 @@ The menu bar stays hidden until Alt is pressed, the way Thunderbird and Firefox 
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
+    QFileDialog,
     QFrame,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QSplitter,
     QStackedWidget,
     QTabWidget,
@@ -28,6 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .. import config
 from .consumer_pane import ConsumerPane
 from .provider_pane import ProviderPane
 
@@ -36,6 +40,8 @@ if TYPE_CHECKING:
 
 PROVIDER_TITLE = "My device"
 NETWORK_TITLE = "Network"
+
+CONFIG_FILE_FILTER = "SDC toolbox config (*.json);;All files (*)"
 
 #: Where the divider sits when the window opens, as a share of the width.
 PROVIDER_SHARE = 3
@@ -161,6 +167,21 @@ class MainWindow(QMainWindow):
         menu_bar = self.menuBar()
 
         file_menu = menu_bar.addMenu("&File")
+
+        self.import_action = QAction("&Import config\u2026", self)
+        self.import_action.setShortcut(QKeySequence("Ctrl+O"))
+        self.import_action.setStatusTip("Replace this device with one described in a file")
+        self.import_action.triggered.connect(self.import_config)
+        file_menu.addAction(self.import_action)
+
+        self.export_action = QAction("&Export config\u2026", self)
+        self.export_action.setShortcut(QKeySequence("Ctrl+S"))
+        self.export_action.setStatusTip("Save this device's data sources and alarms to a file")
+        self.export_action.triggered.connect(self.export_config)
+        file_menu.addAction(self.export_action)
+
+        file_menu.addSeparator()
+
         self.exit_action = QAction("E&xit", self)
         # QKeySequence.Quit resolves to nothing on Windows, so name the shortcut outright.
         self.exit_action.setShortcut(QKeySequence("Ctrl+Q"))
@@ -180,6 +201,74 @@ class MainWindow(QMainWindow):
         for menu in (file_menu, view_menu):
             menu.aboutToHide.connect(self._maybe_hide_menu_bar)
         menu_bar.setVisible(False)
+
+    # -- configuration files -------------------------------------------------------
+
+    def export_config(self) -> Path | None:
+        """Ask for a filename and write this device's configuration to it."""
+        suggested = f"{self.service.instance_name}{config.FILE_SUFFIX}"
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export config",
+            suggested,
+            CONFIG_FILE_FILTER,
+        )
+        if not filename:
+            return None
+        try:
+            written = config.save(self.service, filename)
+        except OSError as exc:
+            QMessageBox.warning(self, "Could not export", str(exc))
+            return None
+        metrics = len(self.service.list_metrics())
+        alarms = len(self.service.list_alerts())
+        self.statusBar().showMessage(
+            f"Exported {metrics} data source(s) and {alarms} alarm(s) to {written.name}",
+            8000,
+        )
+        return written
+
+    def import_config(self) -> bool:
+        """Ask for a filename and rebuild this device from it."""
+        filename, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import config",
+            "",
+            CONFIG_FILE_FILTER,
+        )
+        if not filename:
+            return False
+        return self.load_config(filename, confirm=True)
+
+    def load_config(self, path: str | Path, *, confirm: bool = False) -> bool:
+        """Rebuild this device from a config file.
+
+        Everything already configured is discarded, since a preset describes a whole device
+        rather than an addition to one.
+        """
+        existing = len(self.service.list_metrics()) + len(self.service.list_alerts())
+        if confirm and existing:
+            answer = QMessageBox.question(
+                self,
+                "Replace this device?",
+                f"Importing replaces the {existing} item(s) you have configured.\n\nContinue?",
+            )
+            if answer != QMessageBox.Yes:
+                return False
+
+        try:
+            metrics, alarms = config.load_into(self.service, path)
+        except config.ConfigError as exc:
+            QMessageBox.warning(self, "Could not import", str(exc))
+            return False
+
+        self.provider_pane.refresh()
+        self.provider_pane.refresh_alerts()
+        self.statusBar().showMessage(
+            f"Imported {metrics} data source(s) and {alarms} alarm(s) from {Path(path).name}",
+            8000,
+        )
+        return True
 
     # -- the Alt-revealed menu bar -------------------------------------------------
 

@@ -18,6 +18,7 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from decimal import Decimal
@@ -31,7 +32,13 @@ sys.path.insert(0, str(ROOT))
 
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QColor, QPalette  # noqa: E402
-from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QMessageBox  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QFileDialog,
+    QHeaderView,
+    QLabel,
+    QMessageBox,
+)
 
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 from sdc11073.xml_types import pm_types  # noqa: E402
@@ -217,7 +224,11 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         report.check(titles == ["&File", "&View"], "File and View menus", str(titles))
         file_items = [a.text() for a in menu_bar.actions()[0].menu().actions()]
         view_items = [a.text() for a in menu_bar.actions()[1].menu().actions()]
-        report.check(file_items == ["E&xit"], "File has only Exit", str(file_items))
+        report.check(
+            [t for t in file_items if t] == ["&Import config\u2026", "&Export config\u2026", "E&xit"],
+            "File has import, export and exit",
+            str(file_items),
+        )
         report.check(view_items == ["&Split view"], "View has Split view", str(view_items))
         report.check(
             bool(window.exit_action.shortcut().toString()),
@@ -726,6 +737,56 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                 peer.wait(timeout=15)
             except subprocess.TimeoutExpired:
                 peer.kill()
+
+        print("\n10c. Export and import from the File menu")
+        workdir = Path(tempfile.mkdtemp(prefix="sdctoolbox-gui-"))
+        preset = workdir / "preset.json"
+
+        # The file dialogs would block with nobody to answer them.
+        QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (str(preset), ""))  # noqa: ARG005
+        QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (str(preset), ""))  # noqa: ARG005
+
+        before_metrics = sorted(service.list_metrics())
+        before_alerts = sorted(service.list_alerts())
+        report.check(bool(before_metrics), "there is something to export", str(before_metrics))
+
+        written = window.export_config()
+        report.check(written is not None and written.exists(), "export writes the file")
+
+        service.remove_metric(before_metrics[0])
+        pane.refresh()
+        pump(app)
+        report.check(
+            sorted(service.list_metrics()) != before_metrics,
+            "the device is changed after exporting",
+        )
+
+        report.check(window.import_config(), "import reports success")
+        pump(app)
+        report.check(
+            sorted(service.list_metrics()) == before_metrics,
+            "the data sources are back",
+            str(sorted(service.list_metrics())),
+        )
+        report.check(
+            sorted(service.list_alerts()) == before_alerts,
+            "and so are the alarms",
+            str(sorted(service.list_alerts())),
+        )
+        report.check(
+            pane.table.rowCount() == len(before_metrics),
+            "the table was refreshed by the import",
+            str(pane.table.rowCount()),
+        )
+
+        preset.write_text('{"metrics": [{"label": "broken"}]}', encoding="utf-8")
+        shown_warnings.clear()
+        report.check(not window.import_config(), "a broken file is refused")
+        report.check(
+            len(shown_warnings) == 1,
+            "and the user is told why",
+            shown_warnings[0][1][:60] if shown_warnings else "no message",
+        )
 
         print("\n11. Legibility on a dark theme")
         dark = QPalette()

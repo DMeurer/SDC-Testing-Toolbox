@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "device": {
+    "instance_name": "insufflator",
+    "friendly_name": "Example insufflator"
+  },
+  "metrics": [
+    {
+      "handle": "m.flow_rate",
+      "label": "Flow rate",
+      "kind": "number",
+      "controllable": true,
+      "unit": "L/min",
+      "resolution": "0.1",
+      "minimum": "0",
+      "maximum": "40",
+      "initial_value": "15"
+    },
+    {
+      "handle": "m.target_pressure",
+      "label": "Target pressure",
+      "kind": "number",
+      "controllable": true,
+      "unit": "mmHg",
+      "resolution": "1",
+      "minimum": "0",
+      "maximum": "30",
+      "initial_value": "12"
+    },
+    {
+      "handle": "m.measured_pressure",
+      "label": "Measured pressure",
+      "kind": "number",
+      "controllable": false,
+      "unit": "mmHg",
+      "resolution": "1",
+      "minimum": "0",
+      "maximum": "60",
+      "initial_value": "12"
+    },
+    {
+      "handle": "m.mode",
+      "label": "Mode",
+      "kind": "choice",
+      "controllable": true,
+      "allowed_values": ["STANDBY", "INSUFFLATING", "PAUSED"],
+      "initial_value": "STANDBY"
+    },
+    {
+      "handle": "m.gas_supply",
+      "label": "Gas supply",
+      "kind": "choice",
+      "controllable": false,
+      "allowed_values": ["OK", "LOW", "EMPTY"],
+      "initial_value": "OK"
+    },
+    {
+      "handle": "m.operator_note",
+      "label": "Operator note",
+      "kind": "text",
+      "controllable": true
+    }
+  ],
+  "alerts": [
+    {
+      "handle": "al.overpressure",
+      "label": "Overpressure",
+      "watches": "m.measured_pressure",
+      "kind": "Phy",
+      "priority": "Hi",
+      "upper_limit": "20"
+    },
+    {
+      "handle": "al.flow_out_of_range",
+      "label": "Flow out of range",
+      "watches": "m.flow_rate",
+      "kind": "Tec",
+      "priority": "Me",
+      "lower_limit": "1",
+      "upper_limit": "35"
+    },
+    {
+      "handle": "al.service_due",
+      "label": "Service due",
+      "watches": "m.flow_rate",
+      "kind": "Oth",
+      "priority": "Lo"
+    }
+  ]
+}

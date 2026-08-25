@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 from sdc11073.xml_types import msg_types  # noqa: E402
 
-from sdctoolbox import constants  # noqa: E402
+from sdctoolbox import config, constants  # noqa: E402
 from sdctoolbox.consumer_service import ConsumerService  # noqa: E402
 from sdctoolbox.model import AlertSpec, MetricKind, MetricSpec  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
@@ -270,6 +270,35 @@ class ProviderShell(Cmd):
             state = "PRESENT" if self.service.alert_present(handle) else "clear"
             print(f"  {handle:<22} {spec.source_handle:<18} {spec.limit_text() or 'manual':<24} {state}")
 
+    def do_export(self, line: str) -> None:
+        """export <file>  -  write the current data sources and alarms to a config file."""
+        path = line.strip()
+        if not path:
+            print("usage: export <file>")
+            return
+        try:
+            written = config.save(self.service, path)
+        except OSError as exc:
+            print(f"could not write: {exc}")
+            return
+        print(
+            f"wrote {len(self.service.list_metrics())} data source(s) "
+            f"and {len(self.service.list_alerts())} alarm(s) to {written}",
+        )
+
+    def do_import(self, line: str) -> None:
+        """import <file>  -  replace everything with the device described in a config file."""
+        path = line.strip()
+        if not path:
+            print("usage: import <file>")
+            return
+        try:
+            metrics, alarms = config.load_into(self.service, path)
+        except config.ConfigError as exc:
+            print(f"could not import: {exc}")
+            return
+        print(f"loaded {metrics} data source(s) and {alarms} alarm(s)")
+
     def do_quit(self, _line: str) -> bool:
         """quit  -  stop the provider and exit."""
         return True
@@ -459,6 +488,13 @@ def run_provider(args: argparse.Namespace) -> int:
     service = ProviderService(ip=args.ip, instance_name=args.name)
     service.start()
     try:
+        if args.config:
+            try:
+                metrics, alarms = config.load_into(service, args.config)
+            except config.ConfigError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
+            print(f"loaded {metrics} data source(s) and {alarms} alarm(s) from {args.config}")
         ProviderShell(service).cmdloop()
     except KeyboardInterrupt:
         print()
@@ -482,6 +518,7 @@ def main() -> int:
     parser.add_argument("mode", choices=("provider", "consumer"))
     parser.add_argument("--ip", default=constants.DEFAULT_IP, help="interface to bind discovery to")
     parser.add_argument("--name", default="alpha", help="provider instance name, decides the EPR")
+    parser.add_argument("--config", help="config file to load on startup (provider mode)")
     parser.add_argument("--verbose", action="store_true", help="show sdc11073 logging")
     args = parser.parse_args()
 

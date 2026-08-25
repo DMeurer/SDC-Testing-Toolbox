@@ -24,7 +24,8 @@ Python 3.12 is deliberate: `python` on a typical Windows box may point at a newe
 - [x] **1 — Core.** Create data sources at runtime, publish them, remote-control them. Headless, with a console front end and an acceptance test.
 - [x] **2 — Provider UI.** Metric list with live values, "New data source" dialog.
 - [x] **3 — Consumer UI.** Discovery, MDIB browser, editors for controllable metrics. Works against foreign devices, not just our own.
-- [ ] **4 — Extras.** Alerts, waveforms, saved configurations, TLS.
+- [x] **4a — Alarms and presets.** Alert conditions with their signals, and configs you can export, import and load at startup.
+- [ ] **4b — Waveforms and TLS.**
 
 ## Try it
 
@@ -96,6 +97,41 @@ There is also a console provider, if you would rather have both sides in text:
 .venv\Scripts\python.exe examples\console.py provider
 ```
 
+## Presets
+
+*File → Export config* writes everything you have set up — the data sources and the alarms —
+to a JSON file. *File → Import config* builds it again, replacing whatever the device
+currently has. The same file can be loaded at startup:
+
+```powershell
+.venv\Scripts\python.exe run_toolbox.py --config presets\insufflator.json
+.venv\Scripts\python.exe examples\console.py provider --config presets\insufflator.json
+```
+
+`presets/insufflator.json` is an example: six data sources and three alarms. A bad file is
+refused before anything starts, naming what is wrong with it.
+
+Handles are recorded in the file, so a preset reproduces the same MDIB every time. That
+matters if a script or another device refers to them by name.
+
+## Alarms
+
+BICEPS keeps two things apart that are easy to confuse:
+
+| | |
+|---|---|
+| **condition** | the fact — "the pressure is too high". Has a kind and a priority, and is either present or not. |
+| **signal** | how that fact is announced — visually, audibly, or by vibration. |
+
+One condition can drive several signals, which is why they are separate objects rather than
+flags on one. Every alarm this tool creates gets a visual and an audible signal, so the split
+is visible in the MDIB tree.
+
+Give an alarm limits and it becomes a `LimitAlertCondition` that follows its source metric by
+itself; leave them out and it stays a plain `AlertCondition` that only moves when you raise
+or clear it. Either way a value written by a remote consumer moves it exactly as a local edit
+does.
+
 ## Tests
 Runs a provider in one process and checks it from a consumer in another. 34 checks covering
 discovery, all three controllable metric kinds, value rejection, disabled controls and
@@ -107,11 +143,27 @@ descriptor creation at runtime.
 
 The GUI has its own smoke test, which builds the real window on Qt's offscreen backend and
 drives the actual widgets, including a live connection to a provider in another process.
-111 checks, no display needed.
+120 checks, no display needed.
 
 ```powershell
 .venv\Scripts\python.exe tests\gui_smoke.py
 ```
+
+Config files have a round-trip test that exports a device, rebuilds it and compares the two,
+then checks that a range of broken files are refused with a usable message.
+
+```powershell
+.venv\Scripts\python.exe tests\config_roundtrip.py
+```
+
+## Security
+
+Everything runs over plain `http://`. Neither `ProviderService` nor `ConsumerService` passes
+an `ssl_context_container`, so there is no TLS, no certificates and no authentication — treat
+it as a lab tool on a network you trust.
+
+The log line `Using SSL is enabled. TLS 1.3 Support = True` is a capability message from
+sdc11073, not a statement about the connection.
 ## Using the core
 
 ```python
