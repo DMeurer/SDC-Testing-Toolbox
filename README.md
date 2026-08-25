@@ -18,20 +18,17 @@ py -3.12 -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Python 3.12 is deliberate, see `PLANNING.md`.
+Python 3.12 is deliberate: `python` on a typical Windows box may point at a newer release,
+and an explicit `py -3.12` keeps the environment reproducible. Both dependencies also work on
+3.13 and 3.14 if you prefer.
 
-## Status
+## Milestones
 
-Stages 0 and 1 are complete: the core works headless and is covered by an acceptance test.
-The GUI starts at stage 2.
-
-| Stage | Content | Status |
-|---|---|---|
-| 0 | Environment, API reconciliation, networking settled | done |
-| 1 | Headless core: create a metric at runtime, remote-control it | done |
-| 2 | GUI provider side | open |
-| 3 | GUI consumer side (defensive against foreign MDIBs) | open |
-| 4 | Alerts, waveforms, persistence, TLS | open |
+- [x] **0 — Groundwork.** Pinned environment, sdc11073 API verified, networking settled.
+- [x] **1 — Core.** Create data sources at runtime, publish them, remote-control them. Headless, covered by an acceptance test.
+- [ ] **2 — Provider UI.** Metric list with live values, "New data source" dialog.
+- [ ] **3 — Consumer UI.** Discovery, MDIB browser, editors for controllable metrics. Works against foreign devices, not just our own.
+- [ ] **4 — Extras.** Alerts, waveforms, saved configurations, TLS.
 
 ## Acceptance test
 
@@ -91,9 +88,12 @@ something breaks, they answer the first question: is it us or is it the environm
 .venv\Scripts\python.exe diagnostics\minimal_consumer.py --ip 127.0.0.1   # terminal 2
 ```
 
-`--ip 192.168.0.152` works as well; both paths are verified.
+`--ip 192.168.0.152` works as well; both loopback and a real LAN adapter are verified.
 
-## Documents
+## Networking note
 
-- `INSTRUCTIONS.md` — specification: what gets built and under which rules
-- `PLANNING.md` — rationale, measurements and the traps found along the way
+WS-Discovery in sdc11073 binds to a **single IPv4 address**. On a machine with several
+adapters (VPN, Hyper-V, Wi-Fi Direct, Bluetooth PAN) you have to say which one, hence the
+`--ip` argument everywhere. Loopback is the default so two instances on one machine can talk
+without involving the network.
+

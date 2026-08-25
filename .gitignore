@@ -14,3 +14,7 @@ diagnostics/*.log.err
 # Tooling
 .vscode/
 .idea/
+
+# Notes
+INSTRUCTIONS.md
+PLANNING.md
