@@ -263,7 +263,7 @@ class ConsumerShell(Cmd):
             label = metric.label or "?"
             print(
                 f"  {handle:<24} {metric.kind.value if metric.kind else '?':<8} "
-                f"{show(metric.value):<14} {(metric.unit_label or '-'):<10} {writable}",
+                f"{show(metric.value):<14} {(metric.unit_label or ''):<10} {writable}",
             )
             if metric.allowed_values:
                 print(f"      allowed: {', '.join(metric.allowed_values)}    ({label})")

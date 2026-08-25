@@ -79,7 +79,9 @@ class MetricSpec:
 
     label: str
     kind: MetricKind
-    unit_label: str = "no unit"
+    #: Human readable unit. Empty means dimensionless; the descriptor still carries the
+    #: MDC_DIM_DIMLESS code, we simply do not invent a description for it.
+    unit_label: str = ""
     unit_code: str = constants.CODE_DIMENSIONLESS
     unit_coding_system: str = constants.CODING_SYSTEM_MDC
     allowed_values: tuple[str, ...] = ()

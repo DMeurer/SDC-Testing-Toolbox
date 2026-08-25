@@ -310,10 +310,14 @@ class ProviderService:
             coding_system=spec.type_coding_system,
             concept_descriptions=[pm_types.LocalizedText(spec.label, lang="en-US")],
         )
+        # A dimensionless metric still needs a Unit; it just gets no concept description,
+        # rather than a made-up one such as "no unit".
         descriptor.Unit = pm_types.CodedValue(
             code=spec.unit_code,
             coding_system=spec.unit_coding_system,
-            concept_descriptions=[pm_types.LocalizedText(spec.unit_label, lang="en-US")],
+            concept_descriptions=(
+                [pm_types.LocalizedText(spec.unit_label, lang="en-US")] if spec.unit_label else None
+            ),
         )
         descriptor.MetricCategory = (
             pm_types.MetricCategory.SETTING if spec.controllable else pm_types.MetricCategory.MEASUREMENT

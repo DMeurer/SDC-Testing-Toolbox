@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtWidgets import QLabel, QMainWindow, QTabWidget, QVBoxLayout, QWidget
 
 from .provider_pane import ProviderPane
+from .styling import mute
 
 if TYPE_CHECKING:
     from ..provider_service import ProviderService
@@ -24,7 +25,7 @@ class PlaceholderPane(QWidget):
         super().__init__(parent)
         label = QLabel(message)
         label.setWordWrap(True)
-        label.setStyleSheet("color: palette(mid);")
+        mute(label)
         layout = QVBoxLayout(self)
         layout.addStretch(1)
         layout.addWidget(label)

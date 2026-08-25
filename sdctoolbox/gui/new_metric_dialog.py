@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from ..constants import METRIC_HANDLE_PREFIX
 from ..model import MetricKind, MetricSpec, slugify
+from .styling import mark_as_error, mute
 
 #: Label shown in the combo box -> kind. Order decides the order in the dropdown.
 OFFERED_KINDS: list[tuple[str, MetricKind]] = [
@@ -48,7 +49,7 @@ class NewMetricDialog(QDialog):
         self.label_edit.setPlaceholderText("Zoom level")
 
         self.unit_edit = QLineEdit()
-        self.unit_edit.setPlaceholderText("no unit")
+        self.unit_edit.setPlaceholderText("optional, e.g. steps or mmHg")
 
         self.values_edit = QLineEdit()
         self.values_edit.setPlaceholderText("IDLE, RUN, PAUSE")
@@ -60,11 +61,11 @@ class NewMetricDialog(QDialog):
         self.controllable_box.setChecked(True)
 
         self.handle_preview = QLabel("-")
-        self.handle_preview.setStyleSheet("color: palette(mid);")
+        mute(self.handle_preview)
 
         self.error_label = QLabel("")
         self.error_label.setWordWrap(True)
-        self.error_label.setStyleSheet("color: #c0392b;")
+        mark_as_error(self.error_label)
         self.error_label.hide()
 
         form = QFormLayout()
@@ -162,7 +163,7 @@ class NewMetricDialog(QDialog):
             self._spec = MetricSpec(
                 label=label,
                 kind=self._kind,
-                unit_label=self.unit_edit.text().strip() or "no unit",
+                unit_label=self.unit_edit.text().strip(),
                 allowed_values=values,
                 resolution=resolution,
                 controllable=self.controllable_box.isChecked(),

@@ -29,14 +29,24 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtGui import QColor, QPalette  # noqa: E402
+from PySide6.QtWidgets import QApplication, QHeaderView, QLabel  # noqa: E402
 
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 from sdc11073.xml_types import pm_types  # noqa: E402
 
+from sdctoolbox.constants import CODE_DIMENSIONLESS  # noqa: E402
 from sdctoolbox.gui.main_window import MainWindow  # noqa: E402
 from sdctoolbox.gui.new_metric_dialog import NewMetricDialog  # noqa: E402
-from sdctoolbox.gui.provider_pane import COL_CONTROL, COL_HANDLE, COL_KIND, COL_VALUE, NO_VALUE  # noqa: E402
+from sdctoolbox.gui.provider_pane import (  # noqa: E402
+    COL_CONTROL,
+    COL_HANDLE,
+    COL_KIND,
+    COL_LABEL,
+    COL_UNIT,
+    COL_VALUE,
+    NO_VALUE,
+)
 from sdctoolbox.model import MetricKind  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
@@ -273,6 +283,102 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         service.remove_metric(late)
         pump(app, seconds=1.0)
         report.check(row_for(pane, late) is None, "and disappears when removed")
+
+        print("\n8. Units")
+        report.check(
+            cell(pane, zoom, COL_UNIT) == "steps",
+            "a unit is shown when there is one",
+            str(cell(pane, zoom, COL_UNIT)),
+        )
+        report.check(
+            cell(pane, mode, COL_UNIT) == "",
+            "a dimensionless metric leaves the unit cell empty",
+            repr(cell(pane, mode, COL_UNIT)),
+        )
+        unit_descriptor = service.mdib.entities.by_handle(mode).descriptor.Unit
+        report.check(
+            unit_descriptor is not None and unit_descriptor.Code == CODE_DIMENSIONLESS,
+            "but the descriptor still carries MDC_DIM_DIMLESS",
+            str(getattr(unit_descriptor, "Code", None)),
+        )
+        report.check(
+            not (unit_descriptor.ConceptDescription or []),
+            "and no invented concept description",
+        )
+
+        print("\n9. Column sizing")
+        header = pane.table.horizontalHeader()
+        modes = {header.sectionResizeMode(c) for c in range(pane.table.columnCount())}
+        report.check(
+            modes == {QHeaderView.Interactive},
+            "every column is draggable",
+            ", ".join(str(m) for m in modes),
+        )
+        before = pane.table.columnWidth(COL_LABEL)
+        pane.table.setColumnWidth(COL_LABEL, before + 60)
+        pump(app)
+        report.check(
+            pane.table.columnWidth(COL_LABEL) == before + 60,
+            "a resized column keeps its width",
+            f"{before} -> {pane.table.columnWidth(COL_LABEL)}",
+        )
+        pane.refresh()
+        pump(app)
+        report.check(
+            pane.table.columnWidth(COL_LABEL) == before + 60,
+            "and a refresh does not undo it",
+            str(pane.table.columnWidth(COL_LABEL)),
+        )
+
+        print("\n10. Selection is one flat band")
+        qss = pane.table.styleSheet()
+        report.check("outline: 0" in qss, "focus ring suppressed")
+        report.check("border: 0px" in qss, "per-cell borders suppressed")
+        report.check(
+            "palette(highlight)" in qss and "palette(highlighted-text)" in qss,
+            "selection colours come from the palette, not hard-coded",
+        )
+        report.check(
+            ":selected:!active" in qss,
+            "selection stays flat when the window loses focus",
+        )
+
+        print("\n11. Legibility on a dark theme")
+        dark = QPalette()
+        dark.setColor(QPalette.ColorRole.Window, QColor("#1e1e1e"))
+        dark.setColor(QPalette.ColorRole.WindowText, QColor("#e0e0e0"))
+        dark.setColor(QPalette.ColorRole.Base, QColor("#252526"))
+        dark.setColor(QPalette.ColorRole.Text, QColor("#e0e0e0"))
+        app.setPalette(dark)
+
+        dark_window = MainWindow(service)
+        placeholder = dark_window.tabs.widget(1)
+        dark_label = placeholder.findChild(QLabel)
+        text_colour = dark_label.palette().color(QPalette.ColorRole.WindowText)
+        background = QColor("#1e1e1e")
+        contrast = abs(text_colour.lightness() - background.lightness())
+        report.check(
+            contrast > 60,  # noqa: PLR2004
+            "network tab text is legible on a dark background",
+            f"text {text_colour.name()} on {background.name()}, lightness gap {contrast}",
+        )
+
+        dark_dialog = NewMetricDialog(dark_window)
+        preview_colour = dark_dialog.handle_preview.palette().color(QPalette.ColorRole.WindowText)
+        report.check(
+            abs(preview_colour.lightness() - background.lightness()) > 60,  # noqa: PLR2004
+            "handle preview is legible on a dark background",
+            f"{preview_colour.name()}, lightness {preview_colour.lightness()}",
+        )
+        error_col = dark_dialog.error_label.palette().color(QPalette.ColorRole.WindowText)
+        report.check(
+            error_col.lightness() > background.lightness(),
+            "error text is lighter than a dark background",
+            f"{error_col.name()}, lightness {error_col.lightness()}",
+        )
+        dark_dialog.deleteLater()
+        dark_window.close()
+        dark_window.deleteLater()
 
         window.close()
     finally:

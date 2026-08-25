@@ -50,7 +50,7 @@ consumer> scan
 consumer> connect 0
 consumer> list
   handle              kind     value    unit      writable
-  m.mode              choice   IDLE     no unit   disabled
+  m.mode              choice   IDLE               disabled
       allowed: IDLE, RUN, PAUSE    (Mode)
   m.zoom_level        number   -        steps     yes
 consumer> set m.zoom_level 9

@@ -28,18 +28,28 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
 from sdc11073.xml_types import pm_types
 
 from ..model import MetricKind
 from .new_metric_dialog import NewMetricDialog
 from .qt_bridge import MdibBridge
+from .styling import apply_row_selection_style, muted_colour
 
 if TYPE_CHECKING:
     from ..provider_service import ProviderService
 
 COLUMNS = ["Handle", "Label", "Kind", "Value", "Unit", "Remote control"]
 COL_HANDLE, COL_LABEL, COL_KIND, COL_VALUE, COL_UNIT, COL_CONTROL = range(len(COLUMNS))
+
+#: Starting widths in pixels. Applied once; the user can drag any of them afterwards.
+DEFAULT_COLUMN_WIDTHS = {
+    COL_HANDLE: 180,
+    COL_LABEL: 200,
+    COL_KIND: 70,
+    COL_VALUE: 110,
+    COL_UNIT: 90,
+    COL_CONTROL: 110,
+}
 
 NO_VALUE = "\u2014"  # em dash
 
@@ -76,14 +86,17 @@ class ProviderPane(QWidget):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(COL_HANDLE, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(COL_LABEL, QHeaderView.Stretch)
-        header.setSectionResizeMode(COL_KIND, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(COL_VALUE, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(COL_UNIT, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(COL_CONTROL, QHeaderView.ResizeToContents)
+        # Interactive throughout, so every column can be dragged to any width. Sensible
+        # starting widths are applied once, the first time there is something to measure;
+        # after that the user's own sizing is left alone.
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        header.setStretchLastSection(False)
+        header.setMinimumSectionSize(40)
+        for column, width in DEFAULT_COLUMN_WIDTHS.items():
+            self.table.setColumnWidth(column, width)
         self.table.itemChanged.connect(self._on_item_changed)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
+        apply_row_selection_style(self.table)
 
         self.new_button = QPushButton("New data source\u2026")
         self.new_button.clicked.connect(self._on_new)
@@ -155,6 +168,7 @@ class ProviderPane(QWidget):
                 else:
                     control.setFlags(Qt.ItemIsEnabled)
                     control.setText("n/a")
+                    control.setForeground(muted_colour(self))
                     control.setToolTip(f"{spec.kind.value} metrics cannot be remote-controlled")
                 self.table.setItem(row, COL_CONTROL, control)
         finally:
