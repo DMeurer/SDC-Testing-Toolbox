@@ -17,6 +17,7 @@ BOOTSTRAP_MDIB_PATH = pathlib.Path(__file__).with_name("mdib_bootstrap.xml")
 # Handles that exist in the bootstrap MDIB and are referenced by the services.
 MDS_HANDLE = "mds0"
 SCO_HANDLE = "sco.mds0"
+ALERT_SYSTEM_HANDLE = "alerts.mds0"
 VMD_HANDLE = "vmd0"
 CHANNEL_HANDLE = "ch0.vmd0"
 SYSTEM_CONTEXT_HANDLE = "SC.mds0"
@@ -28,6 +29,11 @@ LOCATION_CONTEXT_HANDLE = "LC.mds0"
 # numeric suffix.
 METRIC_HANDLE_PREFIX = "m."
 OPERATION_HANDLE_PREFIX = "op."
+
+# An alert condition and the signals that announce it. One condition can drive several
+# signals, which is the distinction BICEPS draws and the reason they are separate objects.
+ALERT_HANDLE_PREFIX = "al."
+SIGNAL_HANDLE_PREFIX = "sig."
 
 # --------------------------------------------------------------------------------------
 # Coded values

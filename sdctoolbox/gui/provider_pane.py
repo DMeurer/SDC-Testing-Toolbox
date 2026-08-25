@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QSplitter,
     QComboBox,
     QHBoxLayout,
     QHeaderView,
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
 from sdc11073.xml_types import pm_types
 
 from ..model import MetricKind
+from .new_alert_dialog import NewAlertDialog
 from .new_metric_dialog import NewMetricDialog
 from .qt_bridge import MdibBridge
 from .styling import apply_row_selection_style, muted_colour
@@ -48,6 +50,17 @@ MIN_LABEL_WIDTH = 120
 MIN_SECTION_WIDTH = 40
 
 NO_VALUE = "\u2014"  # em dash
+
+ALERT_COLUMNS = ["Handle", "Label", "Watches", "Raise when", "Kind", "Priority", "State"]
+(
+    ACOL_HANDLE,
+    ACOL_LABEL,
+    ACOL_SOURCE,
+    ACOL_WHEN,
+    ACOL_KIND,
+    ACOL_PRIORITY,
+    ACOL_STATE,
+) = range(len(ALERT_COLUMNS))
 
 EDITOR_TEXT = 0
 EDITOR_CHOICE = 1
@@ -73,8 +86,10 @@ class ProviderPane(QWidget):
         self.bridge.descriptors_added.connect(lambda _: self.refresh())
         self.bridge.descriptors_deleted.connect(lambda _: self.refresh())
         self.bridge.operations_changed.connect(lambda _: self.refresh())
+        self.bridge.alerts_changed.connect(lambda _: self.refresh_alerts())
 
         self.refresh()
+        self.refresh_alerts()
 
     # -- construction --------------------------------------------------------------
 
@@ -111,6 +126,38 @@ class ProviderPane(QWidget):
         buttons.addWidget(self.remove_button)
         buttons.addStretch(1)
 
+        # -- alarms
+        self.alert_table = QTableWidget(0, len(ALERT_COLUMNS))
+        self.alert_table.setHorizontalHeaderLabels(ALERT_COLUMNS)
+        self.alert_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.alert_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.alert_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.alert_table.verticalHeader().setVisible(False)
+        self.alert_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.alert_table.horizontalHeader().setStretchLastSection(True)
+        self.alert_table.itemSelectionChanged.connect(self._on_alert_selection_changed)
+        apply_row_selection_style(self.alert_table)
+
+        self.new_alert_button = QPushButton("New alarm\u2026")
+        self.new_alert_button.clicked.connect(self._on_new_alert)
+        self.remove_alert_button = QPushButton("Remove alarm")
+        self.remove_alert_button.clicked.connect(self._on_remove_alert)
+        self.toggle_alert_button = QPushButton("Raise")
+        self.toggle_alert_button.clicked.connect(self._on_toggle_alert)
+
+        alert_buttons = QHBoxLayout()
+        alert_buttons.addWidget(QLabel("Alarms"))
+        alert_buttons.addStretch(1)
+        alert_buttons.addWidget(self.toggle_alert_button)
+        alert_buttons.addWidget(self.new_alert_button)
+        alert_buttons.addWidget(self.remove_alert_button)
+
+        alert_box = QWidget()
+        alert_layout = QVBoxLayout(alert_box)
+        alert_layout.setContentsMargins(0, 0, 0, 0)
+        alert_layout.addLayout(alert_buttons)
+        alert_layout.addWidget(self.alert_table)
+
         self.editor_label = QLabel("Select a data source to change its value")
         self.value_edit = QLineEdit()
         self.value_edit.returnPressed.connect(self._on_apply)
@@ -127,10 +174,21 @@ class ProviderPane(QWidget):
         editor.addWidget(self.apply_button)
         self._set_editor_enabled(enabled=False)
 
+        self._views = QSplitter(Qt.Vertical)
+        self._views.addWidget(self.table)
+        self._views.addWidget(alert_box)
+        self._views.setStretchFactor(0, 3)
+        self._views.setStretchFactor(1, 2)
+
         layout = QVBoxLayout(self)
         layout.addLayout(buttons)
-        layout.addWidget(self.table, 1)
+        layout.addWidget(self.views, 1)
         layout.addLayout(editor)
+
+    @property
+    def views(self) -> QSplitter:
+        """Metrics above, alarms below, with a divider between them."""
+        return self._views
 
     # -- table -------------------------------------------------------------------
 
@@ -272,6 +330,123 @@ class ProviderPane(QWidget):
                     item.setText(NO_VALUE if value is None else str(value))
         finally:
             self._refreshing = False
+
+    # -- alarms --------------------------------------------------------------------
+
+    def refresh_alerts(self) -> None:
+        """Rebuild the alarm table."""
+        alerts = self.service.list_alerts()
+        selected = self.selected_alert_handle()
+
+        self.alert_table.setRowCount(len(alerts))
+        for row, (handle, spec) in enumerate(sorted(alerts.items())):
+            present = self.service.alert_present(handle)
+            cells = {
+                ACOL_HANDLE: handle,
+                ACOL_LABEL: spec.label,
+                ACOL_SOURCE: spec.source_handle,
+                ACOL_WHEN: spec.limit_text() or "by hand",
+                ACOL_KIND: spec.kind.value,
+                ACOL_PRIORITY: spec.priority.value,
+                ACOL_STATE: "PRESENT" if present else "clear",
+            }
+            for column, text in cells.items():
+                item = QTableWidgetItem(text)
+                if column == ACOL_STATE and not present:
+                    item.setForeground(muted_colour(self))
+                if column == ACOL_WHEN and not spec.has_limits:
+                    item.setToolTip("No limits, so this alarm only moves when you raise or clear it")
+                self.alert_table.setItem(row, column, item)
+
+        self.alert_table.resizeColumnsToContents()
+        if selected is not None:
+            self.select_alert_handle(selected)
+        self._on_alert_selection_changed()
+
+    def selected_alert_handle(self) -> str | None:
+        """Handle of the selected alarm row, or None."""
+        model = self.alert_table.selectionModel()
+        rows = model.selectedRows() if model else []
+        if not rows:
+            return None
+        item = self.alert_table.item(rows[0].row(), ACOL_HANDLE)
+        return item.text() if item else None
+
+    def select_alert_handle(self, handle: str) -> None:
+        """Restore the alarm selection, if that alarm still exists."""
+        for row in range(self.alert_table.rowCount()):
+            item = self.alert_table.item(row, ACOL_HANDLE)
+            if item is not None and item.text() == handle:
+                self.alert_table.selectRow(row)
+                return
+
+    def _on_alert_selection_changed(self) -> None:
+        handle = self.selected_alert_handle()
+        spec = self.service.list_alerts().get(handle) if handle else None
+        self.remove_alert_button.setEnabled(spec is not None)
+        # An alarm with limits is computed from its source, so raising it by hand would only
+        # be undone by the next value change. Offer the button only where it means something.
+        can_toggle = spec is not None and not spec.has_limits
+        self.toggle_alert_button.setEnabled(can_toggle)
+        if spec is None:
+            self.toggle_alert_button.setText("Raise")
+            self.toggle_alert_button.setToolTip("")
+        elif spec.has_limits:
+            self.toggle_alert_button.setText("Raise")
+            self.toggle_alert_button.setToolTip(
+                "This alarm follows its source metric; change the value instead",
+            )
+        else:
+            present = self.service.alert_present(handle)
+            self.toggle_alert_button.setText("Clear" if present else "Raise")
+            self.toggle_alert_button.setToolTip("")
+
+    def _on_new_alert(self) -> None:
+        metrics = self.service.list_metrics()
+        if not metrics:
+            QMessageBox.information(
+                self,
+                "Nothing to watch",
+                "Create a data source first. An alarm always watches one.",
+            )
+            return
+        dialog = NewAlertDialog(metrics, self)
+        if dialog.exec() != NewAlertDialog.Accepted:
+            return
+        spec = dialog.spec()
+        if spec is None:
+            return
+        try:
+            handle = self.service.add_alert(spec)
+        except (KeyError, ValueError, TypeError) as exc:
+            QMessageBox.warning(self, "Could not create alarm", str(exc))
+            return
+        self.refresh_alerts()
+        self.select_alert_handle(handle)
+
+    def _on_remove_alert(self) -> None:
+        handle = self.selected_alert_handle()
+        if handle is None:
+            return
+        confirm = QMessageBox.question(
+            self,
+            "Remove alarm",
+            f"Remove {handle} and its signals?",
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        self.service.remove_alert(handle)
+        self.refresh_alerts()
+
+    def _on_toggle_alert(self) -> None:
+        handle = self.selected_alert_handle()
+        if handle is None:
+            return
+        try:
+            self.service.set_alert_presence(handle, not self.service.alert_present(handle))
+        except KeyError as exc:
+            QMessageBox.warning(self, "Could not change the alarm", str(exc))
+        self.refresh_alerts()
 
     # -- selection -----------------------------------------------------------------
 

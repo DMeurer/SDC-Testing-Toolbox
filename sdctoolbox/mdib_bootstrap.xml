@@ -20,13 +20,16 @@
 	<msg:Mdib SequenceId="urn:oid:1">
 		<pm:MdDescription>
 			
-			<pm:Mds Handle="mds0">
-				<pm:Type Code="toolbox-mds" CodingSystem="urn:sdc-testing-toolbox:private">
-					<pm:ConceptDescription Lang="en-US">SDC-testing-toolbox virtual device</pm:ConceptDescription>
-				</pm:Type>
-				
-				<!-- All operations created at runtime are registered here. -->
-				<pm:Sco Handle="sco.mds0"/>
+            <pm:Mds Handle="mds0">
+                <pm:Type Code="toolbox-mds" CodingSystem="urn:sdc-testing-toolbox:private">
+                    <pm:ConceptDescription Lang="en-US">SDC-testing-toolbox virtual device</pm:ConceptDescription>
+                </pm:Type>
+
+                <!-- Alert conditions and their signals are created here at runtime. -->
+                <pm:AlertSystem Handle="alerts.mds0" SelfCheckPeriod="PT30S"/>
+
+                <!-- All operations created at runtime are registered here. -->
+                <pm:Sco Handle="sco.mds0"/>
 				
 				<pm:SystemContext Handle="SC.mds0">
 					<pm:PatientContext Handle="PC.mds0"/>

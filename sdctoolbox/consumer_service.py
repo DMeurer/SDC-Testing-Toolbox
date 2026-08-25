@@ -25,7 +25,7 @@ from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types.actions import periodic_actions
 
 from . import constants
-from .model import MetricKind, RemoteMetric
+from .model import MetricKind, RemoteAlert, RemoteMetric
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -79,6 +79,22 @@ def _scope_uris(service: Any) -> tuple[str, ...]:
         return tuple(str(uri) for uri in scopes)
     except TypeError:
         return (str(scopes),)
+
+
+#: Descriptor node types that carry an alarm condition.
+ALERT_CONDITION_NODE_TYPES = frozenset(
+    {
+        pm.AlertConditionDescriptor,
+        pm.LimitAlertConditionDescriptor,
+    },
+)
+
+
+def _enum_value(value: Any) -> str | None:
+    """The wire value of a BICEPS enum, tolerating None and plain strings."""
+    if value is None:
+        return None
+    return getattr(value, "value", None) or str(value)
 
 
 def _first_range(ranges: Any) -> tuple[Any, Any]:
@@ -197,6 +213,56 @@ class RemoteDevice:
                 allowed_range[target] = (lower, upper)
 
         return by_target, enabled, allowed_range
+
+    def alerts(self) -> dict[str, RemoteAlert]:
+        """Build a defensive snapshot of every alarm condition on the peer.
+
+        Signals are matched back to their condition through ConditionSignaled, so a
+        condition announced three different ways still appears once, with its three signals
+        listed against it.
+        """
+        with self._lock:
+            signals_by_condition: dict[str, dict[str, str]] = {}
+            for handle, entity in self._mdib.entities.items():
+                if getattr(entity, "node_type", None) is not pm.AlertSignalDescriptor:
+                    continue
+                descriptor = getattr(entity, "descriptor", None)
+                condition = getattr(descriptor, "ConditionSignaled", None)
+                if not condition:
+                    continue
+                manifestation = getattr(descriptor, "Manifestation", None)
+                signals_by_condition.setdefault(condition, {})[handle] = (
+                    getattr(manifestation, "value", None) or str(manifestation)
+                )
+
+            result: dict[str, RemoteAlert] = {}
+            for handle, entity in self._mdib.entities.items():
+                node_type = getattr(entity, "node_type", None)
+                if node_type not in ALERT_CONDITION_NODE_TYPES:
+                    continue
+
+                descriptor = getattr(entity, "descriptor", None)
+                state = getattr(entity, "state", None)
+                lower, upper = None, None
+                limits = getattr(state, "Limits", None) or getattr(descriptor, "MaxLimits", None)
+                if limits is not None:
+                    lower = getattr(limits, "Lower", None)
+                    upper = getattr(limits, "Upper", None)
+
+                result[handle] = RemoteAlert(
+                    handle=handle,
+                    node_type_name=getattr(node_type, "localname", str(node_type)),
+                    label=_first_text(getattr(descriptor, "Type", None)),
+                    kind=_enum_value(getattr(descriptor, "Kind", None)),
+                    priority=_enum_value(getattr(descriptor, "Priority", None)),
+                    present=bool(getattr(state, "Presence", False)),
+                    activation=_enum_value(getattr(state, "ActivationState", None)),
+                    source_handles=tuple(getattr(descriptor, "Source", None) or ()),
+                    lower_limit=lower,
+                    upper_limit=upper,
+                    signals=signals_by_condition.get(handle, {}),
+                )
+            return result
 
     # -- writing -------------------------------------------------------------------
 

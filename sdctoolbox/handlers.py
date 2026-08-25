@@ -40,7 +40,10 @@ def apply_metric_value(state: object, value: object) -> None:
     state.ActivationState = pm_types.ComponentActivation.ON
 
 
-def make_set_handler(mdib: ProviderMdib) -> Callable[[ExecuteParameters], ExecuteResult]:
+def make_set_handler(
+    mdib: ProviderMdib,
+    on_applied: Callable[[str], None] | None = None,
+) -> Callable[[ExecuteParameters], ExecuteResult]:
     """Build the execute handler bound to one provider MDIB.
 
     The handler applies the requested value to the operation's target metric and reports
@@ -51,10 +54,15 @@ def make_set_handler(mdib: ProviderMdib) -> Callable[[ExecuteParameters], Execut
     * the target metric no longer exists,
     * the operation is currently disabled (``OperatingMode`` other than ``En``),
     * the value does not parse as a number for a numeric target,
-    * the value is not among ``AllowedValue`` for a choice target.
+    * the value is not among ``AllowedValue`` for a choice target,
+    * the value falls outside the operation's ``AllowedRange``.
 
     The OperatingMode check is deliberate: ``ScoOperationsRegistry.handle_operation_request``
     does not look at it, so without this check a disabled control would still take effect.
+
+    :param on_applied: called with the target handle after the write has been committed.
+        It runs outside the transaction, because sdc11073 holds a non-reentrant lock for the
+        whole of it and anything wanting a transaction of its own would deadlock.
     """
 
     def handler(params: ExecuteParameters) -> ExecuteResult:
@@ -122,6 +130,9 @@ def make_set_handler(mdib: ProviderMdib) -> Callable[[ExecuteParameters], Execut
 
         with mdib.metric_state_transaction() as mgr:
             mgr.write_entity(target_entity)
+
+        if on_applied is not None:
+            on_applied(target_handle)
 
         logger.info("set %s = %r via %s", target_handle, value, operation_handle)
         return ExecuteResult(

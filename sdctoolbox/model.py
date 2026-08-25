@@ -14,6 +14,7 @@ from decimal import Decimal
 
 from sdc11073.provider.operations import OperationDefinitionBase, SetStringOperation, SetValueOperation
 from sdc11073.xml_types import pm_qnames as pm
+from sdc11073.xml_types import pm_types
 
 from . import constants
 
@@ -62,6 +63,20 @@ _OPERATION_CLASSES: dict[MetricKind, type[OperationDefinitionBase]] = {
     MetricKind.TEXT: SetStringOperation,
     MetricKind.CHOICE: SetStringOperation,
 }
+
+
+# The alarm vocabulary is taken straight from BICEPS rather than reinvented, so the values
+# that go on the wire are the standard's own:
+#   AlertKind      PHYSIOLOGICAL=Phy  TECHNICAL=Tec  OTHER=Oth
+#   AlertPriority  NONE=None  LOW=Lo  MEDIUM=Me  HIGH=Hi
+#   Manifestation  AUD=Aud  VIS=Vis  TAN=Tan  OTH=Oth
+AlertKind = pm_types.AlertConditionKind
+AlertPriority = pm_types.AlertConditionPriority
+AlertManifestation = pm_types.AlertSignalManifestation
+
+#: Every condition this tool creates gets one signal per manifestation listed here. One
+#: condition driving several signals is the whole point of keeping them separate.
+DEFAULT_MANIFESTATIONS = (AlertManifestation.VIS, AlertManifestation.AUD)
 
 
 def slugify(label: str) -> str:
@@ -164,6 +179,104 @@ class MetricSpec:
     def range_text(self) -> str:
         """The limits as something readable, or an empty string when unbounded."""
         return format_range(self.minimum, self.maximum)
+
+
+@dataclass
+class AlertSpec:
+    """An alarm condition as the user describes it.
+
+    BICEPS keeps two things apart that are easy to confuse:
+
+    * the **condition** is the fact - "the pressure is too high". It has a kind and a
+      priority, and it is either present or it is not.
+    * the **signal** is how that fact is announced - visually, audibly, or by vibration.
+
+    One condition can drive several signals, which is why they are separate objects rather
+    than flags on one. This tool creates a visual and an audible signal for every condition,
+    so the split is visible in the tree.
+    """
+
+    label: str
+    #: Handle of the metric this alarm watches. The condition's Source points at it.
+    source_handle: str
+    kind: AlertKind = AlertKind.TECHNICAL
+    priority: AlertPriority = AlertPriority.MEDIUM
+    #: When either limit is given, the condition becomes a LimitAlertCondition and its
+    #: presence follows the source metric automatically.
+    lower_limit: Decimal | None = None
+    upper_limit: Decimal | None = None
+    handle: str | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("lower_limit", "upper_limit"):
+            limit = getattr(self, name)
+            if limit is not None and not isinstance(limit, Decimal):
+                msg = f"{name} must be a Decimal, never a float"
+                raise TypeError(msg)
+        if (
+            self.lower_limit is not None
+            and self.upper_limit is not None
+            and self.lower_limit > self.upper_limit
+        ):
+            msg = f"lower_limit {self.lower_limit} is above upper_limit {self.upper_limit}"
+            raise ValueError(msg)
+        if not self.label.strip():
+            msg = "an alarm needs a label"
+            raise ValueError(msg)
+
+    @property
+    def slug(self) -> str:
+        """Slug used to build handles."""
+        return slugify(self.label)
+
+    @property
+    def has_limits(self) -> bool:
+        """Whether presence is derived from the source metric rather than set by hand."""
+        return self.lower_limit is not None or self.upper_limit is not None
+
+    def limit_text(self) -> str:
+        """The limits as something readable, or an empty string when set manually."""
+        if not self.has_limits:
+            return ""
+        if self.lower_limit is not None and self.upper_limit is not None:
+            return f"outside {self.lower_limit} to {self.upper_limit}"
+        if self.lower_limit is not None:
+            return f"below {self.lower_limit}"
+        return f"above {self.upper_limit}"
+
+    def breached_by(self, value: object) -> bool:
+        """Whether a source value puts this condition into the present state."""
+        if not self.has_limits or not isinstance(value, Decimal):
+            return False
+        if self.lower_limit is not None and value < self.lower_limit:
+            return True
+        return self.upper_limit is not None and value > self.upper_limit
+
+
+@dataclass
+class RemoteAlert:
+    """An alarm observed on a peer device.
+
+    As with RemoteMetric, every field is optional: a foreign provider may publish a bare
+    condition with no type, no source and no signals at all.
+    """
+
+    handle: str
+    node_type_name: str
+    label: str | None = None
+    kind: str | None = None
+    priority: str | None = None
+    present: bool = False
+    activation: str | None = None
+    source_handles: tuple[str, ...] = field(default_factory=tuple)
+    lower_limit: Decimal | None = None
+    upper_limit: Decimal | None = None
+    #: Handle -> manifestation for the signals that announce this condition.
+    signals: dict[str, str] = field(default_factory=dict)
+
+    def limit_text(self) -> str:
+        """The monitored limits, or an empty string when there are none."""
+        return format_range(self.lower_limit, self.upper_limit)
 
 
 def format_range(minimum: Decimal | None, maximum: Decimal | None) -> str:

@@ -53,6 +53,18 @@ MIN_LABEL_WIDTH = 110
 MIN_SECTION_WIDTH = 40
 
 #: Floors that stop the panel from dictating a width the splitter cannot move.
+ALERT_COLUMNS = ["Handle", "Label", "Watches", "Limits", "Kind", "Priority", "Signals", "State"]
+(
+    ACOL_HANDLE,
+    ACOL_LABEL,
+    ACOL_SOURCE,
+    ACOL_LIMITS,
+    ACOL_KIND,
+    ACOL_PRIORITY,
+    ACOL_SIGNALS,
+    ACOL_STATE,
+) = range(len(ALERT_COLUMNS))
+
 MIN_CHILD_WIDTH = 200
 MIN_PANEL_WIDTH = 240
 
@@ -126,11 +138,29 @@ class ConsumerPane(QWidget):
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         apply_row_selection_style(self.table)
 
+        self.alert_table = QTableWidget(0, len(ALERT_COLUMNS))
+        self.alert_table.setHorizontalHeaderLabels(ALERT_COLUMNS)
+        self.alert_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.alert_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.alert_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.alert_table.verticalHeader().setVisible(False)
+        self.alert_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.alert_table.horizontalHeader().setStretchLastSection(True)
+        apply_row_selection_style(self.alert_table)
+
+        alert_box = QWidget()
+        alert_layout = QVBoxLayout(alert_box)
+        alert_layout.setContentsMargins(0, 0, 0, 0)
+        alert_layout.addWidget(QLabel("Alarms"))
+        alert_layout.addWidget(self.alert_table)
+
         self.views = QSplitter(Qt.Vertical)
         self.views.addWidget(self.tree)
         self.views.addWidget(self.table)
+        self.views.addWidget(alert_box)
         self.views.setStretchFactor(0, 1)
         self.views.setStretchFactor(1, 3)
+        self.views.setStretchFactor(2, 2)
 
         self.editor_label = QLabel("Connect to a device to control it")
         self.editor_label.setWordWrap(True)
@@ -153,7 +183,7 @@ class ConsumerPane(QWidget):
 
         # Keep the panel from demanding so much width that the splitter cannot be moved.
         # Every child that would otherwise dictate a large minimum is pinned down here.
-        for widget in (self.tree, self.table, self.device_list, self.editor_stack):
+        for widget in (self.tree, self.table, self.alert_table, self.device_list, self.editor_stack):
             widget.setMinimumWidth(MIN_CHILD_WIDTH)
         self.setMinimumWidth(MIN_PANEL_WIDTH)
 
@@ -229,6 +259,7 @@ class ConsumerPane(QWidget):
         self.bridge.descriptors_deleted.connect(lambda _: self.refresh())
         self.bridge.descriptors_updated.connect(lambda _: self.refresh())
         self.bridge.operations_changed.connect(lambda _: self.refresh())
+        self.bridge.alerts_changed.connect(lambda _: self._rebuild_alerts())
         self.bridge.peer_restarted.connect(self._on_peer_restarted)
         self._set_status(f"Connected to {remote.epr}")
         self.refresh()
@@ -261,6 +292,7 @@ class ConsumerPane(QWidget):
         """Rebuild both the tree and the table from whatever the peer currently says."""
         self._rebuild_tree()
         self._rebuild_table()
+        self._rebuild_alerts()
         self._on_selection_changed()
 
     def _rebuild_tree(self) -> None:
@@ -348,6 +380,31 @@ class ConsumerPane(QWidget):
             item = self.table.item(row, COL_VALUE)
             if item is not None:
                 item.setText(NO_VALUE if metric.value is None else str(metric.value))
+
+    def _rebuild_alerts(self) -> None:
+        """Show the peer's alarms, including how each one is announced."""
+        alerts = {} if self.remote is None else self.remote.alerts()
+        self.alert_table.setRowCount(len(alerts))
+        for row, (handle, alert) in enumerate(sorted(alerts.items())):
+            cells = {
+                ACOL_HANDLE: handle,
+                ACOL_LABEL: alert.label or "",
+                ACOL_SOURCE: ", ".join(alert.source_handles),
+                ACOL_LIMITS: alert.limit_text(),
+                ACOL_KIND: alert.kind or "",
+                ACOL_PRIORITY: alert.priority or "",
+                # One condition, several signals: the reason BICEPS keeps them apart.
+                ACOL_SIGNALS: ", ".join(sorted(alert.signals.values())),
+                ACOL_STATE: "PRESENT" if alert.present else "clear",
+            }
+            for column, text in cells.items():
+                item = QTableWidgetItem(text)
+                if column == ACOL_STATE and not alert.present:
+                    item.setForeground(muted_colour(self))
+                if column == ACOL_SIGNALS and alert.signals:
+                    item.setToolTip("\n".join(f"{h}: {m}" for h, m in sorted(alert.signals.items())))
+                self.alert_table.setItem(row, column, item)
+        self.alert_table.resizeColumnsToContents()
 
     # -- selection and editing -----------------------------------------------------
 

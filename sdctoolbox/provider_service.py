@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -17,12 +18,13 @@ from sdc11073.provider import SdcProvider
 from sdc11073.provider.baseproduct import BaseProduct
 from sdc11073.provider.providerimpl import RoleProviderComponents
 from sdc11073.wsdiscovery import WSDiscovery
+from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types import pm_types
 from sdc11073.xml_types.dpws_types import ThisDeviceType, ThisModelType
 
 from . import constants
 from .handlers import apply_metric_value, make_set_handler
-from .model import MetricKind, MetricSpec
+from .model import DEFAULT_MANIFESTATIONS, AlertSpec, MetricKind, MetricSpec
 
 if TYPE_CHECKING:
     from sdc11073.provider.sco import AbstractScoOperationsRegistry
@@ -62,6 +64,12 @@ class ProviderService:
         self._operations: dict[str, str] = {}
         #: metric handle -> the spec it was created from
         self._specs: dict[str, MetricSpec] = {}
+        #: alarm handle -> the spec it was created from
+        self._alerts: dict[str, AlertSpec] = {}
+        #: alarm handle -> the signals announcing it
+        self._alert_signals: dict[str, list[str]] = {}
+        #: Guards the metric observer against re-entering itself.
+        self._evaluating_alerts = False
         self._lock = threading.RLock()
 
     # -- lifecycle -----------------------------------------------------------------
@@ -84,7 +92,11 @@ class ProviderService:
         self._discovery.start()
 
         self._mdib = ProviderMdib.from_mdib_file(str(constants.BOOTSTRAP_MDIB_PATH))
-        self._handler = make_set_handler(self._mdib)
+        # The handler tells us which metric it touched once its transaction has closed, so a
+        # value written by a remote consumer raises a limit alarm exactly as a local edit
+        # does. It cannot be done from a metrics observable: sdc11073 fires those while
+        # holding the transaction lock, and opening the alert transaction there deadlocks.
+        self._handler = make_set_handler(self._mdib, on_applied=self._on_metric_applied)
 
         this_model = ThisModelType(
             manufacturer=constants.MANUFACTURER,
@@ -138,6 +150,8 @@ class ProviderService:
         self._sco = None
         self._operations.clear()
         self._specs.clear()
+        self._alerts.clear()
+        self._alert_signals.clear()
         logger.info("provider %r stopped", self.instance_name)
 
     def __enter__(self) -> ProviderService:
@@ -228,6 +242,10 @@ class ProviderService:
             with self.mdib.metric_state_transaction() as mgr:
                 mgr.write_entity(entity)
 
+        # Outside the transaction on purpose: writing the alarm state needs a transaction of
+        # its own, and the metric one still holds the lock until the with block closes.
+        self._evaluate_alerts({handle})
+
     def get_value(self, handle: str):  # noqa: ANN201 - the value type depends on the metric kind
         """Read back the current value of one of our own metrics.
 
@@ -303,6 +321,158 @@ class ProviderService:
     def operation_handle_for(self, handle: str) -> str | None:
         """Return the operation handle controlling a metric, if there is one."""
         return self._operations.get(handle)
+
+    # -- alarms --------------------------------------------------------------------
+
+    def add_alert(self, spec: AlertSpec) -> str:
+        """Create an alarm condition and the signals that announce it.
+
+        With limits, the condition becomes a LimitAlertCondition and its presence follows
+        the source metric from then on. Without them it stays a plain AlertCondition that
+        only ``set_alert_presence`` moves.
+        """
+        with self._lock:
+            if self.mdib.entities.by_handle(spec.source_handle) is None:
+                msg = f"no metric with handle {spec.source_handle!r} to watch"
+                raise KeyError(msg)
+
+            handle = spec.handle or self._unique_handle(constants.ALERT_HANDLE_PREFIX + spec.slug)
+            node_type = pm.LimitAlertConditionDescriptor if spec.has_limits else pm.AlertConditionDescriptor
+            entity = self.mdib.entities.new_entity(node_type, handle, constants.ALERT_SYSTEM_HANDLE)
+
+            descriptor = entity.descriptor
+            descriptor.Type = pm_types.CodedValue(
+                code=spec.slug,
+                coding_system=constants.CODING_SYSTEM_PRIVATE,
+                concept_descriptions=[pm_types.LocalizedText(spec.label, lang="en-US")],
+            )
+            descriptor.Source = [spec.source_handle]
+            descriptor.Kind = spec.kind
+            descriptor.Priority = spec.priority
+            if spec.has_limits:
+                descriptor.MaxLimits = pm_types.Range(lower=spec.lower_limit, upper=spec.upper_limit)
+
+            entity.state.ActivationState = pm_types.AlertActivation.ON
+            entity.state.Presence = False
+            if spec.has_limits:
+                entity.state.Limits = pm_types.Range(lower=spec.lower_limit, upper=spec.upper_limit)
+
+            signal_entities = []
+            for manifestation in DEFAULT_MANIFESTATIONS:
+                signal_handle = self._unique_handle(
+                    f"{constants.SIGNAL_HANDLE_PREFIX}{spec.slug}.{manifestation.value.lower()}",
+                )
+                signal = self.mdib.entities.new_entity(
+                    pm.AlertSignalDescriptor,
+                    signal_handle,
+                    constants.ALERT_SYSTEM_HANDLE,
+                )
+                signal.descriptor.ConditionSignaled = handle
+                signal.descriptor.Manifestation = manifestation
+                signal.descriptor.Latching = False
+                signal.state.ActivationState = pm_types.AlertActivation.ON
+                signal.state.Presence = pm_types.AlertSignalPresence.OFF
+                signal_entities.append(signal)
+
+            with self.mdib.descriptor_transaction() as mgr:
+                mgr.write_entity(entity)
+                for signal in signal_entities:
+                    mgr.write_entity(signal)
+
+            self._alerts[handle] = spec
+            self._alert_signals[handle] = [s.handle for s in signal_entities]
+            logger.info(
+                "added alarm %r watching %s (%s)",
+                spec.label,
+                spec.source_handle,
+                spec.limit_text() or "manual",
+            )
+
+            if spec.has_limits:
+                self._evaluate_alerts({spec.source_handle})
+            return handle
+
+    def remove_alert(self, handle: str) -> None:
+        """Delete an alarm condition together with its signals."""
+        with self._lock:
+            signal_handles = self._alert_signals.pop(handle, [])
+            self._alerts.pop(handle, None)
+            entities = [
+                entity
+                for entity in (self.mdib.entities.by_handle(h) for h in [*signal_handles, handle])
+                if entity is not None
+            ]
+            with self.mdib.descriptor_transaction() as mgr:
+                for entity in entities:
+                    mgr.remove_entity(entity)
+            logger.info("removed alarm %s", handle)
+
+    def set_alert_presence(self, handle: str, present: bool) -> None:  # noqa: FBT001
+        """Raise or clear an alarm by hand.
+
+        Only meaningful for a condition without limits; one with limits is recomputed from
+        its source metric and would overwrite this on the next change.
+        """
+        with self._lock:
+            self._write_alert_presence(handle, present=present)
+
+    def alert_present(self, handle: str) -> bool:
+        """Whether the condition is currently raised."""
+        entity = self.mdib.entities.by_handle(handle)
+        return bool(getattr(getattr(entity, "state", None), "Presence", False))
+
+    def list_alerts(self) -> dict[str, AlertSpec]:
+        """The specs of every alarm we created, keyed by handle."""
+        return dict(self._alerts)
+
+    def signal_handles_for(self, handle: str) -> list[str]:
+        """Handles of the signals announcing one condition."""
+        return list(self._alert_signals.get(handle, []))
+
+    def _on_metric_applied(self, metric_handle: str) -> None:
+        """A metric changed, by whatever route. Recompute the alarms watching it."""
+        self._evaluate_alerts({metric_handle})
+
+    def _evaluate_alerts(self, source_handles: set[str]) -> None:
+        if self._evaluating_alerts or self._mdib is None:
+            return
+        self._evaluating_alerts = True
+        try:
+            for handle, spec in list(self._alerts.items()):
+                if not spec.has_limits or spec.source_handle not in source_handles:
+                    continue
+                value = self.get_value(spec.source_handle)
+                self._write_alert_presence(handle, present=spec.breached_by(value))
+        finally:
+            self._evaluating_alerts = False
+
+    def _write_alert_presence(self, handle: str, *, present: bool) -> None:
+        entity = self.mdib.entities.by_handle(handle)
+        if entity is None:
+            msg = f"no alarm with handle {handle!r}"
+            raise KeyError(msg)
+        if bool(getattr(entity.state, "Presence", False)) == present:
+            return
+
+        entity.state.Presence = present
+        entity.state.DeterminationTime = time.time()
+        signals = [
+            signal
+            for signal in (
+                self.mdib.entities.by_handle(h) for h in self._alert_signals.get(handle, [])
+            )
+            if signal is not None
+        ]
+        for signal in signals:
+            signal.state.Presence = (
+                pm_types.AlertSignalPresence.ON if present else pm_types.AlertSignalPresence.OFF
+            )
+
+        with self.mdib.alert_state_transaction() as mgr:
+            mgr.write_entity(entity)
+            for signal in signals:
+                mgr.write_entity(signal)
+        logger.info("alarm %s is now %s", handle, "present" if present else "clear")
 
     # -- internals -----------------------------------------------------------------
 

@@ -29,7 +29,7 @@ from sdc11073.xml_types import msg_types  # noqa: E402
 
 from sdctoolbox import constants  # noqa: E402
 from sdctoolbox.consumer_service import ConsumerService  # noqa: E402
-from sdctoolbox.model import MetricKind, MetricSpec  # noqa: E402
+from sdctoolbox.model import AlertSpec, MetricKind, MetricSpec  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 KIND_BY_NAME = {
@@ -196,6 +196,80 @@ class ProviderShell(Cmd):
             value = show(self.service.get_value(handle))
             print(f"  {handle:<24} {spec.kind.value:<8} {value:<14} {spec.range_text():<14} {control}")
 
+    def do_alert(self, line: str) -> None:
+        """alert <source handle> <label...> [min..max]
+
+        Adds an alarm condition watching one of our metrics, plus a visual and an audible
+        signal for it. With limits the alarm follows the metric by itself; without them use
+        `raise` and `clear`.
+
+            alert m.pressure Pressure out of range 20..100
+            alert m.pressure Service due
+        """
+        parts = shlex.split(line)
+        if len(parts) < 2:  # noqa: PLR2004
+            print("usage: alert <source handle> <label...> [min..max]")
+            return
+
+        source, *rest = parts
+        lower = upper = None
+        if rest and ".." in rest[-1]:
+            low, _, high = rest.pop().partition("..")
+            try:
+                lower = Decimal(low) if low else None
+                upper = Decimal(high) if high else None
+            except InvalidOperation:
+                print(f"could not read limits from {low!r}..{high!r}")
+                return
+        if not rest:
+            print("usage: alert <source handle> <label...> [min..max]")
+            return
+
+        try:
+            spec = AlertSpec(
+                label=" ".join(rest),
+                source_handle=source,
+                lower_limit=lower,
+                upper_limit=upper,
+            )
+            handle = self.service.add_alert(spec)
+        except (KeyError, ValueError, TypeError) as exc:
+            print(f"rejected: {exc}")
+            return
+        print(f"created {handle}  ({spec.limit_text() or 'manual'})")
+        print(f"  signals: {', '.join(self.service.signal_handles_for(handle))}")
+
+    def do_raise(self, line: str) -> None:
+        """raise <alarm handle>  -  raise an alarm that has no limits."""
+        self._set_alert(line, present=True)
+
+    def do_clear(self, line: str) -> None:
+        """clear <alarm handle>  -  clear an alarm that has no limits."""
+        self._set_alert(line, present=False)
+
+    def _set_alert(self, line: str, *, present: bool) -> None:
+        handle = line.strip()
+        if not handle:
+            print("usage: raise|clear <alarm handle>")
+            return
+        try:
+            self.service.set_alert_presence(handle, present)
+        except KeyError:
+            print(f"no such alarm: {handle}")
+            return
+        print(f"{handle} is now {'present' if present else 'clear'}")
+
+    def do_alerts(self, _line: str) -> None:
+        """alerts  -  show our alarms, what they watch and whether they are raised."""
+        alerts = self.service.list_alerts()
+        if not alerts:
+            print("no alarms yet, try: alert m.pressure Pressure high 0..100")
+            return
+        print(f"  {'handle':<22} {'watches':<18} {'when':<24} state")
+        for handle, spec in sorted(alerts.items()):
+            state = "PRESENT" if self.service.alert_present(handle) else "clear"
+            print(f"  {handle:<22} {spec.source_handle:<18} {spec.limit_text() or 'manual':<24} {state}")
+
     def do_quit(self, _line: str) -> bool:
         """quit  -  stop the provider and exit."""
         return True
@@ -325,6 +399,31 @@ class ConsumerShell(Cmd):
                 time.sleep(0.2)
         except KeyboardInterrupt:
             print("  stopped")
+
+    def do_alerts(self, _line: str) -> None:
+        """alerts  -  show the peer's alarms, what they watch and how they are signalled."""
+        if not self._require_connection():
+            return
+        alerts = self.remote.alerts()
+        if not alerts:
+            print("the peer publishes no alarms")
+            return
+        print(f"  {'handle':<22} {'kind':<5} {'prio':<5} {'limits':<16} state")
+        for handle, alert in sorted(alerts.items()):
+            state = "PRESENT" if alert.present else "clear"
+            print(
+                f"  {handle:<22} {(alert.kind or '?'):<5} {(alert.priority or '?'):<5} "
+                f"{alert.limit_text():<16} {state}",
+            )
+            details = []
+            if alert.label:
+                details.append(alert.label)
+            if alert.source_handles:
+                details.append("watches " + ", ".join(alert.source_handles))
+            if alert.signals:
+                details.append("signals " + ", ".join(sorted(alert.signals.values())))
+            if details:
+                print(f"      {' | '.join(details)}")
 
     def do_quit(self, _line: str) -> bool:
         """quit  -  disconnect and exit."""

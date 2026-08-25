@@ -41,7 +41,7 @@ from sdctoolbox import constants  # noqa: E402
 from sdctoolbox.consumer_service import ConsumerService  # noqa: E402
 from sdctoolbox.model import MetricKind  # noqa: E402
 
-from acceptance_provider import LATE, LOCKED, MODE, NOTE, ZOOM  # noqa: E402
+from acceptance_provider import LATE, LIMIT_ALARM, LOCKED, MANUAL_ALARM, MODE, NOTE, ZOOM  # noqa: E402
 
 FINISHED = (msg_types.InvocationState.FINISHED, msg_types.InvocationState.FINISHED_MOD)
 
@@ -325,6 +325,70 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
                 )
 
             report.check(bool(value_events), "metrics_by_handle fired at least once")
+
+            # ------------------------------------------------------------- alarms
+            print("\n6. Alarms", flush=True)
+            alerts = remote.alerts()
+            report.check(len(alerts) == 2, "both alarms are visible", str(sorted(alerts)))  # noqa: PLR2004
+
+            limit_alarm = alerts.get(LIMIT_ALARM)
+            report.check(limit_alarm is not None, f"{LIMIT_ALARM} present")
+            if limit_alarm is not None:
+                report.check(
+                    limit_alarm.node_type_name == "LimitAlertConditionDescriptor",
+                    "an alarm with limits is a LimitAlertCondition",
+                    limit_alarm.node_type_name,
+                )
+                report.check(
+                    limit_alarm.source_handles == (ZOOM,),
+                    "it names the metric it watches",
+                    str(limit_alarm.source_handles),
+                )
+                report.check(
+                    limit_alarm.upper_limit == Decimal("90"),
+                    "and the limit it watches for",
+                    str(limit_alarm.upper_limit),
+                )
+                report.check(
+                    (limit_alarm.kind, limit_alarm.priority) == ("Tec", "Hi"),
+                    "kind and priority survive the round trip",
+                    f"{limit_alarm.kind}/{limit_alarm.priority}",
+                )
+                report.check(
+                    sorted(limit_alarm.signals.values()) == ["Aud", "Vis"],
+                    "one condition, two signals",
+                    str(sorted(limit_alarm.signals.values())),
+                )
+                report.check(
+                    limit_alarm.present,
+                    "it already fired: the boundary write earlier left zoom at 100, above 90",
+                )
+
+            manual_alarm = alerts.get(MANUAL_ALARM)
+            if manual_alarm is not None:
+                report.check(
+                    manual_alarm.node_type_name == "AlertConditionDescriptor",
+                    "an alarm without limits is a plain AlertCondition",
+                    manual_alarm.node_type_name,
+                )
+
+            # The zoom metric currently sits at 100, which is above the alarm limit of 90,
+            # so the alarm should already have fired from the earlier boundary write.
+            state = remote.set_value(ZOOM, Decimal("95"))
+            report.check(state in FINISHED, "raise the source above the limit", str(state))
+            time.sleep(2.0)
+            report.check(
+                remote.alerts()[LIMIT_ALARM].present,
+                "a remote write raises the alarm on the provider",
+            )
+
+            state = remote.set_value(ZOOM, Decimal("20"))
+            report.check(state in FINISHED, "bring the source back into range", str(state))
+            time.sleep(2.0)
+            report.check(
+                not remote.alerts()[LIMIT_ALARM].present,
+                "and clears it again",
+            )
 
             remote.close()
 

@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 
 from sdctoolbox import constants  # noqa: E402
-from sdctoolbox.model import MetricKind, MetricSpec  # noqa: E402
+from sdctoolbox.model import AlertKind, AlertPriority, AlertSpec, MetricKind, MetricSpec  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 # Handles are pinned so the acceptance script can assert on them.
@@ -31,6 +31,8 @@ MODE = "m.mode"
 NOTE = "m.patient_note"
 LOCKED = "m.locked_setting"
 LATE = "m.late_arrival"
+LIMIT_ALARM = "al.zoom_out_of_range"
+MANUAL_ALARM = "al.service_due"
 
 
 def parse_args() -> argparse.Namespace:
@@ -95,7 +97,29 @@ def main() -> int:
     # This one stays in the MDIB but must refuse every write.
     service.disable_control(LOCKED)
 
+    # A limit alarm that follows the zoom metric, plus one raised only by hand.
+    service.add_alert(
+        AlertSpec(
+            label="Zoom out of range",
+            source_handle=ZOOM,
+            kind=AlertKind.TECHNICAL,
+            priority=AlertPriority.HIGH,
+            upper_limit=Decimal("90"),
+            handle=LIMIT_ALARM,
+        ),
+    )
+    service.add_alert(
+        AlertSpec(
+            label="Service due",
+            source_handle=ZOOM,
+            kind=AlertKind.OTHER,
+            priority=AlertPriority.LOW,
+            handle=MANUAL_ALARM,
+        ),
+    )
+
     print(f"[provider] initial metrics: {sorted(service.list_metrics())}", flush=True)
+    print(f"[provider] alarms: {sorted(service.list_alerts())}", flush=True)
     print("[provider] READY", flush=True)
 
     started = time.monotonic()
