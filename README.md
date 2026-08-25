@@ -22,60 +22,70 @@ Python 3.12 is deliberate: `python` on a typical Windows box may point at a newe
 
 - [x] **0 — Groundwork.** Pinned environment, sdc11073 API verified, networking settled.
 - [x] **1 — Core.** Create data sources at runtime, publish them, remote-control them. Headless, with a console front end and an acceptance test.
-- [ ] **2 — Provider UI.** Metric list with live values, "New data source" dialog.
+- [x] **2 — Provider UI.** Metric list with live values, "New data source" dialog.
 - [ ] **3 — Consumer UI.** Discovery, MDIB browser, editors for controllable metrics. Works against foreign devices, not just our own.
 - [ ] **4 — Extras.** Alerts, waveforms, saved configurations, TLS.
 
 ## Try it
 
-Two terminals. The first publishes a device, the second finds it and controls it.
+```powershell
+.venv\Scripts\python.exe run_toolbox.py --name alpha
+```
+
+The **My device** tab is the device you publish. *New data source…* creates a number, text or
+choice; the checkbox in the last column decides whether other devices may write to it. The
+value column is live — it updates whether you edit it here or somebody changes it over the
+network.
+
+The **Network** tab arrives with the next milestone. Until then, drive the other side from a
+console in a second terminal:
 
 ```powershell
-# terminal 1
-.venv\Scripts\python.exe examples\console.py provider
-```
-
-```
-provider> add number Zoom level
-created m.zoom_level  (number)
-provider> add choice Mode IDLE RUN PAUSE
-created m.mode  (choice, values IDLE, RUN, PAUSE)
-provider> control m.mode off
-m.mode now refuses remote writes
-```
-
-```powershell
-# terminal 2
 .venv\Scripts\python.exe examples\console.py consumer
 ```
-
 ```
 consumer> scan
   [0] urn:uuid:053b9f8f-0aa5-5290-8797-351f901ebd74
       sdc.ctxt.loc:/sdc.ctxt.loc.detail/HOSP///CU1//Toolbox?fac=HOSP&poc=CU1&bed=Toolbox
 consumer> connect 0
-connected, 15 entities in its MDIB
 consumer> list
-  handle                   kind     value          unit       writable
-  m.mode                   choice   IDLE           no unit    disabled
+  handle              kind     value    unit      writable
+  m.mode              choice   IDLE     no unit   disabled
       allowed: IDLE, RUN, PAUSE    (Mode)
-  m.zoom_level             number   -              no unit    yes
+  m.zoom_level        number   -        steps     yes
 consumer> set m.zoom_level 9
 accepted, m.zoom_level is now 9
 consumer> set m.mode RUN
 refused by the provider (Fail)
 ```
 
-Things worth trying: add a data source in terminal 1 while terminal 2 is already connected, then run `list` again there — it appears without reconnecting. `watch` in the consumer prints changes as they arrive. `help` lists every command.
+Two things worth doing, because they are what makes SDC interesting:
 
-## Acceptance test
+- Add a data source in the GUI while the consumer is connected, then `list` again. It is
+  there, with no reconnect.
+- Untick its checkbox and try to `set` it. The provider refuses and the value stays put.
 
-Runs a provider in one process and checks it from a consumer in another. 34 checks covering discovery, all three controllable metric kinds, value rejection, disabled controls and descriptor creation at runtime.
+There is also a console provider, if you would rather have both sides in text:
+
+```powershell
+.venv\Scripts\python.exe examples\console.py provider
+```
+
+## Tests
+Runs a provider in one process and checks it from a consumer in another. 34 checks covering
+discovery, all three controllable metric kinds, value rejection, disabled controls and
+descriptor creation at runtime.
 
 ```powershell
 .venv\Scripts\python.exe tests\acceptance_core.py
 ```
 
+The GUI has its own smoke test, which builds the real window on Qt's offscreen backend and
+drives the actual widgets. 30 checks, no display needed.
+
+```powershell
+.venv\Scripts\python.exe tests\gui_smoke.py
+```
 ## Using the core
 
 ```python

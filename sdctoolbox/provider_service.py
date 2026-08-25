@@ -194,11 +194,15 @@ class ProviderService:
             if metric_entity is not None:
                 entities.append(metric_entity)
 
+            # Drop the bookkeeping before committing. Leaving the transaction fires
+            # deleted_descriptors_by_handle synchronously, and any observer that reacts by
+            # listing our metrics would otherwise see a handle whose entity is already gone.
+            self._specs.pop(handle, None)
+
             with self.mdib.descriptor_transaction() as mgr:
                 for entity in entities:
                     mgr.remove_entity(entity)
 
-            self._specs.pop(handle, None)
             logger.info("removed metric %s", handle)
 
     def set_value(self, handle: str, value: Decimal | str) -> None:
@@ -216,11 +220,14 @@ class ProviderService:
                 mgr.write_entity(entity)
 
     def get_value(self, handle: str):  # noqa: ANN201 - the value type depends on the metric kind
-        """Read back the current value of one of our own metrics."""
+        """Read back the current value of one of our own metrics.
+
+        Returns None both when the metric has no value yet and when it no longer exists, so
+        that observers reacting to a deletion do not have to guard against a race.
+        """
         entity = self.mdib.entities.by_handle(handle)
         if entity is None:
-            msg = f"no metric with handle {handle!r}"
-            raise KeyError(msg)
+            return None
         return getattr(getattr(entity.state, "MetricValue", None), "Value", None)
 
     def list_metrics(self) -> dict[str, MetricSpec]:
