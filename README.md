@@ -32,13 +32,16 @@ Python 3.12 is deliberate: `python` on a typical Windows box may point at a newe
 .venv\Scripts\python.exe run_toolbox.py --name alpha
 ```
 
-The **My device** tab is the device you publish. *New data source…* creates a number, text or
-choice; the checkbox in the last column decides whether other devices may write to it. The
+The **My device** panel is the device you publish. *New data source…* creates a number, text
+or choice; the checkbox in the last column decides whether other devices may write to it. The
 value column is live — it updates whether you edit it here or somebody changes it over the
 network.
 
-The **Network** tab arrives with the next milestone. Until then, drive the other side from a
-console in a second terminal:
+The **Network** panel arrives with the next milestone. Until then, drive the other side from
+a console in a second terminal:
+
+Press **Alt** for the menu bar. *View → Split view* (F8) swaps between the two panels sitting
+side by side with a movable divider, and the same two stacked as tabs.
 
 ```powershell
 .venv\Scripts\python.exe examples\console.py consumer

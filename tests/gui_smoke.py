@@ -158,12 +158,86 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         pump(app)
         pane = window.provider_pane
 
-        print("\n1. Window")
-        report.check(window.tabs.count() == 2, "two tabs", str(window.tabs.count()))  # noqa: PLR2004
-        report.check(window.tabs.tabText(0) == "My device", "first tab is the provider")
+        print("\n1. Window layout")
+        report.check(window.split_view_enabled, "starts split")
+        report.check(window.splitter.count() == 2, "two panels", str(window.splitter.count()))  # noqa: PLR2004
+        report.check(
+            window.splitter.orientation() == Qt.Horizontal,
+            "side by side, divided vertically",
+        )
+        report.check(
+            not window.splitter.childrenCollapsible(),
+            "neither panel can be dragged shut",
+        )
+        report.check(window.provider_panel.heading.isVisible(), "panels carry a heading when split")
         report.check(pane.table.rowCount() == 0, "table starts empty")
         report.check(not pane.remove_button.isEnabled(), "remove is disabled with no selection")
         report.check(not pane.apply_button.isEnabled(), "editor is disabled with no selection")
+
+        divider_before = window.splitter.sizes()
+        window.splitter.setSizes([divider_before[0] + 120, max(80, divider_before[1] - 120)])
+        pump(app)
+        moved_sizes = window.splitter.sizes()
+        report.check(
+            moved_sizes[0] > divider_before[0],
+            "the divider can be moved",
+            f"{divider_before} -> {moved_sizes}",
+        )
+
+        print("\n1b. Menu bar")
+        menu_bar = window.menuBar()
+        report.check(not menu_bar.isVisible(), "menu bar is hidden until asked for")
+        titles = [action.text() for action in menu_bar.actions()]
+        report.check(titles == ["&File", "&View"], "File and View menus", str(titles))
+        file_items = [a.text() for a in menu_bar.actions()[0].menu().actions()]
+        view_items = [a.text() for a in menu_bar.actions()[1].menu().actions()]
+        report.check(file_items == ["E&xit"], "File has only Exit", str(file_items))
+        report.check(view_items == ["&Split view"], "View has Split view", str(view_items))
+        report.check(
+            bool(window.exit_action.shortcut().toString()),
+            "Exit has a working shortcut",
+            window.exit_action.shortcut().toString(),
+        )
+
+        window.toggle_menu_bar()
+        pump(app)
+        report.check(menu_bar.isVisible(), "Alt reveals it")
+        window.toggle_menu_bar()
+        pump(app)
+        report.check(not menu_bar.isVisible(), "and Alt puts it away again")
+
+        print("\n1c. Switching layout")
+        report.check(window.split_view_action.isCheckable(), "split view is a checkbox")
+        report.check(window.split_view_action.isChecked(), "and starts on")
+
+        window.split_view_action.setChecked(False)
+        pump(app)
+        report.check(not window.split_view_enabled, "unchecking switches to tabs")
+        report.check(window.tabs.count() == 2, "both panels became tabs", str(window.tabs.count()))  # noqa: PLR2004
+        report.check(
+            [window.tabs.tabText(i) for i in range(window.tabs.count())] == ["My device", "Network"],
+            "tabs are named after the panels",
+        )
+        report.check(
+            not window.provider_panel.heading.isVisible(),
+            "the heading is dropped in tab mode, the tab already says it",
+        )
+        report.check(
+            window.provider_pane.table.rowCount() == 0,
+            "the provider pane survived the move",
+        )
+
+        window.split_view_action.setChecked(True)
+        pump(app)
+        report.check(window.split_view_enabled, "checking switches back to split")
+        report.check(window.splitter.count() == 2, "both panels are back in the splitter")
+        report.check(window.tabs.count() == 0, "and no longer in the tab widget")
+        report.check(window.provider_panel.heading.isVisible(), "headings come back")
+        report.check(
+            window.splitter.sizes()[0] > divider_before[0],
+            "the divider returns where it was left",
+            f"{moved_sizes} -> {window.splitter.sizes()}",
+        )
 
         print("\n2. Dialog validation")
         dialog = NewMetricDialog()
@@ -399,6 +473,12 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         )
 
         print("\n9. Column sizing")
+        # Give the table the whole window, otherwise Label sits at its minimum from the
+        # start and there is no slack to observe being handed back and forth.
+        window.split_view_action.setChecked(False)
+        window.resize(1000, 520)
+        pump(app)
+
         header = pane.table.horizontalHeader()
         modes = {header.sectionResizeMode(c) for c in range(pane.table.columnCount())}
         report.check(
@@ -417,7 +497,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         def viewport_width() -> int:
             return pane.table.viewport().width()
 
-        window.resize(900, 520)
+        window.resize(1000, 520)
         pump(app)
         report.check(
             total_width() <= viewport_width(),
@@ -435,7 +515,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             f"label={pane.table.columnWidth(COL_LABEL)} kind={pane.table.columnWidth(COL_KIND)}",
         )
 
-        for width in (1400, 620, 420):
+        for width in (1400, 900, 700):
             window.resize(width, 520)
             pump(app, seconds=0.3)
             report.check(
@@ -444,7 +524,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                 f"{total_width()} <= {viewport_width()}",
             )
 
-        window.resize(900, 520)
+        window.resize(1000, 520)
         pump(app)
         before_label = pane.table.columnWidth(COL_LABEL)
         pane.table.setColumnWidth(COL_HANDLE, pane.table.columnWidth(COL_HANDLE) + 80)
@@ -482,6 +562,14 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             f"{total_width()} <= {viewport_width()}",
         )
 
+        window.split_view_action.setChecked(True)
+        pump(app, seconds=0.3)
+        report.check(
+            total_width() <= viewport_width(),
+            "and so does bringing the network panel back",
+            f"{total_width()} <= {viewport_width()}",
+        )
+
         print("\n10. Selection is one flat band")
         qss = pane.table.styleSheet()
         report.check("outline: 0" in qss, "focus ring suppressed")
@@ -504,8 +592,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         app.setPalette(dark)
 
         dark_window = MainWindow(service)
-        placeholder = dark_window.tabs.widget(1)
-        dark_label = placeholder.findChild(QLabel)
+        dark_label = dark_window.network_pane.findChild(QLabel)
         text_colour = dark_label.palette().color(QPalette.ColorRole.WindowText)
         background = QColor("#1e1e1e")
         contrast = abs(text_colour.lightness() - background.lightness())
