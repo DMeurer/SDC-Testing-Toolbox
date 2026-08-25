@@ -1,7 +1,15 @@
 """End-to-end acceptance test for the headless core.
 
 Spawns acceptance_provider.py as a separate process, connects to it as a consumer and checks
-every acceptance criterion from INSTRUCTIONS.md section 6, stage 1.
+that the whole loop works:
+
+* a provider is discovered, carries an XAddr and publishes its location as a scope
+* metrics created before we connected arrive with kind, unit and label intact
+* all three controllable kinds can be set remotely and the new value comes back
+* a value outside AllowedValue is refused and leaves the old value in place
+* a control with OperatingMode Dis is refused and leaves the old value in place
+* a metric created at runtime shows up via new_descriptors_by_handle and is immediately
+  controllable, without reconnecting
 
 Two processes rather than two threads on purpose: WS-Discovery, the HTTP servers and the
 subscription machinery all behave differently in-process, and the tool is meant to be run
