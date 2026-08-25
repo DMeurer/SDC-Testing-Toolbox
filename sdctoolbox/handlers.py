@@ -97,6 +97,24 @@ def make_set_handler(mdib: ProviderMdib) -> Callable[[ExecuteParameters], Execut
                 value = requested if isinstance(requested, Decimal) else Decimal(str(requested))
             except (InvalidOperation, ValueError):
                 return _failed(mdib, f"{requested!r} is not a number for {target_handle!r}", target_handle)
+
+            # AllowedRange on the operation state is what a remote caller must respect.
+            # The library does not police it, just as it does not police OperatingMode.
+            for permitted_range in getattr(operation_entity.state, "AllowedRange", None) or []:
+                lower = getattr(permitted_range, "Lower", None)
+                upper = getattr(permitted_range, "Upper", None)
+                if lower is not None and value < lower:
+                    return _failed(
+                        mdib,
+                        f"{value} is below the allowed minimum {lower} of {target_handle!r}",
+                        target_handle,
+                    )
+                if upper is not None and value > upper:
+                    return _failed(
+                        mdib,
+                        f"{value} is above the allowed maximum {upper} of {target_handle!r}",
+                        target_handle,
+                    )
         else:
             value = str(requested)
 

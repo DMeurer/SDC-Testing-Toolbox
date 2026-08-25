@@ -49,12 +49,14 @@ consumer> scan
       sdc.ctxt.loc:/sdc.ctxt.loc.detail/HOSP///CU1//Toolbox?fac=HOSP&poc=CU1&bed=Toolbox
 consumer> connect 0
 consumer> list
-  handle              kind     value    unit      writable
-  m.mode              choice   IDLE               disabled
+  handle              kind     value    range      unit      writable
+  m.mode              choice   IDLE                          disabled
       allowed: IDLE, RUN, PAUSE    (Mode)
-  m.zoom_level        number   -        steps     yes
+  m.zoom_level        number   -        1 to 100   steps     yes
 consumer> set m.zoom_level 9
 accepted, m.zoom_level is now 9
+consumer> set m.zoom_level 500
+refused by the provider (Fail)
 consumer> set m.mode RUN
 refused by the provider (Fail)
 ```
@@ -64,6 +66,18 @@ Two things worth doing, because they are what makes SDC interesting:
 - Add a data source in the GUI while the consumer is connected, then `list` again. It is
   there, with no reconnect.
 - Untick its checkbox and try to `set` it. The provider refuses and the value stays put.
+
+Numbers can carry limits. Those become two different things in BICEPS, because the standard
+separates what a device can produce from what a caller may ask for:
+
+| | |
+|---|---|
+| `NumericMetricDescriptor/TechnicalRange` | on the metric — what it can produce |
+| `SetValueOperationState/AllowedRange` | on the set operation — what you may request |
+
+The second is on a *state*, so the permitted window can be narrowed while the device runs,
+the same way `OperatingMode` can. Neither is enforced by the library, so the provider checks
+incoming values itself and answers `FAILED`.
 
 There is also a console provider, if you would rather have both sides in text:
 

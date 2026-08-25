@@ -56,6 +56,8 @@ def main() -> int:
             kind=MetricKind.NUMBER,
             unit_label="steps",
             resolution=Decimal("1"),
+            minimum=Decimal("1"),
+            maximum=Decimal("100"),
             controllable=True,
             handle=ZOOM,
             initial_value=Decimal("1"),

@@ -38,8 +38,8 @@ from .styling import apply_row_selection_style, muted_colour
 if TYPE_CHECKING:
     from ..provider_service import ProviderService
 
-COLUMNS = ["Handle", "Label", "Kind", "Value", "Unit", "Remote control"]
-COL_HANDLE, COL_LABEL, COL_KIND, COL_VALUE, COL_UNIT, COL_CONTROL = range(len(COLUMNS))
+COLUMNS = ["Handle", "Label", "Kind", "Value", "Range", "Unit", "Remote control"]
+COL_HANDLE, COL_LABEL, COL_KIND, COL_VALUE, COL_RANGE, COL_UNIT, COL_CONTROL = range(len(COLUMNS))
 
 #: Label never shrinks below this, however little room is left.
 MIN_LABEL_WIDTH = 120
@@ -149,6 +149,7 @@ class ProviderPane(QWidget):
                     COL_LABEL: spec.label,
                     COL_KIND: spec.kind.value,
                     COL_VALUE: NO_VALUE if value is None else str(value),
+                    COL_RANGE: spec.range_text(),
                     COL_UNIT: spec.unit_label,
                 }
                 for column, text in cells.items():
@@ -306,6 +307,9 @@ class ProviderPane(QWidget):
         else:
             self.editor_stack.setCurrentIndex(EDITOR_TEXT)
             self.value_edit.setText("" if current is None else str(current))
+            self.value_edit.setPlaceholderText(spec.range_text() if spec.has_range else "")
+        if spec.has_range:
+            self.editor_label.setText(f"{spec.label} ({spec.range_text()}):")
         self._set_editor_enabled(enabled=True)
 
     def _set_editor_enabled(self, *, enabled: bool) -> None:
@@ -368,6 +372,8 @@ class ProviderPane(QWidget):
 
         try:
             self.service.set_value(handle, value)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Outside the allowed range", str(exc))
         except (KeyError, TypeError) as exc:
             QMessageBox.warning(self, "Could not set value", str(exc))
 

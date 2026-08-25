@@ -30,7 +30,7 @@ sys.path.insert(0, str(ROOT))
 
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QColor, QPalette  # noqa: E402
-from PySide6.QtWidgets import QApplication, QHeaderView, QLabel  # noqa: E402
+from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QMessageBox  # noqa: E402
 
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 from sdc11073.xml_types import pm_types  # noqa: E402
@@ -43,6 +43,7 @@ from sdctoolbox.gui.provider_pane import (  # noqa: E402
     COL_HANDLE,
     COL_KIND,
     COL_LABEL,
+    COL_RANGE,
     COL_UNIT,
     COL_VALUE,
     MIN_LABEL_WIDTH,
@@ -92,6 +93,8 @@ def fill_dialog(
     unit: str = "",
     values: str = "",
     resolution: str = "",
+    minimum: str = "",
+    maximum: str = "",
     controllable: bool = True,
 ) -> None:
     """Set the dialog's widgets as a user would."""
@@ -103,6 +106,8 @@ def fill_dialog(
     dialog.unit_edit.setText(unit)
     dialog.values_edit.setText(values)
     dialog.resolution_edit.setText(resolution)
+    dialog.minimum_edit.setText(minimum)
+    dialog.maximum_edit.setText(maximum)
     dialog.controllable_box.setChecked(controllable)
 
 
@@ -125,6 +130,19 @@ def cell(pane, handle: str, column: int) -> str | None:  # noqa: ANN001
 def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
     basic_logging_setup(level=logging.WARNING)
     report = Report()
+
+    # A modal dialog would block forever with no one to click it. Record instead of showing.
+    shown_warnings: list[tuple[str, str]] = []
+
+    def fake_warning(_parent, title, text, *_args, **_kwargs):  # noqa: ANN001, ANN202
+        shown_warnings.append((title, text))
+        return QMessageBox.StandardButton.Ok
+
+    def fake_question(_parent, _title, _text, *_args, **_kwargs):  # noqa: ANN001, ANN202
+        return QMessageBox.StandardButton.Yes
+
+    QMessageBox.warning = staticmethod(fake_warning)
+    QMessageBox.question = staticmethod(fake_question)
 
     print("=" * 74)
     print("GUI smoke test (offscreen)")
@@ -171,7 +189,15 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         dialog._on_accept()  # noqa: SLF001
         report.check(dialog.spec() is None, "non-numeric resolution is refused")
 
-        fill_dialog(dialog, kind=MetricKind.NUMBER, label="Zoom level", unit="steps")
+        fill_dialog(dialog, kind=MetricKind.NUMBER, label="Zoom", minimum="oops")
+        dialog._on_accept()  # noqa: SLF001
+        report.check(dialog.spec() is None, "non-numeric minimum is refused")
+
+        fill_dialog(dialog, kind=MetricKind.NUMBER, label="Zoom", minimum="100", maximum="1")
+        dialog._on_accept()  # noqa: SLF001
+        report.check(dialog.spec() is None, "minimum above maximum is refused")
+
+        fill_dialog(dialog, kind=MetricKind.NUMBER, label="Zoom level", unit="steps", minimum="1", maximum="100")
         report.check(
             dialog.handle_preview.text() == "m.zoom_level",
             "handle preview follows the label",
@@ -180,6 +206,11 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         dialog._on_accept()  # noqa: SLF001
         spec = dialog.spec()
         report.check(spec is not None, "a valid definition is accepted")
+        report.check(
+            spec is not None and (spec.minimum, spec.maximum) == (Decimal("1"), Decimal("100")),
+            "the range reached the spec",
+            f"{spec.minimum} to {spec.maximum}" if spec else "-",
+        )
         dialog.deleteLater()
 
         print("\n3. Creating data sources")
@@ -254,7 +285,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
 
         def write_from_worker() -> None:
             worker_thread_name.append(threading.current_thread().name)
-            service.set_value(zoom, Decimal("777"))
+            service.set_value(zoom, Decimal("88"))  # inside the metric's 1..100 range
             done.set()
 
         worker = threading.Thread(target=write_from_worker, name="pretend-sco-worker")
@@ -269,7 +300,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             worker_thread_name[0] if worker_thread_name else "?",
         )
         report.check(
-            cell(pane, zoom, COL_VALUE) == "777",
+            cell(pane, zoom, COL_VALUE) == "88",
             "table shows a value written off the GUI thread",
             str(cell(pane, zoom, COL_VALUE)),
         )
@@ -305,6 +336,66 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         report.check(
             not (unit_descriptor.ConceptDescription or []),
             "and no invented concept description",
+        )
+
+        print("\n8b. Range")
+        report.check(
+            cell(pane, zoom, COL_RANGE) == "1 to 100",
+            "the range column shows the limits",
+            str(cell(pane, zoom, COL_RANGE)),
+        )
+        report.check(
+            cell(pane, mode, COL_RANGE) == "",
+            "an unbounded metric leaves the range cell empty",
+            repr(cell(pane, mode, COL_RANGE)),
+        )
+
+        descriptor = service.mdib.entities.by_handle(zoom).descriptor
+        technical = (descriptor.TechnicalRange or [None])[0]
+        report.check(
+            technical is not None and (technical.Lower, technical.Upper) == (Decimal("1"), Decimal("100")),
+            "TechnicalRange written on the metric descriptor",
+            f"{getattr(technical, 'Lower', None)} to {getattr(technical, 'Upper', None)}",
+        )
+        operation_state = service.mdib.entities.by_handle(service.operation_handle_for(zoom)).state
+        allowed = (operation_state.AllowedRange or [None])[0]
+        report.check(
+            allowed is not None and (allowed.Lower, allowed.Upper) == (Decimal("1"), Decimal("100")),
+            "AllowedRange written on the operation state",
+            f"{getattr(allowed, 'Lower', None)} to {getattr(allowed, 'Upper', None)}",
+        )
+
+        pane.select_handle(zoom)
+        pump(app)
+        report.check(
+            "1 to 100" in pane.editor_label.text(),
+            "the editor names the range",
+            pane.editor_label.text(),
+        )
+
+        current = service.get_value(zoom)
+        shown_warnings.clear()
+        for attempt in ("0", "101"):
+            pane.value_edit.setText(attempt)
+            pane._on_apply()  # noqa: SLF001
+            pump(app)
+            report.check(
+                service.get_value(zoom) == current,
+                f"setting {attempt} locally is refused",
+                str(service.get_value(zoom)),
+            )
+        report.check(
+            len(shown_warnings) == 2,  # noqa: PLR2004
+            "and the user is told why",
+            "; ".join(title for title, _ in shown_warnings),
+        )
+        pane.value_edit.setText("100")
+        pane._on_apply()  # noqa: SLF001
+        pump(app)
+        report.check(
+            service.get_value(zoom) == Decimal("100"),
+            "the boundary value itself is accepted",
+            str(service.get_value(zoom)),
         )
 
         print("\n9. Column sizing")

@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QVBoxLayout,
@@ -57,6 +58,18 @@ class NewMetricDialog(QDialog):
         self.resolution_edit = QLineEdit()
         self.resolution_edit.setPlaceholderText("1")
 
+        self.minimum_edit = QLineEdit()
+        self.minimum_edit.setPlaceholderText("optional")
+        self.maximum_edit = QLineEdit()
+        self.maximum_edit.setPlaceholderText("optional")
+        limits = QHBoxLayout()
+        limits.setContentsMargins(0, 0, 0, 0)
+        limits.addWidget(self.minimum_edit)
+        limits.addWidget(QLabel("to"))
+        limits.addWidget(self.maximum_edit)
+        self.limits_widget = QWidget()
+        self.limits_widget.setLayout(limits)
+
         self.controllable_box = QCheckBox("Allow other devices to change this value")
         self.controllable_box.setChecked(True)
 
@@ -75,6 +88,7 @@ class NewMetricDialog(QDialog):
         self.values_row = self.values_edit
         form.addRow("Allowed values", self.values_edit)
         form.addRow("Resolution", self.resolution_edit)
+        form.addRow("Range", self.limits_widget)
         form.addRow("", self.controllable_box)
         form.addRow("Handle", self.handle_preview)
 
@@ -120,6 +134,14 @@ class NewMetricDialog(QDialog):
             if is_number
             else "Only meaningful for a number",
         )
+        self.limits_widget.setEnabled(is_number)
+        self.limits_widget.setToolTip(
+            "Optional lower and upper limit. Either can be left blank.\n"
+            "Becomes TechnicalRange on the metric and AllowedRange on its set operation, "
+            "so other devices are refused values outside it."
+            if is_number
+            else "Only meaningful for a number",
+        )
 
     def _update_preview(self) -> None:
         label = self.label_edit.text().strip()
@@ -148,6 +170,8 @@ class NewMetricDialog(QDialog):
                 return
 
         resolution = None
+        minimum = None
+        maximum = None
         if self._kind is MetricKind.NUMBER:
             raw = self.resolution_edit.text().strip() or "1"
             try:
@@ -159,6 +183,24 @@ class NewMetricDialog(QDialog):
                 self._fail("The resolution must be greater than zero.")
                 return
 
+            for caption, edit in (("minimum", self.minimum_edit), ("maximum", self.maximum_edit)):
+                text = edit.text().strip()
+                if not text:
+                    continue
+                try:
+                    parsed = Decimal(text)
+                except InvalidOperation:
+                    self._fail(f"{text!r} is not a valid {caption}.")
+                    return
+                if caption == "minimum":
+                    minimum = parsed
+                else:
+                    maximum = parsed
+
+            if minimum is not None and maximum is not None and minimum > maximum:
+                self._fail(f"The minimum ({minimum}) must not be greater than the maximum ({maximum}).")
+                return
+
         try:
             self._spec = MetricSpec(
                 label=label,
@@ -166,6 +208,8 @@ class NewMetricDialog(QDialog):
                 unit_label=self.unit_edit.text().strip(),
                 allowed_values=values,
                 resolution=resolution,
+                minimum=minimum,
+                maximum=maximum,
                 controllable=self.controllable_box.isChecked(),
                 initial_value=values[0] if values else None,
             )

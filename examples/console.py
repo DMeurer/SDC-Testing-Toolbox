@@ -65,11 +65,12 @@ class ProviderShell(Cmd):
     # -- commands ------------------------------------------------------------------
 
     def do_add(self, line: str) -> None:
-        """add <number|text|choice> <label...> [choice values...]
+        """add <number|text|choice> <label...> [choice values...] [min..max]
 
         Creates a data source, remote-controllable by default.
 
             add number Zoom level
+            add number Zoom level 1..100
             add text Patient note
             add choice Mode IDLE RUN PAUSE
         """
@@ -83,6 +84,16 @@ class ProviderShell(Cmd):
         if kind is None:
             print(f"unknown kind {kind_name!r}, expected one of {', '.join(KIND_BY_NAME)}")
             return
+
+        minimum = maximum = None
+        if rest and ".." in rest[-1] and kind is MetricKind.NUMBER:
+            low, _, high = rest.pop().partition("..")
+            try:
+                minimum = Decimal(low) if low else None
+                maximum = Decimal(high) if high else None
+            except InvalidOperation:
+                print(f"could not read a range from {low!r}..{high!r}")
+                return
 
         if kind is MetricKind.CHOICE:
             # Everything from the first ALL-CAPS token onwards is a choice value.
@@ -104,6 +115,8 @@ class ProviderShell(Cmd):
                 label=label,
                 kind=kind,
                 allowed_values=values,
+                minimum=minimum,
+                maximum=maximum,
                 controllable=True,
                 initial_value=values[0] if values else None,
             )
@@ -112,8 +125,13 @@ class ProviderShell(Cmd):
             print(f"rejected: {exc}")
             return
 
-        extra = f", values {', '.join(values)}" if values else ""
-        print(f"created {handle}  ({kind.value}{extra})")
+        details = []
+        if values:
+            details.append("values " + ", ".join(values))
+        if spec.has_range:
+            details.append(spec.range_text())
+        suffix = f", {'; '.join(details)}" if details else ""
+        print(f"created {handle}  ({kind.value}{suffix})")
 
     def do_set(self, line: str) -> None:
         """set <handle> <value>  -  change the value of one of our data sources."""
@@ -171,11 +189,12 @@ class ProviderShell(Cmd):
         if not specs:
             print("nothing published yet, try: add number Zoom level")
             return
-        print(f"  {'handle':<24} {'kind':<8} {'value':<14} control")
+        print(f"  {'handle':<24} {'kind':<8} {'value':<14} {'range':<14} control")
         for handle, spec in sorted(specs.items()):
             operation = self.service.operation_handle_for(handle)
             control = "-" if operation is None else operation
-            print(f"  {handle:<24} {spec.kind.value:<8} {show(self.service.get_value(handle)):<14} {control}")
+            value = show(self.service.get_value(handle))
+            print(f"  {handle:<24} {spec.kind.value:<8} {value:<14} {spec.range_text():<14} {control}")
 
     def do_quit(self, _line: str) -> bool:
         """quit  -  stop the provider and exit."""
@@ -252,7 +271,7 @@ class ConsumerShell(Cmd):
         if not metrics:
             print("the peer publishes no metrics")
             return
-        print(f"  {'handle':<24} {'kind':<8} {'value':<14} {'unit':<10} writable")
+        print(f"  {'handle':<24} {'kind':<8} {'value':<14} {'range':<14} {'unit':<10} writable")
         for handle, metric in sorted(metrics.items()):
             if metric.controllable_now:
                 writable = "yes"
@@ -263,7 +282,8 @@ class ConsumerShell(Cmd):
             label = metric.label or "?"
             print(
                 f"  {handle:<24} {metric.kind.value if metric.kind else '?':<8} "
-                f"{show(metric.value):<14} {(metric.unit_label or ''):<10} {writable}",
+                f"{show(metric.value):<14} {metric.range_text():<14} "
+                f"{(metric.unit_label or ''):<10} {writable}",
             )
             if metric.allowed_values:
                 print(f"      allowed: {', '.join(metric.allowed_values)}    ({label})")

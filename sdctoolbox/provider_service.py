@@ -211,6 +211,15 @@ class ProviderService:
             msg = "use Decimal, never float"
             raise TypeError(msg)
         with self._lock:
+            spec = self._specs.get(handle)
+            if spec is not None and isinstance(value, Decimal):
+                if spec.minimum is not None and value < spec.minimum:
+                    msg = f"{value} is below the minimum {spec.minimum} of {handle!r}"
+                    raise ValueError(msg)
+                if spec.maximum is not None and value > spec.maximum:
+                    msg = f"{value} is above the maximum {spec.maximum} of {handle!r}"
+                    raise ValueError(msg)
+
             entity = self.mdib.entities.by_handle(handle)
             if entity is None:
                 msg = f"no metric with handle {handle!r}"
@@ -274,6 +283,7 @@ class ProviderService:
                 logger.info("registered operation %s targeting %s", operation_handle, handle)
 
             self._set_operating_mode(operation_handle, pm_types.OperatingMode.ENABLED)
+            self._set_allowed_range(operation_handle, spec)
             self._set_metric_category(handle, pm_types.MetricCategory.SETTING)
             return operation_handle
 
@@ -326,6 +336,16 @@ class ProviderService:
 
         if spec.kind is MetricKind.NUMBER:
             descriptor.Resolution = spec.resolution
+            if spec.has_range:
+                # What the metric itself can produce. Distinct from the AllowedRange we put
+                # on the set operation, which is what a remote caller may ask for.
+                descriptor.TechnicalRange = [
+                    pm_types.Range(
+                        lower=spec.minimum,
+                        upper=spec.maximum,
+                        step_width=spec.resolution,
+                    ),
+                ]
         if spec.kind is MetricKind.CHOICE:
             descriptor.AllowedValue = [pm_types.AllowedValue(value=value) for value in spec.allowed_values]
 
@@ -345,4 +365,22 @@ class ProviderService:
             return
         entity.descriptor.MetricCategory = category
         with self.mdib.descriptor_transaction() as mgr:
+            mgr.write_entity(entity)
+
+    def _set_allowed_range(self, operation_handle: str, spec: MetricSpec) -> None:
+        """Publish the limits a remote caller must respect.
+
+        AllowedRange lives on the operation *state*, not its descriptor, so the permitted
+        window can be narrowed at runtime without a description change - the same trick
+        OperatingMode uses.
+        """
+        if not spec.has_range:
+            return
+        entity = self.mdib.entities.by_handle(operation_handle)
+        if entity is None:
+            return
+        entity.state.AllowedRange = [
+            pm_types.Range(lower=spec.minimum, upper=spec.maximum, step_width=spec.resolution),
+        ]
+        with self.mdib.operational_state_transaction() as mgr:
             mgr.write_entity(entity)

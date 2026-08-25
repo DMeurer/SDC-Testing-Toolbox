@@ -81,6 +81,13 @@ def _scope_uris(service: Any) -> tuple[str, ...]:
         return (str(scopes),)
 
 
+def _first_range(ranges: Any) -> tuple[Any, Any]:
+    """Lower and upper of the first Range in a list, tolerating an absent or empty list."""
+    for item in ranges or []:
+        return getattr(item, "Lower", None), getattr(item, "Upper", None)
+    return None, None
+
+
 @dataclass
 class DiscoveredDevice:
     """A provider seen on the network, before connecting to it."""
@@ -122,7 +129,7 @@ class RemoteDevice:
         them can walk ``mdib.entities`` themselves.
         """
         with self._lock:
-            operations_by_target, enabled_targets = self._operation_index()
+            operations_by_target, enabled_targets, allowed_ranges = self._operation_index()
             result: dict[str, RemoteMetric] = {}
 
             for handle, entity in self._mdib.entities.items():
@@ -137,6 +144,11 @@ class RemoteDevice:
                 allowed = getattr(descriptor, "AllowedValue", None) or []
                 metric_value = getattr(state, "MetricValue", None)
 
+                technical_lower, technical_upper = _first_range(getattr(descriptor, "TechnicalRange", None))
+                # What we may ask for comes from the operation when it says so, otherwise we
+                # fall back on what the device says it can produce.
+                lower, upper = allowed_ranges.get(handle, (technical_lower, technical_upper))
+
                 result[handle] = RemoteMetric(
                     handle=handle,
                     node_type_name=getattr(node_type, "localname", str(node_type)),
@@ -145,6 +157,10 @@ class RemoteDevice:
                     unit_label=_first_text(getattr(descriptor, "Unit", None)),
                     type_code=getattr(getattr(descriptor, "Type", None), "Code", None),
                     allowed_values=tuple(str(item.Value) for item in allowed),
+                    minimum=lower,
+                    maximum=upper,
+                    technical_minimum=technical_lower,
+                    technical_maximum=technical_upper,
                     value=getattr(metric_value, "Value", None),
                     parent_handle=getattr(entity, "parent_handle", None),
                     operation_handles=tuple(operations_by_target.get(handle, ())),
@@ -152,10 +168,15 @@ class RemoteDevice:
                 )
             return result
 
-    def _operation_index(self) -> tuple[dict[str, list[str]], set[str]]:
-        """Map OperationTarget -> operation handles, plus the set of currently enabled targets."""
+    def _operation_index(self) -> tuple[dict[str, list[str]], set[str], dict[str, tuple[Any, Any]]]:
+        """Index the peer's set operations by the metric they target.
+
+        Returns the operation handles per target, the targets whose control is currently
+        enabled, and the AllowedRange per target.
+        """
         by_target: dict[str, list[str]] = {}
         enabled: set[str] = set()
+        allowed_range: dict[str, tuple[Any, Any]] = {}
 
         for handle, entity in self._mdib.entities.items():
             if getattr(entity, "node_type", None) not in SET_OPERATION_NODE_TYPES:
@@ -165,12 +186,17 @@ class RemoteDevice:
                 continue
             by_target.setdefault(target, []).append(handle)
 
-            mode = getattr(getattr(entity, "state", None), "OperatingMode", None)
+            state = getattr(entity, "state", None)
+            mode = getattr(state, "OperatingMode", None)
             # BICEPS implies En when the attribute is absent.
             if mode in (None, pm_types.OperatingMode.ENABLED):
                 enabled.add(target)
 
-        return by_target, enabled
+            lower, upper = _first_range(getattr(state, "AllowedRange", None))
+            if lower is not None or upper is not None:
+                allowed_range[target] = (lower, upper)
+
+        return by_target, enabled, allowed_range
 
     # -- writing -------------------------------------------------------------------
 

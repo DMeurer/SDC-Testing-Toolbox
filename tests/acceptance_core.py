@@ -198,6 +198,17 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
                     "concept description survived the round trip",
                     str(zoom_metric.label),
                 )
+                report.check(
+                    (zoom_metric.minimum, zoom_metric.maximum) == (Decimal("1"), Decimal("100")),
+                    "the peer publishes the range a caller must respect",
+                    f"{zoom_metric.minimum} to {zoom_metric.maximum}",
+                )
+                report.check(
+                    (zoom_metric.technical_minimum, zoom_metric.technical_maximum)
+                    == (Decimal("1"), Decimal("100")),
+                    "and the metric's own TechnicalRange",
+                    f"{zoom_metric.technical_minimum} to {zoom_metric.technical_maximum}",
+                )
 
             locked_metric = metrics.get(LOCKED)
             if locked_metric is not None:
@@ -256,6 +267,31 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
                 remote.metrics()[LOCKED].value == Decimal("5"),
                 "disabled control left the value untouched",
                 str(remote.metrics()[LOCKED].value),
+            )
+
+            state = remote.set_value(ZOOM, Decimal("500"))
+            report.check(
+                state is msg_types.InvocationState.FAILED,
+                "a value above the maximum is rejected",
+                str(state),
+            )
+            state = remote.set_value(ZOOM, Decimal("0"))
+            report.check(
+                state is msg_types.InvocationState.FAILED,
+                "a value below the minimum is rejected",
+                str(state),
+            )
+            time.sleep(1.0)
+            report.check(
+                remote.metrics()[ZOOM].value == Decimal("7"),
+                "out-of-range writes left the value untouched",
+                str(remote.metrics()[ZOOM].value),
+            )
+            state = remote.set_value(ZOOM, Decimal("100"))
+            report.check(
+                state in FINISHED,
+                "the maximum itself is accepted",
+                str(state),
             )
 
             # ------------------------------------------- runtime descriptor creation
