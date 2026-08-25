@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environment
+.venv/
+
+# Diagnostic runtime artifacts
+diagnostics/*.log
+diagnostics/*.log.err
+
+# Tooling
+.vscode/
+.idea/

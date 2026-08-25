@@ -1,0 +1,10 @@
+# Direct dependencies, pinned exactly.
+# Transitive packages follow from these; a full snapshot is recorded in
+# PLANNING.md, section "Verified environment".
+#
+# Installation:
+#   py -3.12 -m venv .venv
+#   .venv\Scripts\python.exe -m pip install -r requirements.txt
+
+sdc11073==3.0.0
+PySide6==6.11.2
