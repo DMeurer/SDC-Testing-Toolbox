@@ -25,10 +25,52 @@ and an explicit `py -3.12` keeps the environment reproducible. Both dependencies
 ## Milestones
 
 - [x] **0 — Groundwork.** Pinned environment, sdc11073 API verified, networking settled.
-- [x] **1 — Core.** Create data sources at runtime, publish them, remote-control them. Headless, covered by an acceptance test.
+- [x] **1 — Core.** Create data sources at runtime, publish them, remote-control them. Headless, with a console front end and an acceptance test.
 - [ ] **2 — Provider UI.** Metric list with live values, "New data source" dialog.
 - [ ] **3 — Consumer UI.** Discovery, MDIB browser, editors for controllable metrics. Works against foreign devices, not just our own.
 - [ ] **4 — Extras.** Alerts, waveforms, saved configurations, TLS.
+
+## Try it
+
+Two terminals. The first publishes a device, the second finds it and controls it.
+
+```powershell
+# terminal 1
+.venv\Scripts\python.exe examples\console.py provider
+```
+```
+provider> add number Zoom level
+created m.zoom_level  (number)
+provider> add choice Mode IDLE RUN PAUSE
+created m.mode  (choice, values IDLE, RUN, PAUSE)
+provider> control m.mode off
+m.mode now refuses remote writes
+```
+
+```powershell
+# terminal 2
+.venv\Scripts\python.exe examples\console.py consumer
+```
+```
+consumer> scan
+  [0] urn:uuid:053b9f8f-0aa5-5290-8797-351f901ebd74
+      sdc.ctxt.loc:/sdc.ctxt.loc.detail/HOSP///CU1//Toolbox?fac=HOSP&poc=CU1&bed=Toolbox
+consumer> connect 0
+connected, 15 entities in its MDIB
+consumer> list
+  handle                   kind     value          unit       writable
+  m.mode                   choice   IDLE           no unit    disabled
+      allowed: IDLE, RUN, PAUSE    (Mode)
+  m.zoom_level             number   -              no unit    yes
+consumer> set m.zoom_level 9
+accepted, m.zoom_level is now 9
+consumer> set m.mode RUN
+refused by the provider (Fail)
+```
+
+Things worth trying: add a data source in terminal 1 while terminal 2 is already connected,
+then run `list` again there — it appears without reconnecting. `watch` in the consumer prints
+changes as they arrive. `help` lists every command.
 
 ## Acceptance test
 
