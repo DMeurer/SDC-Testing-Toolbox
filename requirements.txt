@@ -1,6 +1,5 @@
-# Direct dependencies, pinned exactly.
-# Transitive packages follow from these; a full snapshot is recorded in
-# PLANNING.md, section "Verified environment".
+# Direct dependencies, pinned exactly. Transitive packages follow from these;
+# use `pip freeze` for a full snapshot of a working environment.
 #
 # Installation:
 #   py -3.12 -m venv .venv

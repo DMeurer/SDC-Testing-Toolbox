@@ -1,0 +1,299 @@
+"""End-to-end acceptance test for the headless core.
+
+Spawns acceptance_provider.py as a separate process, connects to it as a consumer and checks
+every acceptance criterion from INSTRUCTIONS.md section 6, stage 1.
+
+Two processes rather than two threads on purpose: WS-Discovery, the HTTP servers and the
+subscription machinery all behave differently in-process, and the tool is meant to be run
+twice on one machine anyway.
+
+Exit code 0 means all checks passed.
+
+Usage:  .venv/Scripts/python.exe tests/acceptance_core.py
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import subprocess
+import sys
+import threading
+import time
+from decimal import Decimal
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from sdc11073.loghelper import basic_logging_setup  # noqa: E402
+from sdc11073.xml_types import msg_types  # noqa: E402
+
+from sdctoolbox import constants  # noqa: E402
+from sdctoolbox.consumer_service import ConsumerService  # noqa: E402
+from sdctoolbox.model import MetricKind  # noqa: E402
+
+from acceptance_provider import LATE, LOCKED, MODE, NOTE, ZOOM  # noqa: E402
+
+FINISHED = (msg_types.InvocationState.FINISHED, msg_types.InvocationState.FINISHED_MOD)
+
+
+class Report:
+    """Collects pass/fail results and prints them as they happen."""
+
+    def __init__(self) -> None:
+        self.failures = 0
+        self.checks = 0
+
+    def check(self, ok: bool, description: str, detail: str = "") -> bool:  # noqa: FBT001
+        self.checks += 1
+        if not ok:
+            self.failures += 1
+        status = "PASS" if ok else "FAIL"
+        suffix = f"  [{detail}]" if detail else ""
+        print(f"  {status}  {description}{suffix}", flush=True)
+        return ok
+
+    def summary(self) -> int:
+        print("-" * 74)
+        if self.failures:
+            print(f"RESULT: {self.failures} of {self.checks} checks FAILED")
+            return 1
+        print(f"RESULT: all {self.checks} checks passed")
+        return 0
+
+
+def wait_for_ready(process: subprocess.Popen, timeout: float) -> bool:
+    """Block until the provider prints READY, echoing its output meanwhile."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        line = process.stdout.readline()
+        if not line:
+            if process.poll() is not None:
+                return False
+            continue
+        print(f"    {line.rstrip()}", flush=True)
+        if "READY" in line:
+            return True
+    return False
+
+
+def drain(process: subprocess.Popen) -> None:
+    """Keep echoing provider output in the background so it never blocks on a full pipe."""
+
+    def pump() -> None:
+        for line in process.stdout:
+            print(f"    {line.rstrip()}", flush=True)
+
+    thread = threading.Thread(target=pump, daemon=True)
+    thread.start()
+
+
+def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one piece
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--ip", default=constants.DEFAULT_IP)
+    args = parser.parse_args()
+
+    basic_logging_setup(level=logging.WARNING)
+    report = Report()
+
+    print("=" * 74)
+    print("Core acceptance")
+    print("=" * 74)
+    print("Starting provider process ...", flush=True)
+
+    process = subprocess.Popen(  # noqa: S603
+        [sys.executable, str(ROOT / "tests" / "acceptance_provider.py"), "--ip", args.ip],
+        cwd=str(ROOT),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+
+    try:
+        if not wait_for_ready(process, timeout=45):
+            print("FAIL: provider never reported READY")
+            return 1
+        drain(process)
+
+        # ---------------------------------------------------------------- discovery
+        print("\n1. Discovery and connection", flush=True)
+        with ConsumerService(ip=args.ip) as consumer_service:
+            devices = consumer_service.scan(timeout=25, expected=1)
+            if not report.check(bool(devices), "provider discovered"):
+                return report.summary()
+
+            device = devices[0]
+            report.check(bool(device.x_addrs), "discovery hit carries an XAddr", device.epr)
+            report.check(
+                device.location_scope is not None,
+                "location context published as a discovery scope",
+                device.location_scope or "none",
+            )
+
+            remote = consumer_service.connect(device)
+
+            # Record runtime descriptor arrivals before the late metric is created.
+            new_descriptor_events: list[str] = []
+            seen = threading.Event()
+
+            def on_new_descriptors(descriptors_by_handle: dict) -> None:
+                for handle in descriptors_by_handle:
+                    new_descriptor_events.append(handle)
+                    if handle == LATE:
+                        seen.set()
+
+            value_events: list[str] = []
+
+            def on_metrics(metrics_by_handle: dict) -> None:
+                value_events.extend(metrics_by_handle)
+
+            remote.bind(
+                new_descriptors_by_handle=on_new_descriptors,
+                metrics_by_handle=on_metrics,
+            )
+
+            # ------------------------------------------------------ initial metrics
+            print("\n2. Metrics created before we connected", flush=True)
+            metrics = remote.metrics()
+            for handle, expected_kind in [
+                (ZOOM, MetricKind.NUMBER),
+                (MODE, MetricKind.CHOICE),
+                (NOTE, MetricKind.TEXT),
+                (LOCKED, MetricKind.NUMBER),
+            ]:
+                metric = metrics.get(handle)
+                report.check(metric is not None, f"{handle} present")
+                if metric is not None:
+                    report.check(metric.kind is expected_kind, f"{handle} is {expected_kind.value}")
+
+            mode_metric = metrics.get(MODE)
+            if mode_metric is not None:
+                report.check(
+                    mode_metric.allowed_values == ("IDLE", "RUN", "PAUSE"),
+                    "choice metric exposes its AllowedValue list",
+                    str(mode_metric.allowed_values),
+                )
+
+            zoom_metric = metrics.get(ZOOM)
+            if zoom_metric is not None:
+                report.check(zoom_metric.controllable, "zoom has a set operation")
+                report.check(zoom_metric.controllable_now, "zoom control is enabled")
+                report.check(
+                    zoom_metric.unit_label == "steps",
+                    "unit label survived the round trip",
+                    str(zoom_metric.unit_label),
+                )
+                report.check(
+                    zoom_metric.label == "Zoom level",
+                    "concept description survived the round trip",
+                    str(zoom_metric.label),
+                )
+
+            locked_metric = metrics.get(LOCKED)
+            if locked_metric is not None:
+                report.check(locked_metric.controllable, "locked setting has a set operation")
+                report.check(
+                    not locked_metric.controllable_now,
+                    "locked setting reports OperatingMode Dis",
+                )
+
+            # ------------------------------------------------------- remote control
+            print("\n3. Remote control", flush=True)
+            state = remote.set_value(ZOOM, Decimal("7"))
+            report.check(state in FINISHED, "setting a numeric value finishes", str(state))
+            time.sleep(1.5)
+            report.check(
+                remote.metrics()[ZOOM].value == Decimal("7"),
+                "new numeric value observed back on the consumer",
+                str(remote.metrics()[ZOOM].value),
+            )
+
+            state = remote.set_value(MODE, "RUN")
+            report.check(state in FINISHED, "setting a choice value finishes", str(state))
+            time.sleep(1.5)
+            report.check(
+                remote.metrics()[MODE].value == "RUN",
+                "new choice value observed back on the consumer",
+                str(remote.metrics()[MODE].value),
+            )
+
+            state = remote.set_value(NOTE, "checked at 10:00")
+            report.check(state in FINISHED, "setting a text value finishes", str(state))
+
+            # ------------------------------------------------------------ rejections
+            print("\n4. Rejections", flush=True)
+            state = remote.set_value(MODE, "NOT_A_MODE")
+            report.check(
+                state is msg_types.InvocationState.FAILED,
+                "value outside AllowedValue is rejected",
+                str(state),
+            )
+            time.sleep(1.0)
+            report.check(
+                remote.metrics()[MODE].value == "RUN",
+                "rejected write left the value untouched",
+                str(remote.metrics()[MODE].value),
+            )
+
+            state = remote.set_value(LOCKED, Decimal("9"))
+            report.check(
+                state is msg_types.InvocationState.FAILED,
+                "write to a disabled control is rejected",
+                str(state),
+            )
+            time.sleep(1.0)
+            report.check(
+                remote.metrics()[LOCKED].value == Decimal("5"),
+                "disabled control left the value untouched",
+                str(remote.metrics()[LOCKED].value),
+            )
+
+            # ------------------------------------------- runtime descriptor creation
+            print("\n5. Data source created at runtime", flush=True)
+            report.check(
+                seen.wait(timeout=30),
+                "new_descriptors_by_handle fired for the late metric",
+                f"events: {new_descriptor_events}",
+            )
+            time.sleep(2.0)
+            metrics = remote.metrics()
+            late_metric = metrics.get(LATE)
+            report.check(late_metric is not None, f"{LATE} appeared in the consumer MDIB")
+            if late_metric is not None:
+                report.check(late_metric.kind is MetricKind.NUMBER, f"{LATE} is a number")
+                report.check(
+                    late_metric.controllable_now,
+                    f"{LATE} is controllable without reconnecting",
+                )
+                state = remote.set_value(LATE, Decimal("99"))
+                report.check(
+                    state in FINISHED,
+                    "controlling the runtime-created metric finishes",
+                    str(state),
+                )
+                time.sleep(1.5)
+                report.check(
+                    remote.metrics()[LATE].value == Decimal("99"),
+                    "runtime-created metric reflects the new value",
+                    str(remote.metrics()[LATE].value),
+                )
+
+            report.check(bool(value_events), "metrics_by_handle fired at least once")
+
+            remote.close()
+
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
+    print()
+    return report.summary()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

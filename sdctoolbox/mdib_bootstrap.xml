@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Bootstrap MDIB for the SDC-testing-toolbox.
+
+  Deliberately almost empty: it provides only the scaffolding that BICEPS requires and that
+  cannot be created conveniently at runtime. Every data source the user creates is added to
+  the Channel "ch0.vmd0" at runtime, and every operation is added to the Sco "sco.mds0".
+
+  Why a file at all: ProviderMdib offers only from_mdib_file() and from_string(); there is no
+  constructor for an empty MDIB.
+
+  Note on BICEPS XML: the element name denotes the containment role (pm:Metric, pm:Operation),
+  the concrete type comes from xsi:type. There is no pm:MdState section - sdc11073 derives the
+  states from the descriptors.
+-->
+<msg:GetMdibResponse
+    xmlns:ext="http://standards.ieee.org/downloads/11073/11073-10207-2017/extension"
+    xmlns:msg="http://standards.ieee.org/downloads/11073/11073-10207-2017/message"
+    xmlns:pm="http://standards.ieee.org/downloads/11073/11073-10207-2017/participant"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    SequenceId="urn:oid:1">
+    <msg:Mdib SequenceId="urn:oid:1">
+        <pm:MdDescription>
+
+            <pm:Mds Handle="mds0">
+                <pm:Type Code="toolbox-mds" CodingSystem="urn:sdc-testing-toolbox:private">
+                    <pm:ConceptDescription Lang="en-US">SDC-testing-toolbox virtual device</pm:ConceptDescription>
+                </pm:Type>
+
+                <!-- All operations created at runtime are registered here. -->
+                <pm:Sco Handle="sco.mds0"/>
+
+                <pm:SystemContext Handle="SC.mds0">
+                    <pm:PatientContext Handle="PC.mds0"/>
+                    <pm:LocationContext Handle="LC.mds0"/>
+                </pm:SystemContext>
+
+                <pm:Vmd Handle="vmd0">
+                    <pm:Type Code="toolbox-vmd" CodingSystem="urn:sdc-testing-toolbox:private">
+                        <pm:ConceptDescription Lang="en-US">User defined data sources</pm:ConceptDescription>
+                    </pm:Type>
+
+                    <!-- Every metric created at runtime becomes a child of this channel. -->
+                    <pm:Channel Handle="ch0.vmd0">
+                        <pm:Type Code="toolbox-channel" CodingSystem="urn:sdc-testing-toolbox:private">
+                            <pm:ConceptDescription Lang="en-US">Default channel</pm:ConceptDescription>
+                        </pm:Type>
+                    </pm:Channel>
+
+                </pm:Vmd>
+            </pm:Mds>
+
+        </pm:MdDescription>
+    </msg:Mdib>
+</msg:GetMdibResponse>

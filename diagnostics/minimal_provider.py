@@ -74,9 +74,10 @@ def main() -> int:
             serial_number="diag-0001",
         )
 
-        # role_provider_components deliberately omitted. That means no SCO registry is built
-        # at all (see PLANNING.md 7.1), so this device publishes values but accepts no remote
-        # control. Fine here: this script only has to prove that packets flow.
+        # role_provider_components deliberately omitted. SdcProvider only builds an SCO
+        # operations registry when a role provider is supplied, so this device publishes
+        # values but accepts no remote control. Fine here: this script only has to prove
+        # that packets flow.
         provider = SdcProvider(
             ws_discovery=discovery,
             epr=PROVIDER_UUID,
