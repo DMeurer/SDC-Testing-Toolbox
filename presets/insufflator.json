@@ -4,6 +4,16 @@
     "instance_name": "insufflator",
     "friendly_name": "Example insufflator"
   },
+  "contexts": {
+    "location": {
+      "facility": "HOSP",
+      "building": "Surgery",
+      "floor": "2",
+      "point_of_care": "OR1",
+      "room": "1",
+      "bed": "Table"
+    }
+  },
   "metrics": [
     {
       "handle": "m.flow_rate",
@@ -68,7 +78,8 @@
       "watches": "m.measured_pressure",
       "kind": "Phy",
       "priority": "Hi",
-      "upper_limit": "20"
+      "upper_limit": "20",
+      "delegable": true
     },
     {
       "handle": "al.flow_out_of_range",
