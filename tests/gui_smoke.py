@@ -220,6 +220,20 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             "neither panel can be dragged shut",
         )
         report.check(window.provider_panel.heading.isVisible(), "panels carry a heading when split")
+        provider_margins = pane.layout().contentsMargins()
+        network_margins = window.network_pane.layout().contentsMargins()
+        report.check(
+            (provider_margins.top(), provider_margins.bottom())
+            == (network_margins.top(), network_margins.bottom()),
+            "both panels pad their content by the same amount",
+            f"provider {provider_margins.top()}/{provider_margins.bottom()}, "
+            f"network {network_margins.top()}/{network_margins.bottom()}",
+        )
+        report.check(
+            provider_margins.top() == 0,
+            "and neither adds its own on top of the panel's",
+            str(provider_margins.top()),
+        )
         report.check(pane.table.rowCount() == 0, "table starts empty")
         report.check(not pane.remove_button.isEnabled(), "remove is disabled with no selection")
         report.check(not pane.apply_button.isEnabled(), "editor is disabled with no selection")

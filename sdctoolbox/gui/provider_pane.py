@@ -185,6 +185,10 @@ class ProviderPane(QWidget):
         self._views.setStretchFactor(1, 2)
 
         layout = QVBoxLayout(self)
+        # TitledPanel already pads both panels. Without this the style's own 9px lands on
+        # top of that here but not in the consumer pane, which sets the same zero - so the
+        # two panels disagreed by 9px at the top and the bottom.
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(buttons)
         layout.addWidget(self.views, 1)
         layout.addLayout(editor)
