@@ -29,7 +29,7 @@ from sdc11073.xml_types import msg_types  # noqa: E402
 
 from sdctoolbox import config, constants  # noqa: E402
 from sdctoolbox.consumer_service import ConsumerService  # noqa: E402
-from sdctoolbox.model import AlertSpec, MetricKind, MetricSpec  # noqa: E402
+from sdctoolbox.model import AlertSpec, LocationInfo, MetricKind, MetricSpec, PatientInfo  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 KIND_BY_NAME = {
@@ -197,18 +197,21 @@ class ProviderShell(Cmd):
             print(f"  {handle:<24} {spec.kind.value:<8} {value:<14} {spec.range_text():<14} {control}")
 
     def do_alert(self, line: str) -> None:
-        """alert <source handle> <label...> [min..max]
+        """alert <source handle> <label...> [min..max] [--delegable]
 
         Adds an alarm condition watching one of our metrics, plus a visual and an audible
         signal for it. With limits the alarm follows the metric by itself; without them use
-        `raise` and `clear`.
+        `raise` and `clear`. `--delegable` lets another device take the signals over.
 
             alert m.pressure Pressure out of range 20..100
+            alert m.pressure Overpressure 0..30 --delegable
             alert m.pressure Service due
         """
         parts = shlex.split(line)
+        delegable = "--delegable" in parts
+        parts = [part for part in parts if part != "--delegable"]
         if len(parts) < 2:  # noqa: PLR2004
-            print("usage: alert <source handle> <label...> [min..max]")
+            print("usage: alert <source handle> <label...> [min..max] [--delegable]")
             return
 
         source, *rest = parts
@@ -222,7 +225,7 @@ class ProviderShell(Cmd):
                 print(f"could not read limits from {low!r}..{high!r}")
                 return
         if not rest:
-            print("usage: alert <source handle> <label...> [min..max]")
+            print("usage: alert <source handle> <label...> [min..max] [--delegable]")
             return
 
         try:
@@ -231,6 +234,7 @@ class ProviderShell(Cmd):
                 source_handle=source,
                 lower_limit=lower,
                 upper_limit=upper,
+                delegable=delegable,
             )
             handle = self.service.add_alert(spec)
         except (KeyError, ValueError, TypeError) as exc:
@@ -238,6 +242,49 @@ class ProviderShell(Cmd):
             return
         print(f"created {handle}  ({spec.limit_text() or 'manual'})")
         print(f"  signals: {', '.join(self.service.signal_handles_for(handle))}")
+
+    def do_ack(self, line: str) -> None:
+        """ack <alarm handle>  -  acknowledge an alarm's signals.
+
+        The condition stays present: acknowledging changes how an alarm is announced, not
+        whether it is true. That is the whole reason BICEPS keeps conditions and signals
+        apart, so watch `alerts` before and after.
+        """
+        handle = line.strip()
+        if not handle:
+            print("usage: ack <alarm handle>")
+            return
+        try:
+            count = self.service.acknowledge_alert(handle)
+        except (KeyError, ValueError) as exc:
+            print(f"rejected: {exc}")
+            return
+        print(f"acknowledged {count} signal(s); {handle} is still present")
+
+    def do_delegate(self, line: str) -> None:
+        """delegate <alarm handle> [on|off]  -  hand its signals to another device.
+
+        Moves each signal's Location from Loc to Rem. Only works where the alarm was
+        created --delegable, because BICEPS allows it only where the descriptor says so.
+        """
+        parts = shlex.split(line)
+        if not parts:
+            print("usage: delegate <alarm handle> [on|off]")
+            return
+        handle = parts[0]
+        delegated = parts[1].lower() != "off" if len(parts) > 1 else True
+
+        signals = [signal for signal in self.service.signal_states(handle) if signal.delegable]
+        if not signals:
+            print(f"{handle} has no delegable signals; create it with --delegable")
+            return
+        try:
+            for signal in signals:
+                self.service.set_signal_delegated(signal.handle, delegated=delegated)
+        except (KeyError, ValueError) as exc:
+            print(f"rejected: {exc}")
+            return
+        print(f"  {' '.join(signal.summary() for signal in self.service.signal_states(handle))}")
 
     def do_raise(self, line: str) -> None:
         """raise <alarm handle>  -  raise an alarm that has no limits."""
@@ -260,15 +307,96 @@ class ProviderShell(Cmd):
         print(f"{handle} is now {'present' if present else 'clear'}")
 
     def do_alerts(self, _line: str) -> None:
-        """alerts  -  show our alarms, what they watch and whether they are raised."""
+        """alerts  -  show our alarms, what they watch, and how their signals stand."""
         alerts = self.service.list_alerts()
         if not alerts:
             print("no alarms yet, try: alert m.pressure Pressure high 0..100")
             return
-        print(f"  {'handle':<22} {'watches':<18} {'when':<24} state")
+        print(f"  {'handle':<22} {'watches':<18} {'when':<20} {'state':<8} signals")
         for handle, spec in sorted(alerts.items()):
             state = "PRESENT" if self.service.alert_present(handle) else "clear"
-            print(f"  {handle:<22} {spec.source_handle:<18} {spec.limit_text() or 'manual':<24} {state}")
+            signals = " ".join(signal.summary() for signal in self.service.signal_states(handle))
+            print(
+                f"  {handle:<22} {spec.source_handle:<18} "
+                f"{spec.limit_text() or 'manual':<20} {state:<8} {signals}",
+            )
+
+    def do_where(self, line: str) -> None:
+        """where [facility/building/floor/poc/room/bed]  -  show or set the location.
+
+        The location is also a WS-Discovery scope, so setting it re-announces this device
+        and consumers filtering on the old one stop seeing it.
+
+            where
+            where HOSP/Surgery/2/OR1/1/Table
+            where HOSP//     (only the parts you give; empty ones are cleared)
+        """
+        text = line.strip()
+        if not text:
+            print(f"  {self.service.get_location().summary() or 'nowhere'}")
+            return
+        parts = (text.split("/") + [""] * 6)[:6]
+        try:
+            self.service.set_location(
+                LocationInfo(
+                    facility=parts[0].strip(),
+                    building=parts[1].strip(),
+                    floor=parts[2].strip(),
+                    point_of_care=parts[3].strip(),
+                    room=parts[4].strip(),
+                    bed=parts[5].strip(),
+                ),
+            )
+        except (RuntimeError, ValueError) as exc:
+            print(f"rejected: {exc}")
+            return
+        print(f"  {self.service.get_location().summary() or 'nowhere'}")
+
+    def do_patient(self, line: str) -> None:
+        """patient [given family [sex] [type] [birth]]  -  show, set or detach the patient.
+
+        `patient` on its own shows who is attached, `patient off` detaches them. Setting one
+        does not overwrite the last: the previous state is disassociated and kept, which is
+        what makes a context different from a metric.
+
+            patient Ada Lovelace F Ad 1815-12-10
+            patient off
+        """
+        parts = shlex.split(line)
+        if not parts:
+            print(f"  {self.service.get_patient().summary() or 'nobody attached'}")
+            return
+        if parts[0].lower() == "off":
+            self.service.clear_patient()
+            print("  nobody attached")
+            return
+        padded = (parts + [""] * 5)[:5]
+        try:
+            self.service.set_patient(
+                PatientInfo(
+                    given_name=padded[0],
+                    family_name=padded[1],
+                    sex=padded[2],
+                    patient_type=padded[3],
+                    date_of_birth=padded[4],
+                ),
+            )
+        except (RuntimeError, ValueError, TypeError) as exc:
+            print(f"rejected: {exc}")
+            return
+        print(f"  {self.service.get_patient().summary()}")
+
+    def do_presets(self, _line: str) -> None:
+        """presets  -  list the ready-made configs, then load one with `import`."""
+        presets = config.list_presets()
+        if not presets:
+            print("no presets found")
+            return
+        for preset in presets:
+            print(f"  {preset.name:<18} {preset.summary()}")
+            if preset.description:
+                print(f"      {preset.description}")
+            print(f"      import {preset.path}")
 
     def do_export(self, line: str) -> None:
         """export <file>  -  write the current data sources and alarms to a config file."""
