@@ -75,16 +75,37 @@ _OPERATION_CLASSES: dict[MetricKind, type[OperationDefinitionBase]] = {
     MetricKind.CHOICE: SetStringOperation,
 }
 
-# A gap in this build, not a rule of the standard. Both sample-array descriptors carry
-# mandatory fields that nothing here fills in, and BICEPS only notices when the descriptor
-# is serialised - by which point it is already in the MDIB. Refuse them at the door instead.
-#
-# Verified against the installed sdc11073 rather than taken from the schema: the order below
-# is the order serialisation complains in, so the first entry is the error you actually see.
-MISSING_MANDATORY_FIELDS: dict[MetricKind, tuple[str, ...]] = {
-    MetricKind.WAVEFORM: ("Resolution", "SamplePeriod"),
-    MetricKind.DISTRIBUTION: ("DomainUnit", "Resolution"),
-}
+# Kinds this build cannot put on the wire, and the mandatory descriptor fields it fails to
+# fill in for them. Empty: every kind BICEPS defines can now be created. Kept as the place
+# to record such a gap if one ever reappears, because the failure mode is nasty - BICEPS
+# only notices a missing mandatory field when the descriptor is serialised, which happens
+# after the transaction has already committed it. See ProviderService._create_entities.
+MISSING_MANDATORY_FIELDS: dict[MetricKind, tuple[str, ...]] = {}
+
+# The two sample-array kinds carry many values per state rather than one.
+SAMPLE_ARRAY_KINDS = (MetricKind.WAVEFORM, MetricKind.DISTRIBUTION)
+
+
+class WaveformShape(enum.Enum):
+    """The curve a generated waveform follows.
+
+    Not a BICEPS concept at all - the standard carries samples and says nothing about their
+    shape. This exists so the tool has something recognisable to send, and so a consumer
+    being tested against it can be checked against a curve somebody can identify by eye.
+    """
+
+    SINE = "sine"
+    SAWTOOTH = "sawtooth"
+    SQUARE = "square"
+    NOISE = "noise"
+
+
+# A tenth of a second: fast enough to look alive on screen, slow enough that two instances
+# on one machine are not spending all their time serialising sample arrays.
+DEFAULT_SAMPLE_PERIOD = Decimal("0.1")
+
+# How many samples a waveform card keeps and draws.
+WAVEFORM_HISTORY = 300
 
 
 # The alarm vocabulary is taken straight from BICEPS rather than reinvented, so the values
@@ -151,6 +172,25 @@ class MetricSpec:
     # Value applied right after creation. None leaves the metric without a MetricValue.
     initial_value: Decimal | str | None = None
 
+    # -- waveform only -----------------------------------------------------------------
+    # RealTimeSampleArrayMetricDescriptor/SamplePeriod: the time between two samples, as a
+    # duration in seconds. Mandatory, so it gets a default rather than being left unset.
+    sample_period: Decimal | None = None
+    # The curve to generate. Nothing in BICEPS; see WaveformShape.
+    shape: WaveformShape = WaveformShape.SINE
+
+    # -- distribution only -------------------------------------------------------------
+    # DistributionSampleArrayMetricDescriptor/DomainUnit: what the samples are distributed
+    # *over*, as opposed to Unit, which is what the samples themselves measure. A power
+    # spectrum is measured in dB (Unit) across a range of Hz (DomainUnit). Mandatory.
+    domain_unit_label: str = ""
+    domain_unit_code: str = constants.CODE_DIMENSIONLESS
+    domain_unit_coding_system: str = constants.CODING_SYSTEM_MDC
+    # DistributionRange: the extent of that domain, i.e. the x axis. Distinct from
+    # minimum/maximum, which describe the samples themselves.
+    domain_minimum: Decimal | None = None
+    domain_maximum: Decimal | None = None
+
     def __post_init__(self) -> None:
         if self.controllable and not self.kind.controllable:
             msg = f"{self.kind.value} metrics cannot be remote-controlled"
@@ -164,9 +204,54 @@ class MetricSpec:
         if self.kind is MetricKind.NUMBER and self.resolution is None:
             # BICEPS requires Resolution on a NumericMetricDescriptor. Whole numbers use 1.
             self.resolution = Decimal("1")
+        if self.kind in SAMPLE_ARRAY_KINDS and self.resolution is None:
+            # Mandatory on both sample-array descriptors too, and easy to miss because the
+            # complaint only arrives when the descriptor is serialised.
+            self.resolution = Decimal("0.1")
         if self.resolution is not None and not isinstance(self.resolution, Decimal):
             msg = "resolution must be a Decimal, never a float"
             raise TypeError(msg)
+
+        if self.kind is MetricKind.WAVEFORM:
+            if self.sample_period is None:
+                self.sample_period = DEFAULT_SAMPLE_PERIOD
+            if not isinstance(self.sample_period, Decimal):
+                msg = "sample_period must be a Decimal, never a float"
+                raise TypeError(msg)
+            if self.sample_period <= 0:
+                msg = f"sample_period must be positive, not {self.sample_period}"
+                raise ValueError(msg)
+            self.shape = _coerce_enum(WaveformShape, self.shape, "shape")
+        elif self.sample_period is not None:
+            msg = f"sample_period is only meaningful for {MetricKind.WAVEFORM.value} metrics"
+            raise ValueError(msg)
+
+        if self.kind is MetricKind.DISTRIBUTION:
+            if self.domain_minimum is None:
+                self.domain_minimum = Decimal("0")
+            if self.domain_maximum is None:
+                self.domain_maximum = Decimal("1")
+        for name in ("domain_minimum", "domain_maximum"):
+            limit = getattr(self, name)
+            if limit is None:
+                continue
+            if not isinstance(limit, Decimal):
+                msg = f"{name} must be a Decimal, never a float"
+                raise TypeError(msg)
+            if self.kind is not MetricKind.DISTRIBUTION:
+                msg = f"{name} is only meaningful for {MetricKind.DISTRIBUTION.value} metrics"
+                raise ValueError(msg)
+        if (
+            self.domain_minimum is not None
+            and self.domain_maximum is not None
+            and self.domain_minimum > self.domain_maximum
+        ):
+            msg = f"domain_minimum {self.domain_minimum} is above domain_maximum {self.domain_maximum}"
+            raise ValueError(msg)
+        if self.domain_unit_label and self.kind is not MetricKind.DISTRIBUTION:
+            msg = f"domain_unit_label is only meaningful for {MetricKind.DISTRIBUTION.value} metrics"
+            raise ValueError(msg)
+
         for name in ("minimum", "maximum"):
             limit = getattr(self, name)
             if limit is None:
@@ -174,8 +259,10 @@ class MetricSpec:
             if not isinstance(limit, Decimal):
                 msg = f"{name} must be a Decimal, never a float"
                 raise TypeError(msg)
-            if self.kind is not MetricKind.NUMBER:
-                msg = f"{name} is only meaningful for {MetricKind.NUMBER.value} metrics"
+            # A sample array's TechnicalRange describes its samples, so limits mean the
+            # same thing there as on a number. Only text and choice have no use for them.
+            if self.kind is MetricKind.TEXT or self.kind is MetricKind.CHOICE:
+                msg = f"{name} is not meaningful for {self.kind.value} metrics"
                 raise ValueError(msg)
         if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
             msg = f"minimum {self.minimum} is greater than maximum {self.maximum}"
@@ -208,6 +295,18 @@ class MetricSpec:
     def has_range(self) -> bool:
         """Whether either limit was given."""
         return self.minimum is not None or self.maximum is not None
+
+    @property
+    def is_sample_array(self) -> bool:
+        """Whether one state of this metric carries many values rather than one."""
+        return self.kind in SAMPLE_ARRAY_KINDS
+
+    def domain_text(self) -> str:
+        """The distribution's domain as something readable, e.g. '0 to 100 Hz'."""
+        if self.kind is not MetricKind.DISTRIBUTION:
+            return ""
+        extent = format_range(self.domain_minimum, self.domain_maximum)
+        return f"{extent} {self.domain_unit_label}".strip()
 
     def range_text(self) -> str:
         """The limits as something readable, or an empty string when unbounded."""
@@ -475,6 +574,16 @@ class RemoteMetric:
     technical_minimum: Decimal | None = None
     technical_maximum: Decimal | None = None
     value: object = None
+    # A sample array reports many values per state instead of one. Empty for every other
+    # kind, and also for a waveform whose peer has not sent a block yet.
+    samples: tuple[Decimal, ...] = field(default_factory=tuple)
+    # RealTimeSampleArrayMetricDescriptor/SamplePeriod, in seconds.
+    sample_period: Decimal | None = None
+    # DistributionSampleArrayMetricDescriptor/DomainUnit and /DistributionRange: what the
+    # samples are spread over, as opposed to what each one measures.
+    domain_unit_label: str | None = None
+    domain_minimum: Decimal | None = None
+    domain_maximum: Decimal | None = None
     parent_handle: str | None = None
     # Handles of set operations whose OperationTarget is this metric.
     operation_handles: tuple[str, ...] = field(default_factory=tuple)
@@ -485,6 +594,16 @@ class RemoteMetric:
     def controllable(self) -> bool:
         """Whether any operation targets this metric at all."""
         return bool(self.operation_handles)
+
+    @property
+    def is_sample_array(self) -> bool:
+        """Whether one state of this metric carries many values rather than one."""
+        return self.kind in SAMPLE_ARRAY_KINDS
+
+    def domain_text(self) -> str:
+        """The distribution's domain as something readable, e.g. '0 to 500 Hz'."""
+        extent = format_range(self.domain_minimum, self.domain_maximum)
+        return f"{extent} {self.domain_unit_label or ''}".strip()
 
     @property
     def has_range(self) -> bool:

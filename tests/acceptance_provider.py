@@ -22,7 +22,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 
 from sdctoolbox import constants  # noqa: E402
-from sdctoolbox.model import AlertKind, AlertPriority, AlertSpec, MetricKind, MetricSpec  # noqa: E402
+from sdctoolbox.model import (  # noqa: E402
+    AlertKind,
+    AlertPriority,
+    AlertSpec,
+    MetricKind,
+    MetricSpec,
+    WaveformShape,
+)
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 # Handles are pinned so the acceptance script can assert on them.
@@ -31,6 +38,8 @@ MODE = "m.mode"
 NOTE = "m.patient_note"
 LOCKED = "m.locked_setting"
 LATE = "m.late_arrival"
+WAVE = "m.pleth"
+DIST = "m.spectrum"
 LIMIT_ALARM = "al.zoom_out_of_range"
 MANUAL_ALARM = "al.service_due"
 
@@ -101,6 +110,34 @@ def main() -> int:
     )
     # This one stays in the MDIB but must refuse every write.
     service.disable_control(LOCKED)
+
+    # A waveform starts its generator by itself, so the consumer should see blocks of
+    # samples arriving without anybody asking for them.
+    service.add_metric(
+        MetricSpec(
+            label="Pleth",
+            kind=MetricKind.WAVEFORM,
+            unit_label="%",
+            minimum=Decimal("0"),
+            maximum=Decimal("100"),
+            sample_period=Decimal("0.1"),
+            shape=WaveformShape.SINE,
+            handle=WAVE,
+        ),
+    )
+    service.add_metric(
+        MetricSpec(
+            label="Spectrum",
+            kind=MetricKind.DISTRIBUTION,
+            unit_label="dB",
+            domain_unit_label="Hz",
+            domain_minimum=Decimal("0"),
+            domain_maximum=Decimal("500"),
+            handle=DIST,
+        ),
+    )
+    # A distribution has nothing driving it, so it gets one block and keeps it.
+    service.set_samples(DIST, [Decimal(str(v)) for v in ("3", "9", "27", "9", "3")])
 
     # A limit alarm that follows the zoom metric, plus one raised only by hand.
     service.add_alert(

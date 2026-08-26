@@ -21,6 +21,7 @@ import json
 import logging
 import sys
 import tempfile
+import time
 from decimal import Decimal
 from pathlib import Path
 
@@ -37,6 +38,7 @@ from sdctoolbox.model import (  # noqa: E402
     MetricKind,
     MetricSpec,
     PatientInfo,
+    WaveformShape,
 )
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
@@ -66,21 +68,23 @@ class Report:
 
 
 def broken_entity(service: ProviderService, handle: str):  # noqa: ANN201 - an sdc11073 Entity
-    """A waveform descriptor with none of its mandatory fields, ready to be written.
+    """A descriptor missing a field BICEPS makes mandatory, ready to be written.
 
-    Nothing here is exotic: this is exactly what add_metric used to build for a waveform,
-    because _apply_spec_to_descriptor sets Resolution only for a number and SamplePeriod
-    never.
+    A numeric metric with no Resolution. Deliberately built by stripping a field rather than
+    by asking for a metric kind the toolbox cannot make: every kind can be made now, and a
+    test that depended on one being unimplementable would quietly stop testing the rollback
+    the moment that changed - which is exactly what happened when waveforms were added.
     """
     entity = service.mdib.entities.new_entity(
-        pm.RealTimeSampleArrayMetricDescriptor,
+        pm.NumericMetricDescriptor,
         handle,
         constants.CHANNEL_HANDLE,
     )
-    service._apply_spec_to_descriptor(  # noqa: SLF001 - reproducing the original failure exactly
+    service._apply_spec_to_descriptor(  # noqa: SLF001 - a normal descriptor, then broken
         entity.descriptor,
-        MetricSpec(label=handle, kind=MetricKind.WAVEFORM),
+        MetricSpec(label=handle, kind=MetricKind.NUMBER),
     )
+    entity.descriptor.Resolution = None
     return entity
 
 
@@ -95,11 +99,11 @@ def check_rollback(report: Report, service: ProviderService) -> None:
     except Exception as exc:  # noqa: BLE001 - this failure is the point
         report.check(
             "Resolution" in str(exc),
-            "an incomplete waveform descriptor is refused",
+            "an incomplete descriptor is refused",
             "mandatory value Resolution missing",
         )
     else:
-        report.check(False, "an incomplete waveform descriptor is refused", "it was accepted")  # noqa: FBT003
+        report.check(False, "an incomplete descriptor is refused", "it was accepted")  # noqa: FBT003
 
     report.check(
         service.mdib.entities.by_handle(unguarded) is not None,
@@ -144,46 +148,111 @@ def check_rollback(report: Report, service: ProviderService) -> None:
     )
 
 
-def check_refusal(report: Report, service: ProviderService) -> None:
-    print("\n2. The kinds that cannot be built are refused at the door")
+def check_sample_arrays(report: Report, service: ProviderService) -> None:
+    print("\n2. Waveforms and distributions")
 
-    for kind in (MetricKind.WAVEFORM, MetricKind.DISTRIBUTION):
-        report.check(not kind.creatable, f"{kind.value} reports itself as not creatable")
-        before = len(service.list_metrics())
+    for kind in MetricKind:
+        report.check(kind.creatable, f"{kind.value} can be created")
+
+    wave = service.add_metric(
+        MetricSpec(
+            label="Pleth",
+            kind=MetricKind.WAVEFORM,
+            unit_label="%",
+            minimum=Decimal("0"),
+            maximum=Decimal("100"),
+            sample_period=Decimal("0.05"),
+            shape=WaveformShape.SAWTOOTH,
+        ),
+    )
+    descriptor = service.mdib.entities.by_handle(wave).descriptor
+    report.check(descriptor.Resolution is not None, "a waveform gets its Resolution", str(descriptor.Resolution))
+    report.check(
+        descriptor.SamplePeriod is not None,
+        "and its SamplePeriod, the other mandatory field",
+        str(descriptor.SamplePeriod),
+    )
+    report.check(
+        [(r.Lower, r.Upper) for r in descriptor.TechnicalRange] == [(Decimal("0"), Decimal("100"))],
+        "limits become a TechnicalRange, as on a number",
+        str([(r.Lower, r.Upper) for r in descriptor.TechnicalRange]),
+    )
+
+    report.check(service.waveforms_running, "adding a waveform starts the generator")
+    deadline = time.monotonic() + 10.0
+    while not service.get_samples(wave) and time.monotonic() < deadline:
+        time.sleep(0.2)
+    samples = service.get_samples(wave)
+    report.check(bool(samples), "samples are generated", f"{len(samples)} in the first block")
+    report.check(
+        all(Decimal("0") <= s <= Decimal("100") for s in samples),
+        "and stay inside the declared range",
+        f"{min(samples)} to {max(samples)}" if samples else "none",
+    )
+    report.check(
+        all(isinstance(s, Decimal) for s in samples),
+        "as Decimal, never float",
+    )
+
+    # A block must continue the curve rather than restarting it, or a consumer sees a saw
+    # edge every half second whatever shape was asked for.
+    first = list(samples)
+    deadline = time.monotonic() + 10.0
+    while service.get_samples(wave) == first and time.monotonic() < deadline:
+        time.sleep(0.2)
+    report.check(service.get_samples(wave) != first, "the next block differs from the last")
+
+    dist = service.add_metric(
+        MetricSpec(
+            label="Spectrum",
+            kind=MetricKind.DISTRIBUTION,
+            unit_label="dB",
+            domain_unit_label="Hz",
+            domain_minimum=Decimal("0"),
+            domain_maximum=Decimal("500"),
+        ),
+    )
+    descriptor = service.mdib.entities.by_handle(dist).descriptor
+    report.check(descriptor.Resolution is not None, "a distribution gets its Resolution")
+    report.check(
+        descriptor.DomainUnit is not None,
+        "and its DomainUnit, the field it fails on first",
+        str(getattr(descriptor.DomainUnit, "Code", None)),
+    )
+    report.check(
+        (descriptor.DistributionRange.Lower, descriptor.DistributionRange.Upper)
+        == (Decimal("0"), Decimal("500")),
+        "the domain becomes a DistributionRange, not a TechnicalRange",
+        f"{descriptor.DistributionRange.Lower} to {descriptor.DistributionRange.Upper}",
+    )
+
+    block = [Decimal(str(v)) for v in ("1.5", "2.5", "3.5")]
+    service.set_samples(dist, block)
+    report.check(service.get_samples(dist) == block, "a distribution takes samples it is given")
+    service.set_samples(dist, [Decimal("9")])
+    report.check(
+        service.get_samples(dist) == [Decimal("9")],
+        "and a second block replaces the first rather than appending",
+        str(service.get_samples(dist)),
+    )
+
+    plain = service.add_metric(MetricSpec(label="Plain", kind=MetricKind.NUMBER))
+    for handle, samples_in, why in [
+        (plain, [Decimal("1")], "samples on a number"),
+        (wave, [0.5], "float samples"),
+    ]:
         try:
-            service.add_metric(MetricSpec(label=f"Probe {kind.value}", kind=kind))
-        except ValueError as exc:
-            report.check(
-                all(field in str(exc) for field in kind.missing_fields),
-                f"add_metric names what is missing for a {kind.value}",
-                str(exc)[:66],
-            )
+            service.set_samples(handle, samples_in)
+        except (ValueError, TypeError) as exc:
+            report.check(True, f"refuses {why}", str(exc)[:56])  # noqa: FBT003
         else:
-            report.check(False, f"add_metric refuses a {kind.value}", "it was accepted")  # noqa: FBT003
-        report.check(
-            len(service.list_metrics()) == before,
-            f"a refused {kind.value} changes nothing",
-        )
-        report.check(
-            service.mdib.entities.by_handle(f"m.probe_{kind.value}") is None,
-            f"and puts no {kind.value} descriptor in the mdib",
-        )
+            report.check(False, f"refuses {why}", "it was accepted")  # noqa: FBT003
 
-    for kind in (MetricKind.NUMBER, MetricKind.TEXT, MetricKind.CHOICE):
-        report.check(kind.creatable, f"{kind.value} is still creatable")
-
-    bad = '{"metrics": [{"label": "w", "kind": "waveform"}]}'
-    try:
-        config.parse(json.loads(bad))
-    except config.ConfigError as exc:
-        report.check(
-            "waveform" in str(exc),
-            "a config file asking for a waveform is refused before anything is built",
-            str(exc)[:66],
-        )
-    else:
-        report.check(False, "a config file asking for a waveform is refused", "accepted")  # noqa: FBT003
-
+    service.stop_waveforms()
+    report.check(not service.waveforms_running, "the generator can be stopped")
+    service.remove_metric(plain)
+    service.remove_metric(dist)
+    service.remove_metric(wave)
 
 def check_alarm_rollback(report: Report, service: ProviderService) -> None:
     print("\n3. An alarm is written whole or not at all")
@@ -424,7 +493,7 @@ def main() -> int:
     service.start()
     try:
         check_rollback(report, service)
-        check_refusal(report, service)
+        check_sample_arrays(report, service)
         check_alarm_rollback(report, service)
         check_signals(report, service)
         check_contexts(report, service)

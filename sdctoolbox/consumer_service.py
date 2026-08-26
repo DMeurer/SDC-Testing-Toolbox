@@ -12,7 +12,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
 from sdc11073 import observableproperties
@@ -97,6 +97,20 @@ def _enum_value(value: Any) -> str | None:
     return getattr(value, "value", None) or str(value)
 
 
+def _seconds(duration: Any) -> Decimal | None:
+    """A SamplePeriod as a number of seconds.
+
+    sdc11073 hands back a float for an xsd:duration. A foreign device may publish something
+    this cannot read, in which case the waveform is still shown, just without its rate.
+    """
+    if duration is None:
+        return None
+    try:
+        return Decimal(str(float(duration)))
+    except (TypeError, ValueError, InvalidOperation):
+        return None
+
+
 def _first_range(ranges: Any) -> tuple[Any, Any]:
     """Lower and upper of the first Range in a list, tolerating an absent or empty list."""
     for item in ranges or []:
@@ -178,6 +192,13 @@ class RemoteDevice:
                     technical_minimum=technical_lower,
                     technical_maximum=technical_upper,
                     value=getattr(metric_value, "Value", None),
+                    # A sample array carries Samples instead of Value, so a peer's waveform
+                    # would otherwise look like a metric that never reports anything.
+                    samples=tuple(getattr(metric_value, "Samples", None) or ()),
+                    sample_period=_seconds(getattr(descriptor, "SamplePeriod", None)),
+                    domain_unit_label=_first_text(getattr(descriptor, "DomainUnit", None)),
+                    domain_minimum=getattr(getattr(descriptor, "DistributionRange", None), "Lower", None),
+                    domain_maximum=getattr(getattr(descriptor, "DistributionRange", None), "Upper", None),
                     parent_handle=getattr(entity, "parent_handle", None),
                     operation_handles=tuple(operations_by_target.get(handle, ())),
                     controllable_now=handle in enabled_targets,

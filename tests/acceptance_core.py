@@ -41,7 +41,17 @@ from sdctoolbox import constants  # noqa: E402
 from sdctoolbox.consumer_service import ConsumerService  # noqa: E402
 from sdctoolbox.model import MetricKind  # noqa: E402
 
-from acceptance_provider import LATE, LIMIT_ALARM, LOCKED, MANUAL_ALARM, MODE, NOTE, ZOOM  # noqa: E402
+from acceptance_provider import (  # noqa: E402
+    DIST,
+    LATE,
+    LIMIT_ALARM,
+    LOCKED,
+    MANUAL_ALARM,
+    MODE,
+    NOTE,
+    WAVE,
+    ZOOM,
+)
 
 FINISHED = (msg_types.InvocationState.FINISHED, msg_types.InvocationState.FINISHED_MOD)
 
@@ -325,6 +335,62 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
                 )
 
             report.check(bool(value_events), "metrics_by_handle fired at least once")
+
+            # ------------------------------------------------------------ sample arrays
+            print("\n5b. Waveforms and distributions over the wire", flush=True)
+            wave = remote.metrics().get(WAVE)
+            report.check(wave is not None, f"{WAVE} present")
+            if wave is not None:
+                report.check(wave.kind is MetricKind.WAVEFORM, "it is a waveform", str(wave.kind))
+                report.check(
+                    wave.sample_period == Decimal("0.1"),
+                    "SamplePeriod survives the round trip",
+                    str(wave.sample_period),
+                )
+                # A waveform arrives as a WaveformStream rather than an EpisodicMetricReport,
+                # so this also proves that path is wired up at both ends.
+                deadline = time.monotonic() + 30.0
+                while not remote.metrics()[WAVE].samples and time.monotonic() < deadline:
+                    time.sleep(0.5)
+                samples = remote.metrics()[WAVE].samples
+                report.check(bool(samples), "blocks of samples arrive", f"{len(samples)} samples")
+                report.check(
+                    all(Decimal("0") <= s <= Decimal("100") for s in samples),
+                    "inside the range the peer declared",
+                    f"{min(samples)} to {max(samples)}" if samples else "none",
+                )
+                first = list(samples)
+                deadline = time.monotonic() + 30.0
+                while remote.metrics()[WAVE].samples == tuple(first) and time.monotonic() < deadline:
+                    time.sleep(0.5)
+                report.check(
+                    remote.metrics()[WAVE].samples != tuple(first),
+                    "and keep arriving, so the stream is live",
+                )
+                report.check(
+                    not wave.controllable,
+                    "no operation targets it: BICEPS has none that writes a sample array",
+                )
+
+            dist = remote.metrics().get(DIST)
+            report.check(dist is not None, f"{DIST} present")
+            if dist is not None:
+                report.check(dist.kind is MetricKind.DISTRIBUTION, "it is a distribution")
+                report.check(
+                    dist.samples == tuple(Decimal(v) for v in ("3", "9", "27", "9", "3")),
+                    "its samples arrive exactly as sent",
+                    str(dist.samples),
+                )
+                report.check(
+                    dist.domain_unit_label == "Hz",
+                    "DomainUnit survives, and is not the same as Unit",
+                    f"domain {dist.domain_unit_label!r}, unit {dist.unit_label!r}",
+                )
+                report.check(
+                    (dist.domain_minimum, dist.domain_maximum) == (Decimal("0"), Decimal("500")),
+                    "and so does DistributionRange",
+                    dist.domain_text(),
+                )
 
             # ------------------------------------------------------------- alarms
             print("\n6. Alarms", flush=True)

@@ -7,6 +7,8 @@ SCO in sync. It has no GUI dependency; stage 2 puts a PySide6 skin on top of it.
 from __future__ import annotations
 
 import logging
+import math
+import random
 import threading
 import time
 from decimal import Decimal
@@ -26,18 +28,51 @@ from . import constants
 from .handlers import apply_metric_value, make_set_handler
 from .model import (
     DEFAULT_MANIFESTATIONS,
+    DEFAULT_SAMPLE_PERIOD,
     AlertSpec,
     LocationInfo,
     MetricKind,
     MetricSpec,
     PatientInfo,
     SignalInfo,
+    WaveformShape,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from sdc11073.provider.sco import AbstractScoOperationsRegistry
 
 logger = logging.getLogger("sdctoolbox.provider")
+
+# How much waveform data goes out per report. Samples are generated in blocks rather than
+# one at a time, because a report per sample would be all overhead: a 0.1s sample period
+# would mean ten SOAP messages a second per waveform.
+WAVEFORM_BLOCK_SECONDS = 0.5
+
+# Samples per full cycle of the generated curve. Fixed rather than derived from the sample
+# period, so a slow waveform and a fast one look the same on screen and only differ in how
+# quickly they get there.
+WAVEFORM_CYCLE_SAMPLES = 40
+
+
+def _shape_sample(shape: WaveformShape, phase: float, low: float, high: float) -> Decimal:
+    """One sample of a curve, as a Decimal between low and high.
+
+    ``phase`` counts cycles, so its fractional part is the position within one.
+    """
+    position = phase % 1.0
+    if shape is WaveformShape.SINE:
+        fraction = (math.sin(position * 2.0 * math.pi) + 1.0) / 2.0
+    elif shape is WaveformShape.SAWTOOTH:
+        fraction = position
+    elif shape is WaveformShape.SQUARE:
+        fraction = 1.0 if position < 0.5 else 0.0  # noqa: PLR2004
+    else:
+        fraction = random.random()  # noqa: S311 - a test signal, not a secret
+    # Two decimal places: enough to draw a smooth curve, short enough that a block of
+    # samples does not bloat the report.
+    return Decimal(str(round(low + fraction * (high - low), 2)))
 
 
 class ProviderService:
@@ -78,6 +113,11 @@ class ProviderService:
         self._alert_signals: dict[str, list[str]] = {}
         # Guards the metric observer against re-entering itself.
         self._evaluating_alerts = False
+        # Waveform generation: one thread for every waveform, and where each curve had
+        # got to, so a new block continues rather than restarting.
+        self._waveform_thread: threading.Thread | None = None
+        self._waveform_stop = threading.Event()
+        self._waveform_phase: dict[str, float] = {}
         self._lock = threading.RLock()
 
     # -- lifecycle -----------------------------------------------------------------
@@ -148,6 +188,7 @@ class ProviderService:
 
     def stop(self) -> None:
         """Take the provider off the network."""
+        self.stop_waveforms()
         if self._provider is not None:
             self._provider.stop_all()
             self._provider = None
@@ -160,6 +201,7 @@ class ProviderService:
         self._specs.clear()
         self._alerts.clear()
         self._alert_signals.clear()
+        self._waveform_phase.clear()
         logger.info("provider %r stopped", self.instance_name)
 
     def __enter__(self) -> ProviderService:
@@ -207,6 +249,10 @@ class ProviderService:
                 self.set_value(handle, spec.initial_value)
             if spec.controllable:
                 self.enable_control(handle)
+            if spec.kind is MetricKind.WAVEFORM:
+                # A waveform with nothing driving it publishes an empty descriptor and
+                # never a sample, which looks like a broken device rather than an idle one.
+                self.start_waveforms()
             return handle
 
     def remove_metric(self, handle: str) -> None:
@@ -693,6 +739,130 @@ class ProviderService:
                 return state
         return None
 
+    # -- sample arrays -------------------------------------------------------------
+
+    def set_samples(self, handle: str, samples: Sequence[Decimal]) -> None:
+        """Publish a fresh block of samples for a waveform or a distribution.
+
+        A sample array state carries many values where an ordinary metric carries one, so
+        this is the sample-array equivalent of set_value rather than an addition to it.
+
+        The transaction picked here decides which report goes out, and sdc11073 chooses it
+        from the *state* rather than from anything we pass: a RealTimeSampleArrayMetricState
+        lands in TransactionResult.rt_updates and leaves as a WaveformStream, everything
+        else lands in metric_updates and leaves as an EpisodicMetricReport. So a waveform
+        needs the rt transaction and a distribution must not use it.
+        """
+        with self._lock:
+            spec = self._specs.get(handle)
+            if spec is None:
+                msg = f"no metric with handle {handle!r}"
+                raise KeyError(msg)
+            if not spec.is_sample_array:
+                msg = f"{handle!r} is a {spec.kind.value}, which holds one value; use set_value"
+                raise ValueError(msg)
+            for sample in samples:
+                if isinstance(sample, float):
+                    msg = "samples must be Decimal, never float"
+                    raise TypeError(msg)
+
+            entity = self.mdib.entities.by_handle(handle)
+            if entity is None:
+                msg = f"no metric with handle {handle!r}"
+                raise KeyError(msg)
+
+            # mk_metric_value raises if there already is one, so only ever call it once.
+            if entity.state.MetricValue is None:
+                entity.state.mk_metric_value()
+            entity.state.MetricValue.Samples = list(samples)
+            entity.state.MetricValue.DeterminationTime = time.time()
+
+            if spec.kind is MetricKind.WAVEFORM:
+                with self.mdib.rt_sample_state_transaction() as mgr:
+                    mgr.write_entity(entity)
+            else:
+                with self.mdib.metric_state_transaction() as mgr:
+                    mgr.write_entity(entity)
+
+    def get_samples(self, handle: str) -> list[Decimal]:
+        """The samples currently published for a sample-array metric."""
+        entity = self.mdib.entities.by_handle(handle)
+        if entity is None:
+            return []
+        value = getattr(entity.state, "MetricValue", None)
+        return list(getattr(value, "Samples", None) or [])
+
+    def start_waveforms(self) -> None:
+        """Begin generating samples for every waveform this device publishes.
+
+        One thread drives all of them. sdc11073 ships a WaveformProviderProtocol and no
+        implementation of it, and a provider configured with none must be started with
+        start_rtsample_loop=False - so rather than write that protocol, this walks the
+        waveforms itself and writes their states. The report comes out either way, because
+        the provider builds it from the transaction result.
+        """
+        with self._lock:
+            if self._waveform_thread is not None:
+                return
+            self._waveform_stop.clear()
+            self._waveform_thread = threading.Thread(
+                target=self._run_waveforms,
+                name=f"waveforms-{self.instance_name}",
+                daemon=True,
+            )
+            self._waveform_thread.start()
+            logger.info("waveform generator started")
+
+    def stop_waveforms(self) -> None:
+        """Stop generating samples and wait for the thread to notice."""
+        thread = self._waveform_thread
+        if thread is None:
+            return
+        self._waveform_stop.set()
+        thread.join(timeout=5.0)
+        self._waveform_thread = None
+        logger.info("waveform generator stopped")
+
+    @property
+    def waveforms_running(self) -> bool:
+        """Whether the generator thread is alive."""
+        return self._waveform_thread is not None and self._waveform_thread.is_alive()
+
+    def _run_waveforms(self) -> None:
+        """Push one block of samples per waveform, per tick, until asked to stop."""
+        while not self._waveform_stop.is_set():
+            started = time.monotonic()
+            for handle, spec in list(self._specs.items()):
+                if spec.kind is not MetricKind.WAVEFORM:
+                    continue
+                try:
+                    self.set_samples(handle, self._next_block(handle, spec))
+                except (KeyError, ValueError, TypeError):
+                    # The metric was removed between listing and writing, or something
+                    # about it is unusable. Neither is worth killing the thread over.
+                    logger.debug("skipped a waveform block for %s", handle, exc_info=True)
+                except Exception:
+                    logger.exception("waveform generation failed for %s", handle)
+            # Sleep the remainder of the block, so generation keeps real time rather than
+            # drifting by however long the writes took.
+            self._waveform_stop.wait(max(0.0, WAVEFORM_BLOCK_SECONDS - (time.monotonic() - started)))
+
+    def _next_block(self, handle: str, spec: MetricSpec) -> list[Decimal]:
+        """The next block of samples for one waveform, continuing where the last left off."""
+        period = float(spec.sample_period or DEFAULT_SAMPLE_PERIOD)
+        count = max(1, int(round(WAVEFORM_BLOCK_SECONDS / period)))
+        low = float(spec.minimum if spec.minimum is not None else 0)
+        high = float(spec.maximum if spec.maximum is not None else 100)
+        if high <= low:
+            high = low + 1.0
+
+        phase = self._waveform_phase.get(handle, 0.0)
+        samples = []
+        for index in range(count):
+            samples.append(_shape_sample(spec.shape, phase + index / WAVEFORM_CYCLE_SAMPLES, low, high))
+        self._waveform_phase[handle] = (phase + count / WAVEFORM_CYCLE_SAMPLES) % 1.0
+        return samples
+
     # -- internals -----------------------------------------------------------------
 
     def _create_entities(self, entities: list) -> None:
@@ -782,6 +952,37 @@ class ProviderService:
                 ]
         if spec.kind is MetricKind.CHOICE:
             descriptor.AllowedValue = [pm_types.AllowedValue(value=value) for value in spec.allowed_values]
+
+        if spec.is_sample_array:
+            # Resolution is mandatory on both sample-array descriptors as well, and it is
+            # the one serialisation complains about first when it is missing.
+            descriptor.Resolution = spec.resolution
+            if spec.has_range:
+                descriptor.TechnicalRange = [
+                    pm_types.Range(lower=spec.minimum, upper=spec.maximum, step_width=spec.resolution),
+                ]
+
+        if spec.kind is MetricKind.WAVEFORM:
+            # An xsd:duration in seconds. sdc11073 takes a float here and renders it.
+            descriptor.SamplePeriod = float(spec.sample_period)
+
+        if spec.kind is MetricKind.DISTRIBUTION:
+            # What the samples are spread *over*, as opposed to Unit, which is what each
+            # sample measures. Mandatory, and the field this kind fails on first.
+            descriptor.DomainUnit = pm_types.CodedValue(
+                code=spec.domain_unit_code,
+                coding_system=spec.domain_unit_coding_system,
+                concept_descriptions=(
+                    [pm_types.LocalizedText(spec.domain_unit_label, lang="en-US")]
+                    if spec.domain_unit_label
+                    else None
+                ),
+            )
+            descriptor.DistributionRange = pm_types.Range(
+                lower=spec.domain_minimum,
+                upper=spec.domain_maximum,
+                step_width=spec.resolution,
+            )
 
     def _set_operating_mode(self, operation_handle: str, mode: pm_types.OperatingMode) -> None:
         entity = self.mdib.entities.by_handle(operation_handle)
