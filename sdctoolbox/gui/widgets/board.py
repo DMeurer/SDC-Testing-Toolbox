@@ -13,8 +13,11 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
+    QHBoxLayout,
     QLabel,
     QScrollArea,
+    QStyle,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -30,9 +33,22 @@ MIN_CARD_WIDTH = 260
 
 
 class MetricCard(QFrame):
-    """One metric: heading, control, and the details underneath."""
+    """One metric: heading, control, and the details underneath.
 
-    def __init__(self, spec: WidgetSpec, parent: QWidget | None = None) -> None:
+    A deletable card carries a bin in its top right. That is the only way to remove a
+    metric while the board is showing, because there is no row to select.
+    """
+
+    #: The bin was clicked. Carries the handle.
+    delete_requested = Signal(str)
+
+    def __init__(
+        self,
+        spec: WidgetSpec,
+        parent: QWidget | None = None,
+        *,
+        deletable: bool = False,
+    ) -> None:
         super().__init__(parent)
         self.spec = spec
         self.setFrameShape(QFrame.StyledPanel)
@@ -42,6 +58,23 @@ class MetricCard(QFrame):
         font.setBold(True)
         heading.setFont(font)
         heading.setWordWrap(True)
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(4)
+        title_row.addWidget(heading, 1)
+
+        self.delete_button: QToolButton | None = None
+        if deletable:
+            self.delete_button = QToolButton()
+            self.delete_button.setIcon(
+                self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon),
+            )
+            self.delete_button.setAutoRaise(True)
+            self.delete_button.setToolTip(f"Remove {spec.handle}")
+            self.delete_button.setAccessibleName(f"Remove {spec.handle}")
+            self.delete_button.clicked.connect(lambda: self.delete_requested.emit(spec.handle))
+            title_row.addWidget(self.delete_button, 0, Qt.AlignTop)
 
         self.control: MetricWidget = build_widget(spec, self)
 
@@ -57,7 +90,7 @@ class MetricCard(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(6)
-        layout.addWidget(heading)
+        layout.addLayout(title_row)
         layout.addWidget(self.control)
         layout.addWidget(footer)
 
@@ -67,9 +100,14 @@ class WidgetBoard(QScrollArea):
 
     #: handle, value. Forwarded from whichever card asked.
     value_requested = Signal(str, object)
+    #: handle. A card's bin was clicked.
+    delete_requested = Signal(str)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, *, deletable: bool = False) -> None:
         super().__init__(parent)
+        #: Whether cards carry a bin. False for a peer's metrics, which are not ours to
+        #: delete.
+        self.deletable = deletable
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setFrameShape(QFrame.NoFrame)
@@ -87,6 +125,9 @@ class WidgetBoard(QScrollArea):
         self._cards: dict[str, MetricCard] = {}
         self._order: list[str] = []
         self._columns = 0
+        #: Highest column and row index we have ever stretched, so they can all be undone.
+        self._stretched_columns = 0
+        self._stretched_rows = 0
 
     # -- content -------------------------------------------------------------------
 
@@ -115,8 +156,9 @@ class WidgetBoard(QScrollArea):
 
         for spec in specs:
             if spec.handle not in self._cards:
-                card = MetricCard(spec, self._canvas)
+                card = MetricCard(spec, self._canvas, deletable=self.deletable)
                 card.control.value_requested.connect(self.value_requested)
+                card.delete_requested.connect(self.delete_requested)
                 self._cards[spec.handle] = card
 
         self._order = [spec.handle for spec in specs]
@@ -139,14 +181,30 @@ class WidgetBoard(QScrollArea):
         available = self.viewport().width() - 8
         return max(1, available // MIN_CARD_WIDTH)
 
+    def _clear_grid(self) -> None:
+        """Empty the grid and undo every stretch we have ever set on it.
+
+        QGridLayout never shrinks: its columnCount and rowCount only grow, and a stretch
+        set on a column stays there after the column is empty. Without this, going from
+        four columns down to two leaves columns three and four still stretching, so the
+        cards bunch up on the left and the rest of the panel stays blank.
+        """
+        while self._grid.count():
+            self._grid.takeAt(0)
+
+        for column in range(max(self._grid.columnCount(), self._stretched_columns)):
+            self._grid.setColumnStretch(column, 0)
+            self._grid.setColumnMinimumWidth(column, 0)
+        for row in range(max(self._grid.rowCount(), self._stretched_rows)):
+            self._grid.setRowStretch(row, 0)
+
     def _relayout(self, *, force: bool = False) -> None:
         columns = self._column_count()
         if not force and columns == self._columns:
             return
         self._columns = columns
 
-        while self._grid.count():
-            self._grid.takeAt(0)
+        self._clear_grid()
 
         if not self._order:
             self._grid.addWidget(self._empty, 0, 0)
@@ -154,17 +212,23 @@ class WidgetBoard(QScrollArea):
             return
         self._empty.setVisible(False)
 
+        rows = 0
         for index, handle in enumerate(self._order):
             card = self._cards.get(handle)
             if card is None:
                 continue
-            self._grid.addWidget(card, index // columns, index % columns)
+            row, column = divmod(index, columns)
+            self._grid.addWidget(card, row, column)
             card.setVisible(True)
+            rows = row + 1
 
         for column in range(columns):
             self._grid.setColumnStretch(column, 1)
         # Keep the cards packed at the top rather than spread down the panel.
-        self._grid.setRowStretch(self._grid.rowCount(), 1)
+        self._grid.setRowStretch(rows, 1)
+
+        self._stretched_columns = max(self._stretched_columns, columns)
+        self._stretched_rows = max(self._stretched_rows, rows + 1)
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001, N802 - Qt naming
         super().resizeEvent(event)

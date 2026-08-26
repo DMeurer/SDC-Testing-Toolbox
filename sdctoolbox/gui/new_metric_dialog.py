@@ -85,12 +85,12 @@ class NewMetricDialog(QDialog):
         form.addRow("Kind", self.kind_box)
         form.addRow("Label", self.label_edit)
         form.addRow("Unit", self.unit_edit)
-        self.values_row = self.values_edit
         form.addRow("Allowed values", self.values_edit)
         form.addRow("Resolution", self.resolution_edit)
         form.addRow("Range", self.limits_widget)
         form.addRow("", self.controllable_box)
         form.addRow("Handle", self.handle_preview)
+        self.form = form
 
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.buttons.accepted.connect(self._on_accept)
@@ -117,31 +117,48 @@ class NewMetricDialog(QDialog):
 
     @property
     def _kind(self) -> MetricKind:
-        return self.kind_box.currentData()
+        """The selected kind.
+
+        Taken from the list by index rather than from the combo box's userData. That works
+        today because MetricKind is a plain Enum, but the BICEPS enums subclass str and Qt
+        silently converts those to plain strings on the way through a QVariant. Reading the
+        list avoids depending on which kind of enum this happens to be.
+        """
+        return OFFERED_KINDS[self.kind_box.currentIndex()][1]
+
+    def _set_row_visible(self, widget: QWidget, *, visible: bool) -> None:
+        """Show or hide a form row, label included.
+
+        Hiding beats disabling here: a greyed-out "Allowed values" box on a number is still
+        something to read and dismiss, and the dialog is short enough that the rows moving
+        is less distracting than the clutter.
+        """
+        widget.setVisible(visible)
+        label = self.form.labelForField(widget)
+        if label is not None:
+            label.setVisible(visible)
 
     def _on_kind_changed(self) -> None:
         is_choice = self._kind is MetricKind.CHOICE
         is_number = self._kind is MetricKind.NUMBER
-        self.values_edit.setEnabled(is_choice)
+
+        self._set_row_visible(self.values_edit, visible=is_choice)
+        self._set_row_visible(self.resolution_edit, visible=is_number)
+        self._set_row_visible(self.limits_widget, visible=is_number)
+
         self.values_edit.setToolTip(
-            "Comma separated. These become the AllowedValue list of the metric."
-            if is_choice
-            else "Only meaningful for a choice",
+            "Comma separated. These become the AllowedValue list of the metric.",
         )
-        self.resolution_edit.setEnabled(is_number)
         self.resolution_edit.setToolTip(
-            "BICEPS requires a resolution on a numeric metric. Use 1 for whole numbers."
-            if is_number
-            else "Only meaningful for a number",
+            "BICEPS requires a resolution on a numeric metric. Use 1 for whole numbers.",
         )
-        self.limits_widget.setEnabled(is_number)
         self.limits_widget.setToolTip(
             "Optional lower and upper limit. Either can be left blank.\n"
             "Becomes TechnicalRange on the metric and AllowedRange on its set operation, "
-            "so other devices are refused values outside it."
-            if is_number
-            else "Only meaningful for a number",
+            "so other devices are refused values outside it.",
         )
+        # The rows that went away leave the dialog taller than it needs to be.
+        self.adjustSize()
 
     def _update_preview(self) -> None:
         label = self.label_edit.text().strip()

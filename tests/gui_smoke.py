@@ -48,6 +48,7 @@ from sdctoolbox.gui.consumer_pane import COL_RANGE as COL_R_RANGE  # noqa: E402
 from sdctoolbox.gui.consumer_pane import COL_VALUE as COL_R_VALUE  # noqa: E402
 from sdctoolbox.gui.consumer_pane import COL_WRITABLE as COL_R_WRITABLE  # noqa: E402
 from sdctoolbox.gui.main_window import MainWindow  # noqa: E402
+from sdctoolbox.gui.new_alert_dialog import NewAlertDialog  # noqa: E402
 from sdctoolbox.gui.new_metric_dialog import NewMetricDialog  # noqa: E402
 from sdctoolbox.gui.provider_pane import (  # noqa: E402
     COL_CONTROL,
@@ -61,8 +62,11 @@ from sdctoolbox.gui.provider_pane import (  # noqa: E402
     NO_VALUE,
 )
 from sdctoolbox.gui.styling import mute  # noqa: E402
-from sdctoolbox.model import MetricKind  # noqa: E402
+from sdctoolbox.model import AlertKind, AlertPriority, MetricKind, MetricSpec  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
+
+# This file lives in tests/, so its own directory is on the path.
+from acceptance_provider import PEER_INSTANCE  # noqa: E402
 
 
 class Report:
@@ -326,7 +330,85 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             "the range reached the spec",
             f"{spec.minimum} to {spec.maximum}" if spec else "-",
         )
+
+        print("\n2b. Inapplicable inputs are hidden, not greyed out")
+        for index in range(dialog.kind_box.count()):
+            if dialog.kind_box.itemText(index) == "Choice":
+                dialog.kind_box.setCurrentIndex(index)
+        dialog._on_kind_changed()  # noqa: SLF001
+        report.check(not dialog.values_edit.isHidden(), "a choice shows its allowed values")
+        report.check(dialog.resolution_edit.isHidden(), "a choice hides resolution")
+        report.check(dialog.limits_widget.isHidden(), "a choice hides the range")
+
+        for index in range(dialog.kind_box.count()):
+            if dialog.kind_box.itemText(index) == "Number":
+                dialog.kind_box.setCurrentIndex(index)
+        dialog._on_kind_changed()  # noqa: SLF001
+        report.check(dialog.values_edit.isHidden(), "a number hides allowed values")
+        report.check(not dialog.resolution_edit.isHidden(), "a number shows resolution")
+        report.check(not dialog.limits_widget.isHidden(), "a number shows the range")
+
+        for index in range(dialog.kind_box.count()):
+            if dialog.kind_box.itemText(index) == "Text":
+                dialog.kind_box.setCurrentIndex(index)
+        dialog._on_kind_changed()  # noqa: SLF001
+        report.check(
+            dialog.values_edit.isHidden()
+            and dialog.resolution_edit.isHidden()
+            and dialog.limits_widget.isHidden(),
+            "text hides all three",
+        )
         dialog.deleteLater()
+
+        print("\n2c. The alarm dialog")
+        alert_metrics = {
+            "m.num": MetricSpec(label="A number", kind=MetricKind.NUMBER, handle="m.num"),
+            "m.txt": MetricSpec(label="Some text", kind=MetricKind.TEXT, handle="m.txt"),
+        }
+        alert_dialog = NewAlertDialog(alert_metrics)
+        alert_dialog.label_edit.setText("Too high")
+        alert_dialog.upper_edit.setText("100")
+        for index in range(alert_dialog.source_box.count()):
+            if alert_dialog.source_box.itemData(index) == "m.num":
+                alert_dialog.source_box.setCurrentIndex(index)
+        alert_dialog._on_source_changed()  # noqa: SLF001
+        report.check(not alert_dialog.limits_widget.isHidden(), "a numeric source shows the limits")
+        alert_dialog._on_accept()  # noqa: SLF001
+        alert_spec = alert_dialog.spec()
+        report.check(
+            alert_spec is not None and alert_spec.upper_limit == Decimal("100"),
+            "and the limit reaches the spec",
+            str(alert_spec.upper_limit) if alert_spec else "-",
+        )
+        # The enums BICEPS defines subclass str, so a QVariant round trip hands back a
+        # plain str. Anything downstream then refuses it.
+        report.check(
+            alert_spec is not None and isinstance(alert_spec.kind, AlertKind),
+            "kind is a real enum, not the string Qt hands back",
+            type(alert_spec.kind).__name__ if alert_spec else "-",
+        )
+        report.check(
+            alert_spec is not None and isinstance(alert_spec.priority, AlertPriority),
+            "and so is priority",
+            type(alert_spec.priority).__name__ if alert_spec else "-",
+        )
+
+        alert_dialog2 = NewAlertDialog(alert_metrics)
+        alert_dialog2.label_edit.setText("Manual")
+        alert_dialog2.upper_edit.setText("100")
+        for index in range(alert_dialog2.source_box.count()):
+            if alert_dialog2.source_box.itemData(index) == "m.txt":
+                alert_dialog2.source_box.setCurrentIndex(index)
+        alert_dialog2._on_source_changed()  # noqa: SLF001
+        report.check(alert_dialog2.limits_widget.isHidden(), "a text source hides the limits")
+        alert_dialog2._on_accept()  # noqa: SLF001
+        report.check(
+            alert_dialog2.spec() is not None and alert_dialog2.spec().upper_limit is None,
+            "and a limit typed before switching is not smuggled through",
+            str(alert_dialog2.spec().upper_limit) if alert_dialog2.spec() else "-",
+        )
+        alert_dialog.deleteLater()
+        alert_dialog2.deleteLater()
 
         print("\n3. Creating data sources")
         zoom = service.add_metric(spec)
@@ -644,9 +726,9 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             found = wait_for(app, lambda: bool(consumer.devices), timeout=40)
             report.check(found, "the peer is discovered", f"{len(consumer.devices)} device(s)")
 
-            # Our own provider is on the network too, so pick the peer by EPR rather than
-            # trusting the order of the list.
-            peer_epr = epr_for("alpha").urn
+            # Our own provider is on the network too, and so is any toolbox window the user
+            # happens to have open, so pick the peer by EPR rather than trusting the order.
+            peer_epr = epr_for(PEER_INSTANCE).urn
             peer_row = next(
                 (i for i, d in enumerate(consumer.devices) if d.epr == peer_epr),
                 None,

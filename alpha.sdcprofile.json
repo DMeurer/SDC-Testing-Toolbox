@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "device": {
+    "instance_name": "alpha",
+    "friendly_name": "Toolbox alpha"
+  },
+  "metrics": [
+    {
+      "handle": "m.camera_mode",
+      "label": "camera mode",
+      "kind": "choice",
+      "controllable": true,
+      "allowed_values": [
+        "normal",
+        "infrared",
+        "contrast"
+      ],
+      "initial_value": "normal"
+    },
+    {
+      "handle": "m.patient_nr",
+      "label": "patient nr",
+      "kind": "text",
+      "controllable": true,
+      "initial_value": "dave"
+    },
+    {
+      "handle": "m.zoom",
+      "label": "zoom",
+      "kind": "number",
+      "controllable": true,
+      "unit": "%",
+      "resolution": "1",
+      "minimum": "0",
+      "maximum": "100",
+      "initial_value": "22"
+    }
+  ],
+  "alerts": []
+}

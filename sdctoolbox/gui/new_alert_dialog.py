@@ -46,6 +46,9 @@ class NewAlertDialog(QDialog):
         self.setWindowTitle("New alarm")
         self.setMinimumWidth(440)
         self._metrics = metrics
+        #: Whether the limits row applies to the selected source. Tracked rather than read
+        #: back off the widget, so the logic does not depend on the dialog being on screen.
+        self._limits_apply = False
 
         self.source_box = QComboBox()
         for handle, spec in sorted(metrics.items()):
@@ -99,6 +102,7 @@ class NewAlertDialog(QDialog):
         form.addRow("Priority", self.priority_box)
         form.addRow("Raise when", self.limits_widget)
         form.addRow("Handle", self.handle_preview)
+        self.form = form
 
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.buttons.accepted.connect(self._on_accept)
@@ -126,12 +130,35 @@ class NewAlertDialog(QDialog):
     def _on_source_changed(self) -> None:
         handle = self.source_box.currentData()
         spec = self._metrics.get(handle) if handle else None
-        # Limits only mean anything against a number.
-        numeric = spec is not None and spec.kind is MetricKind.NUMBER
-        self.limits_widget.setEnabled(numeric)
-        self.limits_widget.setToolTip(
-            "" if numeric else "Limits can only be compared against a numeric metric",
-        )
+        # Limits only mean anything against a number, so for anything else the row goes
+        # away rather than sitting there greyed out.
+        self._limits_apply = spec is not None and spec.kind is MetricKind.NUMBER
+        self._set_row_visible(self.limits_widget, visible=self._limits_apply)
+
+    def _set_row_visible(self, widget: QWidget, *, visible: bool) -> None:
+        """Show or hide a form row, label included."""
+        widget.setVisible(visible)
+        label = self.form.labelForField(widget)
+        if label is not None:
+            label.setVisible(visible)
+        # A hidden row still reserves its height until the dialog is asked to shrink.
+        self.adjustSize()
+
+    @property
+    def _kind(self) -> AlertKind:
+        """The selected kind.
+
+        Read from the list rather than the combo box's userData: the BICEPS enums subclass
+        str, so Qt stores them as plain strings and hands back a str that is no longer an
+        enum. AlertSpec would coerce it anyway, but taking it from here keeps the type
+        correct all the way through.
+        """
+        return KIND_CAPTIONS[self.kind_box.currentIndex()][1]
+
+    @property
+    def _priority(self) -> AlertPriority:
+        """The selected priority. Same reasoning as _kind."""
+        return PRIORITY_CAPTIONS[self.priority_box.currentIndex()][1]
 
     def _update_preview(self) -> None:
         label = self.label_edit.text().strip()
@@ -155,7 +182,9 @@ class NewAlertDialog(QDialog):
             return
 
         lower = upper = None
-        if self.limits_widget.isEnabled():
+        # Deliberately not isVisible(): a child of a dialog that has not been shown yet
+        # reports False, which would silently drop the limits.
+        if self._limits_apply:
             for caption, edit in (("lower limit", self.lower_edit), ("upper limit", self.upper_edit)):
                 text = edit.text().strip()
                 if not text:
@@ -174,8 +203,8 @@ class NewAlertDialog(QDialog):
             self._spec = AlertSpec(
                 label=label,
                 source_handle=source,
-                kind=self.kind_box.currentData(),
-                priority=self.priority_box.currentData(),
+                kind=self._kind,
+                priority=self._priority,
                 lower_limit=lower,
                 upper_limit=upper,
             )

@@ -34,11 +34,16 @@ LATE = "m.late_arrival"
 LIMIT_ALARM = "al.zoom_out_of_range"
 MANUAL_ALARM = "al.service_due"
 
+#: Not "alpha": that is run_toolbox.py's default, and EPRs are derived from the name, so a
+#: toolbox window left open would publish the same EPR as this process and a test could
+#: connect to whichever answered first.
+PEER_INSTANCE = "acceptance-peer"
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ip", default=constants.DEFAULT_IP)
-    parser.add_argument("--instance", default="alpha")
+    parser.add_argument("--instance", default=PEER_INSTANCE)
     parser.add_argument("--late-after", type=float, default=8.0, help="seconds before adding the late metric")
     parser.add_argument("--seconds", type=float, default=70.0, help="total run time")
     return parser.parse_args()

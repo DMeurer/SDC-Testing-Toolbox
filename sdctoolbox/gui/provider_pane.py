@@ -118,8 +118,9 @@ class ProviderPane(QWidget):
 
         # The same metrics, shown either as a control each or as one row each. Both are
         # always built; the View menu decides which is on top.
-        self.board = WidgetBoard()
+        self.board = WidgetBoard(deletable=True)
         self.board.value_requested.connect(self._on_widget_value_requested)
+        self.board.delete_requested.connect(self._on_card_delete_requested)
         self.metric_stack = QStackedWidget()
         self.metric_stack.addWidget(self.board)
         self.metric_stack.addWidget(self.table)
@@ -209,6 +210,10 @@ class ProviderPane(QWidget):
     def set_use_widgets(self, enabled: bool) -> None:  # noqa: FBT001 - matches the Qt signal
         """Switch between a control per metric and the table."""
         self.metric_stack.setCurrentWidget(self.board if enabled else self.table)
+        # Remove works off the table's selection, and the board has no selection. In widget
+        # mode each card carries its own bin instead, so the button would only ever be
+        # disabled and confusing.
+        self.remove_button.setVisible(not enabled)
         if enabled:
             self._refresh_board()
 
@@ -222,6 +227,10 @@ class ProviderPane(QWidget):
             ],
         )
         self.board.show_values({handle: self.service.get_value(handle) for handle in specs})
+
+    def _on_card_delete_requested(self, handle: str) -> None:
+        """A card's bin was clicked."""
+        self._confirm_and_remove(handle)
 
     def _on_widget_value_requested(self, handle: str, value: object) -> None:
         """A control asked for a value. On our own device that is simply a write."""
@@ -570,18 +579,35 @@ class ProviderPane(QWidget):
         handle = self.selected_handle()
         if handle is None:
             return
-        confirm = QMessageBox.question(
-            self,
-            "Remove data source",
-            f"Remove {handle}?\n\nConnected consumers will see it disappear.",
-        )
-        if confirm != QMessageBox.Yes:
+        self._confirm_and_remove(handle)
+
+    def _confirm_and_remove(self, handle: str) -> None:
+        """Ask, then delete. Shared by the table's button and each card's bin."""
+        spec = self.service.list_metrics().get(handle)
+        name = f"{spec.label} ({handle})" if spec and spec.label else handle
+        watching = [
+            alert_handle
+            for alert_handle, alert in self.service.list_alerts().items()
+            if alert.source_handle == handle
+        ]
+
+        question = f"Remove {name}?\n\nConnected consumers will see it disappear."
+        if watching:
+            # Removing the metric would leave these pointing at nothing, so say so before
+            # rather than after.
+            question += f"\n\nThese alarms watch it and will be removed too:\n  {', '.join(watching)}"
+
+        if QMessageBox.question(self, "Remove data source", question) != QMessageBox.Yes:
             return
+
         try:
+            for alert_handle in watching:
+                self.service.remove_alert(alert_handle)
             self.service.remove_metric(handle)
         except KeyError as exc:
             QMessageBox.warning(self, "Could not remove", str(exc))
         self.refresh()
+        self.refresh_alerts()
 
     def _on_apply(self) -> None:
         handle = self.selected_handle()

@@ -23,7 +23,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 
@@ -38,7 +38,7 @@ from sdctoolbox.gui.widgets.controls import (  # noqa: E402
     TextWidget,
 )
 from sdctoolbox.gui.widgets.factory import CONTROLS, pick_control  # noqa: E402
-from sdctoolbox.model import MetricKind, MetricSpec  # noqa: E402
+from sdctoolbox.model import AlertSpec, MetricKind, MetricSpec  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 
@@ -161,6 +161,16 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
     print("=" * 74)
 
     app = QApplication(sys.argv)
+
+    # Modal dialogs would block with nobody to answer them.
+    asked: list[tuple[str, str]] = []
+
+    def fake_question(_parent, title, text, *_args, **_kwargs):  # noqa: ANN001, ANN202
+        asked.append((title, text))
+        return QMessageBox.StandardButton.Yes
+
+    QMessageBox.question = staticmethod(fake_question)
+    QMessageBox.warning = staticmethod(lambda *_a, **_k: QMessageBox.StandardButton.Ok)
 
     print("\n1. Which control represents which metric")
     for description, spec, expected in CHOICES:
@@ -341,6 +351,139 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         service.remove_metric(late)
         pump(app, seconds=0.8)
         report.check(late not in pane.board.handles, "and loses it when removed")
+
+        print("\n8. Deleting from a card")
+        # There is no row to select on the board, so the Remove button cannot work there.
+        window.set_use_widgets(True)
+        pump(app)
+        report.check(
+            not pane.remove_button.isVisible(),
+            "the Remove button is hidden in widget mode",
+        )
+
+        doomed = service.add_metric(
+            MetricSpec(label="Doomed", kind=MetricKind.NUMBER, controllable=True, initial_value=Decimal("1")),
+        )
+        service.add_alert(
+            AlertSpec(label="Doomed too high", source_handle=doomed, upper_limit=Decimal("5")),
+        )
+        pane.refresh()
+        pane.refresh_alerts()
+        pump(app)
+
+        card = pane.board.card(doomed)
+        report.check(card is not None and card.delete_button is not None, "every card carries a bin")
+        report.check(
+            card.delete_button.toolTip() == f"Remove {doomed}",
+            "the bin says what it removes",
+            card.delete_button.toolTip(),
+        )
+        report.check(not card.delete_button.icon().isNull(), "the bin has an icon")
+
+        asked.clear()
+        card.delete_button.click()
+        pump(app, seconds=0.6)
+        report.check(doomed not in service.list_metrics(), "clicking it removes the metric")
+        report.check(doomed not in pane.board.handles, "and the card goes with it")
+        report.check(
+            not service.list_alerts(),
+            "the alarm watching it is removed too, rather than left dangling",
+            str(sorted(service.list_alerts())),
+        )
+        report.check(
+            bool(asked) and "alarms watch it" in asked[-1][1],
+            "and the user was warned that would happen",
+            asked[-1][1].replace("\n", " ")[:70] if asked else "nothing asked",
+        )
+
+        window.set_use_widgets(False)
+        pump(app)
+        report.check(
+            pane.remove_button.isVisible(),
+            "the Remove button comes back in table mode",
+        )
+        report.check(
+            window.network_pane.board.deletable is False,
+            "a peer's metrics are not ours to delete",
+        )
+        window.set_use_widgets(True)
+        pump(app)
+
+        print("\n9. The board reflows both ways")
+        for index in range(8):
+            service.add_metric(
+                MetricSpec(
+                    label=f"Filler {index}",
+                    kind=MetricKind.NUMBER,
+                    controllable=True,
+                    initial_value=Decimal(index),
+                ),
+            )
+        pane.refresh()
+        window.set_use_widgets(True)
+        window.split_view_action.setChecked(False)
+        pump(app, seconds=0.5)
+
+        board = pane.board
+
+        def occupied_columns() -> int:
+            """How many distinct grid columns actually hold a card."""
+            columns = set()
+            for index in range(board._grid.count()):  # noqa: SLF001
+                _, column, _, _ = board._grid.getItemPosition(index)  # noqa: SLF001
+                columns.add(column)
+            return len(columns)
+
+        def stale_stretch() -> list[int]:
+            """Columns that still stretch despite holding nothing.
+
+            This is what made narrowing fail: QGridLayout never shrinks its column count,
+            so a stretch left on an emptied column keeps reserving space for it.
+            """
+            used = set()
+            for index in range(board._grid.count()):  # noqa: SLF001
+                _, column, _, _ = board._grid.getItemPosition(index)  # noqa: SLF001
+                used.add(column)
+            return [
+                column
+                for column in range(board._grid.columnCount())  # noqa: SLF001
+                if column not in used and board._grid.columnStretch(column) > 0  # noqa: SLF001
+            ]
+
+        window.resize(1600, 640)
+        pump(app, seconds=0.5)
+        wide_columns = occupied_columns()
+        report.check(wide_columns > 1, "a wide window uses several columns", str(wide_columns))
+        report.check(not stale_stretch(), "no empty column is stretched when wide")
+
+        window.resize(600, 640)
+        pump(app, seconds=0.5)
+        narrow_columns = occupied_columns()
+        report.check(
+            narrow_columns < wide_columns,
+            "narrowing reduces the column count again",
+            f"{wide_columns} -> {narrow_columns}",
+        )
+        report.check(
+            not stale_stretch(),
+            "and leaves no stretched empty columns behind",
+            str(stale_stretch()),
+        )
+
+        window.resize(1600, 640)
+        pump(app, seconds=0.5)
+        report.check(
+            occupied_columns() == wide_columns,
+            "widening again gets the columns back",
+            f"{occupied_columns()} vs {wide_columns}",
+        )
+
+        report.check(
+            all(board.card(handle) is not None for handle in board.handles),
+            "every card survived the reflowing",
+        )
+        window.split_view_action.setChecked(True)
+        pump(app, seconds=0.3)
 
         window.network_pane.shutdown()
         window.close()

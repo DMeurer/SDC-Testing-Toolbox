@@ -11,6 +11,7 @@ import enum
 import re
 from dataclasses import dataclass, field
 from decimal import Decimal
+from typing import Any
 
 from sdc11073.provider.operations import OperationDefinitionBase, SetStringOperation, SetValueOperation
 from sdc11073.xml_types import pm_qnames as pm
@@ -181,6 +182,23 @@ class MetricSpec:
         return format_range(self.minimum, self.maximum)
 
 
+def _coerce_enum(enum_cls: Any, value: Any, field_name: str) -> Any:
+    """Turn a wire value back into its enum member, and say so clearly if it will not.
+
+    The BICEPS enums subclass str, so a member survives being treated as text and comes
+    back looking correct while no longer being an enum. sdc11073 then refuses it with
+    "Value can only be X, got <class 'str'>", which does not point at where it went wrong.
+    """
+    if isinstance(value, enum_cls):
+        return value
+    try:
+        return enum_cls(value)
+    except ValueError as exc:
+        allowed = ", ".join(f"{member.name}={member.value}" for member in enum_cls)
+        msg = f"{field_name}: {value!r} is not a {enum_cls.__name__}. Allowed: {allowed}"
+        raise ValueError(msg) from exc
+
+
 @dataclass
 class AlertSpec:
     """An alarm condition as the user describes it.
@@ -208,6 +226,13 @@ class AlertSpec:
     handle: str | None = None
 
     def __post_init__(self) -> None:
+        # AlertKind and AlertPriority are the BICEPS enums, and those subclass str. Anything
+        # that round-trips a value through a string - Qt's QVariant, a JSON file, a console
+        # argument - hands back a plain str that looks right but is not the enum. Coerce
+        # here so every entry point gets the same treatment.
+        self.kind = _coerce_enum(AlertKind, self.kind, "kind")
+        self.priority = _coerce_enum(AlertPriority, self.priority, "priority")
+
         for name in ("lower_limit", "upper_limit"):
             limit = getattr(self, name)
             if limit is not None and not isinstance(limit, Decimal):
