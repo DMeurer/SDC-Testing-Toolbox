@@ -44,10 +44,10 @@ if TYPE_CHECKING:
 COLUMNS = ["Handle", "Label", "Kind", "Value", "Range", "Unit", "Remote control"]
 COL_HANDLE, COL_LABEL, COL_KIND, COL_VALUE, COL_RANGE, COL_UNIT, COL_CONTROL = range(len(COLUMNS))
 
-#: Label never shrinks below this, however little room is left.
+# Label never shrinks below this, however little room is left.
 MIN_LABEL_WIDTH = 120
 
-#: Floor for every other column.
+# Floor for every other column.
 MIN_SECTION_WIDTH = 40
 
 NO_VALUE = "\u2014"  # em dash
@@ -73,11 +73,11 @@ class ProviderPane(QWidget):
     def __init__(self, service: ProviderService, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.service = service
-        #: Guards against the table's own updates being mistaken for user clicks.
+        # Guards against the table's own updates being mistaken for user clicks.
         self._refreshing = False
-        #: Guards against our own column sizing being mistaken for the user dragging.
+        # Guards against our own column sizing being mistaken for the user dragging.
         self._adjusting_columns = False
-        #: Once the user drags a column divider we stop choosing widths for them.
+        # Once the user drags a column divider we stop choosing widths for them.
         self._user_sized_columns = False
 
         self._build_ui()

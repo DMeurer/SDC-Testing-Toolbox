@@ -16,8 +16,8 @@ from __future__ import annotations
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QAbstractItemView, QWidget
 
-#: How far to blend foreground towards background for de-emphasised text, in percent.
-#: High enough to read comfortably, low enough to look secondary.
+# How far to blend foreground towards background for de-emphasised text, in percent.
+# High enough to read comfortably, low enough to look secondary.
 _MUTE_PERCENT = 45
 
 
@@ -70,12 +70,12 @@ def mark_as_error(widget: QWidget) -> None:
     widget.setPalette(palette)
 
 
-#: Draws the selection as one flat band across the row.
-#:
-#: Without this, the Windows 11 style decorates each cell individually - rounded corners and
-#: an accent marker on the current cell - which reads as coloured fragments down the left of
-#: every column rather than as a single selected row. Colours come from palette() so this
-#: stays theme-correct.
+# Draws the selection as one flat band across the row.
+#
+# Without this, the Windows 11 style decorates each cell individually - rounded corners and
+# an accent marker on the current cell - which reads as coloured fragments down the left of
+# every column rather than as a single selected row. Colours come from palette() so this
+# stays theme-correct.
 FLAT_SELECTION_QSS = """
 QTableView {
     outline: 0;

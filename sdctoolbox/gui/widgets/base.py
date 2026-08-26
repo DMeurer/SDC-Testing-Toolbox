@@ -37,10 +37,10 @@ class WidgetSpec:
     minimum: Decimal | None = None
     maximum: Decimal | None = None
     resolution: Decimal | None = None
-    #: Whether the user may change this from here. False renders the control read-only
-    #: rather than hiding it, so a device's read-outs are still visible.
+    # Whether the user may change this from here. False renders the control read-only
+    # rather than hiding it, so a device's read-outs are still visible.
     editable: bool = False
-    #: Shown under the control when it cannot be edited, e.g. why not.
+    # Shown under the control when it cannot be edited, e.g. why not.
     note: str = ""
 
     @property
@@ -105,10 +105,10 @@ class MetricWidget(QWidget):
     which is why the provider and the consumer can share the same controls.
     """
 
-    #: The user wants this metric set to this value. Decimal for numbers, str otherwise.
+    # The user wants this metric set to this value. Decimal for numbers, str otherwise.
     value_requested = Signal(str, object)
 
-    #: Lower number sorts first when the factory looks for a match.
+    # Lower number sorts first when the factory looks for a match.
     priority = 100
 
     def __init__(self, spec: WidgetSpec, parent: QWidget | None = None) -> None:

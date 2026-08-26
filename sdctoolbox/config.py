@@ -21,7 +21,7 @@ from .model import AlertKind, AlertPriority, AlertSpec, MetricKind, MetricSpec
 if TYPE_CHECKING:
     from .provider_service import ProviderService
 
-#: Bumped when the layout changes in a way older files would not survive.
+# Bumped when the layout changes in a way older files would not survive.
 CONFIG_VERSION = 1
 
 FILE_SUFFIX = ".sdcprofile.json"

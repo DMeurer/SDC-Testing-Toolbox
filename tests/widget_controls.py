@@ -77,7 +77,7 @@ def number(**kwargs) -> WidgetSpec:  # noqa: ANN003
     return WidgetSpec(handle="m.n", label="N", kind=MetricKind.NUMBER, **kwargs)
 
 
-#: (description, spec, expected control)
+# (description, spec, expected control)
 CHOICES = [
     (
         "a choice with allowed values gets a dropdown",

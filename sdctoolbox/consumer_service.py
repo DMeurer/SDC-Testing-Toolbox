@@ -81,7 +81,7 @@ def _scope_uris(service: Any) -> tuple[str, ...]:
         return (str(scopes),)
 
 
-#: Descriptor node types that carry an alarm condition.
+# Descriptor node types that carry an alarm condition.
 ALERT_CONDITION_NODE_TYPES = frozenset(
     {
         pm.AlertConditionDescriptor,

@@ -60,15 +60,15 @@ class ProviderService:
         self._mdib: ProviderMdib | None = None
         self._sco: AbstractScoOperationsRegistry | None = None
         self._handler = None
-        #: metric handle -> operation handle, for metrics that have a set operation
+        # metric handle -> operation handle, for metrics that have a set operation
         self._operations: dict[str, str] = {}
-        #: metric handle -> the spec it was created from
+        # metric handle -> the spec it was created from
         self._specs: dict[str, MetricSpec] = {}
-        #: alarm handle -> the spec it was created from
+        # alarm handle -> the spec it was created from
         self._alerts: dict[str, AlertSpec] = {}
-        #: alarm handle -> the signals announcing it
+        # alarm handle -> the signals announcing it
         self._alert_signals: dict[str, list[str]] = {}
-        #: Guards the metric observer against re-entering itself.
+        # Guards the metric observer against re-entering itself.
         self._evaluating_alerts = False
         self._lock = threading.RLock()
 

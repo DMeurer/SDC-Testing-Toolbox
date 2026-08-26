@@ -38,11 +38,11 @@ class AsyncCall(QObject):
     keeps a leaning-on-the-button user from stacking up discovery runs.
     """
 
-    #: The return value of the call.
+    # The return value of the call.
     finished = Signal(object)
-    #: The message from whatever went wrong.
+    # The message from whatever went wrong.
     failed = Signal(str)
-    #: True when work begins, False when it ends either way. Useful for disabling buttons.
+    # True when work begins, False when it ends either way. Useful for disabling buttons.
     busy_changed = Signal(bool)
 
     def __init__(self, parent: QObject | None = None) -> None:

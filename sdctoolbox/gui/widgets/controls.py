@@ -24,11 +24,11 @@ from ...model import MetricKind
 from ..styling import mute
 from .base import MetricWidget, WidgetSpec
 
-#: A Qt slider works in ints. Above this many steps it stops being a useful control and the
-#: stepper is a better fit, so the slider declines the metric.
+# A Qt slider works in ints. Above this many steps it stops being a useful control and the
+# stepper is a better fit, so the slider declines the metric.
 MAX_SLIDER_STEPS = 100_000
 
-#: How much the stepper's buttons move the value.
+# How much the stepper's buttons move the value.
 STEP_SMALL = Decimal("1")
 STEP_LARGE = Decimal("10")
 

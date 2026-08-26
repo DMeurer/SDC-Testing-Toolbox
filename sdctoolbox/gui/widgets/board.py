@@ -28,7 +28,7 @@ from .factory import build_widget
 if TYPE_CHECKING:
     from .base import MetricWidget, WidgetSpec
 
-#: Narrowest a card may be before the board drops to fewer columns.
+# Narrowest a card may be before the board drops to fewer columns.
 MIN_CARD_WIDTH = 260
 
 
@@ -39,7 +39,7 @@ class MetricCard(QFrame):
     metric while the board is showing, because there is no row to select.
     """
 
-    #: The bin was clicked. Carries the handle.
+    # The bin was clicked. Carries the handle.
     delete_requested = Signal(str)
 
     def __init__(
@@ -98,15 +98,15 @@ class MetricCard(QFrame):
 class WidgetBoard(QScrollArea):
     """Shows a control per metric, reflowing into columns as the width allows."""
 
-    #: handle, value. Forwarded from whichever card asked.
+    # handle, value. Forwarded from whichever card asked.
     value_requested = Signal(str, object)
-    #: handle. A card's bin was clicked.
+    # handle. A card's bin was clicked.
     delete_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None, *, deletable: bool = False) -> None:
         super().__init__(parent)
-        #: Whether cards carry a bin. False for a peer's metrics, which are not ours to
-        #: delete.
+        # Whether cards carry a bin. False for a peer's metrics, which are not ours to
+        # delete.
         self.deletable = deletable
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -125,7 +125,7 @@ class WidgetBoard(QScrollArea):
         self._cards: dict[str, MetricCard] = {}
         self._order: list[str] = []
         self._columns = 0
-        #: Highest column and row index we have ever stretched, so they can all be undone.
+        # Highest column and row index we have ever stretched, so they can all be undone.
         self._stretched_columns = 0
         self._stretched_rows = 0
 

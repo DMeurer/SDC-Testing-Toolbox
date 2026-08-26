@@ -36,40 +36,27 @@ Start it twice. Each instance publishes a device and can discover the other.
 .venv\Scripts\python.exe run_toolbox.py --name beta
 ```
 
-The **My device** panel is the device you publish. *New data source…* creates a number, text
-or choice; the checkbox in the last column decides whether other devices may write to it. The
-value column is live — it updates whether you edit it here or somebody changes it over the
-network.
+The **My device** panel is the device you publish. *New data source…* creates a number, text or choice; the checkbox in the last column decides whether other devices may write to it. The value column is live — it updates whether you edit it here or somebody changes it over the network.
 
-The **Network** panel is everybody else's. *Scan* finds providers, *Connect* loads one, and
-you get its containment tree above and its metrics below. Rows the device will accept writes
-for are marked writable; select one and the editor underneath adapts to it — a combo box for
-a choice, a plain field with the permitted range for a number. The result of a write is
-reported as the provider's own `InvocationState`.
+The **Network** panel is everybody else's. *Scan* finds providers, *Connect* loads one, and you get its containment tree above and its metrics below. Rows the device will accept writes for are marked writable; select one and the editor underneath adapts to it — a combo box for a choice, a plain field with the permitted range for a number. The result of a write is reported as the provider's own `InvocationState`.
 
-Press **Alt** for the menu bar. *View → Split view* (F8) swaps between the two panels sitting
-side by side with a movable divider, and the same two stacked as tabs. *View → Use widgets if
-possible* (F9) swaps the metric tables for a control per metric.
+Press **Alt** for the menu bar. *View → Split view* (F8) swaps between the two panels sitting side by side with a movable divider, and the same two stacked as tabs. *View → Use widgets if possible* (F9) swaps the metric tables for a control per metric.
 
 ## Widgets
 
 By default each metric gets the control that suits it rather than a row in a table:
 
-| Metric | Control |
-|---|---|
-| Choice | dropdown of its allowed values |
-| Number with a minimum **and** a maximum | slider, labelled with both ends |
-| Number without both | the value, with −10 −1 +1 +10 either side |
-| Text | a field |
-| Anything else | the value, read-only |
+| Metric                                  | Control                                   |
+|-----------------------------------------|-------------------------------------------|
+| Choice                                  | dropdown of its allowed values            |
+| Number with a minimum **and** a maximum | slider, labelled with both ends           |
+| Number without both                     | the value, with −10 −1 +1 +10 either side |
+| Text                                    | a field                                   |
+| Anything else                           | the value, read-only                      |
 
-"If possible" is the operative part. A waveform, or a metric type this tool has never heard
-of, still gets a card showing its value — it just cannot be edited. Nothing disappears
-because no control fits it.
+"If possible" is the operative part. A waveform, or a metric type this tool has never heard of, still gets a card showing its value — it just cannot be edited. Nothing disappears because no control fits it.
 
-The fallbacks are deliberate too. A slider needs both ends of the range to mean anything, so
-a one-sided limit gets the stepper. A range that would need more than 100 000 slider steps
-gets the stepper as well, because at that point a slider is a lie.
+The fallbacks are deliberate too. A slider needs both ends of the range to mean anything, so a one-sided limit gets the stepper. A range that would need more than 100 000 slider steps gets the stepper as well, because at that point a slider is a lie.
 
 Switch to the table with *View → Use widgets if possible* whenever you want the details:
 handles, units, ranges and writability all at once.
@@ -79,10 +66,8 @@ Adding a control is one class in `sdctoolbox/gui/widgets/controls.py` and one li
 
 Two things worth doing, because they are what makes SDC interesting:
 
-- Add a data source in one instance while the other is connected to it. It appears in the
-  other's table straight away, with no reconnect.
-- Untick its checkbox and try to set it from the other side. The write is refused and the
-  value stays put.
+- Add a data source in one instance while the other is connected to it. It appears in the other's table straight away, with no reconnect.
+- Untick its checkbox and try to set it from the other side. The write is refused and the value stays put.
 
 The same is available as a text console, which is easier to script:
 
@@ -90,6 +75,7 @@ The same is available as a text console, which is easier to script:
 .venv\Scripts\python.exe examples\console.py provider
 .venv\Scripts\python.exe examples\console.py consumer
 ```
+
 ```
 consumer> scan
   [0] urn:uuid:053b9f8f-0aa5-5290-8797-351f901ebd74
@@ -106,17 +92,14 @@ consumer> set m.zoom_level 500
 refused by the provider (Fail)
 ```
 
-Numbers can carry limits. Those become two different things in BICEPS, because the standard
-separates what a device can produce from what a caller may ask for:
+Numbers can carry limits. Those become two different things in BICEPS, because the standard separates what a device can produce from what a caller may ask for:
 
-| | |
-|---|---|
-| `NumericMetricDescriptor/TechnicalRange` | on the metric — what it can produce |
-| `SetValueOperationState/AllowedRange` | on the set operation — what you may request |
+|                                          |                                             |
+|------------------------------------------|---------------------------------------------|
+| `NumericMetricDescriptor/TechnicalRange` | on the metric — what it can produce         |
+| `SetValueOperationState/AllowedRange`    | on the set operation — what you may request |
 
-The second is on a *state*, so the permitted window can be narrowed while the device runs,
-the same way `OperatingMode` can. Neither is enforced by the library, so the provider checks
-incoming values itself and answers `FAILED`.
+The second is on a *state*, so the permitted window can be narrowed while the device runs, the same way `OperatingMode` can. Neither is enforced by the library, so the provider checks incoming values itself and answers `FAILED`.
 
 There is also a console provider, if you would rather have both sides in text:
 
@@ -126,65 +109,51 @@ There is also a console provider, if you would rather have both sides in text:
 
 ## Presets
 
-*File → Export config* writes everything you have set up — the data sources and the alarms —
-to a JSON file. *File → Import config* builds it again, replacing whatever the device
-currently has. The same file can be loaded at startup:
+*File → Export config* writes everything you have set up — the data sources and the alarms — to a JSON file. *File → Import config* builds it again, replacing whatever the device currently has. The same file can be loaded at startup:
 
 ```powershell
 .venv\Scripts\python.exe run_toolbox.py --config presets\insufflator.json
 .venv\Scripts\python.exe examples\console.py provider --config presets\insufflator.json
 ```
 
-`presets/insufflator.json` is an example: six data sources and three alarms. A bad file is
-refused before anything starts, naming what is wrong with it.
+`presets/insufflator.json` is an example: six data sources and three alarms. A bad file is refused before anything starts, naming what is wrong with it.
 
-Handles are recorded in the file, so a preset reproduces the same MDIB every time. That
-matters if a script or another device refers to them by name.
+Handles are recorded in the file, so a preset reproduces the same MDIB every time. That matters if a script or another device refers to them by name.
 
 ## Alarms
 
 BICEPS keeps two things apart that are easy to confuse:
 
-| | |
-|---|---|
+|               |                                                                                                 |
+|---------------|-------------------------------------------------------------------------------------------------|
 | **condition** | the fact — "the pressure is too high". Has a kind and a priority, and is either present or not. |
-| **signal** | how that fact is announced — visually, audibly, or by vibration. |
+| **signal**    | how that fact is announced — visually, audibly, or by vibration.                                |
 
-One condition can drive several signals, which is why they are separate objects rather than
-flags on one. Every alarm this tool creates gets a visual and an audible signal, so the split
-is visible in the MDIB tree.
+One condition can drive several signals, which is why they are separate objects rather than flags on one. Every alarm this tool creates gets a visual and an audible signal, so the split is visible in the MDIB tree.
 
-Give an alarm limits and it becomes a `LimitAlertCondition` that follows its source metric by
-itself; leave them out and it stays a plain `AlertCondition` that only moves when you raise
-or clear it. Either way a value written by a remote consumer moves it exactly as a local edit
-does.
+Give an alarm limits and it becomes a `LimitAlertCondition` that follows its source metric by itself; leave them out and it stays a plain `AlertCondition` that only moves when you raise or clear it. Either way a value written by a remote consumer moves it exactly as a local edit does.
 
 ## Tests
-Runs a provider in one process and checks it from a consumer in another. 34 checks covering
-discovery, all three controllable metric kinds, value rejection, disabled controls and
-descriptor creation at runtime.
+
+Runs a provider in one process and checks it from a consumer in another. 34 checks covering discovery, all three controllable metric kinds, value rejection, disabled controls and descriptor creation at runtime.
 
 ```powershell
 .venv\Scripts\python.exe tests\acceptance_core.py
 ```
 
-The GUI has its own smoke test, which builds the real window on Qt's offscreen backend and
-drives the actual widgets, including a live connection to a provider in another process.
-120 checks, no display needed.
+The GUI has its own smoke test, which builds the real window on Qt's offscreen backend and drives the actual widgets, including a live connection to a provider in another process. 120 checks, no display needed.
 
 ```powershell
 .venv\Scripts\python.exe tests\gui_smoke.py
 ```
 
-Config files have a round-trip test that exports a device, rebuilds it and compares the two,
-then checks that a range of broken files are refused with a usable message.
+Config files have a round-trip test that exports a device, rebuilds it and compares the two, then checks that a range of broken files are refused with a usable message.
 
 ```powershell
 .venv\Scripts\python.exe tests\config_roundtrip.py
 ```
 
-The widgets have their own suite: which control gets picked for which metric, then the real
-controls driven inside the real window to check a click reaches the device.
+The widgets have their own suite: which control gets picked for which metric, then the real controls driven inside the real window to check a click reaches the device.
 
 ```powershell
 .venv\Scripts\python.exe tests\widget_controls.py
@@ -192,12 +161,10 @@ controls driven inside the real window to check a click reaches the device.
 
 ## Security
 
-Everything runs over plain `http://`. Neither `ProviderService` nor `ConsumerService` passes
-an `ssl_context_container`, so there is no TLS, no certificates and no authentication — treat
-it as a lab tool on a network you trust.
+Everything runs over plain `http://`. Neither `ProviderService` nor `ConsumerService` passes an `ssl_context_container`, so there is no TLS, no certificates and no authentication — treat it as a lab tool on a network you trust.
 
-The log line `Using SSL is enabled. TLS 1.3 Support = True` is a capability message from
-sdc11073, not a statement about the connection.
+The log line `Using SSL is enabled. TLS 1.3 Support = True` is a capability message from sdc11073, not a statement about the connection.
+
 ## Using the core
 
 ```python

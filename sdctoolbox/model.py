@@ -75,8 +75,8 @@ AlertKind = pm_types.AlertConditionKind
 AlertPriority = pm_types.AlertConditionPriority
 AlertManifestation = pm_types.AlertSignalManifestation
 
-#: Every condition this tool creates gets one signal per manifestation listed here. One
-#: condition driving several signals is the whole point of keeping them separate.
+# Every condition this tool creates gets one signal per manifestation listed here. One
+# condition driving several signals is the whole point of keeping them separate.
 DEFAULT_MANIFESTATIONS = (AlertManifestation.VIS, AlertManifestation.AUD)
 
 
@@ -95,28 +95,28 @@ class MetricSpec:
 
     label: str
     kind: MetricKind
-    #: Human readable unit. Empty means dimensionless; the descriptor still carries the
-    #: MDC_DIM_DIMLESS code, we simply do not invent a description for it.
+    # Human readable unit. Empty means dimensionless; the descriptor still carries the
+    # MDC_DIM_DIMLESS code, we simply do not invent a description for it.
     unit_label: str = ""
     unit_code: str = constants.CODE_DIMENSIONLESS
     unit_coding_system: str = constants.CODING_SYSTEM_MDC
     allowed_values: tuple[str, ...] = ()
     resolution: Decimal | None = None
-    #: Lower and upper limit for a number. Either may be left open.
-    #:
-    #: These become two different things in BICEPS, because the standard distinguishes what
-    #: a metric can produce from what a remote caller may ask for:
-    #:   * NumericMetricDescriptor/TechnicalRange on the metric itself
-    #:   * SetValueOperationState/AllowedRange on its set operation
+    # Lower and upper limit for a number. Either may be left open.
+    #
+    # These become two different things in BICEPS, because the standard distinguishes what
+    # a metric can produce from what a remote caller may ask for:
+    #   * NumericMetricDescriptor/TechnicalRange on the metric itself
+    #   * SetValueOperationState/AllowedRange on its set operation
     minimum: Decimal | None = None
     maximum: Decimal | None = None
     controllable: bool = False
-    #: Explicit handle. When None, ProviderService derives one from the label.
+    # Explicit handle. When None, ProviderService derives one from the label.
     handle: str | None = None
-    #: Free-form code for the metric's own Type. Defaults to the slug in our private system.
+    # Free-form code for the metric's own Type. Defaults to the slug in our private system.
     type_code: str | None = None
     type_coding_system: str = constants.CODING_SYSTEM_PRIVATE
-    #: Value applied right after creation. None leaves the metric without a MetricValue.
+    # Value applied right after creation. None leaves the metric without a MetricValue.
     initial_value: Decimal | str | None = None
 
     def __post_init__(self) -> None:
@@ -215,12 +215,12 @@ class AlertSpec:
     """
 
     label: str
-    #: Handle of the metric this alarm watches. The condition's Source points at it.
+    # Handle of the metric this alarm watches. The condition's Source points at it.
     source_handle: str
     kind: AlertKind = AlertKind.TECHNICAL
     priority: AlertPriority = AlertPriority.MEDIUM
-    #: When either limit is given, the condition becomes a LimitAlertCondition and its
-    #: presence follows the source metric automatically.
+    # When either limit is given, the condition becomes a LimitAlertCondition and its
+    # presence follows the source metric automatically.
     lower_limit: Decimal | None = None
     upper_limit: Decimal | None = None
     handle: str | None = None
@@ -296,7 +296,7 @@ class RemoteAlert:
     source_handles: tuple[str, ...] = field(default_factory=tuple)
     lower_limit: Decimal | None = None
     upper_limit: Decimal | None = None
-    #: Handle -> manifestation for the signals that announce this condition.
+    # Handle -> manifestation for the signals that announce this condition.
     signals: dict[str, str] = field(default_factory=dict)
 
     def limit_text(self) -> str:
@@ -330,19 +330,19 @@ class RemoteMetric:
     unit_label: str | None = None
     type_code: str | None = None
     allowed_values: tuple[str, ...] = ()
-    #: Limits the peer publishes. `minimum`/`maximum` come from the set operation's
-    #: AllowedRange when there is one, otherwise from the metric's TechnicalRange.
+    # Limits the peer publishes. `minimum`/`maximum` come from the set operation's
+    # AllowedRange when there is one, otherwise from the metric's TechnicalRange.
     minimum: Decimal | None = None
     maximum: Decimal | None = None
-    #: The metric's own TechnicalRange, kept separately because it describes what the device
-    #: can produce rather than what we are allowed to ask for.
+    # The metric's own TechnicalRange, kept separately because it describes what the device
+    # can produce rather than what we are allowed to ask for.
     technical_minimum: Decimal | None = None
     technical_maximum: Decimal | None = None
     value: object = None
     parent_handle: str | None = None
-    #: Handles of set operations whose OperationTarget is this metric.
+    # Handles of set operations whose OperationTarget is this metric.
     operation_handles: tuple[str, ...] = field(default_factory=tuple)
-    #: True when at least one of those operations currently has OperatingMode == En.
+    # True when at least one of those operations currently has OperatingMode == En.
     controllable_now: bool = False
 
     @property

@@ -39,7 +39,7 @@ SIGNAL_HANDLE_PREFIX = "sig."
 # Coded values
 # --------------------------------------------------------------------------------------
 
-#: The default nomenclature of IEEE 11073-10101.
+# The default nomenclature of IEEE 11073-10101.
 CODING_SYSTEM_MDC = "urn:oid:1.2.840.10004.1.1.1.0.0.1"
 
 # Our own coding system. Everything we invent lives here rather than pretending to be MDC.

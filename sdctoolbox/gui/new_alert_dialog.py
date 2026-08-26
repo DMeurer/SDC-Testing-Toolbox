@@ -46,8 +46,8 @@ class NewAlertDialog(QDialog):
         self.setWindowTitle("New alarm")
         self.setMinimumWidth(440)
         self._metrics = metrics
-        #: Whether the limits row applies to the selected source. Tracked rather than read
-        #: back off the widget, so the logic does not depend on the dialog being on screen.
+        # Whether the limits row applies to the selected source. Tracked rather than read
+        # back off the widget, so the logic does not depend on the dialog being on screen.
         self._limits_apply = False
 
         self.source_box = QComboBox()

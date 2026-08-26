@@ -43,7 +43,7 @@ NETWORK_TITLE = "Network"
 
 CONFIG_FILE_FILTER = "SDC toolbox config (*.json);;All files (*)"
 
-#: Where the divider sits when the window opens, as a share of the width.
+# Where the divider sits when the window opens, as a share of the width.
 PROVIDER_SHARE = 3
 NETWORK_SHARE = 2
 
@@ -107,7 +107,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.tabs)
         self.setCentralWidget(self.stack)
 
-        #: Remembered across a trip through tab mode so the divider comes back where it was.
+        # Remembered across a trip through tab mode so the divider comes back where it was.
         self._splitter_sizes: list[int] = []
 
         self._build_menus()

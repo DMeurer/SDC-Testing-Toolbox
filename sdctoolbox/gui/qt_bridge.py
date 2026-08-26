@@ -30,19 +30,19 @@ class MdibBridge(QObject):
         bridge.metrics_changed.connect(self.refresh)
     """
 
-    #: handle -> state, for metrics whose value changed
+    # handle -> state, for metrics whose value changed
     metrics_changed = Signal(dict)
-    #: handle -> descriptor, for descriptors created at runtime
+    # handle -> descriptor, for descriptors created at runtime
     descriptors_added = Signal(dict)
-    #: handle -> descriptor, for descriptors whose definition changed
+    # handle -> descriptor, for descriptors whose definition changed
     descriptors_updated = Signal(dict)
-    #: handle -> descriptor, for descriptors that disappeared
+    # handle -> descriptor, for descriptors that disappeared
     descriptors_deleted = Signal(dict)
-    #: handle -> state, for operations whose OperatingMode changed
+    # handle -> state, for operations whose OperatingMode changed
     operations_changed = Signal(dict)
-    #: handle -> state, for alerts (unused until alerts are implemented)
+    # handle -> state, for alerts (unused until alerts are implemented)
     alerts_changed = Signal(dict)
-    #: The peer restarted: its sequence or instance id changed and the cached MDIB is stale.
+    # The peer restarted: its sequence or instance id changed and the cached MDIB is stale.
     peer_restarted = Signal()
 
     def __init__(self, mdib: MdibBase, parent: QObject | None = None) -> None:

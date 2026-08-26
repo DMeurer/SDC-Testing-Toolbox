@@ -53,7 +53,7 @@ COL_HANDLE, COL_LABEL, COL_KIND, COL_VALUE, COL_RANGE, COL_UNIT, COL_WRITABLE = 
 MIN_LABEL_WIDTH = 110
 MIN_SECTION_WIDTH = 40
 
-#: Floors that stop the panel from dictating a width the splitter cannot move.
+# Floors that stop the panel from dictating a width the splitter cannot move.
 ALERT_COLUMNS = ["Handle", "Label", "Watches", "Limits", "Kind", "Priority", "Signals", "State"]
 (
     ACOL_HANDLE,

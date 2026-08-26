@@ -26,7 +26,7 @@ from ..constants import METRIC_HANDLE_PREFIX
 from ..model import MetricKind, MetricSpec, slugify
 from .styling import mark_as_error, mute
 
-#: Label shown in the combo box -> kind. Order decides the order in the dropdown.
+# Label shown in the combo box -> kind. Order decides the order in the dropdown.
 OFFERED_KINDS: list[tuple[str, MetricKind]] = [
     ("Number", MetricKind.NUMBER),
     ("Text", MetricKind.TEXT),
