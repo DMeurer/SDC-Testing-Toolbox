@@ -48,6 +48,16 @@ class MetricKind(enum.Enum):
         """Whether a set operation exists for this kind."""
         return self in _OPERATION_CLASSES
 
+    @property
+    def creatable(self) -> bool:
+        """Whether this build can actually put such a descriptor on the wire."""
+        return self not in MISSING_MANDATORY_FIELDS
+
+    @property
+    def missing_fields(self) -> tuple[str, ...]:
+        """Mandatory descriptor fields this build never fills in, if any."""
+        return MISSING_MANDATORY_FIELDS.get(self, ())
+
 
 _DESCRIPTOR_QNAMES = {
     MetricKind.NUMBER: pm.NumericMetricDescriptor,
@@ -63,6 +73,17 @@ _OPERATION_CLASSES: dict[MetricKind, type[OperationDefinitionBase]] = {
     MetricKind.NUMBER: SetValueOperation,
     MetricKind.TEXT: SetStringOperation,
     MetricKind.CHOICE: SetStringOperation,
+}
+
+# A gap in this build, not a rule of the standard. Both sample-array descriptors carry
+# mandatory fields that nothing here fills in, and BICEPS only notices when the descriptor
+# is serialised - by which point it is already in the MDIB. Refuse them at the door instead.
+#
+# Verified against the installed sdc11073 rather than taken from the schema: the order below
+# is the order serialisation complains in, so the first entry is the error you actually see.
+MISSING_MANDATORY_FIELDS: dict[MetricKind, tuple[str, ...]] = {
+    MetricKind.WAVEFORM: ("Resolution", "SamplePeriod"),
+    MetricKind.DISTRIBUTION: ("DomainUnit", "Resolution"),
 }
 
 

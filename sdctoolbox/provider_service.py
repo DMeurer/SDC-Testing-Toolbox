@@ -170,6 +170,14 @@ class ProviderService:
         a DescriptionModificationReport, so connected consumers see the new metric appear.
         """
         with self._lock:
+            if not spec.kind.creatable:
+                missing = ", ".join(spec.kind.missing_fields)
+                msg = (
+                    f"this build cannot create {spec.kind.value} metrics yet: it never sets "
+                    f"{missing}, which BICEPS makes mandatory"
+                )
+                raise ValueError(msg)
+
             handle = spec.handle or self._unique_handle(constants.METRIC_HANDLE_PREFIX + spec.slug)
             if self.mdib.entities.by_handle(handle) is not None:
                 msg = f"handle {handle!r} already exists"

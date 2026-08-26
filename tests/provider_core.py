@@ -17,6 +17,7 @@ Usage:  .venv/Scripts/python.exe tests/provider_core.py
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 from decimal import Decimal
@@ -28,7 +29,7 @@ sys.path.insert(0, str(ROOT))
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 from sdc11073.xml_types import pm_qnames as pm  # noqa: E402
 
-from sdctoolbox import constants  # noqa: E402
+from sdctoolbox import config, constants  # noqa: E402
 from sdctoolbox.model import AlertSpec, MetricKind, MetricSpec  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
@@ -60,8 +61,9 @@ class Report:
 def broken_entity(service: ProviderService, handle: str):  # noqa: ANN201 - an sdc11073 Entity
     """A waveform descriptor with none of its mandatory fields, ready to be written.
 
-    Nothing here is exotic: this is exactly what add_metric builds for a waveform, because
-    _apply_spec_to_descriptor sets Resolution only for a number and SamplePeriod never.
+    Nothing here is exotic: this is exactly what add_metric used to build for a waveform,
+    because _apply_spec_to_descriptor sets Resolution only for a number and SamplePeriod
+    never.
     """
     entity = service.mdib.entities.new_entity(
         pm.RealTimeSampleArrayMetricDescriptor,
@@ -135,8 +137,49 @@ def check_rollback(report: Report, service: ProviderService) -> None:
     )
 
 
+def check_refusal(report: Report, service: ProviderService) -> None:
+    print("\n2. The kinds that cannot be built are refused at the door")
+
+    for kind in (MetricKind.WAVEFORM, MetricKind.DISTRIBUTION):
+        report.check(not kind.creatable, f"{kind.value} reports itself as not creatable")
+        before = len(service.list_metrics())
+        try:
+            service.add_metric(MetricSpec(label=f"Probe {kind.value}", kind=kind))
+        except ValueError as exc:
+            report.check(
+                all(field in str(exc) for field in kind.missing_fields),
+                f"add_metric names what is missing for a {kind.value}",
+                str(exc)[:66],
+            )
+        else:
+            report.check(False, f"add_metric refuses a {kind.value}", "it was accepted")  # noqa: FBT003
+        report.check(
+            len(service.list_metrics()) == before,
+            f"a refused {kind.value} changes nothing",
+        )
+        report.check(
+            service.mdib.entities.by_handle(f"m.probe_{kind.value}") is None,
+            f"and puts no {kind.value} descriptor in the mdib",
+        )
+
+    for kind in (MetricKind.NUMBER, MetricKind.TEXT, MetricKind.CHOICE):
+        report.check(kind.creatable, f"{kind.value} is still creatable")
+
+    bad = '{"metrics": [{"label": "w", "kind": "waveform"}]}'
+    try:
+        config.parse(json.loads(bad))
+    except config.ConfigError as exc:
+        report.check(
+            "waveform" in str(exc),
+            "a config file asking for a waveform is refused before anything is built",
+            str(exc)[:66],
+        )
+    else:
+        report.check(False, "a config file asking for a waveform is refused", "accepted")  # noqa: FBT003
+
+
 def check_alarm_rollback(report: Report, service: ProviderService) -> None:
-    print("\n2. An alarm is written whole or not at all")
+    print("\n3. An alarm is written whole or not at all")
 
     service.add_metric(
         MetricSpec(label="Alarm source", kind=MetricKind.NUMBER, initial_value=Decimal("1")),
@@ -181,6 +224,7 @@ def main() -> int:
     service.start()
     try:
         check_rollback(report, service)
+        check_refusal(report, service)
         check_alarm_rollback(report, service)
     finally:
         service.stop()

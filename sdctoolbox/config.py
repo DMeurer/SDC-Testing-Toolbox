@@ -151,6 +151,15 @@ def metric_from_dict(entry: dict[str, Any]) -> MetricSpec:
     if kind is None:
         msg = f"metrics[{label}]: no kind given"
         raise ConfigError(msg)
+    if not kind.creatable:
+        # Refuse it here rather than half way through building the device, which is where
+        # ProviderService.add_metric would otherwise stop.
+        missing = ", ".join(kind.missing_fields)
+        msg = (
+            f"metrics[{label}]: this build cannot create {kind.value} metrics yet, "
+            f"because it never sets {missing}"
+        )
+        raise ConfigError(msg)
 
     initial = entry.get("initial_value")
     if initial is not None and kind is MetricKind.NUMBER:
