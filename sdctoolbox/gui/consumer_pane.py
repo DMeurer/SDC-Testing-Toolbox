@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -42,6 +41,7 @@ from ..model import MetricKind
 from .async_call import AsyncCall
 from .qt_bridge import MdibBridge
 from .styling import apply_row_selection_style, muted_colour
+from .table_columns import TableColumns
 from .widgets import WidgetBoard, from_remote_metric
 
 if TYPE_CHECKING:
@@ -49,9 +49,6 @@ if TYPE_CHECKING:
 
 COLUMNS = ["Handle", "Label", "Kind", "Value", "Range", "Unit", "Writable"]
 COL_HANDLE, COL_LABEL, COL_KIND, COL_VALUE, COL_RANGE, COL_UNIT, COL_WRITABLE = range(len(COLUMNS))
-
-MIN_LABEL_WIDTH = 110
-MIN_SECTION_WIDTH = 40
 
 # Floors that stop the panel from dictating a width the splitter cannot move.
 ALERT_COLUMNS = ["Handle", "Label", "Watches", "Limits", "Kind", "Priority", "Signals", "State"]
@@ -88,8 +85,6 @@ class ConsumerPane(QWidget):
         self.devices: list[DiscoveredDevice] = []
         self.remote: RemoteDevice | None = None
         self.bridge: MdibBridge | None = None
-        self._adjusting_columns = False
-        self._user_sized_columns = False
 
         self._build_ui()
         self._wire_async()
@@ -130,12 +125,7 @@ class ConsumerPane(QWidget):
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
-        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.Interactive)
-        header.setStretchLastSection(False)
-        header.setMinimumSectionSize(MIN_SECTION_WIDTH)
-        header.sectionResized.connect(self._on_section_resized)
+        self._columns = TableColumns(self.table, flexible=COL_LABEL)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         apply_row_selection_style(self.table)
 
@@ -145,8 +135,7 @@ class ConsumerPane(QWidget):
         self.alert_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.alert_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.alert_table.verticalHeader().setVisible(False)
-        self.alert_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        self.alert_table.horizontalHeader().setStretchLastSection(True)
+        self._alert_columns = TableColumns(self.alert_table, flexible=ACOL_LABEL)
         apply_row_selection_style(self.alert_table)
 
         alert_box = QWidget()
@@ -188,9 +177,10 @@ class ConsumerPane(QWidget):
         editor.addWidget(self.apply_button)
         editor.addWidget(self.invocation_label)
 
-        # Keep the panel from demanding so much width that the splitter cannot be moved.
-        # Every child that would otherwise dictate a large minimum is pinned down here.
-        for widget in (self.tree, self.table, self.board, self.alert_table, self.device_list, self.editor_stack):
+        # Keep the panel from demanding more width than it needs. The two tables are
+        # left alone: TableColumns sets their minimum from their own columns, and
+        # overriding it here would let the splitter squeeze them below what they can draw.
+        for widget in (self.tree, self.board, self.device_list, self.editor_stack):
             widget.setMinimumWidth(MIN_CHILD_WIDTH)
         self.setMinimumWidth(MIN_PANEL_WIDTH)
 
@@ -363,7 +353,7 @@ class ConsumerPane(QWidget):
 
         if selected is not None:
             self.select_handle(selected)
-        self._fit_columns()
+        self._columns.refit()
 
     @staticmethod
     def _writable_text(metric: Any) -> tuple[str, str]:
@@ -444,7 +434,7 @@ class ConsumerPane(QWidget):
                 if column == ACOL_SIGNALS and alert.signals:
                     item.setToolTip("\n".join(f"{h}: {m}" for h, m in sorted(alert.signals.items())))
                 self.alert_table.setItem(row, column, item)
-        self.alert_table.resizeColumnsToContents()
+        self._alert_columns.refit()
 
     # -- selection and editing -----------------------------------------------------
 
@@ -556,60 +546,6 @@ class ConsumerPane(QWidget):
         self.scan_button.setEnabled(not working)
         self.connect_button.setEnabled(not working and self._selected_device() is not None)
         self.disconnect_button.setEnabled(self.remote is not None)
-
-    # -- column widths -------------------------------------------------------------
-
-    def _fit_columns(self, changed: int | None = None) -> None:
-        """Same contract as the provider table: fill the viewport exactly, never overflow."""
-        if self._adjusting_columns:
-            return
-        self._adjusting_columns = True
-        try:
-            if not self._user_sized_columns:
-                self.table.resizeColumnsToContents()
-            available = self.table.viewport().width()
-            if available <= 0:
-                return
-            columns = range(self.table.columnCount())
-            others = sum(self.table.columnWidth(c) for c in columns if c != COL_LABEL)
-            leftover = available - others
-            if leftover >= MIN_LABEL_WIDTH:
-                self.table.setColumnWidth(COL_LABEL, leftover)
-                return
-            self.table.setColumnWidth(COL_LABEL, MIN_LABEL_WIDTH)
-            excess = others + MIN_LABEL_WIDTH - available
-            preferred = [changed] if changed not in (None, COL_LABEL) else []
-            rest = sorted(
-                (c for c in columns if c != COL_LABEL and c != changed),
-                key=self.table.columnWidth,
-                reverse=True,
-            )
-            for column in preferred + rest:
-                if excess <= 0:
-                    break
-                spare = self.table.columnWidth(column) - MIN_SECTION_WIDTH
-                if spare <= 0:
-                    continue
-                take = min(excess, spare)
-                self.table.setColumnWidth(column, self.table.columnWidth(column) - take)
-                excess -= take
-        finally:
-            self._adjusting_columns = False
-
-    def _on_section_resized(self, index: int, _old: int, _new: int) -> None:
-        if self._adjusting_columns:
-            return
-        self._user_sized_columns = True
-        self._fit_columns(changed=index)
-
-    def resizeEvent(self, event) -> None:  # noqa: ANN001, N802 - Qt naming
-        super().resizeEvent(event)
-        self._fit_columns()
-
-    def showEvent(self, event) -> None:  # noqa: ANN001, N802 - Qt naming
-        """Refit on becoming visible, since moving between layouts changes the room available."""
-        super().showEvent(event)
-        self._fit_columns()
 
     # -- teardown ------------------------------------------------------------------
 

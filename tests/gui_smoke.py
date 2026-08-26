@@ -58,7 +58,6 @@ from sdctoolbox.gui.provider_pane import (  # noqa: E402
     COL_RANGE,
     COL_UNIT,
     COL_VALUE,
-    MIN_LABEL_WIDTH,
     NO_VALUE,
 )
 from sdctoolbox.gui.styling import mute  # noqa: E402
@@ -626,105 +625,105 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             str(service.get_value(zoom)),
         )
 
-        print("\n9. Column sizing")
-        # The table only has a size while it is the visible page, so put it in front first.
+        print("\n9. Column sizing, all four tables")
+        # A table only has a width while it is the visible page.
+        consumer = window.network_pane
         window.set_use_widgets(False)
-        # Give the table the whole window, otherwise Label sits at its minimum from the
-        # start and there is no slack to observe being handed back and forth.
         window.split_view_action.setChecked(False)
-        window.resize(1000, 520)
-        pump(app)
+        window.resize(1100, 620)
+        pump(app, seconds=0.5)
 
-        header = pane.table.horizontalHeader()
-        modes = {header.sectionResizeMode(c) for c in range(pane.table.columnCount())}
-        report.check(
-            modes == {QHeaderView.Interactive},
-            "every column is draggable",
-            ", ".join(str(m) for m in modes),
-        )
-        report.check(
-            pane.table.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff,
-            "horizontal scrolling is off",
-        )
+        tables = [
+            ("provider metrics", pane.table, pane._columns),  # noqa: SLF001
+            ("provider alarms", pane.alert_table, pane._alert_columns),  # noqa: SLF001
+            ("consumer metrics", consumer.table, consumer._columns),  # noqa: SLF001
+            ("consumer alarms", consumer.alert_table, consumer._alert_columns),  # noqa: SLF001
+        ]
 
-        def total_width() -> int:
-            return sum(pane.table.columnWidth(c) for c in range(pane.table.columnCount()))
+        for name, table, columns in tables:
+            report.check(
+                table.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff,
+                f"{name}: no horizontal scrolling",
+            )
+            modes = {
+                table.horizontalHeader().sectionResizeMode(c)
+                for c in range(table.columnCount())
+            }
+            report.check(
+                modes == {QHeaderView.Interactive},
+                f"{name}: every separator is draggable",
+                ", ".join(str(m) for m in modes),
+            )
+            report.check(
+                columns.total_width() == columns.available_width(),
+                f"{name}: fills the viewport exactly",
+                f"{columns.total_width()} vs {columns.available_width()}",
+            )
 
-        def viewport_width() -> int:
-            return pane.table.viewport().width()
-
-        window.resize(1000, 520)
-        pump(app)
-        report.check(
-            total_width() <= viewport_width(),
-            "columns fit the viewport",
-            f"{total_width()} <= {viewport_width()}",
-        )
-        report.check(
-            total_width() >= viewport_width() - 2,  # noqa: PLR2004
-            "and leave no empty gap on the right",
-            f"{total_width()} vs {viewport_width()}",
-        )
         report.check(
             pane.table.columnWidth(COL_LABEL) > pane.table.columnWidth(COL_KIND),
-            "Label absorbs the slack, other columns stay narrow",
+            "Label takes the slack while the rest stay at their contents",
             f"label={pane.table.columnWidth(COL_LABEL)} kind={pane.table.columnWidth(COL_KIND)}",
         )
 
-        for width in (1400, 900, 700):
-            window.resize(width, 520)
-            pump(app, seconds=0.3)
-            report.check(
-                total_width() <= viewport_width(),
-                f"still fits after resizing the window to {width}px",
-                f"{total_width()} <= {viewport_width()}",
-            )
+        print("\n9b. A separator trades width with its neighbour")
+        table, columns = pane.table, pane._columns  # noqa: SLF001
+        before = [table.columnWidth(c) for c in range(table.columnCount())]
+        room = before[COL_LABEL] - 110  # what Label can give before hitting its floor
+        table.setColumnWidth(COL_HANDLE, before[COL_HANDLE] + 30)
+        pump(app)
+        after = [table.columnWidth(c) for c in range(table.columnCount())]
 
-        window.resize(1000, 520)
-        pump(app)
-        before_label = pane.table.columnWidth(COL_LABEL)
-        pane.table.setColumnWidth(COL_HANDLE, pane.table.columnWidth(COL_HANDLE) + 80)
-        pump(app)
+        moved = after[COL_HANDLE] - before[COL_HANDLE]
+        report.check(moved > 0, "widening a column widens it", str(moved))
         report.check(
-            total_width() <= viewport_width(),
-            "widening a column does not push the table past the edge",
-            f"{total_width()} <= {viewport_width()}",
+            after[COL_LABEL] - before[COL_LABEL] == -moved,
+            "and takes exactly that from the neighbour on its right",
+            f"neighbour {before[COL_LABEL]} -> {after[COL_LABEL]}",
         )
         report.check(
-            pane.table.columnWidth(COL_LABEL) < before_label,
-            "Label gives up the room instead",
-            f"{before_label} -> {pane.table.columnWidth(COL_LABEL)}",
-        )
-
-        # Dragging one column absurdly wide must not be allowed to overflow either.
-        pane.table.setColumnWidth(COL_HANDLE, viewport_width() + 400)
-        pump(app)
-        report.check(
-            total_width() <= viewport_width(),
-            "an oversized drag is clamped back",
-            f"{total_width()} <= {viewport_width()}",
+            after[COL_KIND:] == before[COL_KIND:],
+            "leaving every other column alone",
         )
         report.check(
-            pane.table.columnWidth(COL_LABEL) >= MIN_LABEL_WIDTH,
-            "Label never drops below its minimum",
-            str(pane.table.columnWidth(COL_LABEL)),
+            columns.total_width() == columns.available_width(),
+            "so the total is unchanged",
+            f"{columns.total_width()} vs {columns.available_width()}",
+        )
+        report.check(
+            moved <= room + 1,
+            "and it stops when the neighbour reaches its minimum",
+            f"asked 30, moved {moved}, neighbour had {room}",
         )
 
-        pane.refresh()
+        last = table.columnCount() - 1
+        before = [table.columnWidth(c) for c in range(table.columnCount())]
+        table.setColumnWidth(last, before[last] + 80)
         pump(app)
         report.check(
-            total_width() <= viewport_width(),
-            "a refresh keeps the fit",
-            f"{total_width()} <= {viewport_width()}",
+            [table.columnWidth(c) for c in range(table.columnCount())] == before,
+            "the last separator refuses, having nothing to its right to take from",
         )
+
+        print("\n9c. Resizing the window keeps every table exact")
+        for width in (1500, 900, 700, 1100):
+            window.resize(width, 620)
+            pump(app, seconds=0.35)
+            for name, _table, columns in tables:
+                report.check(
+                    columns.total_width() == columns.available_width(),
+                    f"{width}px: {name} still exact",
+                    f"{columns.total_width()} vs {columns.available_width()}",
+                )
 
         window.split_view_action.setChecked(True)
-        pump(app, seconds=0.3)
-        report.check(
-            total_width() <= viewport_width(),
-            "and so does bringing the network panel back",
-            f"{total_width()} <= {viewport_width()}",
-        )
+        pump(app, seconds=0.4)
+        for name, _table, columns in tables:
+            report.check(
+                columns.total_width() == columns.available_width(),
+                f"back in split view: {name} still exact",
+                f"{columns.total_width()} vs {columns.available_width()}",
+            )
         window.set_use_widgets(True)
         pump(app)
 

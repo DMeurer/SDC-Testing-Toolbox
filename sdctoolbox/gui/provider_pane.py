@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QSplitter,
     QComboBox,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -36,6 +35,7 @@ from .new_alert_dialog import NewAlertDialog
 from .new_metric_dialog import NewMetricDialog
 from .qt_bridge import MdibBridge
 from .styling import apply_row_selection_style, muted_colour
+from .table_columns import TableColumns
 from .widgets import WidgetBoard, from_spec
 
 if TYPE_CHECKING:
@@ -43,12 +43,6 @@ if TYPE_CHECKING:
 
 COLUMNS = ["Handle", "Label", "Kind", "Value", "Range", "Unit", "Remote control"]
 COL_HANDLE, COL_LABEL, COL_KIND, COL_VALUE, COL_RANGE, COL_UNIT, COL_CONTROL = range(len(COLUMNS))
-
-# Label never shrinks below this, however little room is left.
-MIN_LABEL_WIDTH = 120
-
-# Floor for every other column.
-MIN_SECTION_WIDTH = 40
 
 NO_VALUE = "\u2014"  # em dash
 
@@ -75,10 +69,6 @@ class ProviderPane(QWidget):
         self.service = service
         # Guards against the table's own updates being mistaken for user clicks.
         self._refreshing = False
-        # Guards against our own column sizing being mistaken for the user dragging.
-        self._adjusting_columns = False
-        # Once the user drags a column divider we stop choosing widths for them.
-        self._user_sized_columns = False
 
         self._build_ui()
 
@@ -101,17 +91,7 @@ class ProviderPane(QWidget):
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
-        # The table never scrolls sideways: the columns are always made to fit the width
-        # available, so nothing can hide off the right-hand edge.
-        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        header = self.table.horizontalHeader()
-        # Interactive throughout, so every column can be dragged. Widths are chosen
-        # automatically until the user drags one; after that only Label is adjusted, and
-        # only as far as is needed to keep the total inside the viewport.
-        header.setSectionResizeMode(QHeaderView.Interactive)
-        header.setStretchLastSection(False)
-        header.setMinimumSectionSize(MIN_SECTION_WIDTH)
-        header.sectionResized.connect(self._on_section_resized)
+        self._columns = TableColumns(self.table, flexible=COL_LABEL)
         self.table.itemChanged.connect(self._on_item_changed)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         apply_row_selection_style(self.table)
@@ -143,8 +123,7 @@ class ProviderPane(QWidget):
         self.alert_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.alert_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.alert_table.verticalHeader().setVisible(False)
-        self.alert_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        self.alert_table.horizontalHeader().setStretchLastSection(True)
+        self._alert_columns = TableColumns(self.alert_table, flexible=ACOL_LABEL)
         self.alert_table.itemSelectionChanged.connect(self._on_alert_selection_changed)
         apply_row_selection_style(self.alert_table)
 
@@ -291,84 +270,8 @@ class ProviderPane(QWidget):
         if selected is not None:
             self.select_handle(selected)
         self._on_selection_changed()
-        self._fit_columns()
+        self._columns.refit()
         self._refresh_board()
-
-    # -- column widths -------------------------------------------------------------
-
-    def _fit_columns(self, changed: int | None = None) -> None:
-        """Make the columns exactly fill the viewport, never more.
-
-        Label is the elastic one: it takes whatever the other columns leave behind. When
-        even its minimum does not fit, width is clawed back from the others, starting with
-        the column the user just widened and then from the widest remaining ones.
-
-        Until the user drags a divider the other columns are sized to their contents; after
-        that their widths are left alone except when something has to give.
-        """
-        if self._adjusting_columns:
-            return
-
-        self._adjusting_columns = True
-        try:
-            if not self._user_sized_columns:
-                self.table.resizeColumnsToContents()
-
-            available = self.table.viewport().width()
-            if available <= 0:
-                return  # not laid out yet; a later resize event will do the work
-
-            columns = range(self.table.columnCount())
-            others = sum(self.table.columnWidth(c) for c in columns if c != COL_LABEL)
-
-            leftover = available - others
-            if leftover >= MIN_LABEL_WIDTH:
-                self.table.setColumnWidth(COL_LABEL, leftover)
-                return
-
-            # Too narrow. Pin Label at its minimum and take the difference off the rest.
-            self.table.setColumnWidth(COL_LABEL, MIN_LABEL_WIDTH)
-            excess = others + MIN_LABEL_WIDTH - available
-
-            preferred = [changed] if changed not in (None, COL_LABEL) else []
-            rest = sorted(
-                (c for c in columns if c != COL_LABEL and c != changed),
-                key=self.table.columnWidth,
-                reverse=True,
-            )
-            for column in preferred + rest:
-                if excess <= 0:
-                    break
-                spare = self.table.columnWidth(column) - MIN_SECTION_WIDTH
-                if spare <= 0:
-                    continue
-                take = min(excess, spare)
-                self.table.setColumnWidth(column, self.table.columnWidth(column) - take)
-                excess -= take
-        finally:
-            self._adjusting_columns = False
-
-    def _on_section_resized(self, index: int, _old: int, _new: int) -> None:
-        """The user dragged a divider: take our hands off the widths, then re-fit."""
-        if self._adjusting_columns:
-            return
-        self._user_sized_columns = True
-        self._fit_columns(changed=index)
-
-    def resizeEvent(self, event) -> None:  # noqa: ANN001, N802 - Qt naming
-        """Keep the columns filling the window whenever it changes size."""
-        super().resizeEvent(event)
-        self._fit_columns()
-
-    def showEvent(self, event) -> None:  # noqa: ANN001, N802 - Qt naming
-        """Refit on becoming visible.
-
-        Moving the pane between the splitter and the tab widget changes how much room it
-        has without necessarily producing a resize event, so the widths have to be
-        recalculated when it reappears.
-        """
-        super().showEvent(event)
-        self._fit_columns()
 
     def _on_values_changed(self, states_by_handle: dict) -> None:
         """Update just the value cells. Cheaper than a rebuild and keeps the selection."""
@@ -415,7 +318,7 @@ class ProviderPane(QWidget):
                     item.setToolTip("No limits, so this alarm only moves when you raise or clear it")
                 self.alert_table.setItem(row, column, item)
 
-        self.alert_table.resizeColumnsToContents()
+        self._alert_columns.refit()
         if selected is not None:
             self.select_alert_handle(selected)
         self._on_alert_selection_changed()
