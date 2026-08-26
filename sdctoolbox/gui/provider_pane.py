@@ -36,6 +36,7 @@ from .new_alert_dialog import NewAlertDialog
 from .new_metric_dialog import NewMetricDialog
 from .qt_bridge import MdibBridge
 from .styling import apply_row_selection_style, muted_colour
+from .widgets import WidgetBoard, from_spec
 
 if TYPE_CHECKING:
     from ..provider_service import ProviderService
@@ -115,6 +116,14 @@ class ProviderPane(QWidget):
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         apply_row_selection_style(self.table)
 
+        # The same metrics, shown either as a control each or as one row each. Both are
+        # always built; the View menu decides which is on top.
+        self.board = WidgetBoard()
+        self.board.value_requested.connect(self._on_widget_value_requested)
+        self.metric_stack = QStackedWidget()
+        self.metric_stack.addWidget(self.board)
+        self.metric_stack.addWidget(self.table)
+
         self.new_button = QPushButton("New data source\u2026")
         self.new_button.clicked.connect(self._on_new)
         self.remove_button = QPushButton("Remove")
@@ -175,7 +184,7 @@ class ProviderPane(QWidget):
         self._set_editor_enabled(enabled=False)
 
         self._views = QSplitter(Qt.Vertical)
-        self._views.addWidget(self.table)
+        self._views.addWidget(self.metric_stack)
         self._views.addWidget(alert_box)
         self._views.setStretchFactor(0, 3)
         self._views.setStretchFactor(1, 2)
@@ -189,6 +198,41 @@ class ProviderPane(QWidget):
     def views(self) -> QSplitter:
         """Metrics above, alarms below, with a divider between them."""
         return self._views
+
+    # -- widgets or table ----------------------------------------------------------
+
+    @property
+    def use_widgets(self) -> bool:
+        """Whether the metrics are shown as controls rather than as a table."""
+        return self.metric_stack.currentWidget() is self.board
+
+    def set_use_widgets(self, enabled: bool) -> None:  # noqa: FBT001 - matches the Qt signal
+        """Switch between a control per metric and the table."""
+        self.metric_stack.setCurrentWidget(self.board if enabled else self.table)
+        if enabled:
+            self._refresh_board()
+
+    def _refresh_board(self) -> None:
+        """Rebuild the controls from the current metrics."""
+        specs = self.service.list_metrics()
+        self.board.set_metrics(
+            [
+                from_spec(handle, spec, editable=True)
+                for handle, spec in sorted(specs.items())
+            ],
+        )
+        self.board.show_values({handle: self.service.get_value(handle) for handle in specs})
+
+    def _on_widget_value_requested(self, handle: str, value: object) -> None:
+        """A control asked for a value. On our own device that is simply a write."""
+        try:
+            self.service.set_value(handle, value)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Outside the allowed range", str(exc))
+            self._refresh_board()
+        except (KeyError, TypeError) as exc:
+            QMessageBox.warning(self, "Could not set value", str(exc))
+            self._refresh_board()
 
     # -- table -------------------------------------------------------------------
 
@@ -239,6 +283,7 @@ class ProviderPane(QWidget):
             self.select_handle(selected)
         self._on_selection_changed()
         self._fit_columns()
+        self._refresh_board()
 
     # -- column widths -------------------------------------------------------------
 
@@ -318,6 +363,9 @@ class ProviderPane(QWidget):
 
     def _on_values_changed(self, states_by_handle: dict) -> None:
         """Update just the value cells. Cheaper than a rebuild and keeps the selection."""
+        self.board.show_values(
+            {handle: self.service.get_value(handle) for handle in states_by_handle},
+        )
         self._refreshing = True
         try:
             for row in range(self.table.rowCount()):

@@ -48,7 +48,34 @@ a choice, a plain field with the permitted range for a number. The result of a w
 reported as the provider's own `InvocationState`.
 
 Press **Alt** for the menu bar. *View → Split view* (F8) swaps between the two panels sitting
-side by side with a movable divider, and the same two stacked as tabs.
+side by side with a movable divider, and the same two stacked as tabs. *View → Use widgets if
+possible* (F9) swaps the metric tables for a control per metric.
+
+## Widgets
+
+By default each metric gets the control that suits it rather than a row in a table:
+
+| Metric | Control |
+|---|---|
+| Choice | dropdown of its allowed values |
+| Number with a minimum **and** a maximum | slider, labelled with both ends |
+| Number without both | the value, with −10 −1 +1 +10 either side |
+| Text | a field |
+| Anything else | the value, read-only |
+
+"If possible" is the operative part. A waveform, or a metric type this tool has never heard
+of, still gets a card showing its value — it just cannot be edited. Nothing disappears
+because no control fits it.
+
+The fallbacks are deliberate too. A slider needs both ends of the range to mean anything, so
+a one-sided limit gets the stepper. A range that would need more than 100 000 slider steps
+gets the stepper as well, because at that point a slider is a lie.
+
+Switch to the table with *View → Use widgets if possible* whenever you want the details:
+handles, units, ranges and writability all at once.
+
+Adding a control is one class in `sdctoolbox/gui/widgets/controls.py` and one line in
+`factory.py`. Nothing else knows any control by name.
 
 Two things worth doing, because they are what makes SDC interesting:
 
@@ -154,6 +181,13 @@ then checks that a range of broken files are refused with a usable message.
 
 ```powershell
 .venv\Scripts\python.exe tests\config_roundtrip.py
+```
+
+The widgets have their own suite: which control gets picked for which metric, then the real
+controls driven inside the real window to check a click reaches the device.
+
+```powershell
+.venv\Scripts\python.exe tests\widget_controls.py
 ```
 
 ## Security

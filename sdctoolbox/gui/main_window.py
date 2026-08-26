@@ -112,6 +112,7 @@ class MainWindow(QMainWindow):
 
         self._build_menus()
         self.set_split_view(enabled=True)
+        self.set_use_widgets(enabled=True)
 
         self.statusBar().showMessage(
             f"Publishing on {service.ip}   \u00b7   {service.epr.urn}   \u00b7   press Alt for the menu",
@@ -156,6 +157,22 @@ class MainWindow(QMainWindow):
         for panel in (self.provider_panel, self.network_panel):
             panel.setParent(None)
 
+    def set_use_widgets(self, enabled: bool) -> None:  # noqa: FBT001 - matches the Qt signal
+        """Show metrics as controls where one fits, or fall back to the table.
+
+        "If possible" is the operative part: a metric with no control that suits it still
+        gets a card, showing its value read-only, rather than vanishing from the view.
+        """
+        for pane in (self.provider_pane, self.network_pane):
+            pane.set_use_widgets(enabled)
+        if self.widgets_action.isChecked() != enabled:
+            self.widgets_action.setChecked(enabled)
+
+    @property
+    def widgets_enabled(self) -> bool:
+        """Whether the panes are showing controls rather than tables."""
+        return self.widgets_action.isChecked()
+
     @property
     def split_view_enabled(self) -> bool:
         """Whether the panels are currently side by side."""
@@ -189,6 +206,17 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.exit_action)
 
         view_menu = menu_bar.addMenu("&View")
+
+        self.widgets_action = QAction("Use &widgets if possible", self)
+        self.widgets_action.setCheckable(True)
+        self.widgets_action.setChecked(True)
+        self.widgets_action.setShortcut("F9")
+        self.widgets_action.setStatusTip(
+            "Show each metric as a control that suits it, falling back to the table",
+        )
+        self.widgets_action.toggled.connect(self.set_use_widgets)
+        view_menu.addAction(self.widgets_action)
+
         self.split_view_action = QAction("&Split view", self)
         self.split_view_action.setCheckable(True)
         self.split_view_action.setChecked(True)

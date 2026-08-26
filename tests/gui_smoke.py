@@ -229,7 +229,11 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             "File has import, export and exit",
             str(file_items),
         )
-        report.check(view_items == ["&Split view"], "View has Split view", str(view_items))
+        report.check(
+            view_items == ["Use &widgets if possible", "&Split view"],
+            "View has the widget toggle and split view",
+            str(view_items),
+        )
         report.check(
             bool(window.exit_action.shortcut().toString()),
             "Exit has a working shortcut",
@@ -510,6 +514,8 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         )
 
         print("\n9. Column sizing")
+        # The table only has a size while it is the visible page, so put it in front first.
+        window.set_use_widgets(False)
         # Give the table the whole window, otherwise Label sits at its minimum from the
         # start and there is no slack to observe being handed back and forth.
         window.split_view_action.setChecked(False)
@@ -606,6 +612,8 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             "and so does bringing the network panel back",
             f"{total_width()} <= {viewport_width()}",
         )
+        window.set_use_widgets(True)
+        pump(app)
 
         print("\n10. Selection is one flat band")
         qss = pane.table.styleSheet()

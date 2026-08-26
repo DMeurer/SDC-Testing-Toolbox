@@ -42,6 +42,7 @@ from ..model import MetricKind
 from .async_call import AsyncCall
 from .qt_bridge import MdibBridge
 from .styling import apply_row_selection_style, muted_colour
+from .widgets import WidgetBoard, from_remote_metric
 
 if TYPE_CHECKING:
     from ..consumer_service import DiscoveredDevice, RemoteDevice
@@ -154,9 +155,15 @@ class ConsumerPane(QWidget):
         alert_layout.addWidget(QLabel("Alarms"))
         alert_layout.addWidget(self.alert_table)
 
+        self.board = WidgetBoard()
+        self.board.value_requested.connect(self._on_widget_value_requested)
+        self.metric_stack = QStackedWidget()
+        self.metric_stack.addWidget(self.board)
+        self.metric_stack.addWidget(self.table)
+
         self.views = QSplitter(Qt.Vertical)
         self.views.addWidget(self.tree)
-        self.views.addWidget(self.table)
+        self.views.addWidget(self.metric_stack)
         self.views.addWidget(alert_box)
         self.views.setStretchFactor(0, 1)
         self.views.setStretchFactor(1, 3)
@@ -183,7 +190,7 @@ class ConsumerPane(QWidget):
 
         # Keep the panel from demanding so much width that the splitter cannot be moved.
         # Every child that would otherwise dictate a large minimum is pinned down here.
-        for widget in (self.tree, self.table, self.alert_table, self.device_list, self.editor_stack):
+        for widget in (self.tree, self.table, self.board, self.alert_table, self.device_list, self.editor_stack):
             widget.setMinimumWidth(MIN_CHILD_WIDTH)
         self.setMinimumWidth(MIN_PANEL_WIDTH)
 
@@ -293,6 +300,7 @@ class ConsumerPane(QWidget):
         self._rebuild_tree()
         self._rebuild_table()
         self._rebuild_alerts()
+        self._refresh_board()
         self._on_selection_changed()
 
     def _rebuild_tree(self) -> None:
@@ -370,6 +378,7 @@ class ConsumerPane(QWidget):
         if self.remote is None:
             return
         metrics = self.remote.metrics()
+        self.board.show_values({handle: metric.value for handle, metric in metrics.items()})
         for row in range(self.table.rowCount()):
             handle_item = self.table.item(row, COL_HANDLE)
             if handle_item is None:
@@ -380,6 +389,37 @@ class ConsumerPane(QWidget):
             item = self.table.item(row, COL_VALUE)
             if item is not None:
                 item.setText(NO_VALUE if metric.value is None else str(metric.value))
+
+    # -- widgets or table ----------------------------------------------------------
+
+    @property
+    def use_widgets(self) -> bool:
+        """Whether the peer's metrics are shown as controls rather than as a table."""
+        return self.metric_stack.currentWidget() is self.board
+
+    def set_use_widgets(self, enabled: bool) -> None:  # noqa: FBT001 - matches the Qt signal
+        """Switch between a control per metric and the table."""
+        self.metric_stack.setCurrentWidget(self.board if enabled else self.table)
+        if enabled:
+            self._refresh_board()
+
+    def _refresh_board(self) -> None:
+        """Rebuild the controls from what the peer currently publishes."""
+        if self.remote is None:
+            self.board.clear()
+            return
+        metrics = self.remote.metrics()
+        self.board.set_metrics([from_remote_metric(metric) for _, metric in sorted(metrics.items())])
+        self.board.show_values({handle: metric.value for handle, metric in metrics.items()})
+
+    def _on_widget_value_requested(self, handle: str, value: object) -> None:
+        """A control asked for a value on the peer. That is a remote write, so it waits."""
+        if self.remote is None:
+            return
+        self.select_handle(handle)
+        self.invocation_label.setText("waiting\u2026")
+        if not self._set_call.start(self.remote.set_value, handle, value):
+            self.invocation_label.setText("busy, try again")
 
     def _rebuild_alerts(self) -> None:
         """Show the peer's alarms, including how each one is announced."""
