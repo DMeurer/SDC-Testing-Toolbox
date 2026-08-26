@@ -114,9 +114,7 @@ class MainWindow(QMainWindow):
         self.set_split_view(enabled=True)
         self.set_use_widgets(enabled=True)
 
-        self.statusBar().showMessage(
-            f"Publishing on {service.ip}   \u00b7   {service.epr.urn}   \u00b7   press Alt for the menu",
-        )
+        self._show_status_hint()
 
     # -- layout --------------------------------------------------------------------
 
@@ -212,6 +210,17 @@ class MainWindow(QMainWindow):
 
         view_menu = menu_bar.addMenu("&View")
 
+        self.always_show_menu_action = QAction("Always show &menu bar", self)
+        self.always_show_menu_action.setCheckable(True)
+        self.always_show_menu_action.setChecked(True)
+        self.always_show_menu_action.setStatusTip(
+            "Keep the menu bar on screen, or hide it until Alt is pressed",
+        )
+        self.always_show_menu_action.toggled.connect(self.set_always_show_menu)
+        view_menu.addAction(self.always_show_menu_action)
+
+        view_menu.addSeparator()
+
         self.widgets_action = QAction("Use &widgets if possible", self)
         self.widgets_action.setCheckable(True)
         self.widgets_action.setChecked(True)
@@ -230,10 +239,10 @@ class MainWindow(QMainWindow):
         self.split_view_action.toggled.connect(self.set_split_view)
         view_menu.addAction(self.split_view_action)
 
-        # Hidden until Alt is pressed. The actions keep working through their shortcuts.
+        # Hiding is opt-in. The actions keep working through their shortcuts either way.
         for menu in (file_menu, view_menu):
             menu.aboutToHide.connect(self._maybe_hide_menu_bar)
-        menu_bar.setVisible(False)
+        menu_bar.setVisible(True)
 
     # -- configuration files -------------------------------------------------------
 
@@ -303,10 +312,28 @@ class MainWindow(QMainWindow):
         )
         return True
 
-    # -- the Alt-revealed menu bar -------------------------------------------------
+    # -- the menu bar --------------------------------------------------------------
+
+    @property
+    def always_show_menu(self) -> bool:
+        """Whether the menu bar stays on screen rather than hiding until Alt."""
+        return self.always_show_menu_action.isChecked()
+
+    def set_always_show_menu(self, enabled: bool) -> None:  # noqa: FBT001 - matches the Qt signal
+        """Keep the menu bar visible, or let it hide until Alt is pressed."""
+        self.menuBar().setVisible(enabled)
+        if self.always_show_menu_action.isChecked() != enabled:
+            self.always_show_menu_action.setChecked(enabled)
+        self._show_status_hint()
 
     def toggle_menu_bar(self) -> None:
-        """Show the menu bar, or hide it again if it is already up."""
+        """Alt: reveal the menu bar, or put it away again.
+
+        Does nothing while the menu bar is pinned, since there is nothing to reveal and
+        hiding it would contradict the setting.
+        """
+        if self.always_show_menu:
+            return
         menu_bar = self.menuBar()
         if menu_bar.isVisible():
             menu_bar.setVisible(False)
@@ -316,9 +343,18 @@ class MainWindow(QMainWindow):
 
     def _maybe_hide_menu_bar(self) -> None:
         """Put the menu bar away once the user is finished with it."""
+        if self.always_show_menu:
+            return
         menu_bar = self.menuBar()
         if menu_bar.activeAction() is None:
             menu_bar.setVisible(False)
+
+    def _show_status_hint(self) -> None:
+        """Mention Alt only while it is the only way to reach the menu."""
+        message = f"Publishing on {self.service.ip}   \u00b7   {self.service.epr.urn}"
+        if not self.always_show_menu:
+            message += "   \u00b7   press Alt for the menu"
+        self.statusBar().showMessage(message)
 
     def keyReleaseEvent(self, event) -> None:  # noqa: ANN001, N802 - Qt naming
         """Alt on its own reveals the menu bar; Escape puts it away."""
@@ -326,7 +362,7 @@ class MainWindow(QMainWindow):
             self.toggle_menu_bar()
             event.accept()
             return
-        if event.key() == Qt.Key_Escape and self.menuBar().isVisible():
+        if event.key() == Qt.Key_Escape and not self.always_show_menu and self.menuBar().isVisible():
             self.menuBar().setVisible(False)
             event.accept()
             return

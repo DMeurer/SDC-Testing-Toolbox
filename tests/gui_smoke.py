@@ -225,19 +225,25 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
 
         print("\n1b. Menu bar")
         menu_bar = window.menuBar()
-        report.check(not menu_bar.isVisible(), "menu bar is hidden until asked for")
+        report.check(menu_bar.isVisible(), "the menu bar is on screen by default")
+        report.check(window.always_show_menu, "because Always show menu bar starts on")
+        report.check(
+            "Alt" not in window.statusBar().currentMessage(),
+            "so the status bar does not mention Alt",
+            window.statusBar().currentMessage()[-40:],
+        )
         titles = [action.text() for action in menu_bar.actions()]
         report.check(titles == ["&File", "&View"], "File and View menus", str(titles))
         file_items = [a.text() for a in menu_bar.actions()[0].menu().actions()]
-        view_items = [a.text() for a in menu_bar.actions()[1].menu().actions()]
+        view_items = [a.text() for a in menu_bar.actions()[1].menu().actions() if a.text()]
         report.check(
             [t for t in file_items if t] == ["&Import config\u2026", "&Export config\u2026", "E&xit"],
             "File has import, export and exit",
             str(file_items),
         )
         report.check(
-            view_items == ["Use &widgets if possible", "&Split view"],
-            "View has the widget toggle and split view",
+            view_items == ["Always show &menu bar", "Use &widgets if possible", "&Split view"],
+            "View has all three toggles",
             str(view_items),
         )
         report.check(
@@ -248,10 +254,34 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
 
         window.toggle_menu_bar()
         pump(app)
+        report.check(
+            menu_bar.isVisible(),
+            "Alt does nothing while the bar is pinned, rather than hiding it",
+        )
+
+        window.always_show_menu_action.setChecked(False)
+        pump(app)
+        report.check(not menu_bar.isVisible(), "unpinning hides it")
+        report.check(
+            "Alt" in window.statusBar().currentMessage(),
+            "and the status bar says how to get it back",
+        )
+        window.toggle_menu_bar()
+        pump(app)
         report.check(menu_bar.isVisible(), "Alt reveals it")
         window.toggle_menu_bar()
         pump(app)
         report.check(not menu_bar.isVisible(), "and Alt puts it away again")
+
+        window.always_show_menu_action.setChecked(True)
+        pump(app)
+        report.check(menu_bar.isVisible(), "re-pinning brings it back")
+        window._maybe_hide_menu_bar()  # noqa: SLF001
+        pump(app)
+        report.check(
+            menu_bar.isVisible(),
+            "and closing a menu no longer hides it",
+        )
 
         print("\n1c. Switching layout")
         report.check(window.split_view_action.isCheckable(), "split view is a checkbox")

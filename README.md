@@ -57,7 +57,10 @@ The **My device** panel is the device you publish. *New data source…* creates 
 
 The **Network** panel is everybody else's. *Scan* finds providers, *Connect* loads one, and you get its containment tree above and its metrics below. Rows the device will accept writes for are marked writable; select one and the editor underneath adapts to it — a combo box for a choice, a plain field with the permitted range for a number. The result of a write is reported as the provider's own `InvocationState`.
 
-Press **Alt** for the menu bar. *View → Split view* (F8) swaps between the two panels sitting side by side with a movable divider, and the same two stacked as tabs. *View → Use widgets if possible* (F9) swaps the metric tables for a control per metric.
+The menu bar is on screen by default. *View → Always show menu bar* hides it until you press
+**Alt**, if you would rather have the room. *View → Split view* (F8) swaps between the two
+panels sitting side by side with a movable divider, and the same two stacked as tabs.
+*View → Use widgets if possible* (F9) swaps the metric tables for a control per metric.
 
 ## Widgets
 

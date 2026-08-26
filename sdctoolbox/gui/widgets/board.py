@@ -68,7 +68,7 @@ class MetricCard(QFrame):
         if deletable:
             self.delete_button = QToolButton()
             self.delete_button.setIcon(
-                self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon),
+                self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarCloseButton),
             )
             self.delete_button.setAutoRaise(True)
             self.delete_button.setToolTip(f"Remove {spec.handle}")
