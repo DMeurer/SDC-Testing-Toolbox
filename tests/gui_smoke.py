@@ -263,6 +263,37 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             [window.tabs.tabText(i) for i in range(window.tabs.count())] == ["My device", "Network"],
             "tabs are named after the panels",
         )
+        # QTabWidget shows only its current page. Forcing both visible on the way in draws
+        # them on top of each other until the first tab switch takes the visibility back.
+        visible_panels = [
+            panel.title
+            for panel in (window.provider_panel, window.network_panel)
+            if panel.isVisible()
+        ]
+        report.check(
+            len(visible_panels) == 1,
+            "exactly one panel is visible in tab mode, not both stacked",
+            str(visible_panels),
+        )
+        report.check(
+            window.tabs.currentIndex() == 0,
+            "and the first tab is the current one",
+            str(window.tabs.currentIndex()),
+        )
+        report.check(
+            window.provider_panel.isVisible() and not window.network_panel.isVisible(),
+            "the visible one is the current tab's panel",
+        )
+
+        window.tabs.setCurrentIndex(1)
+        pump(app)
+        report.check(
+            window.network_panel.isVisible() and not window.provider_panel.isVisible(),
+            "switching tabs swaps which panel shows",
+        )
+        window.tabs.setCurrentIndex(0)
+        pump(app)
+
         report.check(
             not window.provider_panel.heading.isVisible(),
             "the heading is dropped in tab mode, the tab already says it",

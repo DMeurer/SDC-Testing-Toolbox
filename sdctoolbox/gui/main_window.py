@@ -127,6 +127,8 @@ class MainWindow(QMainWindow):
             for panel in (self.provider_panel, self.network_panel):
                 panel.set_heading_visible(True)
                 self.splitter.addWidget(panel)
+                # Needed here, unlike in tab mode: _detach_panels hid these by dropping
+                # their parent, and a QSplitter does not unhide what it is given.
                 panel.setVisible(True)
             self.splitter.setStretchFactor(0, PROVIDER_SHARE)
             self.splitter.setStretchFactor(1, NETWORK_SHARE)
@@ -140,7 +142,10 @@ class MainWindow(QMainWindow):
             for panel in (self.provider_panel, self.network_panel):
                 panel.set_heading_visible(False)
                 self.tabs.addTab(panel, panel.title)
-                panel.setVisible(True)
+            # Deliberately no setVisible here. A QTabWidget shows only its current page,
+            # and forcing both visible draws them on top of each other until the first tab
+            # switch hands visibility back to the tab widget.
+            self.tabs.setCurrentIndex(0)
             self.stack.setCurrentWidget(self.tabs)
 
         if self.split_view_action.isChecked() != enabled:
