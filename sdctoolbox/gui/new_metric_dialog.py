@@ -11,7 +11,6 @@ from decimal import Decimal, InvalidOperation
 
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -24,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from ..constants import METRIC_HANDLE_PREFIX
 from ..model import MetricKind, MetricSpec, slugify
+from .no_wheel import NoWheelComboBox
 from .styling import mark_as_error, mute
 
 # Label shown in the combo box -> kind. Order decides the order in the dropdown.
@@ -42,7 +42,7 @@ class NewMetricDialog(QDialog):
         self.setWindowTitle("New data source")
         self.setMinimumWidth(420)
 
-        self.kind_box = QComboBox()
+        self.kind_box = NoWheelComboBox()
         for caption, kind in OFFERED_KINDS:
             self.kind_box.addItem(caption, kind)
 

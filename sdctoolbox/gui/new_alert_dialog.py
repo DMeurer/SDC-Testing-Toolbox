@@ -10,7 +10,6 @@ from decimal import Decimal, InvalidOperation
 
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -23,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from ..constants import ALERT_HANDLE_PREFIX
 from ..model import AlertKind, AlertPriority, AlertSpec, MetricKind, MetricSpec, slugify
+from .no_wheel import NoWheelComboBox
 from .styling import mark_as_error, mute
 
 KIND_CAPTIONS = [
@@ -51,7 +51,7 @@ class NewAlertDialog(QDialog):
         # back off the widget, so the logic does not depend on the dialog being on screen.
         self._limits_apply = False
 
-        self.source_box = QComboBox()
+        self.source_box = NoWheelComboBox()
         for handle, spec in sorted(metrics.items()):
             caption = f"{spec.label} ({handle})" if spec.label else handle
             self.source_box.addItem(caption, handle)
@@ -59,11 +59,11 @@ class NewAlertDialog(QDialog):
         self.label_edit = QLineEdit()
         self.label_edit.setPlaceholderText("Pressure out of range")
 
-        self.kind_box = QComboBox()
+        self.kind_box = NoWheelComboBox()
         for caption, kind in KIND_CAPTIONS:
             self.kind_box.addItem(caption, kind)
 
-        self.priority_box = QComboBox()
+        self.priority_box = NoWheelComboBox()
         for caption, priority in PRIORITY_CAPTIONS:
             self.priority_box.addItem(caption, priority)
         self.priority_box.setCurrentIndex(1)

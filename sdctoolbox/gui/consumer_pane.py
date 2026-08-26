@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Any
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QComboBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -39,6 +38,7 @@ from sdc11073.xml_types import msg_types
 from ..consumer_service import ConsumerService
 from ..model import MetricKind
 from .async_call import AsyncCall
+from .no_wheel import NoWheelComboBox
 from .qt_bridge import MdibBridge
 from .styling import apply_row_selection_style, muted_colour
 from .table_columns import TableColumns
@@ -162,7 +162,7 @@ class ConsumerPane(QWidget):
         self.editor_label.setWordWrap(True)
         self.value_edit = QLineEdit()
         self.value_edit.returnPressed.connect(self._on_apply)
-        self.choice_box = QComboBox()
+        self.choice_box = NoWheelComboBox()
         self.editor_stack = QStackedWidget()
         self.editor_stack.addWidget(self.value_edit)
         self.editor_stack.addWidget(self.choice_box)

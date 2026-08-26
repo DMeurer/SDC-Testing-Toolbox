@@ -30,8 +30,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtGui import QColor, QPalette  # noqa: E402
+from PySide6.QtCore import QPoint, QPointF, Qt  # noqa: E402
+from PySide6.QtGui import QColor, QPalette, QWheelEvent  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
     QFileDialog,
@@ -112,6 +112,28 @@ def pump(app: QApplication, seconds: float = 0.4) -> None:
     while time.monotonic() < deadline:
         app.processEvents()
         time.sleep(0.02)
+
+
+def send_wheel(app: QApplication, widget, notches: int = -1) -> None:  # noqa: ANN001
+    """Turn the wheel over a widget, the way a real scroll reaches it.
+
+    One notch is 120 units, negative being a scroll downwards.
+    """
+    delta = QPoint(0, notches * 120)
+    centre = widget.rect().center()
+    app.sendEvent(
+        widget,
+        QWheelEvent(
+            QPointF(centre),
+            QPointF(widget.mapToGlobal(centre)),
+            delta,
+            delta,
+            Qt.NoButton,
+            Qt.NoModifier,
+            Qt.NoScrollPhase,
+            False,  # noqa: FBT003 - inverted, a positional in the Qt signature
+        ),
+    )
 
 
 def wait_for(app: QApplication, predicate, timeout: float = 30.0) -> bool:  # noqa: ANN001
@@ -581,6 +603,105 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         pane._on_apply()  # noqa: SLF001
         pump(app)
         report.check(cell(pane, mode, COL_VALUE) == "RUN", "choice set from the combo box")
+
+        print("\n4b. The wheel scrolls, it does not edit")
+        # The board is a scroll area full of cards. A combo box or slider that takes the
+        # wheel rewrites every value the pointer crosses on the way down the panel - and on
+        # our own board those writes go straight into the MDIB.
+        window.set_use_widgets(True)
+        pane.refresh()
+        pump(app)
+
+        mode_card = pane.board.card(mode)
+        zoom_card = pane.board.card(zoom)
+        report.check(mode_card is not None and zoom_card is not None, "both cards are on the board")
+
+        # The wheel has to reach the actual input, not the card or the MetricWidget wrapper:
+        # a plain QWidget ignores wheel events anyway, so aiming at those would pass whether
+        # or not anything was fixed.
+        mode_input = mode_card.control.box
+        zoom_input = zoom_card.control.slider
+        report.check(
+            type(mode_input).__name__ == "NoWheelComboBox"
+            and type(zoom_input).__name__ == "NoWheelSlider",
+            "the cards are built from the wheel-proof controls",
+            f"{type(mode_input).__name__}, {type(zoom_input).__name__}",
+        )
+
+        before_mode = service.get_value(mode)
+        before_zoom = service.get_value(zoom)
+        # The slider only writes while it has focus, so a stray wheel moves the handle
+        # without reaching the MDIB. Watch the handle, which is what actually moves.
+        before_handle = zoom_input.value()
+        for widget in (mode_input, zoom_input):
+            for _ in range(5):
+                send_wheel(app, widget)
+        pump(app)
+        report.check(
+            service.get_value(mode) == before_mode,
+            "scrolling over a choice card leaves the value alone",
+            f"{before_mode} -> {service.get_value(mode)}",
+        )
+        report.check(
+            zoom_input.value() == before_handle,
+            "scrolling over a number card leaves the slider where it was",
+            f"handle {before_handle} -> {zoom_input.value()}",
+        )
+        report.check(
+            service.get_value(zoom) == before_zoom,
+            "and nothing reaches the mdib either",
+            f"{before_zoom} -> {service.get_value(zoom)}",
+        )
+
+        # ... but the board still has to scroll, or every card becomes a dead zone. Two
+        # cards fit in the panel, so add enough to push it past the bottom.
+        filler = [
+            service.add_metric(MetricSpec(label=f"Filler {i}", kind=MetricKind.NUMBER))
+            for i in range(12)
+        ]
+        pane.refresh()
+        pump(app)
+        bar = pane.board.verticalScrollBar()
+        report.check(bar.maximum() > 0, "the board has something to scroll", f"max {bar.maximum()}")
+        if bar.maximum() > 0:
+            bar.setValue(0)
+            send_wheel(app, pane.board.card(mode).control.box)
+            pump(app)
+            report.check(
+                bar.value() > 0,
+                "and the wheel scrolls the board past the card instead",
+                f"scrollbar 0 -> {bar.value()}",
+            )
+        for handle in filler:
+            service.remove_metric(handle)
+        pane.refresh()
+        pump(app)
+
+        # The editor combo below the board, and the tab bar, behave the same way.
+        window.set_use_widgets(False)
+        pane.select_handle(mode)
+        pump(app)
+        index_before = pane.choice_box.currentIndex()
+        send_wheel(app, pane.choice_box)
+        pump(app)
+        report.check(
+            pane.choice_box.currentIndex() == index_before,
+            "the editor combo ignores the wheel too",
+            f"{index_before} -> {pane.choice_box.currentIndex()}",
+        )
+
+        window.set_split_view(False)
+        pump(app)
+        tab_before = window.tabs.currentIndex()
+        send_wheel(app, window.tabs.tabBar())
+        pump(app)
+        report.check(
+            window.tabs.currentIndex() == tab_before,
+            "and the tab bar does not flick between panels",
+            f"{tab_before} -> {window.tabs.currentIndex()}",
+        )
+        window.set_split_view(True)
+        pump(app)
 
         print("\n5. Remote control checkbox")
         row = row_for(pane, zoom)

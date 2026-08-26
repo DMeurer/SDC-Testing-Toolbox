@@ -16,7 +16,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QSplitter,
-    QComboBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -34,6 +33,7 @@ from ..model import MetricKind
 from .context_dialog import ContextDialog
 from .new_alert_dialog import NewAlertDialog
 from .new_metric_dialog import NewMetricDialog
+from .no_wheel import NoWheelComboBox
 from .qt_bridge import MdibBridge
 from .styling import apply_row_selection_style, mute, muted_colour
 from .table_columns import TableColumns
@@ -165,7 +165,7 @@ class ProviderPane(QWidget):
         self.editor_label = QLabel("Select a data source to change its value")
         self.value_edit = QLineEdit()
         self.value_edit.returnPressed.connect(self._on_apply)
-        self.choice_box = QComboBox()
+        self.choice_box = NoWheelComboBox()
         self.editor_stack = QStackedWidget()
         self.editor_stack.addWidget(self.value_edit)
         self.editor_stack.addWidget(self.choice_box)

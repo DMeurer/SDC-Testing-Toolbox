@@ -11,16 +11,15 @@ from typing import Any
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QComboBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
-    QSlider,
     QVBoxLayout,
 )
 
 from ...model import MetricKind
+from ..no_wheel import NoWheelComboBox, NoWheelSlider
 from ..styling import mute
 from .base import MetricWidget, WidgetSpec
 
@@ -53,7 +52,7 @@ class ChoiceWidget(MetricWidget):
         return spec.kind is MetricKind.CHOICE and bool(spec.allowed_values)
 
     def build(self) -> None:
-        self.box = QComboBox()
+        self.box = NoWheelComboBox()
         self.box.addItems(list(self.spec.allowed_values))
         self.box.activated.connect(self._on_activated)
 
@@ -111,7 +110,7 @@ class SliderWidget(MetricWidget):
         self._resolution = self.spec.resolution or Decimal("1")
         self._steps = self._steps(self.spec) or 1
 
-        self.slider = QSlider(Qt.Horizontal)
+        self.slider = NoWheelSlider(Qt.Horizontal)
         self.slider.setMinimum(0)
         self.slider.setMaximum(self._steps)
         self.slider.setSingleStep(1)

@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from sdc11073.xml_types.xml_structure import DateOfBirthProperty
 
 from ..model import LocationInfo, PatientInfo
+from .no_wheel import NoWheelComboBox
 from .styling import mark_as_error, mute
 
 # pm:Sex and pm:PatientType, with the BICEPS code as the data. The empty first entry leaves
@@ -86,11 +87,11 @@ class ContextDialog(QDialog):
 
         self.given_edit = QLineEdit(patient.given_name)
         self.family_edit = QLineEdit(patient.family_name)
-        self.sex_box = QComboBox()
+        self.sex_box = NoWheelComboBox()
         for caption, code in SEX_CAPTIONS:
             self.sex_box.addItem(caption, code)
         self._select(self.sex_box, patient.sex)
-        self.type_box = QComboBox()
+        self.type_box = NoWheelComboBox()
         for caption, code in PATIENT_TYPE_CAPTIONS:
             self.type_box.addItem(caption, code)
         self._select(self.type_box, patient.patient_type)

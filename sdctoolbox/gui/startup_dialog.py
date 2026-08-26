@@ -15,7 +15,6 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -29,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import config, constants
+from .no_wheel import NoWheelComboBox
 from .styling import mark_as_error, mute
 
 CONFIG_FILE_FILTER = "SDC toolbox config (*.json);;All files (*)"
@@ -88,7 +88,7 @@ class StartupDialog(QDialog):
             "identity on the network. Two instances must not share a name.",
         )
 
-        self.ip_box = QComboBox()
+        self.ip_box = NoWheelComboBox()
         self.ip_box.setEditable(True)
         for address, adapter in available_ipv4():
             suffix = "  (link-local, probably not what you want)" if address.startswith(LINK_LOCAL_PREFIX) else ""
@@ -99,7 +99,7 @@ class StartupDialog(QDialog):
             "machine talk without involving the network.",
         )
 
-        self.config_box = QComboBox()
+        self.config_box = NoWheelComboBox()
         self.config_box.setEditable(True)
         self.config_box.lineEdit().setPlaceholderText("optional")
         # Same shape as the address row above: the choices worth having are listed, and

@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from .. import config
 from .consumer_pane import ConsumerPane
+from .no_wheel import NoWheelTabBar
 from .provider_pane import ProviderPane
 
 if TYPE_CHECKING:
@@ -101,6 +102,9 @@ class MainWindow(QMainWindow):
         self.splitter = QSplitter(Qt.Horizontal)
         self.splitter.setChildrenCollapsible(False)
         self.tabs = QTabWidget()
+        # A tab bar flicks between tabs on wheel by default, so scrolling near the top of
+        # the window swaps the panels under the pointer.
+        self.tabs.setTabBar(NoWheelTabBar())
 
         self.stack = QStackedWidget()
         self.stack.addWidget(self.splitter)
