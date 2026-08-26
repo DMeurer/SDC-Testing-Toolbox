@@ -182,8 +182,7 @@ class ProviderService:
             )
             self._apply_spec_to_descriptor(entity.descriptor, spec)
 
-            with self.mdib.descriptor_transaction() as mgr:
-                mgr.write_entity(entity)
+            self._create_entities([entity])
 
             self._specs[handle] = spec
             logger.info("added %s metric %r (%s)", spec.kind.value, spec.label, handle)
@@ -374,10 +373,7 @@ class ProviderService:
                 signal.state.Presence = pm_types.AlertSignalPresence.OFF
                 signal_entities.append(signal)
 
-            with self.mdib.descriptor_transaction() as mgr:
-                mgr.write_entity(entity)
-                for signal in signal_entities:
-                    mgr.write_entity(signal)
+            self._create_entities([entity, *signal_entities])
 
             self._alerts[handle] = spec
             self._alert_signals[handle] = [s.handle for s in signal_entities]
@@ -475,6 +471,51 @@ class ProviderService:
         logger.info("alarm %s is now %s", handle, "present" if present else "clear")
 
     # -- internals -----------------------------------------------------------------
+
+    def _create_entities(self, entities: list) -> None:
+        """Write brand new entities in one descriptor transaction, undoing them if it fails.
+
+        A descriptor BICEPS considers incomplete is not rejected by the transaction. The
+        transaction commits it, and only then does sdc11073 serialise the
+        DescriptionModificationReport from an observer of mdib.transaction - which is where
+        the complaint comes from. By that point descriptions.add_object_no_lock has already
+        run, so letting the exception out unhandled leaves a handle in the MDIB that is
+        advertised to consumers while this service has no record of it.
+
+        Undoing it is best effort by design: see _discard_entities.
+        """
+        handles = [entity.handle for entity in entities]
+        try:
+            with self.mdib.descriptor_transaction() as mgr:
+                for entity in entities:
+                    mgr.write_entity(entity)
+        except Exception:
+            logger.warning("creating %s failed, undoing it", ", ".join(handles))
+            self._discard_entities(handles)
+            raise
+
+    def _discard_entities(self, handles: list[str]) -> None:
+        """Remove entities that were committed but could not be announced.
+
+        One transaction per handle, so that one that will not come out does not strand the
+        rest. The removal report serialises the same descriptor that could not be serialised
+        on the way in and therefore fails in the same place - but process_transaction has
+        already dropped the descriptor by then, which is the part that matters. Swallow that
+        second failure and verify the outcome instead of trusting it.
+        """
+        for handle in handles:
+            entity = self.mdib.entities.by_handle(handle)
+            if entity is None:
+                continue
+            try:
+                with self.mdib.descriptor_transaction() as mgr:
+                    mgr.remove_entity(entity)
+            except Exception:  # noqa: BLE001 - the removal is committed before this fires
+                logger.debug("announcing the removal of %s failed too", handle, exc_info=True)
+            if self.mdib.entities.by_handle(handle) is None:
+                logger.info("undid %s", handle)
+            else:
+                logger.error("could not undo %s: it is still in the mdib", handle)
 
     def _unique_handle(self, candidate: str) -> str:
         if self.mdib.entities.by_handle(candidate) is None:
