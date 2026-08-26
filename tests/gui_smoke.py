@@ -43,6 +43,8 @@ from PySide6.QtWidgets import (  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 from sdc11073.xml_types import pm_types  # noqa: E402
 
+import run_toolbox  # noqa: E402
+from sdctoolbox import constants  # noqa: E402
 from sdctoolbox.constants import CODE_DIMENSIONLESS, epr_for  # noqa: E402
 from sdctoolbox.gui.consumer_pane import COL_RANGE as COL_R_RANGE  # noqa: E402
 from sdctoolbox.gui.consumer_pane import COL_VALUE as COL_R_VALUE  # noqa: E402
@@ -60,6 +62,7 @@ from sdctoolbox.gui.provider_pane import (  # noqa: E402
     COL_VALUE,
     NO_VALUE,
 )
+from sdctoolbox.gui.startup_dialog import LINK_LOCAL_PREFIX, StartupDialog  # noqa: E402
 from sdctoolbox.gui.styling import mute  # noqa: E402
 from sdctoolbox.model import AlertKind, AlertPriority, MetricKind, MetricSpec  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
@@ -906,6 +909,82 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             len(shown_warnings) == 1,
             "and the user is told why",
             shown_warnings[0][1][:60] if shown_warnings else "no message",
+        )
+
+        print("\n10d. The startup window")
+        startup = StartupDialog()
+        report.check(
+            startup.name_edit.text() == constants.DEFAULT_INSTANCE_NAME,
+            "the name defaults to the same value the command line uses",
+            startup.name_edit.text(),
+        )
+        report.check(
+            startup.chosen_ip() == constants.DEFAULT_IP,
+            "and so does the address",
+            startup.chosen_ip(),
+        )
+        report.check(not startup.config_edit.text(), "no config file by default")
+        report.check(not startup.verbose_box.isChecked(), "and quiet logging")
+
+        addresses = [startup.ip_box.itemData(i) for i in range(startup.ip_box.count())]
+        report.check(bool(addresses), "the address list is populated", f"{len(addresses)} entries")
+        report.check(
+            constants.DEFAULT_IP in addresses,
+            "loopback is among them",
+        )
+        link_local = [a for a in addresses if a.startswith(LINK_LOCAL_PREFIX)]
+        usable = [a for a in addresses if not a.startswith(LINK_LOCAL_PREFIX)]
+        if link_local and usable:
+            report.check(
+                addresses.index(usable[-1]) < addresses.index(link_local[0]),
+                "usable addresses are listed before link-local ones",
+            )
+        report.check(
+            "\u2014" in startup.ip_box.itemText(0),
+            "each entry names its adapter",
+            startup.ip_box.itemText(0)[:48],
+        )
+        report.check(
+            startup.chosen_ip() == startup.ip_box.itemData(startup.ip_box.currentIndex()),
+            "the adapter name is not smuggled into the address",
+            startup.chosen_ip(),
+        )
+
+        startup.name_edit.setText("   ")
+        startup._on_accept()  # noqa: SLF001
+        report.check(startup.settings() is None, "a blank name is refused")
+        report.check(not startup.error_label.isHidden(), "and says why", startup.error_label.text()[:44])
+
+        startup.name_edit.setText("beta")
+        startup.config_edit.setText("does-not-exist.json")
+        startup._on_accept()  # noqa: SLF001
+        report.check(startup.settings() is None, "a missing config file is refused")
+
+        startup.config_edit.setText(str(ROOT / "presets" / "insufflator.json"))
+        startup.verbose_box.setChecked(True)
+        startup._on_accept()  # noqa: SLF001
+        chosen = startup.settings()
+        report.check(chosen is not None, "a valid combination is accepted")
+        if chosen is not None:
+            report.check(chosen.name == "beta", "the name is carried through", chosen.name)
+            report.check(chosen.verbose, "and the verbose flag")
+            report.check(bool(chosen.config_path), "and the config file")
+        startup.deleteLater()
+
+        print("\n10e. Arguments skip the startup window")
+        report.check(
+            run_toolbox.settings_from_args(run_toolbox.parse_args([])).name
+            == constants.DEFAULT_INSTANCE_NAME,
+            "argument defaults match the dialog's",
+        )
+        from_args = run_toolbox.settings_from_args(
+            run_toolbox.parse_args(["--name", "gamma", "--ip", "127.0.0.1", "--verbose"]),
+        )
+        report.check(from_args.name == "gamma", "arguments are honoured", from_args.name)
+        report.check(from_args.verbose, "including verbose")
+        report.check(
+            type(from_args) is type(chosen),
+            "arguments and the dialog produce the same shape, so main() cannot tell them apart",
         )
 
         print("\n11. Legibility on a dark theme")

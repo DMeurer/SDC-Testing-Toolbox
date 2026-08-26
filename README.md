@@ -29,12 +29,29 @@ Python 3.12 is deliberate: `python` on a typical Windows box may point at a newe
 
 ## Try it
 
-Start it twice. Each instance publishes a device and can discover the other.
+Run it with no arguments and it asks how to start: device name, which address to bind
+discovery to, an optional config file, and whether to log verbosely. Everything is filled in
+with a working default, so Start is usually enough.
+
+```powershell
+.venv\Scripts\python.exe run_toolbox.py
+```
+
+The address is a list rather than a field, because discovery binds to a **single** IPv4
+address and a normal machine has eight or nine. Each entry names its adapter, usable
+addresses come first, and link-local ones are marked as the dead ends they are.
+
+Give it any argument and it starts straight away instead, which is what you want for a
+shortcut or a script:
 
 ```powershell
 .venv\Scripts\python.exe run_toolbox.py --name alpha
-.venv\Scripts\python.exe run_toolbox.py --name beta
+.venv\Scripts\python.exe run_toolbox.py --name beta --config presets\insufflator.json
 ```
+
+Start it twice under different names to have two devices find each other. The name decides
+the EPR, so restarting under the same name keeps that device's identity on the network — and
+two instances must not share one.
 
 The **My device** panel is the device you publish. *New data source…* creates a number, text or choice; the checkbox in the last column decides whether other devices may write to it. The value column is live — it updates whether you edit it here or somebody changes it over the network.
 
