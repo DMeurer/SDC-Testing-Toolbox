@@ -343,6 +343,77 @@ class SignalInfo:
         return f"{text}->Rem" if self.delegated else text
 
 
+# Patient and location are BICEPS *contexts*: who and where, as opposed to what the device
+# is measuring. They live in the SystemContext as multi-state entities, because a device may
+# know about several and one of them is the associated one.
+#
+# The two are not symmetrical. A location is also published as a WS-Discovery scope, so a
+# consumer can filter by it before connecting; a patient never leaves the MDIB.
+
+
+@dataclass(frozen=True)
+class LocationInfo:
+    """Where the device is. Mirrors pm:LocationDetail."""
+
+    facility: str = ""
+    building: str = ""
+    floor: str = ""
+    point_of_care: str = ""
+    room: str = ""
+    bed: str = ""
+
+    def is_empty(self) -> bool:
+        """Whether nothing at all was given."""
+        return not any(
+            (self.facility, self.building, self.floor, self.point_of_care, self.room, self.bed),
+        )
+
+    def summary(self) -> str:
+        """The parts that were filled in, in the hierarchy BICEPS orders them by."""
+        parts = [
+            self.facility,
+            self.building,
+            self.floor,
+            self.point_of_care,
+            self.room,
+            self.bed,
+        ]
+        return " / ".join(part for part in parts if part)
+
+
+@dataclass(frozen=True)
+class PatientInfo:
+    """Who the device is attached to. A subset of pm:PatientDemographicsCoreData.
+
+    Deliberately a subset: height, weight and race are carried by the standard but inviting
+    someone to type a weight into a learning tool suggests a clinical purpose this has none
+    of. Name, sex, patient type and date of birth are enough to show how a context works.
+    """
+
+    given_name: str = ""
+    family_name: str = ""
+    # 'Unspec', 'M', 'F' or 'Unkn' - pm:Sex. Empty leaves the element out.
+    sex: str = ""
+    # 'Unspec', 'Ad', 'Ado', 'Ped', 'Inf', 'Neo' or 'Oth' - pm:PatientType.
+    patient_type: str = ""
+    # An xsd:date, xsd:gYearMonth or xsd:gYear string, e.g. '1980-04-01'.
+    date_of_birth: str = ""
+
+    def is_empty(self) -> bool:
+        """Whether nothing at all was given."""
+        return not any(
+            (self.given_name, self.family_name, self.sex, self.patient_type, self.date_of_birth),
+        )
+
+    def summary(self) -> str:
+        """Something short enough for a status line."""
+        name = " ".join(part for part in (self.given_name, self.family_name) if part)
+        extras = ", ".join(part for part in (self.sex, self.patient_type, self.date_of_birth) if part)
+        if name and extras:
+            return f"{name} ({extras})"
+        return name or extras
+
+
 @dataclass
 class RemoteAlert:
     """An alarm observed on a peer device.

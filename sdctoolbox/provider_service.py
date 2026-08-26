@@ -24,7 +24,15 @@ from sdc11073.xml_types.dpws_types import ThisDeviceType, ThisModelType
 
 from . import constants
 from .handlers import apply_metric_value, make_set_handler
-from .model import DEFAULT_MANIFESTATIONS, AlertSpec, MetricKind, MetricSpec, SignalInfo
+from .model import (
+    DEFAULT_MANIFESTATIONS,
+    AlertSpec,
+    LocationInfo,
+    MetricKind,
+    MetricSpec,
+    PatientInfo,
+    SignalInfo,
+)
 
 if TYPE_CHECKING:
     from sdc11073.provider.sco import AbstractScoOperationsRegistry
@@ -130,7 +138,7 @@ class ProviderService:
 
         # No waveform provider configured, so the real-time sample loop must stay off.
         self._provider.start_all(start_rtsample_loop=False)
-        self._provider.set_location(SdcLocation(**constants.DEFAULT_LOCATION))
+        self.set_location(LocationInfo(**constants.DEFAULT_LOCATION))
 
         if self._sco is None:
             msg = "no SCO registry was created - the bootstrap MDIB is missing its Sco element"
@@ -569,6 +577,121 @@ class ProviderService:
             for signal in signals:
                 mgr.write_entity(signal)
         logger.info("alarm %s is now %s", handle, "present" if present else "clear")
+
+    # -- contexts ------------------------------------------------------------------
+
+    def get_location(self) -> LocationInfo:
+        """Where this device says it is."""
+        state = self._associated_context_state(constants.LOCATION_CONTEXT_HANDLE)
+        detail = getattr(state, "LocationDetail", None) if state is not None else None
+        if detail is None:
+            return LocationInfo()
+        return LocationInfo(
+            facility=detail.Facility or "",
+            building=detail.Building or "",
+            floor=detail.Floor or "",
+            point_of_care=detail.PoC or "",
+            room=detail.Room or "",
+            bed=detail.Bed or "",
+        )
+
+    def set_location(self, info: LocationInfo) -> None:
+        """Move the device, and tell the network.
+
+        Deliberately routed through SdcProvider.set_location rather than written as a context
+        state by hand: a location is also a WS-Discovery scope, so changing it has to
+        re-announce the device or consumers would keep filtering on the old one.
+        """
+        with self._lock:
+            if self._provider is None:
+                msg = "provider is not started"
+                raise RuntimeError(msg)
+            self._provider.set_location(
+                SdcLocation(
+                    fac=info.facility or None,
+                    bldng=info.building or None,
+                    flr=info.floor or None,
+                    poc=info.point_of_care or None,
+                    rm=info.room or None,
+                    bed=info.bed or None,
+                ),
+            )
+            logger.info("location is now %s", info.summary() or "unset")
+
+    def get_patient(self) -> PatientInfo:
+        """Who the device says it is attached to."""
+        state = self._associated_context_state(constants.PATIENT_CONTEXT_HANDLE)
+        core = getattr(state, "CoreData", None) if state is not None else None
+        if core is None:
+            return PatientInfo()
+        birth = getattr(core, "DateOfBirth", None)
+        return PatientInfo(
+            given_name=core.Givenname or "",
+            family_name=core.Familyname or "",
+            sex=str(core.Sex) if core.Sex else "",
+            patient_type=str(core.PatientType) if core.PatientType else "",
+            # XsdDateInformation renders itself back to the xsd form it was parsed from,
+            # so a date entered as 1815-12-10 comes back as 1815-12-10 rather than a
+            # datetime with a made-up midnight on the end.
+            date_of_birth=str(birth) if birth is not None else "",
+        )
+
+    def set_patient(self, info: PatientInfo) -> None:
+        """Associate a patient with the device, replacing whoever was there before.
+
+        A context is a multi-state entity: the old state is disassociated rather than
+        overwritten, so the MDIB keeps the history of who was attached when. That is why
+        this cannot simply write over one state the way a metric does.
+        """
+        with self._lock:
+            entity = self.mdib.entities.by_handle(constants.PATIENT_CONTEXT_HANDLE)
+            if entity is None:
+                msg = f"the bootstrap MDIB has no {constants.PATIENT_CONTEXT_HANDLE}"
+                raise RuntimeError(msg)
+
+            state = entity.new_state()
+            core = pm_types.PatientDemographicsCoreData()
+            core.Givenname = info.given_name or None
+            core.Familyname = info.family_name or None
+            core.Sex = pm_types.Sex(info.sex) if info.sex else None
+            core.PatientType = pm_types.PatientType(info.patient_type) if info.patient_type else None
+            if info.date_of_birth:
+                # Raises ValueError on anything xsd:date cannot express, which is what we want:
+                # a silently dropped birth date would look like the field does not work.
+                core.set_birthdate(info.date_of_birth)
+            state.CoreData = core
+            state.ContextAssociation = pm_types.ContextAssociation.ASSOCIATED
+            state.BindingStartTime = time.time()
+
+            with self.mdib.context_state_transaction() as mgr:
+                mgr.disassociate_all(entity.handle, ignored_handle=state.Handle)
+                mgr.write_entity(entity, [state.Handle])
+            logger.info("patient is now %s", info.summary() or "unset")
+
+    def clear_patient(self) -> None:
+        """Detach whoever is currently associated, without putting anyone in their place."""
+        with self._lock:
+            entity = self.mdib.entities.by_handle(constants.PATIENT_CONTEXT_HANDLE)
+            if entity is None:
+                return
+            with self.mdib.context_state_transaction() as mgr:
+                disassociated = mgr.disassociate_all(entity.handle)
+            logger.info("detached %d patient context state(s)", len(disassociated))
+
+    def _associated_context_state(self, descriptor_handle: str):  # noqa: ANN202 - an sdc11073 state
+        """The currently associated state of a context, or None when there is none.
+
+        A context descriptor holds many states and at most one of them is associated. The
+        rest are the history, which is exactly what makes a context different from a metric.
+        """
+        entity = self.mdib.entities.by_handle(descriptor_handle)
+        if entity is None:
+            return None
+        entity.update()
+        for state in entity.states.values():
+            if state.ContextAssociation == pm_types.ContextAssociation.ASSOCIATED:
+                return state
+        return None
 
     # -- internals -----------------------------------------------------------------
 

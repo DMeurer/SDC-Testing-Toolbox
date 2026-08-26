@@ -31,10 +31,11 @@ from PySide6.QtWidgets import (
 from sdc11073.xml_types import pm_types
 
 from ..model import MetricKind
+from .context_dialog import ContextDialog
 from .new_alert_dialog import NewAlertDialog
 from .new_metric_dialog import NewMetricDialog
 from .qt_bridge import MdibBridge
-from .styling import apply_row_selection_style, muted_colour
+from .styling import apply_row_selection_style, mute, muted_colour
 from .table_columns import TableColumns
 from .widgets import WidgetBoard, from_spec
 
@@ -82,6 +83,7 @@ class ProviderPane(QWidget):
 
         self.refresh()
         self.refresh_alerts()
+        self.refresh_contexts()
 
     # -- construction --------------------------------------------------------------
 
@@ -111,11 +113,17 @@ class ProviderPane(QWidget):
         self.remove_button = QPushButton("Remove")
         self.remove_button.clicked.connect(self._on_remove)
         self.remove_button.setEnabled(False)
+        self.context_button = QPushButton("Patient and location\u2026")
+        self.context_button.clicked.connect(self._on_edit_contexts)
+        self.context_label = QLabel("")
+        mute(self.context_label)
 
         buttons = QHBoxLayout()
         buttons.addWidget(self.new_button)
         buttons.addWidget(self.remove_button)
-        buttons.addStretch(1)
+        buttons.addWidget(self.context_button)
+        buttons.addWidget(self.context_label, 1)
+        buttons.addStretch(0)
 
         # -- alarms
         self.alert_table = QTableWidget(0, len(ALERT_COLUMNS))
@@ -490,6 +498,38 @@ class ProviderPane(QWidget):
         except (KeyError, ValueError) as exc:
             QMessageBox.warning(self, "Could not delegate", str(exc))
         self.refresh_alerts()
+
+    # -- contexts ------------------------------------------------------------------
+
+    def refresh_contexts(self) -> None:
+        """Show who and where the device currently says it is."""
+        location = self.service.get_location()
+        patient = self.service.get_patient()
+        parts = []
+        if not patient.is_empty():
+            parts.append(patient.summary())
+        if not location.is_empty():
+            parts.append(location.summary())
+        self.context_label.setText("   \u00b7   ".join(parts))
+
+    def _on_edit_contexts(self) -> None:
+        dialog = ContextDialog(self.service.get_location(), self.service.get_patient(), self)
+        if dialog.exec() != ContextDialog.Accepted:
+            return
+        location = dialog.location()
+        patient = dialog.patient()
+        try:
+            if location is not None:
+                self.service.set_location(location)
+            if patient is not None:
+                # An empty patient means "detach", not "attach a nameless one".
+                if patient.is_empty():
+                    self.service.clear_patient()
+                else:
+                    self.service.set_patient(patient)
+        except (RuntimeError, ValueError, TypeError) as exc:
+            QMessageBox.warning(self, "Could not change the contexts", str(exc))
+        self.refresh_contexts()
 
     # -- selection -----------------------------------------------------------------
 

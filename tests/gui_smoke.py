@@ -49,6 +49,7 @@ from sdctoolbox.constants import CODE_DIMENSIONLESS, epr_for  # noqa: E402
 from sdctoolbox.gui.consumer_pane import COL_RANGE as COL_R_RANGE  # noqa: E402
 from sdctoolbox.gui.consumer_pane import COL_VALUE as COL_R_VALUE  # noqa: E402
 from sdctoolbox.gui.consumer_pane import COL_WRITABLE as COL_R_WRITABLE  # noqa: E402
+from sdctoolbox.gui.context_dialog import ContextDialog  # noqa: E402
 from sdctoolbox.gui.main_window import MainWindow  # noqa: E402
 from sdctoolbox.gui.new_alert_dialog import NewAlertDialog  # noqa: E402
 from sdctoolbox.gui.new_metric_dialog import NewMetricDialog  # noqa: E402
@@ -66,7 +67,15 @@ from sdctoolbox.gui.provider_pane import (  # noqa: E402
 )
 from sdctoolbox.gui.startup_dialog import LINK_LOCAL_PREFIX, StartupDialog  # noqa: E402
 from sdctoolbox.gui.styling import mute  # noqa: E402
-from sdctoolbox.model import AlertKind, AlertPriority, AlertSpec, MetricKind, MetricSpec  # noqa: E402
+from sdctoolbox.model import (  # noqa: E402
+    AlertKind,
+    AlertPriority,
+    AlertSpec,
+    LocationInfo,
+    MetricKind,
+    MetricSpec,
+    PatientInfo,
+)
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 # This file lives in tests/, so its own directory is on the path.
@@ -475,6 +484,42 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         alert_dialog.deleteLater()
         alert_dialog2.deleteLater()
 
+        print("\n2d. The patient and location dialog")
+        context_dialog = ContextDialog(LocationInfo(facility="HOSP"), PatientInfo())
+        report.check(
+            context_dialog.facility_edit.text() == "HOSP",
+            "it opens on the current location",
+            context_dialog.facility_edit.text(),
+        )
+        context_dialog.birth_edit.setText("the fourth of July")
+        context_dialog._on_accept()  # noqa: SLF001
+        report.check(context_dialog.patient() is None, "an unusable date of birth is refused")
+        report.check(
+            not context_dialog.error_label.isHidden(),
+            "and says what a date should look like",
+            context_dialog.error_label.text()[:44],
+        )
+        context_dialog.birth_edit.setText("1980-04-01")
+        context_dialog.given_edit.setText("Ada")
+        context_dialog.room_edit.setText("12")
+        for index in range(context_dialog.sex_box.count()):
+            if context_dialog.sex_box.itemData(index) == "F":
+                context_dialog.sex_box.setCurrentIndex(index)
+        context_dialog._on_accept()  # noqa: SLF001
+        entered_patient = context_dialog.patient()
+        entered_location = context_dialog.location()
+        report.check(entered_patient is not None, "a valid combination is accepted")
+        if entered_patient is not None:
+            report.check(entered_patient.given_name == "Ada", "the name is carried through")
+            report.check(
+                entered_patient.sex == "F",
+                "and sex comes out as its BICEPS code, not its caption",
+                entered_patient.sex,
+            )
+        if entered_location is not None:
+            report.check(entered_location.room == "12", "and the location too", entered_location.room)
+        context_dialog.deleteLater()
+
         print("\n3. Creating data sources")
         zoom = service.add_metric(spec)
         pane.refresh()
@@ -660,7 +705,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             str(service.get_value(zoom)),
         )
 
-        print("\n8c. Alarm signals in the pane")
+        print("\n8c. Alarm signals and contexts in the pane")
         acked = service.add_alert(
             AlertSpec(
                 label="Zoom too high",
@@ -729,6 +774,29 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         service.remove_alert(acked)
         pane.refresh_alerts()
         pump(app)
+
+        pane.refresh_contexts()
+        report.check(
+            "HOSP" in pane.context_label.text(),
+            "the pane shows the default location",
+            pane.context_label.text(),
+        )
+        service.set_patient(PatientInfo(given_name="Ada", family_name="Lovelace"))
+        pane.refresh_contexts()
+        pump(app)
+        report.check(
+            "Ada Lovelace" in pane.context_label.text(),
+            "and the patient once one is attached",
+            pane.context_label.text(),
+        )
+        service.clear_patient()
+        pane.refresh_contexts()
+        pump(app)
+        report.check(
+            "Ada" not in pane.context_label.text(),
+            "and drops them again when they are detached",
+            pane.context_label.text(),
+        )
 
         print("\n9. Column sizing, all four tables")
         # A table only has a width while it is the visible page.

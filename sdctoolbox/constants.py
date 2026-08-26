@@ -67,7 +67,8 @@ EPR_NAMESPACE = uuid.UUID("{7c2e4a10-6b3d-4f8e-9c21-0d5a8e3f1b47}")
 DEFAULT_INSTANCE_NAME = "toolbox"
 
 # Location context published by every provider, so consumers can filter by it later.
-DEFAULT_LOCATION = {"fac": "HOSP", "poc": "CU1", "bed": "Toolbox"}
+# Keys are LocationInfo field names, not the abbreviations SdcLocation takes.
+DEFAULT_LOCATION = {"facility": "HOSP", "point_of_care": "CU1", "bed": "Toolbox"}
 
 # --------------------------------------------------------------------------------------
 # DPWS device metadata

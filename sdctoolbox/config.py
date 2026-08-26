@@ -11,17 +11,28 @@ the same MDIB every time, which matters when a consumer or a script refers to th
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field, fields
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .constants import METRIC_HANDLE_PREFIX
-from .model import AlertKind, AlertPriority, AlertSpec, MetricKind, MetricSpec
+from .model import (
+    AlertKind,
+    AlertPriority,
+    AlertSpec,
+    LocationInfo,
+    MetricKind,
+    MetricSpec,
+    PatientInfo,
+)
 
 if TYPE_CHECKING:
     from .provider_service import ProviderService
 
-# Bumped when the layout changes in a way older files would not survive.
+# Bumped when the layout changes in a way older files would not survive. Still 1: everything
+# added since is optional, so a version 1 file written by an earlier build still loads and a
+# file written by this one still loads there, minus the parts it does not know about.
 CONFIG_VERSION = 1
 
 FILE_SUFFIX = ".sdcprofile.json"
@@ -29,6 +40,25 @@ FILE_SUFFIX = ".sdcprofile.json"
 
 class ConfigError(Exception):
     """A config file could not be read, or does not describe a usable device."""
+
+
+@dataclass(frozen=True)
+class DeviceConfig:
+    """Everything a config file describes.
+
+    A dataclass rather than a tuple because there are now four parts and a caller reading
+    ``metrics, alerts, location, patient = parse(...)`` would have to get the order right
+    every time.
+
+    ``location`` and ``patient`` are None when the file does not mention them at all, which
+    is not the same as an empty one: the first leaves the device's current context alone,
+    the second would replace it.
+    """
+
+    metrics: list[MetricSpec] = field(default_factory=list)
+    alerts: list[AlertSpec] = field(default_factory=list)
+    location: LocationInfo | None = None
+    patient: PatientInfo | None = None
 
 
 def _decimal_or_none(value: Any, field: str) -> Decimal | None:
@@ -98,6 +128,44 @@ def alert_to_dict(handle: str, spec: AlertSpec) -> dict[str, Any]:
     return entry
 
 
+def _context_to_dict(service: ProviderService) -> dict[str, Any]:
+    """Patient and location, omitted entirely when neither was filled in.
+
+    Location is always present in practice, since every provider publishes a default one as
+    a discovery scope, but a config that only describes data sources should not grow a
+    patient block full of empty strings.
+    """
+    contexts: dict[str, Any] = {}
+    location = service.get_location()
+    if not location.is_empty():
+        contexts["location"] = {
+            key: value
+            for key, value in {
+                "facility": location.facility,
+                "building": location.building,
+                "floor": location.floor,
+                "point_of_care": location.point_of_care,
+                "room": location.room,
+                "bed": location.bed,
+            }.items()
+            if value
+        }
+    patient = service.get_patient()
+    if not patient.is_empty():
+        contexts["patient"] = {
+            key: value
+            for key, value in {
+                "given_name": patient.given_name,
+                "family_name": patient.family_name,
+                "sex": patient.sex,
+                "patient_type": patient.patient_type,
+                "date_of_birth": patient.date_of_birth,
+            }.items()
+            if value
+        }
+    return contexts
+
+
 def to_dict(service: ProviderService, *, include_values: bool = True) -> dict[str, Any]:
     """Capture a running provider's configuration.
 
@@ -115,12 +183,16 @@ def to_dict(service: ProviderService, *, include_values: bool = True) -> dict[st
                 entry.pop("initial_value", None)
         metrics.append(entry)
 
-    return {
+    payload: dict[str, Any] = {
         "version": CONFIG_VERSION,
         "device": {"instance_name": service.instance_name, "friendly_name": service.friendly_name},
         "metrics": metrics,
         "alerts": [alert_to_dict(handle, spec) for handle, spec in sorted(service.list_alerts().items())],
     }
+    contexts = _context_to_dict(service)
+    if contexts:
+        payload["contexts"] = contexts
+    return payload
 
 
 def save(service: ProviderService, path: str | Path, *, include_values: bool = True) -> Path:
@@ -223,7 +295,39 @@ def alert_from_dict(entry: dict[str, Any]) -> AlertSpec:
         raise ConfigError(msg) from exc
 
 
-def parse(data: Any) -> tuple[list[MetricSpec], list[AlertSpec]]:
+def _contexts_from_dict(data: Any) -> tuple[LocationInfo | None, PatientInfo | None]:
+    """Rebuild the patient and location contexts, if the file carries any.
+
+    None means "the file says nothing", which is different from an empty block: the first
+    leaves whatever the device already had, the second would clear it.
+    """
+    if data is None:
+        return None, None
+    if not isinstance(data, dict):
+        msg = f"contexts: expected an object, found {type(data).__name__}"
+        raise ConfigError(msg)
+
+    def block(name: str, cls: Any) -> Any:
+        raw = data.get(name)
+        if raw is None:
+            return None
+        if not isinstance(raw, dict):
+            msg = f"contexts.{name}: expected an object, found {type(raw).__name__}"
+            raise ConfigError(msg)
+        allowed = {f.name for f in fields(cls)}
+        unknown = sorted(set(raw) - allowed)
+        if unknown:
+            msg = (
+                f"contexts.{name}: does not understand {', '.join(unknown)}. "
+                f"It takes: {', '.join(sorted(allowed))}"
+            )
+            raise ConfigError(msg)
+        return cls(**{key: str(value) for key, value in raw.items()})
+
+    return block("location", LocationInfo), block("patient", PatientInfo)
+
+
+def parse(data: Any) -> DeviceConfig:
     """Turn a decoded config into specs, complaining clearly about anything wrong."""
     if not isinstance(data, dict):
         msg = f"expected an object at the top level, found {type(data).__name__}"
@@ -236,6 +340,7 @@ def parse(data: Any) -> tuple[list[MetricSpec], list[AlertSpec]]:
 
     metrics = [metric_from_dict(entry) for entry in data.get("metrics") or []]
     alerts = [alert_from_dict(entry) for entry in data.get("alerts") or []]
+    location, patient = _contexts_from_dict(data.get("contexts"))
 
     # Catch a dangling reference here rather than half way through building the device.
     defined = {spec.handle or (METRIC_HANDLE_PREFIX + spec.slug) for spec in metrics}
@@ -248,10 +353,10 @@ def parse(data: Any) -> tuple[list[MetricSpec], list[AlertSpec]]:
             )
             raise ConfigError(msg)
 
-    return metrics, alerts
+    return DeviceConfig(metrics=metrics, alerts=alerts, location=location, patient=patient)
 
 
-def load_file(path: str | Path) -> tuple[list[MetricSpec], list[AlertSpec]]:
+def load_file(path: str | Path) -> DeviceConfig:
     """Read and validate a config file without touching any provider."""
     source = Path(path)
     try:
@@ -269,8 +374,7 @@ def load_file(path: str | Path) -> tuple[list[MetricSpec], list[AlertSpec]]:
 
 def apply_to(
     service: ProviderService,
-    metrics: list[MetricSpec],
-    alerts: list[AlertSpec],
+    device: DeviceConfig,
     *,
     replace: bool = True,
 ) -> tuple[int, int]:
@@ -288,20 +392,27 @@ def apply_to(
         for handle in list(service.list_metrics()):
             service.remove_metric(handle)
 
-    for spec in metrics:
+    for spec in device.metrics:
         service.add_metric(spec)
     created_alerts = 0
-    for spec in alerts:
+    for spec in device.alerts:
         try:
             service.add_alert(spec)
         except KeyError as exc:
             msg = f"alarm {spec.label!r} watches {spec.source_handle!r}, which the file does not define"
             raise ConfigError(msg) from exc
         created_alerts += 1
-    return len(metrics), created_alerts
+
+    # Contexts last, and only when the file mentions them. A file that says nothing about a
+    # patient leaves the one already attached alone rather than silently detaching them.
+    if device.location is not None:
+        service.set_location(device.location)
+    if device.patient is not None:
+        service.set_patient(device.patient)
+
+    return len(device.metrics), created_alerts
 
 
 def load_into(service: ProviderService, path: str | Path, *, replace: bool = True) -> tuple[int, int]:
     """Read a config file and build it on a running provider."""
-    metrics, alerts = load_file(path)
-    return apply_to(service, metrics, alerts, replace=replace)
+    return apply_to(service, load_file(path), replace=replace)

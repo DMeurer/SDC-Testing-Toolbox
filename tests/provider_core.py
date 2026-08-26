@@ -30,7 +30,13 @@ from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 from sdc11073.xml_types import pm_qnames as pm  # noqa: E402
 
 from sdctoolbox import config, constants  # noqa: E402
-from sdctoolbox.model import AlertSpec, MetricKind, MetricSpec  # noqa: E402
+from sdctoolbox.model import (  # noqa: E402
+    AlertSpec,
+    LocationInfo,
+    MetricKind,
+    MetricSpec,
+    PatientInfo,
+)
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 
@@ -299,6 +305,81 @@ def check_signals(report: Report, service: ProviderService) -> None:
     service.remove_metric("m.pressure")
 
 
+def check_contexts(report: Report, service: ProviderService) -> None:
+    print("\n5. Patient and location contexts")
+
+    default = service.get_location()
+    report.check(
+        default.facility == "HOSP" and default.bed == "Toolbox",
+        "a provider starts with the default location associated",
+        default.summary(),
+    )
+    report.check(service.get_patient().is_empty(), "and with nobody attached")
+
+    service.set_location(
+        LocationInfo(facility="HOSP", building="B2", floor="3", point_of_care="OR1", bed="A"),
+    )
+    report.check(
+        service.get_location().summary() == "HOSP / B2 / 3 / OR1 / A",
+        "every part of a location survives the round trip",
+        service.get_location().summary(),
+    )
+
+    service.set_patient(
+        PatientInfo(
+            given_name="Ada",
+            family_name="Lovelace",
+            sex="F",
+            patient_type="Ad",
+            date_of_birth="1815-12-10",
+        ),
+    )
+    patient = service.get_patient()
+    report.check(patient.given_name == "Ada", "given name survives", patient.given_name)
+    report.check(patient.sex == "F", "sex survives as its BICEPS code", patient.sex)
+    report.check(patient.patient_type == "Ad", "and patient type", patient.patient_type)
+    report.check(
+        patient.date_of_birth == "1815-12-10",
+        "the date of birth comes back in the form it was given",
+        patient.date_of_birth,
+    )
+
+    # A context is a multi-state entity: the old state is disassociated, not overwritten.
+    service.set_patient(PatientInfo(given_name="Grace", family_name="Hopper"))
+    report.check(
+        service.get_patient().summary() == "Grace Hopper",
+        "a new patient replaces the old one",
+        service.get_patient().summary(),
+    )
+    entity = service.mdib.entities.by_handle(constants.PATIENT_CONTEXT_HANDLE)
+    entity.update()
+    associations = sorted(str(state.ContextAssociation) for state in entity.states.values())
+    report.check(
+        associations == ["Assoc", "Dis"],
+        "the previous patient is kept as a disassociated state, not deleted",
+        str(associations),
+    )
+
+    service.clear_patient()
+    report.check(service.get_patient().is_empty(), "clearing detaches everyone")
+    entity.update()
+    report.check(
+        all(
+            str(state.ContextAssociation) != "Assoc"
+            for state in entity.states.values()
+        ),
+        "and leaves no associated state behind",
+    )
+
+    bad = PatientInfo(date_of_birth="not a date")
+    try:
+        service.set_patient(bad)
+    except (ValueError, TypeError) as exc:
+        report.check(bool(str(exc)), "an unusable date of birth is refused", str(exc)[:60])
+    else:
+        report.check(False, "an unusable date of birth is refused", "it was accepted")  # noqa: FBT003
+
+
 def main() -> int:
     basic_logging_setup(level=logging.ERROR)
     report = Report()
@@ -314,6 +395,7 @@ def main() -> int:
         check_refusal(report, service)
         check_alarm_rollback(report, service)
         check_signals(report, service)
+        check_contexts(report, service)
     finally:
         service.stop()
 
