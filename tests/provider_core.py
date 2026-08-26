@@ -212,6 +212,93 @@ def check_alarm_rollback(report: Report, service: ProviderService) -> None:
     service.remove_metric("m.alarm_source")
 
 
+def check_signals(report: Report, service: ProviderService) -> None:
+    print("\n4. Acknowledging and delegating a signal")
+
+    service.add_metric(
+        MetricSpec(label="Pressure", kind=MetricKind.NUMBER, initial_value=Decimal("5")),
+    )
+    alarm = service.add_alert(
+        AlertSpec(
+            label="Pressure high",
+            source_handle="m.pressure",
+            upper_limit=Decimal("10"),
+            delegable=True,
+        ),
+    )
+
+    def summaries() -> list[str]:
+        return [signal.summary() for signal in service.signal_states(alarm)]
+
+    report.check(summaries() == ["Vis:Off", "Aud:Off"], "signals start off", str(summaries()))
+
+    try:
+        service.acknowledge_alert(alarm)
+    except ValueError as exc:
+        report.check(
+            "not raised" in str(exc),
+            "acknowledging an alarm that is not raised is refused",
+            str(exc)[:60],
+        )
+    else:
+        report.check(False, "acknowledging a clear alarm is refused", "it was accepted")  # noqa: FBT003
+
+    service.set_value("m.pressure", Decimal("20"))
+    report.check(summaries() == ["Vis:On", "Aud:On"], "a breach turns them on", str(summaries()))
+
+    report.check(service.acknowledge_alert(alarm) == 2, "both signals are acknowledged")  # noqa: PLR2004
+    report.check(summaries() == ["Vis:Ack", "Aud:Ack"], "and report Ack", str(summaries()))
+    report.check(
+        service.alert_present(alarm),
+        "the condition is still present: acknowledging changes how it is announced, "
+        "not whether it is true",
+    )
+
+    # The interesting one. Alarms are re-evaluated on every change to the source, so an
+    # acknowledgement that did not survive the next out-of-range value would be useless.
+    service.set_value("m.pressure", Decimal("25"))
+    report.check(
+        summaries() == ["Vis:Ack", "Aud:Ack"],
+        "a further breach does not undo the acknowledgement",
+        str(summaries()),
+    )
+
+    service.set_value("m.pressure", Decimal("1"))
+    report.check(summaries() == ["Vis:Off", "Aud:Off"], "clearing turns them off", str(summaries()))
+    service.set_value("m.pressure", Decimal("30"))
+    report.check(
+        summaries() == ["Vis:On", "Aud:On"],
+        "but a fresh occurrence is not acknowledged",
+        str(summaries()),
+    )
+
+    signal = service.signal_handles_for(alarm)[0]
+    service.set_signal_delegated(signal, delegated=True)
+    report.check(
+        service.signal_states(alarm)[0].delegated,
+        "a delegable signal moves to Rem",
+        summaries()[0],
+    )
+    service.set_signal_delegated(signal, delegated=False)
+    report.check(not service.signal_states(alarm)[0].delegated, "and back to Loc")
+
+    plain = service.add_alert(AlertSpec(label="Plain", source_handle="m.pressure"))
+    try:
+        service.set_signal_delegated(service.signal_handles_for(plain)[0], delegated=True)
+    except ValueError as exc:
+        report.check(
+            "SignalDelegationSupported" in str(exc),
+            "delegating a signal that does not support it is refused",
+            str(exc)[:60],
+        )
+    else:
+        report.check(False, "delegating an undelegable signal is refused", "accepted")  # noqa: FBT003
+
+    service.remove_alert(plain)
+    service.remove_alert(alarm)
+    service.remove_metric("m.pressure")
+
+
 def main() -> int:
     basic_logging_setup(level=logging.ERROR)
     report = Report()
@@ -226,6 +313,7 @@ def main() -> int:
         check_rollback(report, service)
         check_refusal(report, service)
         check_alarm_rollback(report, service)
+        check_signals(report, service)
     finally:
         service.stop()
 

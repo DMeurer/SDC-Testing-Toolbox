@@ -46,7 +46,7 @@ COL_HANDLE, COL_LABEL, COL_KIND, COL_VALUE, COL_RANGE, COL_UNIT, COL_CONTROL = r
 
 NO_VALUE = "\u2014"  # em dash
 
-ALERT_COLUMNS = ["Handle", "Label", "Watches", "Raise when", "Kind", "Priority", "State"]
+ALERT_COLUMNS = ["Handle", "Label", "Watches", "Raise when", "Kind", "Priority", "State", "Signals"]
 (
     ACOL_HANDLE,
     ACOL_LABEL,
@@ -55,6 +55,7 @@ ALERT_COLUMNS = ["Handle", "Label", "Watches", "Raise when", "Kind", "Priority",
     ACOL_KIND,
     ACOL_PRIORITY,
     ACOL_STATE,
+    ACOL_SIGNALS,
 ) = range(len(ALERT_COLUMNS))
 
 EDITOR_TEXT = 0
@@ -133,11 +134,17 @@ class ProviderPane(QWidget):
         self.remove_alert_button.clicked.connect(self._on_remove_alert)
         self.toggle_alert_button = QPushButton("Raise")
         self.toggle_alert_button.clicked.connect(self._on_toggle_alert)
+        self.acknowledge_button = QPushButton("Acknowledge")
+        self.acknowledge_button.clicked.connect(self._on_acknowledge)
+        self.delegate_button = QPushButton("Delegate")
+        self.delegate_button.clicked.connect(self._on_delegate)
 
         alert_buttons = QHBoxLayout()
         alert_buttons.addWidget(QLabel("Alarms"))
         alert_buttons.addStretch(1)
         alert_buttons.addWidget(self.toggle_alert_button)
+        alert_buttons.addWidget(self.acknowledge_button)
+        alert_buttons.addWidget(self.delegate_button)
         alert_buttons.addWidget(self.new_alert_button)
         alert_buttons.addWidget(self.remove_alert_button)
 
@@ -301,6 +308,7 @@ class ProviderPane(QWidget):
         self.alert_table.setRowCount(len(alerts))
         for row, (handle, spec) in enumerate(sorted(alerts.items())):
             present = self.service.alert_present(handle)
+            signals = self.service.signal_states(handle)
             cells = {
                 ACOL_HANDLE: handle,
                 ACOL_LABEL: spec.label,
@@ -309,6 +317,7 @@ class ProviderPane(QWidget):
                 ACOL_KIND: spec.kind.value,
                 ACOL_PRIORITY: spec.priority.value,
                 ACOL_STATE: "PRESENT" if present else "clear",
+                ACOL_SIGNALS: "  ".join(signal.summary() for signal in signals),
             }
             for column, text in cells.items():
                 item = QTableWidgetItem(text)
@@ -316,6 +325,14 @@ class ProviderPane(QWidget):
                     item.setForeground(muted_colour(self))
                 if column == ACOL_WHEN and not spec.has_limits:
                     item.setToolTip("No limits, so this alarm only moves when you raise or clear it")
+                if column == ACOL_SIGNALS:
+                    item.setToolTip(
+                        "How each signal is announcing the condition. Ack means it has been\n"
+                        "acknowledged; the condition itself is still present. ->Rem means it\n"
+                        "has been delegated to another device.",
+                    )
+                    if not present:
+                        item.setForeground(muted_colour(self))
                 self.alert_table.setItem(row, column, item)
 
         self._alert_columns.refit()
@@ -360,6 +377,45 @@ class ProviderPane(QWidget):
             present = self.service.alert_present(handle)
             self.toggle_alert_button.setText("Clear" if present else "Raise")
             self.toggle_alert_button.setToolTip("")
+        self._update_signal_buttons(handle, spec)
+
+    def _update_signal_buttons(self, handle: str | None, spec: object | None) -> None:
+        """Acknowledge and Delegate follow the selected alarm's signals."""
+        signals = self.service.signal_states(handle) if handle and spec is not None else []
+        present = bool(handle) and spec is not None and self.service.alert_present(handle)
+
+        # Acknowledging a condition that is not raised is meaningless, and the provider
+        # refuses it, so do not offer it either.
+        unacknowledged = [signal for signal in signals if not signal.acknowledged]
+        self.acknowledge_button.setEnabled(present and bool(unacknowledged))
+        if spec is None:
+            self.acknowledge_button.setToolTip("")
+        elif not present:
+            self.acknowledge_button.setToolTip("Nothing to acknowledge: this alarm is not raised")
+        elif not unacknowledged:
+            self.acknowledge_button.setToolTip("Every signal is already acknowledged")
+        else:
+            self.acknowledge_button.setToolTip(
+                "Mark the signals as seen. The condition stays present - acknowledging\n"
+                "changes how an alarm is announced, not whether it is true.",
+            )
+
+        delegable = [signal for signal in signals if signal.delegable]
+        self.delegate_button.setEnabled(bool(delegable))
+        anywhere_delegated = any(signal.delegated for signal in delegable)
+        self.delegate_button.setText("Take back" if anywhere_delegated else "Delegate")
+        if spec is None:
+            self.delegate_button.setToolTip("")
+        elif not delegable:
+            self.delegate_button.setToolTip(
+                "This alarm's signals are not delegable: their descriptors do not set\n"
+                "SignalDelegationSupported",
+            )
+        else:
+            self.delegate_button.setToolTip(
+                "Record that another device announces these signals, by moving their\n"
+                "Location from Loc to Rem.",
+            )
 
     def _on_new_alert(self) -> None:
         metrics = self.service.list_metrics()
@@ -406,6 +462,33 @@ class ProviderPane(QWidget):
             self.service.set_alert_presence(handle, not self.service.alert_present(handle))
         except KeyError as exc:
             QMessageBox.warning(self, "Could not change the alarm", str(exc))
+        self.refresh_alerts()
+
+    def _on_acknowledge(self) -> None:
+        handle = self.selected_alert_handle()
+        if handle is None:
+            return
+        try:
+            self.service.acknowledge_alert(handle)
+        except (KeyError, ValueError) as exc:
+            QMessageBox.warning(self, "Could not acknowledge", str(exc))
+        self.refresh_alerts()
+
+    def _on_delegate(self) -> None:
+        """Hand every delegable signal of the selected alarm over, or take them all back."""
+        handle = self.selected_alert_handle()
+        if handle is None:
+            return
+        delegable = [signal for signal in self.service.signal_states(handle) if signal.delegable]
+        if not delegable:
+            return
+        # One button for the whole condition, so the target is whatever the majority is not.
+        delegate = not any(signal.delegated for signal in delegable)
+        try:
+            for signal in delegable:
+                self.service.set_signal_delegated(signal.handle, delegated=delegate)
+        except (KeyError, ValueError) as exc:
+            QMessageBox.warning(self, "Could not delegate", str(exc))
         self.refresh_alerts()
 
     # -- selection -----------------------------------------------------------------

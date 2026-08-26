@@ -53,6 +53,8 @@ from sdctoolbox.gui.main_window import MainWindow  # noqa: E402
 from sdctoolbox.gui.new_alert_dialog import NewAlertDialog  # noqa: E402
 from sdctoolbox.gui.new_metric_dialog import NewMetricDialog  # noqa: E402
 from sdctoolbox.gui.provider_pane import (  # noqa: E402
+    ACOL_HANDLE,
+    ACOL_SIGNALS,
     COL_CONTROL,
     COL_HANDLE,
     COL_KIND,
@@ -64,7 +66,7 @@ from sdctoolbox.gui.provider_pane import (  # noqa: E402
 )
 from sdctoolbox.gui.startup_dialog import LINK_LOCAL_PREFIX, StartupDialog  # noqa: E402
 from sdctoolbox.gui.styling import mute  # noqa: E402
-from sdctoolbox.model import AlertKind, AlertPriority, MetricKind, MetricSpec  # noqa: E402
+from sdctoolbox.model import AlertKind, AlertPriority, AlertSpec, MetricKind, MetricSpec  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 # This file lives in tests/, so its own directory is on the path.
@@ -657,6 +659,76 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             "the boundary value itself is accepted",
             str(service.get_value(zoom)),
         )
+
+        print("\n8c. Alarm signals in the pane")
+        acked = service.add_alert(
+            AlertSpec(
+                label="Zoom too high",
+                source_handle=zoom,
+                upper_limit=Decimal("90"),
+                delegable=True,
+            ),
+        )
+        pane.refresh_alerts()
+        pump(app)
+        pane.select_alert_handle(acked)
+        pump(app)
+
+        def signals_cell() -> str:
+            for row in range(pane.alert_table.rowCount()):
+                if pane.alert_table.item(row, ACOL_HANDLE).text() == acked:
+                    return pane.alert_table.item(row, ACOL_SIGNALS).text()
+            return ""
+
+        # zoom sits at 100 from the range section above, so the alarm is already raised.
+        report.check(service.alert_present(acked), "the alarm is raised by the value already set")
+        report.check(
+            signals_cell() == "Vis:On  Aud:On",
+            "the signals column shows both signals",
+            signals_cell(),
+        )
+        report.check(pane.acknowledge_button.isEnabled(), "Acknowledge is offered while raised")
+        pane._on_acknowledge()  # noqa: SLF001
+        pump(app)
+        report.check(signals_cell() == "Vis:Ack  Aud:Ack", "acknowledging updates the cell", signals_cell())
+        report.check(
+            service.alert_present(acked),
+            "and leaves the condition present, because Ack is about the announcement",
+        )
+        report.check(
+            not pane.acknowledge_button.isEnabled(),
+            "Acknowledge switches off once there is nothing left to acknowledge",
+        )
+
+        report.check(
+            pane.delegate_button.isEnabled() and pane.delegate_button.text() == "Delegate",
+            "Delegate is offered for a delegable alarm",
+            pane.delegate_button.text(),
+        )
+        pane._on_delegate()  # noqa: SLF001
+        pump(app)
+        report.check("->Rem" in signals_cell(), "delegating shows in the cell", signals_cell())
+        report.check(
+            pane.delegate_button.text() == "Take back",
+            "and the button offers the way back",
+            pane.delegate_button.text(),
+        )
+        pane._on_delegate()  # noqa: SLF001
+        pump(app)
+        report.check("->Rem" not in signals_cell(), "taking it back undoes it", signals_cell())
+
+        plain_alarm = service.add_alert(AlertSpec(label="Not delegable", source_handle=zoom))
+        pane.refresh_alerts()
+        pane.select_alert_handle(plain_alarm)
+        pump(app)
+        report.check(
+            not pane.delegate_button.isEnabled(),
+            "an alarm without SignalDelegationSupported cannot be delegated from the UI",
+        )
+        service.remove_alert(plain_alarm)
+        service.remove_alert(acked)
+        pane.refresh_alerts()
+        pump(app)
 
         print("\n9. Column sizing, all four tables")
         # A table only has a width while it is the visible page.

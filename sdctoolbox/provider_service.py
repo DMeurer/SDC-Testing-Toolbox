@@ -24,7 +24,7 @@ from sdc11073.xml_types.dpws_types import ThisDeviceType, ThisModelType
 
 from . import constants
 from .handlers import apply_metric_value, make_set_handler
-from .model import DEFAULT_MANIFESTATIONS, AlertSpec, MetricKind, MetricSpec
+from .model import DEFAULT_MANIFESTATIONS, AlertSpec, MetricKind, MetricSpec, SignalInfo
 
 if TYPE_CHECKING:
     from sdc11073.provider.sco import AbstractScoOperationsRegistry
@@ -377,8 +377,10 @@ class ProviderService:
                 signal.descriptor.ConditionSignaled = handle
                 signal.descriptor.Manifestation = manifestation
                 signal.descriptor.Latching = False
+                signal.descriptor.SignalDelegationSupported = spec.delegable
                 signal.state.ActivationState = pm_types.AlertActivation.ON
                 signal.state.Presence = pm_types.AlertSignalPresence.OFF
+                signal.state.Location = pm_types.AlertSignalPrimaryLocation.LOCAL
                 signal_entities.append(signal)
 
             self._create_entities([entity, *signal_entities])
@@ -433,6 +435,91 @@ class ProviderService:
         """Handles of the signals announcing one condition."""
         return list(self._alert_signals.get(handle, []))
 
+    def signal_states(self, handle: str) -> list[SignalInfo]:
+        """How each signal of one condition is currently announcing it."""
+        infos = []
+        for signal_handle in self._alert_signals.get(handle, []):
+            entity = self.mdib.entities.by_handle(signal_handle)
+            if entity is None:
+                continue
+            infos.append(
+                SignalInfo(
+                    handle=signal_handle,
+                    manifestation=str(entity.descriptor.Manifestation),
+                    presence=str(entity.state.Presence),
+                    location=str(entity.state.Location),
+                    delegable=bool(entity.descriptor.SignalDelegationSupported),
+                ),
+            )
+        return infos
+
+    def acknowledge_alert(self, handle: str) -> int:
+        """Acknowledge every signal of a condition. Returns how many were acknowledged.
+
+        Acknowledging changes how the alarm is announced, not whether it is true: the
+        condition keeps its Presence, and only the signals move to Ack. That distinction is
+        the reason conditions and signals are separate objects, so the tool has to honour it
+        rather than quietly clear the condition.
+        """
+        with self._lock:
+            if handle not in self._alert_signals:
+                msg = f"no alarm with handle {handle!r}"
+                raise KeyError(msg)
+            if not self.alert_present(handle):
+                msg = f"{handle!r} is not raised, so there is nothing to acknowledge"
+                raise ValueError(msg)
+            acknowledged = [
+                entity
+                for entity in (
+                    self.mdib.entities.by_handle(h) for h in self._alert_signals[handle]
+                )
+                if entity is not None and entity.state.Presence != pm_types.AlertSignalPresence.ACK
+            ]
+            if not acknowledged:
+                return 0
+            for entity in acknowledged:
+                entity.state.Presence = pm_types.AlertSignalPresence.ACK
+            with self.mdib.alert_state_transaction() as mgr:
+                for entity in acknowledged:
+                    mgr.write_entity(entity)
+            logger.info("acknowledged %d signal(s) of %s", len(acknowledged), handle)
+            return len(acknowledged)
+
+    def set_signal_delegated(self, signal_handle: str, *, delegated: bool) -> None:
+        """Hand a signal over to another device, or take it back.
+
+        Delegation moves the signal's Location from Loc to Rem. BICEPS only allows it where
+        the descriptor says SignalDelegationSupported, and nothing in sdc11073 enforces that,
+        so this does.
+
+        Note what this is and is not. It records that the announcement now belongs somewhere
+        else. It does not arrange for anybody to pick it up: that needs a device offering a
+        delegable signal of its own and an operation to drive it, which is beyond a two-role
+        toolbox talking to itself.
+        """
+        with self._lock:
+            entity = self.mdib.entities.by_handle(signal_handle)
+            if entity is None:
+                msg = f"no alarm signal with handle {signal_handle!r}"
+                raise KeyError(msg)
+            if delegated and not entity.descriptor.SignalDelegationSupported:
+                msg = (
+                    f"{signal_handle!r} is not delegable: its descriptor does not set "
+                    f"SignalDelegationSupported"
+                )
+                raise ValueError(msg)
+            location = (
+                pm_types.AlertSignalPrimaryLocation.REMOTE
+                if delegated
+                else pm_types.AlertSignalPrimaryLocation.LOCAL
+            )
+            if entity.state.Location == location:
+                return
+            entity.state.Location = location
+            with self.mdib.alert_state_transaction() as mgr:
+                mgr.write_entity(entity)
+            logger.info("signal %s is now announced %s", signal_handle, location)
+
     def _on_metric_applied(self, metric_handle: str) -> None:
         """A metric changed, by whatever route. Recompute the alarms watching it."""
         self._evaluate_alerts({metric_handle})
@@ -456,6 +543,9 @@ class ProviderService:
             msg = f"no alarm with handle {handle!r}"
             raise KeyError(msg)
         if bool(getattr(entity.state, "Presence", False)) == present:
+            # Also what keeps an acknowledgement alive: alarms are re-evaluated on every
+            # change to the source metric, and without this an Ack would be overwritten with
+            # On by the very next value that is still out of range.
             return
 
         entity.state.Presence = present
@@ -468,6 +558,8 @@ class ProviderService:
             if signal is not None
         ]
         for signal in signals:
+            # A fresh occurrence has not been acknowledged, so Ack does not survive the
+            # condition going away and coming back.
             signal.state.Presence = (
                 pm_types.AlertSignalPresence.ON if present else pm_types.AlertSignalPresence.OFF
             )

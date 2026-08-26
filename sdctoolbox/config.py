@@ -93,6 +93,8 @@ def alert_to_dict(handle: str, spec: AlertSpec) -> dict[str, Any]:
         entry["lower_limit"] = str(spec.lower_limit)
     if spec.upper_limit is not None:
         entry["upper_limit"] = str(spec.upper_limit)
+    if spec.delegable:
+        entry["delegable"] = True
     return entry
 
 
@@ -214,6 +216,7 @@ def alert_from_dict(entry: dict[str, Any]) -> AlertSpec:
             lower_limit=_decimal_or_none(entry.get("lower_limit"), f"alerts[{label}].lower_limit"),
             upper_limit=_decimal_or_none(entry.get("upper_limit"), f"alerts[{label}].upper_limit"),
             handle=entry.get("handle") or None,
+            delegable=bool(entry.get("delegable", False)),
         )
     except (ValueError, TypeError) as exc:
         msg = f"alerts[{label}]: {exc}"

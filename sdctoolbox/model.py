@@ -96,6 +96,17 @@ AlertKind = pm_types.AlertConditionKind
 AlertPriority = pm_types.AlertConditionPriority
 AlertManifestation = pm_types.AlertSignalManifestation
 
+# How a signal is currently announcing itself.
+#   ON=On  OFF=Off  LATCH=Latch  ACK=Ack
+# ACK is the acknowledgement: the user has seen the alarm. The condition stays present, so
+# the fact is not erased - only the way it is being announced changes.
+AlertSignalPresence = pm_types.AlertSignalPresence
+
+# Where a signal is announced. LOCAL=Loc means here, REMOTE=Rem means another device has
+# taken it over. That hand-over is what BICEPS calls signal delegation, and a signal may
+# only be delegated when its descriptor says SignalDelegationSupported.
+AlertSignalLocation = pm_types.AlertSignalPrimaryLocation
+
 # Every condition this tool creates gets one signal per manifestation listed here. One
 # condition driving several signals is the whole point of keeping them separate.
 DEFAULT_MANIFESTATIONS = (AlertManifestation.VIS, AlertManifestation.AUD)
@@ -245,6 +256,9 @@ class AlertSpec:
     lower_limit: Decimal | None = None
     upper_limit: Decimal | None = None
     handle: str | None = None
+    # Whether another device may take this alarm's signals over. Sets
+    # SignalDelegationSupported on every signal; without it a delegation is refused.
+    delegable: bool = False
 
     def __post_init__(self) -> None:
         # AlertKind and AlertPriority are the BICEPS enums, and those subclass str. Anything
@@ -297,6 +311,36 @@ class AlertSpec:
         if self.lower_limit is not None and value < self.lower_limit:
             return True
         return self.upper_limit is not None and value > self.upper_limit
+
+
+@dataclass(frozen=True)
+class SignalInfo:
+    """The live state of one signal announcing a condition."""
+
+    handle: str
+    manifestation: str
+    presence: str
+    location: str
+    delegable: bool
+
+    @property
+    def acknowledged(self) -> bool:
+        """Whether the user has already acknowledged this signal."""
+        return self.presence == AlertSignalPresence.ACK
+
+    @property
+    def delegated(self) -> bool:
+        """Whether another device has taken this signal over."""
+        return self.location == AlertSignalLocation.REMOTE
+
+    def summary(self) -> str:
+        """Short form for a table cell or a console line, e.g. 'Vis:Ack', 'Aud:On->Rem'.
+
+        ASCII on purpose: this is printed by examples/console.py and by the test suites, and
+        a Windows console on cp1252 cannot encode an arrow.
+        """
+        text = f"{self.manifestation}:{self.presence}"
+        return f"{text}->Rem" if self.delegated else text
 
 
 @dataclass

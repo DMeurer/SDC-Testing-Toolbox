@@ -9,6 +9,7 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -80,6 +81,12 @@ class NewAlertDialog(QDialog):
         self.limits_widget = QWidget()
         self.limits_widget.setLayout(limits)
 
+        self.delegable_box = QCheckBox("Another device may announce this alarm")
+        self.delegable_box.setToolTip(
+            "Sets SignalDelegationSupported on both signals. Without it a delegation is\n"
+            "refused, because BICEPS only allows one where the descriptor says so.",
+        )
+
         self.hint = QLabel(
             "Leave the limits blank for an alarm you raise by hand. "
             "A visual and an audible signal are created either way.",
@@ -101,6 +108,7 @@ class NewAlertDialog(QDialog):
         form.addRow("Kind", self.kind_box)
         form.addRow("Priority", self.priority_box)
         form.addRow("Raise when", self.limits_widget)
+        form.addRow("Delegation", self.delegable_box)
         form.addRow("Handle", self.handle_preview)
         self.form = form
 
@@ -207,6 +215,7 @@ class NewAlertDialog(QDialog):
                 priority=self._priority,
                 lower_limit=lower,
                 upper_limit=upper,
+                delegable=self.delegable_box.isChecked(),
             )
         except (ValueError, TypeError) as exc:
             self._fail(str(exc))
