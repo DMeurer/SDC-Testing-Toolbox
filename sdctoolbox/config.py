@@ -16,7 +16,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .constants import METRIC_HANDLE_PREFIX
+from .constants import METRIC_HANDLE_PREFIX, PRESET_DIR
 from .model import (
     AlertKind,
     AlertPriority,
@@ -59,6 +59,53 @@ class DeviceConfig:
     alerts: list[AlertSpec] = field(default_factory=list)
     location: LocationInfo | None = None
     patient: PatientInfo | None = None
+
+
+@dataclass(frozen=True)
+class Preset:
+    """One ready-made config found in the presets folder."""
+
+    path: Path
+    name: str
+    description: str
+    metrics: int
+    alerts: int
+
+    def summary(self) -> str:
+        """What the file contains, for a menu entry or a dropdown."""
+        parts = [f"{self.metrics} data source(s)", f"{self.alerts} alarm(s)"]
+        return ", ".join(parts)
+
+
+def list_presets(directory: str | Path | None = None) -> list[Preset]:
+    """Every usable config in the presets folder, in name order.
+
+    A file that will not parse is left out rather than raising: one broken preset must not
+    stop the menu being built. Whoever wants the reason can open it with Import config, which
+    reports it properly.
+    """
+    folder = Path(directory) if directory is not None else PRESET_DIR
+    if not folder.is_dir():
+        return []
+
+    found = []
+    for path in sorted(folder.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            device = parse(data)
+        except (OSError, json.JSONDecodeError, ConfigError):
+            continue
+        found.append(
+            Preset(
+                path=path,
+                name=str(data.get("name") or path.stem),
+                description=str(data.get("description") or ""),
+                metrics=len(device.metrics),
+                alerts=len(device.alerts),
+            ),
+        )
+    found.sort(key=lambda preset: preset.name.lower())
+    return found
 
 
 def _decimal_or_none(value: Any, field: str) -> Decimal | None:

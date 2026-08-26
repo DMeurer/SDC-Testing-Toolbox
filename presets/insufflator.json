@@ -1,5 +1,7 @@
 {
   "version": 1,
+  "name": "Insufflator",
+  "description": "Six data sources and three alarms, roughly what a laparoscopic insufflator publishes.",
   "device": {
     "instance_name": "insufflator",
     "friendly_name": "Example insufflator"

@@ -14,6 +14,9 @@ import uuid
 
 BOOTSTRAP_MDIB_PATH = pathlib.Path(__file__).with_name("mdib_bootstrap.xml")
 
+# Ready-made configs shipped with the tool. The File menu builds its preset list from here.
+PRESET_DIR = pathlib.Path(__file__).resolve().parent.parent / "presets"
+
 # Handles that exist in the bootstrap MDIB and are referenced by the services.
 MDS_HANDLE = "mds0"
 SCO_HANDLE = "sco.mds0"

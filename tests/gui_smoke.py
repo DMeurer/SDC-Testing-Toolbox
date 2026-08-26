@@ -248,9 +248,16 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         file_items = [a.text() for a in menu_bar.actions()[0].menu().actions()]
         view_items = [a.text() for a in menu_bar.actions()[1].menu().actions() if a.text()]
         report.check(
-            [t for t in file_items if t] == ["&Import config\u2026", "&Export config\u2026", "E&xit"],
-            "File has import, export and exit",
+            [t for t in file_items if t]
+            == ["&Import config\u2026", "&Export config\u2026", "Load &preset", "E&xit"],
+            "File has import, export, presets and exit",
             str(file_items),
+        )
+        preset_items = [a.text() for a in window.presets_menu.actions()]
+        report.check(bool(preset_items), "the preset submenu is populated", str(preset_items))
+        report.check(
+            all(a.isEnabled() for a in window.presets_menu.actions()),
+            "and every entry is loadable, so none of the shipped presets is broken",
         )
         report.check(
             view_items == ["Always show &menu bar", "Use &widgets if possible", "&Split view"],
@@ -1093,7 +1100,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             "and so does the address",
             startup.chosen_ip(),
         )
-        report.check(not startup.config_edit.text(), "no config file by default")
+        report.check(startup.chosen_config() is None, "no config file by default")
         report.check(not startup.verbose_box.isChecked(), "and quiet logging")
 
         addresses = [startup.ip_box.itemData(i) for i in range(startup.ip_box.count())]
@@ -1126,11 +1133,31 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         report.check(not startup.error_label.isHidden(), "and says why", startup.error_label.text()[:44])
 
         startup.name_edit.setText("beta")
-        startup.config_edit.setText("does-not-exist.json")
+        startup.config_box.setCurrentText("does-not-exist.json")
         startup._on_accept()  # noqa: SLF001
         report.check(startup.settings() is None, "a missing config file is refused")
 
-        startup.config_edit.setText(str(ROOT / "presets" / "insufflator.json"))
+        # The presets folder is offered in the same list, so the common case needs no
+        # file dialog at all.
+        preset_paths = [
+            startup.config_box.itemData(i)
+            for i in range(startup.config_box.count())
+            if startup.config_box.itemData(i)
+        ]
+        report.check(bool(preset_paths), "presets are offered in the list", f"{len(preset_paths)} entries")
+        report.check(
+            all(Path(p).exists() for p in preset_paths),
+            "and every one of them exists",
+        )
+        if preset_paths:
+            startup.config_box.setCurrentIndex(1)
+            report.check(
+                startup.chosen_config() == preset_paths[0],
+                "picking one yields its path, not its caption",
+                str(startup.chosen_config()),
+            )
+
+        startup.config_box.setCurrentText(str(ROOT / "presets" / "insufflator.json"))
         startup.verbose_box.setChecked(True)
         startup._on_accept()  # noqa: SLF001
         chosen = startup.settings()

@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import tempfile
 from decimal import Decimal
 from pathlib import Path
 
@@ -380,6 +381,37 @@ def check_contexts(report: Report, service: ProviderService) -> None:
         report.check(False, "an unusable date of birth is refused", "it was accepted")  # noqa: FBT003
 
 
+def check_presets(report: Report) -> None:
+    print("\n6. Presets")
+
+    presets = config.list_presets()
+    report.check(bool(presets), "the shipped presets are found", f"{len(presets)} found")
+    for preset in presets:
+        report.check(preset.path.exists(), f"{preset.name} points at a real file")
+        report.check(bool(preset.name), "and has a name", preset.name)
+        report.check(preset.metrics > 0, f"{preset.name} defines data sources", str(preset.metrics))
+
+    with tempfile.TemporaryDirectory(prefix="sdctoolbox-presets-") as raw:
+        folder = Path(raw)
+        (folder / "broken.json").write_text("{ not json", encoding="utf-8")
+        (folder / "invalid.json").write_text('{"metrics": [{"label": "x"}]}', encoding="utf-8")
+        (folder / "good.json").write_text(
+            '{"name": "Good one", "metrics": [{"label": "v", "kind": "number"}]}',
+            encoding="utf-8",
+        )
+        found = config.list_presets(folder)
+        report.check(
+            [preset.name for preset in found] == ["Good one"],
+            "an unreadable preset is skipped rather than breaking the list",
+            str([preset.name for preset in found]),
+        )
+
+    report.check(
+        config.list_presets(Path(tempfile.gettempdir()) / "no-such-preset-folder") == [],
+        "a missing presets folder is not an error",
+    )
+
+
 def main() -> int:
     basic_logging_setup(level=logging.ERROR)
     report = Report()
@@ -396,6 +428,7 @@ def main() -> int:
         check_alarm_rollback(report, service)
         check_signals(report, service)
         check_contexts(report, service)
+        check_presets(report)
     finally:
         service.stop()
 

@@ -200,6 +200,10 @@ class MainWindow(QMainWindow):
         self.export_action.triggered.connect(self.export_config)
         file_menu.addAction(self.export_action)
 
+        self.presets_menu = file_menu.addMenu("Load &preset")
+        self.presets_menu.setStatusTip("Ready-made devices that ship with the tool")
+        self._build_presets_menu()
+
         file_menu.addSeparator()
 
         self.exit_action = QAction("E&xit", self)
@@ -245,6 +249,36 @@ class MainWindow(QMainWindow):
         menu_bar.setVisible(True)
 
     # -- configuration files -------------------------------------------------------
+
+    def _build_presets_menu(self) -> None:
+        """Fill the preset submenu from the presets folder.
+
+        Built once at startup rather than on every open: the folder ships with the tool and
+        does not change while it runs. An empty or unreadable folder leaves one disabled
+        entry saying so, which is more use than a menu that opens onto nothing.
+        """
+        self.presets_menu.clear()
+        self.preset_actions: list[QAction] = []
+
+        presets = config.list_presets()
+        if not presets:
+            empty = QAction("No presets found", self)
+            empty.setEnabled(False)
+            self.presets_menu.addAction(empty)
+            return
+
+        for preset in presets:
+            action = QAction(preset.name, self)
+            action.setStatusTip(preset.description or preset.summary())
+            action.setToolTip(f"{preset.description}\n{preset.summary()}".strip())
+            # default=preset, or every entry would close over the last one.
+            action.triggered.connect(lambda _checked=False, chosen=preset: self.load_preset(chosen))
+            self.presets_menu.addAction(action)
+            self.preset_actions.append(action)
+
+    def load_preset(self, preset: config.Preset) -> bool:
+        """Replace this device with a shipped preset, asking first if anything would be lost."""
+        return self.load_config(preset.path, confirm=True)
 
     def export_config(self) -> Path | None:
         """Ask for a filename and write this device's configuration to it."""
@@ -306,6 +340,7 @@ class MainWindow(QMainWindow):
 
         self.provider_pane.refresh()
         self.provider_pane.refresh_alerts()
+        self.provider_pane.refresh_contexts()
         self.statusBar().showMessage(
             f"Imported {metrics} data source(s) and {alarms} alarm(s) from {Path(path).name}",
             8000,

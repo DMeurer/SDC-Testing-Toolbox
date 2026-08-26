@@ -99,13 +99,25 @@ class StartupDialog(QDialog):
             "machine talk without involving the network.",
         )
 
-        self.config_edit = QLineEdit()
-        self.config_edit.setPlaceholderText("optional")
+        self.config_box = QComboBox()
+        self.config_box.setEditable(True)
+        self.config_box.lineEdit().setPlaceholderText("optional")
+        # Same shape as the address row above: the choices worth having are listed, and
+        # anything else can still be typed or browsed for.
+        self.config_box.addItem("", "")
+        for preset in config.list_presets():
+            caption = f"{preset.name}  \u2014  {preset.summary()}"
+            self.config_box.addItem(caption, str(preset.path))
+        self.config_box.setCurrentIndex(0)
+        self.config_box.setToolTip(
+            "A preset that ships with the tool, or any exported config file.\n"
+            "Loading one replaces whatever the device would otherwise start with.",
+        )
         browse = QPushButton("Browse\u2026")
         browse.clicked.connect(self._on_browse)
         config_row = QHBoxLayout()
         config_row.setContentsMargins(0, 0, 0, 0)
-        config_row.addWidget(self.config_edit, 1)
+        config_row.addWidget(self.config_box, 1)
         config_row.addWidget(browse)
         config_widget = QWidget()
         config_widget.setLayout(config_row)
@@ -164,10 +176,21 @@ class StartupDialog(QDialog):
             return self.ip_box.itemData(index)
         return self.ip_box.currentText().split("\u2014")[0].strip()
 
+    def chosen_config(self) -> str | None:
+        """The config file path, or None when the user picked nothing.
+
+        A listed preset carries its full path as item data; anything typed or browsed for is
+        the text itself. Same reasoning as chosen_ip.
+        """
+        index = self.config_box.currentIndex()
+        if index >= 0 and self.config_box.currentText() == self.config_box.itemText(index):
+            return self.config_box.itemData(index) or None
+        return self.config_box.currentText().strip() or None
+
     def _on_browse(self) -> None:
         filename, _ = QFileDialog.getOpenFileName(self, "Choose a config file", "", CONFIG_FILE_FILTER)
         if filename:
-            self.config_edit.setText(filename)
+            self.config_box.setCurrentText(filename)
 
     def _fail(self, message: str) -> None:
         self.error_label.setText(message)
@@ -186,7 +209,7 @@ class StartupDialog(QDialog):
             self._fail("Choose an address to bind discovery to.")
             return
 
-        config_path = self.config_edit.text().strip() or None
+        config_path = self.chosen_config()
         if config_path is not None:
             # Check it now rather than after a window has appeared and half a device exists.
             if not Path(config_path).exists():
