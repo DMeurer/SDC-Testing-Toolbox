@@ -25,7 +25,8 @@ Python 3.12 is deliberate: `python` on a typical Windows box may point at a newe
 - [x] **2 — Provider UI.** Metric list with live values, "New data source" dialog.
 - [x] **3 — Consumer UI.** Discovery, MDIB browser, editors for controllable metrics. Works against foreign devices, not just our own.
 - [x] **4a — Alarms and presets.** Alert conditions with their signals, and configs you can export, import and load at startup.
-- [ ] **4b — Waveforms and TLS.**
+- [x] **4b — Contexts and signal handling.** Editable patient and location, acknowledgement and delegation, a preset picker.
+- [ ] **4c — Waveforms, distributions and TLS.**
 
 ## Try it
 
@@ -37,9 +38,12 @@ with a working default, so Start is usually enough.
 .venv\Scripts\python.exe run_toolbox.py
 ```
 
-The address is a list rather than a field, because discovery binds to a **single** IPv4
-address and a normal machine has eight or nine. Each entry names its adapter, usable
-addresses come first, and link-local ones are marked as the dead ends they are.
+Two of those fields are dropdowns rather than plain boxes, for the same reason. The address
+list matters because discovery binds to a **single** IPv4 address and a normal machine has
+eight or nine: each entry names its adapter, usable addresses come first, and link-local ones
+are marked as the dead ends they are. The config list offers the presets that ship with the
+tool, so the common case needs no file dialog at all. Both stay editable if you want
+something that is not on the list.
 
 Give it any argument and it starts straight away instead, which is what you want for a
 shortcut or a script:
@@ -53,7 +57,7 @@ Start it twice under different names to have two devices find each other. The na
 the EPR, so restarting under the same name keeps that device's identity on the network — and
 two instances must not share one.
 
-The **My device** panel is the device you publish. *New data source…* creates a number, text or choice; the checkbox in the last column decides whether other devices may write to it. The value column is live — it updates whether you edit it here or somebody changes it over the network.
+The **My device** panel is the device you publish. *New data source…* creates a number, text or choice; the checkbox in the last column decides whether other devices may write to it. The value column is live — it updates whether you edit it here or somebody changes it over the network. *Patient and location…* edits the two contexts, and the line beside it shows what they currently say.
 
 The **Network** panel is everybody else's. *Scan* finds providers, *Connect* loads one, and you get its containment tree above and its metrics below. Rows the device will accept writes for are marked writable; select one and the editor underneath adapts to it — a combo box for a choice, a plain field with the permitted range for a number. The result of a write is reported as the provider's own `InvocationState`.
 
@@ -74,7 +78,9 @@ By default each metric gets the control that suits it rather than a row in a tab
 | Text                                    | a field                                   |
 | Anything else                           | the value, read-only                      |
 
-"If possible" is the operative part. A waveform, or a metric type this tool has never heard of, still gets a card showing its value — it just cannot be edited. Nothing disappears because no control fits it.
+"If possible" is the operative part. A metric type this tool has never heard of still gets a card showing its value — it just cannot be edited. Nothing disappears because no control fits it.
+
+The two sample-array kinds BICEPS defines, `RealTimeSampleArrayMetric` (a waveform) and `DistributionSampleArrayMetric`, cannot be **created** yet: this build never sets the fields the standard makes mandatory for them, and asking for one is refused with a message naming which. That is milestone 4b.
 
 The fallbacks are deliberate too. A slider needs both ends of the range to mean anything, so a one-sided limit gets the stepper. A range that would need more than 100 000 slider steps gets the stepper as well, because at that point a slider is a lie.
 
@@ -127,16 +133,46 @@ There is also a console provider, if you would rather have both sides in text:
 .venv\Scripts\python.exe examples\console.py provider
 ```
 
+It reaches everything the window does, which makes it the quickest way to watch an acknowledgement not clear an alarm:
+
+```
+provider> alert m.pressure Pressure high 0..30 --delegable
+created al.pressure_high  (outside 0 to 30)
+  signals: sig.pressure_high.vis, sig.pressure_high.aud
+provider> set m.pressure 80
+provider> alerts
+  handle                 watches            when                 state    signals
+  al.pressure_high       m.pressure         outside 0 to 30      PRESENT  Vis:On Aud:On
+provider> ack al.pressure_high
+acknowledged 2 signal(s); al.pressure_high is still present
+provider> alerts
+  handle                 watches            when                 state    signals
+  al.pressure_high       m.pressure         outside 0 to 30      PRESENT  Vis:Ack Aud:Ack
+provider> delegate al.pressure_high
+  Vis:Ack->Rem Aud:Ack->Rem
+provider> where HOSP/Surgery/2/OR1/1/Table
+  HOSP / Surgery / 2 / OR1 / 1 / Table
+provider> patient Ada Lovelace F Ad 1815-12-10
+  Ada Lovelace (F, Ad, 1815-12-10)
+provider> presets
+  Insufflator        6 data source(s), 3 alarm(s)
+      Six data sources and three alarms, roughly what a laparoscopic insufflator publishes.
+```
+
 ## Presets
 
-*File → Export config* writes everything you have set up — the data sources and the alarms — to a JSON file. *File → Import config* builds it again, replacing whatever the device currently has. The same file can be loaded at startup:
+*File → Export config* writes everything you have set up — the data sources, the alarms and the contexts — to a JSON file. *File → Import config* builds it again, replacing whatever the device currently has.
+
+*File → Load preset* lists the ready-made devices in `presets/`, so the ones that ship with the tool need no file dialog. The same list appears in the startup window. A preset that will not parse is left out of the menu rather than breaking it; open it with *Import config* if you want to know why.
+
+Any of them can also be loaded at startup:
 
 ```powershell
 .venv\Scripts\python.exe run_toolbox.py --config presets\insufflator.json
 .venv\Scripts\python.exe examples\console.py provider --config presets\insufflator.json
 ```
 
-`presets/insufflator.json` is an example: six data sources and three alarms. A bad file is refused before anything starts, naming what is wrong with it.
+`presets/insufflator.json` is an example: six data sources, three alarms and a location. A bad file is refused before anything starts, naming what is wrong with it.
 
 Handles are recorded in the file, so a preset reproduces the same MDIB every time. That matters if a script or another device refers to them by name.
 
@@ -153,31 +189,53 @@ One condition can drive several signals, which is why they are separate objects 
 
 Give an alarm limits and it becomes a `LimitAlertCondition` that follows its source metric by itself; leave them out and it stays a plain `AlertCondition` that only moves when you raise or clear it. Either way a value written by a remote consumer moves it exactly as a local edit does.
 
+The Signals column is where the split stops being academic. Two buttons act on it:
+
+| Button          | What it changes                                                   |
+|-----------------|-------------------------------------------------------------------|
+| **Acknowledge** | each signal's `Presence`, from `On` to `Ack`                       |
+| **Delegate**    | each signal's `Location`, from `Loc` to `Rem`                      |
+
+Acknowledging is the interesting one, because it does **not** clear the alarm. The condition keeps its `Presence`; only the announcement changes. Watch the State and Signals columns while you do it — State stays `PRESENT` and Signals goes to `Vis:Ack Aud:Ack`. Push the source further out of range and the acknowledgement survives, because the fact has not changed. Bring it back into range and out again and it does not, because that is a new occurrence.
+
+Delegation records that another device announces the signal instead. BICEPS only permits it where the descriptor sets `SignalDelegationSupported`, which is the *Delegation* checkbox in the New alarm dialog, and nothing in sdc11073 enforces that — so the provider does. Note what this is: it marks where the announcement belongs. It does not arrange for anybody to pick it up, which would need a second device offering a delegable signal of its own.
+
+## Contexts
+
+Contexts are the part of BICEPS that says *who* and *where*, as opposed to what the device is measuring. *Patient and location…* on the My device panel edits both.
+
+They are worth a look because they behave unlike anything else in the MDIB:
+
+- **They are multi-state.** Setting a patient does not overwrite the previous one. The old state is *disassociated* and kept, and a new one is associated, so the MDIB records who was attached when. Attach two patients in a row and look at `PC.mds0` in the consumer's containment tree: there are two states, one `Assoc` and one `Dis`.
+- **The location is also a discovery scope.** Changing it re-announces the device, so a consumer filtering on the old location stops seeing it. The patient never leaves the MDIB.
+
+Clearing every patient field detaches the patient rather than attaching a nameless one.
+
+The patient fields are a subset of `pm:PatientDemographicsCoreData` — name, sex, patient type and date of birth. Height, weight and race are in the standard and deliberately left out: inviting someone to type a weight into a learning tool suggests a clinical purpose it has none of.
+
 ## Tests
 
-Runs a provider in one process and checks it from a consumer in another. 34 checks covering discovery, all three controllable metric kinds, value rejection, disabled controls and descriptor creation at runtime.
+Five suites, all runnable from a terminal, all printing PASS/FAIL per check.
+
+| Suite                     | Checks | Covers                                                                     |
+|---------------------------|--------|----------------------------------------------------------------------------|
+| `tests/acceptance_core.py`  | 53   | two processes: discovery, control, rejections, runtime descriptors, alarms |
+| `tests/gui_smoke.py`        | 215  | the real window offscreen, plus a live peer process                        |
+| `tests/widget_controls.py`  | 63   | which control for which metric, then controls driven for real              |
+| `tests/provider_core.py`    | 52   | descriptor rollback, signal handling, contexts, presets                    |
+| `tests/config_roundtrip.py` | 25   | export, reimport, compare; broken files refused                            |
 
 ```powershell
 .venv\Scripts\python.exe tests\acceptance_core.py
-```
-
-The GUI has its own smoke test, which builds the real window on Qt's offscreen backend and drives the actual widgets, including a live connection to a provider in another process. 120 checks, no display needed.
-
-```powershell
 .venv\Scripts\python.exe tests\gui_smoke.py
-```
-
-Config files have a round-trip test that exports a device, rebuilds it and compares the two, then checks that a range of broken files are refused with a usable message.
-
-```powershell
+.venv\Scripts\python.exe tests\widget_controls.py
+.venv\Scripts\python.exe tests\provider_core.py
 .venv\Scripts\python.exe tests\config_roundtrip.py
 ```
 
-The widgets have their own suite: which control gets picked for which metric, then the real controls driven inside the real window to check a click reaches the device.
+The acceptance test runs a provider in one process and checks it from a consumer in another. The GUI suite builds the real window on Qt's offscreen backend and drives the actual widgets, including a live connection to a provider in another process — no display needed.
 
-```powershell
-.venv\Scripts\python.exe tests\widget_controls.py
-```
+`provider_core.py` is the odd one out: it is about what the MDIB must never be left in. Its first section deliberately writes a descriptor BICEPS cannot serialise *without* the rollback, watches the orphan appear, and only then checks that the guarded path leaves nothing behind — so a passing run means the check is still capable of failing.
 
 ## Security
 
@@ -189,7 +247,7 @@ The log line `Using SSL is enabled. TLS 1.3 Support = True` is a capability mess
 
 ```python
 from decimal import Decimal
-from sdctoolbox.model import MetricKind, MetricSpec
+from sdctoolbox.model import AlertSpec, LocationInfo, MetricKind, MetricSpec, PatientInfo
 from sdctoolbox.provider_service import ProviderService
 
 with ProviderService(instance_name="alpha") as provider:
@@ -204,6 +262,16 @@ with ProviderService(instance_name="alpha") as provider:
     )
     provider.set_value(handle, Decimal("5"))
     provider.disable_control(handle)  # keeps the operation, refuses writes
+
+    provider.set_location(LocationInfo(facility="HOSP", point_of_care="OR1", bed="A"))
+    provider.set_patient(PatientInfo(given_name="Ada", family_name="Lovelace"))
+
+    alarm = provider.add_alert(
+        AlertSpec(label="Zoom high", source_handle=handle, upper_limit=Decimal("90"), delegable=True)
+    )
+    provider.set_value(handle, Decimal("95"))       # raises it
+    provider.acknowledge_alert(alarm)               # signals go Ack, condition stays present
+    print([signal.summary() for signal in provider.signal_states(alarm)])
 ```
 
 ```python
