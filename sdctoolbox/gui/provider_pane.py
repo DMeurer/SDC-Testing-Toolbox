@@ -80,6 +80,9 @@ class ProviderPane(QWidget):
         self.bridge.descriptors_deleted.connect(lambda _: self.refresh())
         self.bridge.operations_changed.connect(lambda _: self.refresh())
         self.bridge.alerts_changed.connect(lambda _: self.refresh_alerts())
+        # Waveforms travel as a WaveformStream, not an EpisodicMetricReport, so they
+        # never reach metrics_changed.
+        self.bridge.waveforms_changed.connect(self._on_waveforms_changed)
 
         self.refresh()
         self.refresh_alerts()
@@ -224,7 +227,7 @@ class ProviderPane(QWidget):
                 for handle, spec in sorted(specs.items())
             ],
         )
-        self.board.show_values({handle: self.service.get_value(handle) for handle in specs})
+        self.board.show_values({handle: self._displayable(handle, spec) for handle, spec in specs.items()})
 
     def _on_card_delete_requested(self, handle: str) -> None:
         """A card's bin was clicked."""
@@ -252,13 +255,12 @@ class ProviderPane(QWidget):
         try:
             self.table.setRowCount(len(specs))
             for row, (handle, spec) in enumerate(sorted(specs.items())):
-                value = self.service.get_value(handle)
                 cells = {
                     COL_HANDLE: handle,
                     COL_LABEL: spec.label,
                     COL_KIND: spec.kind.value,
-                    COL_VALUE: NO_VALUE if value is None else str(value),
-                    COL_RANGE: spec.range_text(),
+                    COL_VALUE: self._value_text(handle, spec),
+                    COL_RANGE: spec.domain_text() or spec.range_text(),
                     COL_UNIT: spec.unit_label,
                 }
                 for column, text in cells.items():
@@ -292,10 +294,61 @@ class ProviderPane(QWidget):
         self._columns.refit()
         self._refresh_board()
 
+    def _displayable(self, handle: str, spec) -> object:  # noqa: ANN001 - a MetricSpec
+        """What a card should be given: a block of samples, or a single value."""
+        if spec.is_sample_array:
+            return self.service.get_samples(handle)
+        return self.service.get_value(handle)
+
+    def _value_text(self, handle: str, spec) -> str:  # noqa: ANN001 - a MetricSpec
+        """What the table's Value cell shows.
+
+        A sample array has no single value to print, and printing three hundred of them
+        would be useless, so the cell says how many arrived instead. The card draws them.
+        """
+        if spec.is_sample_array:
+            count = len(self.service.get_samples(handle))
+            return f"{count} sample(s)" if count else NO_VALUE
+        value = self.service.get_value(handle)
+        return NO_VALUE if value is None else str(value)
+
+    def _refresh_sample_cells(self, handles) -> None:  # noqa: ANN001 - any iterable
+        """Update the count in the Value column for the metrics named."""
+        specs = self.service.list_metrics()
+        self._refreshing = True
+        try:
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, COL_HANDLE)
+                if item is None or item.text() not in handles:
+                    continue
+                spec = specs.get(item.text())
+                cell = self.table.item(row, COL_VALUE)
+                if spec is not None and cell is not None:
+                    cell.setText(self._value_text(item.text(), spec))
+        finally:
+            self._refreshing = False
+
+    def _on_waveforms_changed(self, states_by_handle: dict) -> None:
+        """A block of samples arrived. Only the cards need it; the table shows a summary."""
+        specs = self.service.list_metrics()
+        self.board.show_values(
+            {
+                handle: self.service.get_samples(handle)
+                for handle in states_by_handle
+                if handle in specs
+            },
+        )
+        self._refresh_sample_cells(states_by_handle)
+
     def _on_values_changed(self, states_by_handle: dict) -> None:
         """Update just the value cells. Cheaper than a rebuild and keeps the selection."""
+        specs = self.service.list_metrics()
         self.board.show_values(
-            {handle: self.service.get_value(handle) for handle in states_by_handle},
+            {
+                handle: self._displayable(handle, specs[handle])
+                for handle in states_by_handle
+                if handle in specs
+            },
         )
         self._refreshing = True
         try:
@@ -303,10 +356,10 @@ class ProviderPane(QWidget):
                 handle_item = self.table.item(row, COL_HANDLE)
                 if handle_item is None or handle_item.text() not in states_by_handle:
                     continue
-                value = self.service.get_value(handle_item.text())
+                spec = specs.get(handle_item.text())
                 item = self.table.item(row, COL_VALUE)
-                if item is not None:
-                    item.setText(NO_VALUE if value is None else str(value))
+                if spec is not None and item is not None:
+                    item.setText(self._value_text(handle_item.text(), spec))
         finally:
             self._refreshing = False
 

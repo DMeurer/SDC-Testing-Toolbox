@@ -703,6 +703,88 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         window.set_split_view(True)
         pump(app)
 
+        print("\n4c. Waveforms and distributions on the board")
+        wave = service.add_metric(
+            MetricSpec(
+                label="Pleth",
+                kind=MetricKind.WAVEFORM,
+                unit_label="%",
+                minimum=Decimal("0"),
+                maximum=Decimal("100"),
+                sample_period=Decimal("0.05"),
+            ),
+        )
+        dist = service.add_metric(
+            MetricSpec(
+                label="Spectrum",
+                kind=MetricKind.DISTRIBUTION,
+                unit_label="dB",
+                domain_unit_label="Hz",
+                domain_minimum=Decimal("0"),
+                domain_maximum=Decimal("500"),
+            ),
+        )
+        window.set_use_widgets(True)
+        pane.refresh()
+        pump(app)
+
+        wave_card = pane.board.card(wave)
+        dist_card = pane.board.card(dist)
+        report.check(wave_card is not None and dist_card is not None, "both get a card")
+        report.check(
+            type(wave_card.control).__name__ == "SampleArrayWidget",
+            "a waveform gets the plot, not the read-out",
+            type(wave_card.control).__name__,
+        )
+        report.check(
+            wave_card.control.plot.scrolling and not dist_card.control.plot.scrolling,
+            "the waveform scrolls and the distribution does not",
+        )
+
+        # The generator is already running, so samples should reach the plot on their own.
+        report.check(
+            wait_for(app, lambda: bool(pane.board.card(wave).control.plot.samples), timeout=20.0),
+            "samples reach the waveform plot without anybody asking",
+            f"{len(pane.board.card(wave).control.plot.samples)} on the plot",
+        )
+
+        service.set_samples(dist, [Decimal("1"), Decimal("5"), Decimal("2")])
+        pump(app)
+        report.check(
+            dist_card.control.plot.samples == [1.0, 5.0, 2.0],
+            "a distribution block reaches its plot",
+            str(dist_card.control.plot.samples),
+        )
+        service.set_samples(dist, [Decimal("7")])
+        pump(app)
+        report.check(
+            dist_card.control.plot.samples == [7.0],
+            "and the next block replaces it rather than appending",
+            str(dist_card.control.plot.samples),
+        )
+
+        # It has to survive being painted, which is where a divide by zero would show up.
+        window.set_use_widgets(False)
+        pump(app)
+        report.check(
+            "sample" in cell(pane, wave, COL_VALUE),
+            "the table says how many samples rather than printing them",
+            cell(pane, wave, COL_VALUE),
+        )
+        report.check(
+            cell(pane, dist, COL_RANGE) == "0 to 500 Hz",
+            "and shows a distribution's domain in the range column",
+            cell(pane, dist, COL_RANGE),
+        )
+        window.set_use_widgets(True)
+        pump(app)
+
+        service.remove_metric(wave)
+        service.remove_metric(dist)
+        service.stop_waveforms()
+        pane.refresh()
+        pump(app)
+
         print("\n5. Remote control checkbox")
         row = row_for(pane, zoom)
         item = pane.table.item(row, COL_CONTROL)

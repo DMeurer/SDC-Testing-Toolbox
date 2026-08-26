@@ -7,13 +7,21 @@ the panes never mention any control by name.
 from __future__ import annotations
 
 from .base import MetricWidget, WidgetSpec
-from .controls import ChoiceWidget, ReadoutWidget, SliderWidget, StepperWidget, TextWidget
+from .controls import (
+    ChoiceWidget,
+    ReadoutWidget,
+    SampleArrayWidget,
+    SliderWidget,
+    StepperWidget,
+    TextWidget,
+)
 
 # Asked in order of priority, first match wins. ReadoutWidget accepts anything and so must
 # stay last; it is what makes an unknown metric type show up rather than disappear.
 CONTROLS: list[type[MetricWidget]] = sorted(
     [
         ChoiceWidget,
+        SampleArrayWidget,
         SliderWidget,
         StepperWidget,
         TextWidget,

@@ -40,8 +40,12 @@ class MdibBridge(QObject):
     descriptors_deleted = Signal(dict)
     # handle -> state, for operations whose OperatingMode changed
     operations_changed = Signal(dict)
-    # handle -> state, for alerts (unused until alerts are implemented)
+    # handle -> state, for alerts
     alerts_changed = Signal(dict)
+    # handle -> state, for waveforms. Separate from metrics_by_handle because sdc11073
+    # routes a RealTimeSampleArrayMetricState down its own path, as a WaveformStream
+    # rather than an EpisodicMetricReport - so a waveform never appears in the other one.
+    waveforms_changed = Signal(dict)
     # The peer restarted: its sequence or instance id changed and the cached MDIB is stale.
     peer_restarted = Signal()
 
@@ -55,6 +59,7 @@ class MdibBridge(QObject):
             "deleted_descriptors_by_handle": self._on_descriptors_deleted,
             "operation_by_handle": self._on_operations,
             "alert_by_handle": self._on_alerts,
+            "waveform_by_handle": self._on_waveforms,
         }
         # Only a ConsumerMdib reports that the far end restarted; a provider has no peer.
         if hasattr(type(mdib), "sequence_or_instance_id_changed_event"):
@@ -80,6 +85,9 @@ class MdibBridge(QObject):
 
     def _on_alerts(self, values: dict) -> None:
         self.alerts_changed.emit(dict(values))
+
+    def _on_waveforms(self, values: dict) -> None:
+        self.waveforms_changed.emit(dict(values))
 
     def _on_peer_restarted(self, changed: bool) -> None:  # noqa: FBT001 - the observable is a flag
         if changed:

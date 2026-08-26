@@ -81,6 +81,12 @@ class MetricCard(QFrame):
         footer_parts = [spec.handle]
         if spec.unit:
             footer_parts.append(spec.unit)
+        if spec.domain:
+            # A distribution's domain is what its x axis means, so it belongs on the card
+            # rather than only in the table.
+            footer_parts.append(f"over {spec.domain}")
+        if spec.sample_period:
+            footer_parts.append(f"{spec.sample_period}s/sample")
         if spec.note:
             footer_parts.append(spec.note)
         footer = QLabel("  \u00b7  ".join(footer_parts))

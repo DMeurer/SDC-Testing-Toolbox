@@ -29,7 +29,8 @@ from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 
 from sdctoolbox.gui.main_window import MainWindow  # noqa: E402
 from sdctoolbox.gui.widgets import WidgetSpec, build_widget  # noqa: E402
-from sdctoolbox.gui.widgets.controls import (  # noqa: E402
+from sdctoolbox.gui.widgets.controls import (
+    SampleArrayWidget,  # noqa: E402
     MAX_SLIDER_STEPS,
     ChoiceWidget,
     ReadoutWidget,
@@ -135,13 +136,18 @@ CHOICES = [
         TextWidget,
     ),
     (
-        "a waveform falls back to a read-out",
+        "a waveform gets a plot",
         WidgetSpec("m.w", "ECG", MetricKind.WAVEFORM),
-        ReadoutWidget,
+        SampleArrayWidget,
     ),
     (
-        "a distribution falls back to a read-out",
+        "a distribution gets a plot too",
         WidgetSpec("m.d", "Dist", MetricKind.DISTRIBUTION),
+        SampleArrayWidget,
+    ),
+    (
+        "a kind this build has never heard of still gets a card",
+        WidgetSpec("m.x", "Mystery", None),
         ReadoutWidget,
     ),
     (

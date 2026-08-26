@@ -42,6 +42,10 @@ class WidgetSpec:
     editable: bool = False
     # Shown under the control when it cannot be edited, e.g. why not.
     note: str = ""
+    # Sample-array facts. The plot uses the domain to label a distribution and the sample
+    # period to say how fast a waveform is arriving.
+    sample_period: Decimal | None = None
+    domain: str = ""
 
     @property
     def caption(self) -> str:
@@ -67,6 +71,8 @@ def from_spec(handle: str, spec: MetricSpec, *, editable: bool, note: str = "") 
         resolution=spec.resolution,
         editable=editable,
         note=note,
+        sample_period=spec.sample_period,
+        domain=spec.domain_text(),
     )
 
 
@@ -76,7 +82,11 @@ def from_remote_metric(metric: RemoteMetric) -> WidgetSpec:
     A foreign device may publish no label, so the handle stands in for one. Everything else
     is optional too and simply arrives as None.
     """
-    if metric.controllable_now:
+    if metric.is_sample_array:
+        # Not a restriction we impose: BICEPS defines no operation that writes a sample
+        # array, so nobody can drive one remotely.
+        note = "samples, read-only"
+    elif metric.controllable_now:
         note = ""
     elif metric.controllable:
         note = "control disabled by the device"
@@ -93,6 +103,8 @@ def from_remote_metric(metric: RemoteMetric) -> WidgetSpec:
         maximum=metric.maximum,
         editable=metric.controllable_now,
         note=note,
+        sample_period=metric.sample_period,
+        domain=metric.domain_text(),
     )
 
 

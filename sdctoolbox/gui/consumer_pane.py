@@ -71,6 +71,18 @@ NO_VALUE = "\u2014"
 EDITOR_TEXT = 0
 EDITOR_CHOICE = 1
 
+
+def _displayable(metric) -> object:  # noqa: ANN001 - a RemoteMetric
+    """What a card should be given: a block of samples, or a single value."""
+    return list(metric.samples) if metric.is_sample_array else metric.value
+
+
+def _value_text(metric) -> str:  # noqa: ANN001 - a RemoteMetric
+    """What the table's Value cell shows."""
+    if metric.is_sample_array:
+        return f"{len(metric.samples)} sample(s)" if metric.samples else NO_VALUE
+    return NO_VALUE if metric.value is None else str(metric.value)
+
 FINISHED_STATES = (msg_types.InvocationState.FINISHED, msg_types.InvocationState.FINISHED_MOD)
 
 
@@ -257,6 +269,8 @@ class ConsumerPane(QWidget):
         self.bridge.descriptors_updated.connect(lambda _: self.refresh())
         self.bridge.operations_changed.connect(lambda _: self.refresh())
         self.bridge.alerts_changed.connect(lambda _: self._rebuild_alerts())
+        # A peer's waveforms arrive as a WaveformStream, on their own observable.
+        self.bridge.waveforms_changed.connect(lambda _: self.refresh_values())
         self.bridge.peer_restarted.connect(self._on_peer_restarted)
         self._set_status(f"Connected to {remote.epr}")
         self.refresh()
@@ -331,8 +345,8 @@ class ConsumerPane(QWidget):
                 COL_HANDLE: handle,
                 COL_LABEL: metric.label or "",
                 COL_KIND: metric.kind.value if metric.kind else metric.node_type_name,
-                COL_VALUE: NO_VALUE if metric.value is None else str(metric.value),
-                COL_RANGE: metric.range_text(),
+                COL_VALUE: _value_text(metric),
+                COL_RANGE: metric.domain_text() or metric.range_text(),
                 COL_UNIT: metric.unit_label or "",
                 COL_WRITABLE: writable,
             }
@@ -368,7 +382,7 @@ class ConsumerPane(QWidget):
         if self.remote is None:
             return
         metrics = self.remote.metrics()
-        self.board.show_values({handle: metric.value for handle, metric in metrics.items()})
+        self.board.show_values({handle: _displayable(metric) for handle, metric in metrics.items()})
         for row in range(self.table.rowCount()):
             handle_item = self.table.item(row, COL_HANDLE)
             if handle_item is None:
@@ -378,7 +392,7 @@ class ConsumerPane(QWidget):
                 continue
             item = self.table.item(row, COL_VALUE)
             if item is not None:
-                item.setText(NO_VALUE if metric.value is None else str(metric.value))
+                item.setText(_value_text(metric))
 
     # -- widgets or table ----------------------------------------------------------
 
@@ -400,7 +414,7 @@ class ConsumerPane(QWidget):
             return
         metrics = self.remote.metrics()
         self.board.set_metrics([from_remote_metric(metric) for _, metric in sorted(metrics.items())])
-        self.board.show_values({handle: metric.value for handle, metric in metrics.items()})
+        self.board.show_values({handle: _displayable(metric) for handle, metric in metrics.items()})
 
     def _on_widget_value_requested(self, handle: str, value: object) -> None:
         """A control asked for a value on the peer. That is a remote write, so it waits."""

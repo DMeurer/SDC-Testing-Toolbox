@@ -18,10 +18,11 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ...model import MetricKind
+from ...model import SAMPLE_ARRAY_KINDS, MetricKind
 from ..no_wheel import NoWheelComboBox, NoWheelSlider
 from ..styling import mute
 from .base import MetricWidget, WidgetSpec
+from .plot import SamplePlot
 
 # A Qt slider works in ints. Above this many steps it stops being a useful control and the
 # stepper is a better fit, so the slider declines the metric.
@@ -40,6 +41,49 @@ def _trim(value: Decimal) -> str:
     if "." in text:
         text = text.rstrip("0").rstrip(".")
     return text or "0"
+
+
+class SampleArrayWidget(MetricWidget):
+    """A plot, for the two kinds whose state carries many values instead of one.
+
+    Both sample-array kinds land here because both are a list of numbers against an axis,
+    but they are drawn differently and for a reason:
+
+    * a **waveform** is samples against *time*, arriving in blocks. Older samples scroll off
+      the left, so what you see is a window onto something continuous.
+    * a **distribution** is samples against a *domain* - the DomainUnit, e.g. Hz. It is one
+      complete picture that gets replaced, not a moving window, so it is drawn as bars
+      across its DistributionRange.
+
+    Painted by hand rather than with QtCharts: it is a polyline, and the alternative is a
+    dependency this project has deliberately kept out.
+    """
+
+    priority = 15
+
+    @classmethod
+    def matches(cls, spec: WidgetSpec) -> bool:
+        return spec.kind in SAMPLE_ARRAY_KINDS
+
+    def build(self) -> None:
+        self.plot = SamplePlot(
+            scrolling=self.spec.kind is MetricKind.WAVEFORM,
+            minimum=self.spec.minimum,
+            maximum=self.spec.maximum,
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.plot)
+
+    def show_value(self, value: Any) -> None:
+        """Accept a block of samples. A single value would be meaningless here."""
+        if isinstance(value, (list, tuple)):
+            self.plot.add_samples(value)
+
+    def set_editable(self, editable: bool) -> None:  # noqa: FBT001, ARG002
+        # Nothing to enable: BICEPS defines no operation that writes a sample array, so
+        # these are read-only for everyone, not just for us.
+        return
 
 
 class ChoiceWidget(MetricWidget):
