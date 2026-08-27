@@ -1,7 +1,7 @@
 {
   "version": 1,
   "name": "Insufflator",
-  "description": "Six data sources and three alarms, roughly what a laparoscopic insufflator publishes.",
+  "description": "Eight data sources and three alarms, roughly what a laparoscopic insufflator publishes.",
   "device": {
     "instance_name": "insufflator",
     "friendly_name": "Example insufflator"
@@ -71,6 +71,29 @@
       "label": "Operator note",
       "kind": "text",
       "controllable": true
+    },
+    {
+      "handle": "m.pressure_trace",
+      "label": "Pressure trace",
+      "kind": "waveform",
+      "controllable": false,
+      "unit": "mmHg",
+      "resolution": "0.1",
+      "minimum": "0",
+      "maximum": "30",
+      "sample_period": "0.1",
+      "shape": "sine"
+    },
+    {
+      "handle": "m.flow_spectrum",
+      "label": "Flow spectrum",
+      "kind": "distribution",
+      "controllable": false,
+      "unit": "dB",
+      "resolution": "0.1",
+      "domain_unit": "Hz",
+      "domain_minimum": "0",
+      "domain_maximum": "50"
     }
   ],
   "alerts": [

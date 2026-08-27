@@ -25,6 +25,7 @@ from .model import (
     MetricKind,
     MetricSpec,
     PatientInfo,
+    WaveformShape,
 )
 
 if TYPE_CHECKING:
@@ -154,6 +155,14 @@ def metric_to_dict(handle: str, spec: MetricSpec) -> dict[str, Any]:
         entry["maximum"] = str(spec.maximum)
     if spec.initial_value is not None:
         entry["initial_value"] = str(spec.initial_value)
+    if spec.kind is MetricKind.WAVEFORM:
+        entry["sample_period"] = str(spec.sample_period)
+        entry["shape"] = spec.shape.value
+    if spec.kind is MetricKind.DISTRIBUTION:
+        if spec.domain_unit_label:
+            entry["domain_unit"] = spec.domain_unit_label
+        entry["domain_minimum"] = str(spec.domain_minimum)
+        entry["domain_maximum"] = str(spec.domain_maximum)
     return entry
 
 
@@ -222,7 +231,9 @@ def to_dict(service: ProviderService, *, include_values: bool = True) -> dict[st
     metrics = []
     for handle, spec in sorted(service.list_metrics().items()):
         entry = metric_to_dict(handle, spec)
-        if include_values:
+        # A sample array's samples are generated or pushed, not configured, so recording
+        # a block of them as an initial value would be recording noise.
+        if include_values and not spec.is_sample_array:
             current = service.get_value(handle)
             if current is not None:
                 entry["initial_value"] = str(current)
@@ -300,6 +311,16 @@ def metric_from_dict(entry: dict[str, Any]) -> MetricSpec:
             controllable=bool(entry.get("controllable", False)),
             handle=entry.get("handle") or None,
             initial_value=initial,
+            sample_period=_decimal_or_none(entry.get("sample_period"), f"metrics[{label}].sample_period"),
+            shape=_enum_or_default(
+                WaveformShape,
+                entry.get("shape"),
+                WaveformShape.SINE,
+                f"metrics[{label}].shape",
+            ),
+            domain_unit_label=str(entry.get("domain_unit") or ""),
+            domain_minimum=_decimal_or_none(entry.get("domain_minimum"), f"metrics[{label}].domain_minimum"),
+            domain_maximum=_decimal_or_none(entry.get("domain_maximum"), f"metrics[{label}].domain_maximum"),
         )
     except (ValueError, TypeError) as exc:
         msg = f"metrics[{label}]: {exc}"

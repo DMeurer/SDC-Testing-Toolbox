@@ -23,7 +23,14 @@ sys.path.insert(0, str(ROOT))
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 
 from sdctoolbox import config  # noqa: E402
-from sdctoolbox.model import AlertKind, AlertPriority, AlertSpec, MetricKind, MetricSpec  # noqa: E402
+from sdctoolbox.model import (  # noqa: E402
+    AlertKind,
+    AlertPriority,
+    AlertSpec,
+    MetricKind,
+    MetricSpec,
+    WaveformShape,
+)
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 
@@ -65,6 +72,11 @@ def snapshot(service: ProviderService) -> dict:
                 spec.maximum,
                 spec.controllable,
                 service.get_value(handle),
+                spec.sample_period,
+                spec.shape,
+                spec.domain_unit_label,
+                spec.domain_minimum,
+                spec.domain_maximum,
             )
             for handle, spec in service.list_metrics().items()
         },
@@ -106,6 +118,27 @@ def build_reference(service: ProviderService) -> None:
         ),
     )
     service.add_metric(MetricSpec(label="Patient note", kind=MetricKind.TEXT, controllable=False))
+    service.add_metric(
+        MetricSpec(
+            label="Pleth",
+            kind=MetricKind.WAVEFORM,
+            unit_label="%",
+            minimum=Decimal("0"),
+            maximum=Decimal("100"),
+            sample_period=Decimal("0.05"),
+            shape=WaveformShape.SQUARE,
+        ),
+    )
+    service.add_metric(
+        MetricSpec(
+            label="Spectrum",
+            kind=MetricKind.DISTRIBUTION,
+            unit_label="dB",
+            domain_unit_label="Hz",
+            domain_minimum=Decimal("0"),
+            domain_maximum=Decimal("500"),
+        ),
+    )
     service.add_alert(
         AlertSpec(
             label="Zoom high",
@@ -156,7 +189,7 @@ def main() -> int:
         report.check(path.exists(), "the file is written", f"{path.stat().st_size} bytes")
         data = json.loads(path.read_text(encoding="utf-8"))
         report.check(data.get("version") == config.CONFIG_VERSION, "it records a version")
-        report.check(len(data.get("metrics", [])) == 3, "all data sources are in it")  # noqa: PLR2004
+        report.check(len(data.get("metrics", [])) == 5, "all data sources are in it")  # noqa: PLR2004
         report.check(len(data.get("alerts", [])) == 2, "and both alarms")  # noqa: PLR2004
         report.check(
             all("handle" in entry for entry in data["metrics"]),
@@ -179,7 +212,7 @@ def main() -> int:
     target.start()
     try:
         metrics, alerts = config.load_into(target, path)
-        report.check(metrics == 3, "three data sources created", str(metrics))  # noqa: PLR2004
+        report.check(metrics == 5, "five data sources created", str(metrics))  # noqa: PLR2004
         report.check(alerts == 2, "two alarms created", str(alerts))  # noqa: PLR2004
         after = snapshot(target)
         report.check(after == before, "everything matches the original")
@@ -204,7 +237,7 @@ def main() -> int:
         print("\n3. Import replaces rather than appends")
         metrics, _ = config.load_into(target, path)
         report.check(
-            len(target.list_metrics()) == 3,  # noqa: PLR2004
+            len(target.list_metrics()) == 5,  # noqa: PLR2004
             "loading twice does not duplicate anything",
             str(sorted(target.list_metrics())),
         )
