@@ -67,6 +67,16 @@ class Report:
         return 0
 
 
+def wait_until(predicate, timeout: float = 10.0) -> bool:
+    """Poll until predicate() is true or the time runs out."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.2)
+    return False
+
+
 def broken_entity(service: ProviderService, handle: str):  # noqa: ANN201 - an sdc11073 Entity
     """A descriptor missing a field BICEPS makes mandatory, ready to be written.
 
@@ -178,7 +188,7 @@ def check_sample_arrays(report: Report, service: ProviderService) -> None:
         str([(r.Lower, r.Upper) for r in descriptor.TechnicalRange]),
     )
 
-    report.check(service.waveforms_running, "adding a waveform starts the generator")
+    report.check(service.generator_running, "adding a waveform starts the generator")
     deadline = time.monotonic() + 10.0
     while not service.get_samples(wave) and time.monotonic() < deadline:
         time.sleep(0.2)
@@ -225,14 +235,47 @@ def check_sample_arrays(report: Report, service: ProviderService) -> None:
         "the domain becomes a DistributionRange, not a TechnicalRange",
         f"{descriptor.DistributionRange.Lower} to {descriptor.DistributionRange.Upper}",
     )
+    # A distribution used to have nothing driving it, so its card said 'waiting for
+    # samples' for ever - there was no way to fill one from the window at all.
+    filled = wait_until(lambda: bool(service.get_samples(dist)), timeout=10.0)
+    report.check(
+        filled,
+        "a distribution is filled by the generator, without being asked",
+        f"{len(service.get_samples(dist))} samples",
+    )
+    first_distribution = list(service.get_samples(dist))
+    report.check(
+        bool(first_distribution)
+        and wait_until(lambda: service.get_samples(dist) != first_distribution, timeout=10.0),
+        "and keeps moving, so a still card means something is wrong",
+        f"{len(first_distribution)} samples to start",
+    )
+
+    step = descriptor.DistributionRange.StepWidth
+    report.check(
+        step is not None and step != descriptor.Resolution,
+        "StepWidth is the domain spacing, not the value Resolution",
+        f"StepWidth {step}, Resolution {descriptor.Resolution}",
+    )
+    implied = (descriptor.DistributionRange.Upper - descriptor.DistributionRange.Lower) / step + 1
+    report.check(
+        abs(implied - len(service.get_samples(dist))) < 1,
+        "and it agrees with how many samples are actually sent",
+        f"descriptor implies {implied:.1f}, {len(service.get_samples(dist))} sent",
+    )
 
     block = [Decimal(str(v)) for v in ("1.5", "2.5", "3.5")]
     service.set_samples(dist, block)
     report.check(service.get_samples(dist) == block, "a distribution takes samples it is given")
+    report.check(
+        wait_until(lambda: service.get_samples(dist) != block, timeout=3.0) is False,
+        "and setting one by hand takes it off the generator, so the block survives",
+        str(service.get_samples(dist)),
+    )
     service.set_samples(dist, [Decimal("9")])
     report.check(
         service.get_samples(dist) == [Decimal("9")],
-        "and a second block replaces the first rather than appending",
+        "a second block replaces the first rather than appending",
         str(service.get_samples(dist)),
     )
 
@@ -248,8 +291,8 @@ def check_sample_arrays(report: Report, service: ProviderService) -> None:
         else:
             report.check(False, f"refuses {why}", "it was accepted")  # noqa: FBT003
 
-    service.stop_waveforms()
-    report.check(not service.waveforms_running, "the generator can be stopped")
+    service.stop_generator()
+    report.check(not service.generator_running, "the generator can be stopped")
     service.remove_metric(plain)
     service.remove_metric(dist)
     service.remove_metric(wave)

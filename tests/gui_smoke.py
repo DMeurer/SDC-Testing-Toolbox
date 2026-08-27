@@ -748,6 +748,14 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             f"{len(pane.board.card(wave).control.plot.samples)} on the plot",
         )
 
+        # A distribution used to have nothing driving it at all: no generator, and no way
+        # to push a block from the window, so the card read "waiting for samples" for ever.
+        report.check(
+            wait_for(app, lambda: bool(pane.board.card(dist).control.plot.samples), timeout=15.0),
+            "a distribution fills itself, without anybody pushing a block",
+            f"{len(pane.board.card(dist).control.plot.samples)} bars",
+        )
+
         service.set_samples(dist, [Decimal("1"), Decimal("5"), Decimal("2")])
         pump(app)
         report.check(
@@ -769,7 +777,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         # board being rebuilt. Appending there duplicated the newest block every time, and
         # because each pane pushed *every* metric on *every* report, two waveforms made
         # both of their traces jagged and a third made it worse.
-        service.stop_waveforms()
+        service.stop_generator()
         pump(app)
         wave_plot = pane.board.card(wave).control.plot
         wave_plot.clear()
@@ -817,7 +825,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                 sample_period=Decimal("0.5"),
             ),
         )
-        service.stop_waveforms()
+        service.stop_generator()
         pane.refresh()
         pump(app)
         first_plot = pane.board.card(wave).control.plot
@@ -894,7 +902,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
 
         service.remove_metric(wave)
         service.remove_metric(dist)
-        service.stop_waveforms()
+        service.stop_generator()
         pane.refresh()
         pump(app)
 

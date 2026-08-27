@@ -172,17 +172,21 @@ class ProviderShell(Cmd):
         suffix = " ..." if len(current) > 12 else ""  # noqa: PLR2004
         print(f"  {len(current)} sample(s): {shown}{suffix}")
 
-    def do_waveforms(self, line: str) -> None:
-        """waveforms [on|off]  -  show or change whether waveform generation is running."""
+    def do_generator(self, line: str) -> None:
+        """generator [on|off]  -  show or change whether sample generation is running.
+
+        Drives waveforms and distributions both. Setting a block with `samples` takes that
+        metric off the generator, so it keeps what you gave it.
+        """
         text = line.strip().lower()
         if text == "on":
-            self.service.start_waveforms()
+            self.service.start_generator()
         elif text == "off":
-            self.service.stop_waveforms()
+            self.service.stop_generator()
         elif text:
-            print("usage: waveforms [on|off]")
+            print("usage: generator [on|off]")
             return
-        print(f"  generator {'running' if self.service.waveforms_running else 'stopped'}")
+        print(f"  generator {'running' if self.service.generator_running else 'stopped'}")
 
     def do_set(self, line: str) -> None:
         """set <handle> <value>  -  change the value of one of our data sources."""

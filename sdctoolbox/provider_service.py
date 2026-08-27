@@ -55,6 +55,56 @@ WAVEFORM_BLOCK_SECONDS = 0.5
 # quickly they get there.
 WAVEFORM_CYCLE_SAMPLES = 40
 
+# How many samples a generated distribution spreads across its domain. This is what fixes
+# DistributionRange/StepWidth, because the two have to agree: a descriptor saying the
+# samples are 0.1 Hz apart while five arrive for a 50 Hz domain describes nothing real.
+DISTRIBUTION_BINS = 32
+
+# How wide the generated bell is, as a fraction of the domain.
+DISTRIBUTION_WIDTH = 0.12
+
+# How far the bell's peak moves per tick, as a fraction of a full sweep.
+DISTRIBUTION_DRIFT = 0.02
+
+
+def _domain_step(spec: MetricSpec) -> Decimal:
+    """The gap between two samples along a distribution's domain.
+
+    Quantised, because a domain that does not divide evenly by the bin count produces a
+    repeating decimal and that would go on the wire in full. Six places keeps the descriptor
+    honest to well under a thousandth of a bin.
+    """
+    # `or` would be wrong here: Decimal("0") is falsy, so a domain ending at zero - which
+    # -60..0 dB is - would silently become 1 and the step would be computed over 61.
+    upper = spec.domain_maximum if spec.domain_maximum is not None else Decimal("1")
+    lower = spec.domain_minimum if spec.domain_minimum is not None else Decimal("0")
+    span = upper - lower
+    if span <= 0:
+        return Decimal("1")
+    step = span / Decimal(DISTRIBUTION_BINS - 1)
+    return step.quantize(Decimal("0.000001")).normalize()
+
+
+def _distribution_samples(spec: MetricSpec, phase: float) -> list[Decimal]:
+    """A bell across the domain, its peak drifting with the phase.
+
+    A distribution is a shape over a domain rather than a signal in time, so the generated
+    one is the shape people actually recognise as a distribution. It still moves, because a
+    card that never changes tells you nothing about whether reports are arriving.
+    """
+    low = float(spec.minimum if spec.minimum is not None else 0)
+    high = float(spec.maximum if spec.maximum is not None else 100)
+    if high <= low:
+        high = low + 1.0
+    centre = 0.5 + 0.3 * math.sin(phase * 2.0 * math.pi)
+
+    samples = []
+    for index in range(DISTRIBUTION_BINS):
+        position = index / (DISTRIBUTION_BINS - 1)
+        weight = math.exp(-((position - centre) ** 2) / (2.0 * DISTRIBUTION_WIDTH**2))
+        samples.append(Decimal(str(round(low + weight * (high - low), 2))))
+    return samples
+
 
 def _shape_sample(shape: WaveformShape, phase: float, low: float, high: float) -> Decimal:
     """One sample of a curve, as a Decimal between low and high.
@@ -118,6 +168,8 @@ class ProviderService:
         self._waveform_thread: threading.Thread | None = None
         self._waveform_stop = threading.Event()
         self._waveform_phase: dict[str, float] = {}
+        # Sample arrays whose block was set by hand, and which the generator leaves alone.
+        self._pinned_samples: set[str] = set()
         self._lock = threading.RLock()
 
     # -- lifecycle -----------------------------------------------------------------
@@ -188,7 +240,7 @@ class ProviderService:
 
     def stop(self) -> None:
         """Take the provider off the network."""
-        self.stop_waveforms()
+        self.stop_generator()
         if self._provider is not None:
             self._provider.stop_all()
             self._provider = None
@@ -202,6 +254,7 @@ class ProviderService:
         self._alerts.clear()
         self._alert_signals.clear()
         self._waveform_phase.clear()
+        self._pinned_samples.clear()
         logger.info("provider %r stopped", self.instance_name)
 
     def __enter__(self) -> ProviderService:
@@ -249,10 +302,12 @@ class ProviderService:
                 self.set_value(handle, spec.initial_value)
             if spec.controllable:
                 self.enable_control(handle)
-            if spec.kind is MetricKind.WAVEFORM:
-                # A waveform with nothing driving it publishes an empty descriptor and
-                # never a sample, which looks like a broken device rather than an idle one.
-                self.start_waveforms()
+            if spec.is_sample_array:
+                # A sample array with nothing driving it publishes a descriptor and never a
+                # sample, which looks like a broken device rather than an idle one. That is
+                # what a distribution used to do: there was no way to fill one from the
+                # window at all, so its card said 'waiting for samples' for ever.
+                self.start_generator()
             return handle
 
     def remove_metric(self, handle: str) -> None:
@@ -273,6 +328,8 @@ class ProviderService:
             # deleted_descriptors_by_handle synchronously, and any observer that reacts by
             # listing our metrics would otherwise see a handle whose entity is already gone.
             self._specs.pop(handle, None)
+            self._waveform_phase.pop(handle, None)
+            self._pinned_samples.discard(handle)
 
             with self.mdib.descriptor_transaction() as mgr:
                 for entity in entities:
@@ -763,6 +820,9 @@ class ProviderService:
                 raise ValueError(msg)
 
             entity = self._apply_samples(handle, samples)
+            # Setting a block by hand takes the metric off the generator. Without this the
+            # next tick would overwrite it, which makes set_samples look broken.
+            self._pinned_samples.add(handle)
             if spec.kind is MetricKind.WAVEFORM:
                 with self.mdib.rt_sample_state_transaction() as mgr:
                     mgr.write_entity(entity)
@@ -795,8 +855,13 @@ class ProviderService:
         value = getattr(entity.state, "MetricValue", None)
         return list(getattr(value, "Samples", None) or [])
 
-    def start_waveforms(self) -> None:
-        """Begin generating samples for every waveform this device publishes.
+    def start_generator(self) -> None:
+        """Begin generating samples for every sample array this device publishes.
+
+        Both kinds, not just waveforms: a distribution with nothing driving it shows an
+        empty card for ever, and until this existed there was no way to fill one from the
+        window at all. Pushing a block with set_samples takes that metric off the generator,
+        so your own data is not overwritten on the next tick.
 
         One thread drives all of them. sdc11073 ships a WaveformProviderProtocol and no
         implementation of it, and a provider configured with none must be started with
@@ -810,13 +875,13 @@ class ProviderService:
             self._waveform_stop.clear()
             self._waveform_thread = threading.Thread(
                 target=self._run_waveforms,
-                name=f"waveforms-{self.instance_name}",
+                name=f"samples-{self.instance_name}",
                 daemon=True,
             )
             self._waveform_thread.start()
-            logger.info("waveform generator started")
+            logger.info("sample generator started")
 
-    def stop_waveforms(self) -> None:
+    def stop_generator(self) -> None:
         """Stop generating samples and wait for the thread to notice."""
         thread = self._waveform_thread
         if thread is None:
@@ -824,15 +889,15 @@ class ProviderService:
         self._waveform_stop.set()
         thread.join(timeout=5.0)
         self._waveform_thread = None
-        logger.info("waveform generator stopped")
+        logger.info("sample generator stopped")
 
     @property
-    def waveforms_running(self) -> bool:
+    def generator_running(self) -> bool:
         """Whether the generator thread is alive."""
         return self._waveform_thread is not None and self._waveform_thread.is_alive()
 
     def _run_waveforms(self) -> None:
-        """Push one block per waveform, per tick, until asked to stop.
+        """Push one block per sample array, per tick, until asked to stop.
 
         Every waveform goes into **one** transaction, so the tick produces one
         WaveformStream carrying all of them rather than one report each. sdc11073 builds
@@ -849,36 +914,63 @@ class ProviderService:
             self._waveform_stop.wait(max(0.0, WAVEFORM_BLOCK_SECONDS - (time.monotonic() - started)))
 
     def _publish_one_block(self) -> None:
-        """Advance every waveform by one block and send them together."""
+        """Advance every generated sample array by one block and send them.
+
+        Two transactions, not one, and that is forced by the standard rather than chosen:
+        sdc11073 sorts states into buckets by type, and a distribution state is an ordinary
+        metric state. Putting it in the rt transaction would not make it a waveform, it
+        would just be in the wrong place.
+        """
         with self._lock:
-            waveforms = [
-                (handle, spec)
-                for handle, spec in self._specs.items()
-                if spec.kind is MetricKind.WAVEFORM
-            ]
-            if not waveforms:
+            waveforms = []
+            distributions = []
+            for handle, spec in self._specs.items():
+                if not spec.is_sample_array or handle in self._pinned_samples:
+                    continue
+                if spec.kind is MetricKind.WAVEFORM:
+                    waveforms.append((handle, spec))
+                else:
+                    distributions.append((handle, spec))
+            if not waveforms and not distributions:
                 return
 
-            entities = []
             advanced: dict[str, float] = {}
+            wave_entities = []
             for handle, spec in waveforms:
                 block, next_phase = self._next_block(handle, spec)
-                try:
-                    entities.append(self._apply_samples(handle, block))
-                except (KeyError, TypeError):
-                    # Removed between listing and writing. Not worth stopping for.
-                    logger.debug("skipped a waveform block for %s", handle, exc_info=True)
-                    continue
-                advanced[handle] = next_phase
+                entity = self._try_apply(handle, block)
+                if entity is not None:
+                    wave_entities.append(entity)
+                    advanced[handle] = next_phase
 
-            if not entities:
-                return
-            with self.mdib.rt_sample_state_transaction() as mgr:
-                for entity in entities:
-                    mgr.write_entity(entity)
-            # Only once the block is out. Advancing a phase for samples that were never
+            dist_entities = []
+            for handle, spec in distributions:
+                phase = self._waveform_phase.get(handle, 0.0)
+                entity = self._try_apply(handle, _distribution_samples(spec, phase))
+                if entity is not None:
+                    dist_entities.append(entity)
+                    advanced[handle] = (phase + DISTRIBUTION_DRIFT) % 1.0
+
+            if wave_entities:
+                with self.mdib.rt_sample_state_transaction() as mgr:
+                    for entity in wave_entities:
+                        mgr.write_entity(entity)
+            if dist_entities:
+                with self.mdib.metric_state_transaction() as mgr:
+                    for entity in dist_entities:
+                        mgr.write_entity(entity)
+
+            # Only once the blocks are out. Advancing a phase for samples that were never
             # published would leave a step in the curve the size of the lost block.
             self._waveform_phase.update(advanced)
+
+    def _try_apply(self, handle: str, block: list[Decimal]):  # noqa: ANN202 - an Entity or None
+        """Stage a block, or None if the metric went away between listing and writing."""
+        try:
+            return self._apply_samples(handle, block)
+        except (KeyError, TypeError):
+            logger.debug("skipped a block for %s", handle, exc_info=True)
+            return None
 
     def _next_block(self, handle: str, spec: MetricSpec) -> tuple[list[Decimal], float]:
         """The next block for one waveform, and the phase it leaves off at.
@@ -1017,7 +1109,11 @@ class ProviderService:
             descriptor.DistributionRange = pm_types.Range(
                 lower=spec.domain_minimum,
                 upper=spec.domain_maximum,
-                step_width=spec.resolution,
+                # Not Resolution. Resolution is how finely a *sample value* is measured;
+                # StepWidth is how far apart two samples sit along the domain, so it is
+                # fixed by how many we send. Passing Resolution here made the descriptor
+                # claim 501 samples across a 0..50 Hz domain while five were being sent.
+                step_width=_domain_step(spec),
             )
 
     def _set_operating_mode(self, operation_handle: str, mode: pm_types.OperatingMode) -> None:

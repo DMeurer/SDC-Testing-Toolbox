@@ -180,16 +180,18 @@ The distinction between `Unit` and `DomainUnit` is the one worth seeing on scree
 
 **Neither can be remote-controlled.** That is not a limitation of this tool: BICEPS defines no operation whose argument is a sample array, so the New data source dialog hides the control checkbox for both, and a peer's waveform is marked `samples, read-only`.
 
-Add a waveform and it starts generating immediately — a waveform with nothing driving it publishes a descriptor and never a sample, which looks like a broken device rather than an idle one. Pick the curve from *Shape*; sine, sawtooth, square and noise are there so a consumer you are testing can be checked against something recognisable by eye. The shape is **not** a BICEPS concept: the standard carries samples and says nothing about what they look like.
+Add either kind and it starts generating immediately — a waveform with nothing driving it publishes a descriptor and never a sample, which looks like a broken device rather than an idle one. Pick the curve from *Shape*; sine, sawtooth, square and noise are there so a consumer you are testing can be checked against something recognisable by eye. The shape is **not** a BICEPS concept: the standard carries samples and says nothing about what they look like.
 
-A distribution has nothing driving it and waits to be given a block, from the console:
+A distribution gets a drifting bell across its domain, which is the shape that makes one recognisable as a distribution rather than a signal. Push your own block instead and that metric comes off the generator, so what you set stays put:
 
 ```
 provider> samples m.spectrum 3 9 27 9 3
   5 sample(s): 3 9 27 9 3
-provider> waveforms off
+provider> generator off
   generator stopped
 ```
+
+`DistributionRange/StepWidth` is derived from how many samples are actually sent, so the descriptor and the data agree. It is **not** `Resolution`: StepWidth is how far apart two samples sit along the domain, Resolution is how finely one sample value is measured.
 
 The plot is painted by hand in `sdctoolbox/gui/widgets/plot.py`. It is a polyline and a couple of guide lines, and pulling in a charting library for that would have been the largest dependency in the project by a wide margin.
 
@@ -237,9 +239,9 @@ Five suites, all runnable from a terminal, all printing PASS/FAIL per check.
 | Suite                       | Checks | Covers                                                                                |
 |-----------------------------|--------|---------------------------------------------------------------------------------------|
 | `tests/acceptance_core.py`  | 68     | two processes: discovery, control, rejections, runtime descriptors, alarms, waveforms  |
-| `tests/gui_smoke.py`        | 248    | the real window offscreen, plus a live peer process                                    |
+| `tests/gui_smoke.py`        | 249    | the real window offscreen, plus a live peer process                                    |
 | `tests/widget_controls.py`  | 64     | which control for which metric, then controls driven for real                          |
-| `tests/provider_core.py`    | 61     | descriptor rollback, sample arrays, signal handling, contexts, presets                 |
+| `tests/provider_core.py`    | 66     | descriptor rollback, sample arrays, signal handling, contexts, presets                 |
 | `tests/config_roundtrip.py` | 25     | export, reimport, compare; broken files refused                                        |
 
 ```powershell
