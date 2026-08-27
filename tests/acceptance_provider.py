@@ -40,6 +40,10 @@ LOCKED = "m.locked_setting"
 LATE = "m.late_arrival"
 WAVE = "m.pleth"
 DIST = "m.spectrum"
+SAW = "m.saw"
+# The generator advances a fixed fraction of a cycle per sample, so a sawtooth from 0 to
+# 100 rises by exactly 100/40 each time. acceptance_core relies on that being exact.
+SAW_CYCLE = 40
 LIMIT_ALARM = "al.zoom_out_of_range"
 MANUAL_ALARM = "al.service_due"
 
@@ -134,6 +138,21 @@ def main() -> int:
             domain_minimum=Decimal("0"),
             domain_maximum=Decimal("500"),
             handle=DIST,
+        ),
+    )
+    # A second waveform, and the one the stream-continuity check watches. Two of them is
+    # the case that used to go wrong: each report made the consumer re-push the other's
+    # latest block into its trace.
+    service.add_metric(
+        MetricSpec(
+            label="Saw",
+            kind=MetricKind.WAVEFORM,
+            unit_label="mmHg",
+            minimum=Decimal("0"),
+            maximum=Decimal("100"),
+            sample_period=Decimal("0.1"),
+            shape=WaveformShape.SAWTOOTH,
+            handle=SAW,
         ),
     )
     # A distribution has nothing driving it, so it gets one block and keeps it.

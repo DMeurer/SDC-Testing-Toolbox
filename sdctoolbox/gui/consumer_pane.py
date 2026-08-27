@@ -270,7 +270,7 @@ class ConsumerPane(QWidget):
         self.bridge.operations_changed.connect(lambda _: self.refresh())
         self.bridge.alerts_changed.connect(lambda _: self._rebuild_alerts())
         # A peer's waveforms arrive as a WaveformStream, on their own observable.
-        self.bridge.waveforms_changed.connect(lambda _: self.refresh_values())
+        self.bridge.waveforms_changed.connect(self._on_waveforms_changed)
         self.bridge.peer_restarted.connect(self._on_peer_restarted)
         self._set_status(f"Connected to {remote.epr}")
         self.refresh()
@@ -393,6 +393,26 @@ class ConsumerPane(QWidget):
             item = self.table.item(row, COL_VALUE)
             if item is not None:
                 item.setText(_value_text(metric))
+
+    def _on_waveforms_changed(self, states_by_handle: dict) -> None:
+        """A block arrived from the peer.
+
+        Only the handles the report carried, and appended rather than shown. Pushing every
+        metric on every report - which is what calling refresh_values here used to do -
+        spliced each waveform's latest block into its trace once per *other* waveform, so
+        two waveforms made both of them jagged and three made it worse.
+        """
+        if self.remote is None:
+            return
+        metrics = self.remote.metrics()
+        self.board.append_samples(
+            {
+                handle: list(metrics[handle].samples)
+                for handle in states_by_handle
+                if handle in metrics
+            },
+        )
+        self.refresh_values()
 
     # -- widgets or table ----------------------------------------------------------
 

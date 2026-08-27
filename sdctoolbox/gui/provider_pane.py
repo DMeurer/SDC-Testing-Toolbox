@@ -329,9 +329,17 @@ class ProviderPane(QWidget):
             self._refreshing = False
 
     def _on_waveforms_changed(self, states_by_handle: dict) -> None:
-        """A block of samples arrived. Only the cards need it; the table shows a summary."""
+        """A block of samples arrived. Only the cards need it; the table shows a summary.
+
+        Scoped to the handles the report carried, and appended rather than shown, because
+        the plot has to be told the difference between new data and a refresh.
+
+        Creating a waveform descriptor also lands here, with a state that has no MetricValue
+        yet: a descriptor transaction puts the new sample-array state in the same bucket a
+        WaveformStream comes from. Such an event carries no samples and appends nothing.
+        """
         specs = self.service.list_metrics()
-        self.board.show_values(
+        self.board.append_samples(
             {
                 handle: self.service.get_samples(handle)
                 for handle in states_by_handle

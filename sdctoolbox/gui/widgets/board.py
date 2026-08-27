@@ -177,6 +177,17 @@ class WidgetBoard(QScrollArea):
             if card is not None and not card.control.busy_editing():
                 card.control.show_value(value)
 
+    def append_samples(self, blocks: dict[str, Any]) -> None:
+        """Hand each named card a block of new samples.
+
+        Deliberately keyed by handle and called only with the handles a report actually
+        carried: pushing every card on every report is what made traces jagged.
+        """
+        for handle, samples in blocks.items():
+            card = self._cards.get(handle)
+            if card is not None:
+                card.control.append_samples(samples)
+
     def clear(self) -> None:
         """Remove everything."""
         self.set_metrics([])

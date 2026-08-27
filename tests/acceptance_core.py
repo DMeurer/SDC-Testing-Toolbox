@@ -49,6 +49,8 @@ from acceptance_provider import (  # noqa: E402
     MANUAL_ALARM,
     MODE,
     NOTE,
+    SAW,
+    SAW_CYCLE,
     WAVE,
     ZOOM,
 )
@@ -370,6 +372,52 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
                 report.check(
                     not wave.controllable,
                     "no operation targets it: BICEPS has none that writes a sample array",
+                )
+
+                # The blocks have to join up. A sawtooth is used at the far end precisely
+                # because a break is arithmetic rather than a matter of opinion: consecutive
+                # samples rise by a fixed step until the wrap, so a duplicated, dropped or
+                # reordered block shows up as a delta that is neither.
+                print("\n5c. The stream joins up", flush=True)
+                received: list[Decimal] = []
+                seen_blocks: list[tuple] = []
+
+                def collect_blocks(states_by_handle: dict) -> None:
+                    state = states_by_handle.get(SAW)
+                    value = getattr(state, "MetricValue", None) if state is not None else None
+                    block = tuple(getattr(value, "Samples", None) or ())
+                    if block:
+                        seen_blocks.append(block)
+
+                remote.bind(waveform_by_handle=collect_blocks)
+                deadline = time.monotonic() + 25.0
+                while len(seen_blocks) < 6 and time.monotonic() < deadline:  # noqa: PLR2004
+                    time.sleep(0.5)
+
+                report.check(
+                    len(seen_blocks) >= 3,  # noqa: PLR2004
+                    "several blocks arrive",
+                    f"{len(seen_blocks)} blocks",
+                )
+                for block in seen_blocks:
+                    received.extend(block)
+
+                step = Decimal("100") / Decimal(SAW_CYCLE)
+                breaks = []
+                for index in range(1, len(received)):
+                    delta = received[index] - received[index - 1]
+                    wrapped = delta < 0 and received[index - 1] > Decimal("100") - step * 2
+                    if not wrapped and abs(delta - step) > Decimal("0.05"):
+                        breaks.append(f"{received[index - 1]}->{received[index]}")
+                report.check(
+                    not breaks,
+                    "and every block continues the one before it",
+                    f"{len(received)} samples, breaks at {breaks[:4]}" if breaks else f"{len(received)} samples",
+                )
+                report.check(
+                    len(set(seen_blocks)) == len(seen_blocks) or len(received) < 2,  # noqa: PLR2004
+                    "no block is delivered twice",
+                    f"{len(seen_blocks)} blocks, {len(set(seen_blocks))} distinct",
                 )
 
             dist = remote.metrics().get(DIST)

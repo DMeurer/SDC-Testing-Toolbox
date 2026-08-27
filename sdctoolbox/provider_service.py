@@ -761,28 +761,31 @@ class ProviderService:
             if not spec.is_sample_array:
                 msg = f"{handle!r} is a {spec.kind.value}, which holds one value; use set_value"
                 raise ValueError(msg)
-            for sample in samples:
-                if isinstance(sample, float):
-                    msg = "samples must be Decimal, never float"
-                    raise TypeError(msg)
 
-            entity = self.mdib.entities.by_handle(handle)
-            if entity is None:
-                msg = f"no metric with handle {handle!r}"
-                raise KeyError(msg)
-
-            # mk_metric_value raises if there already is one, so only ever call it once.
-            if entity.state.MetricValue is None:
-                entity.state.mk_metric_value()
-            entity.state.MetricValue.Samples = list(samples)
-            entity.state.MetricValue.DeterminationTime = time.time()
-
+            entity = self._apply_samples(handle, samples)
             if spec.kind is MetricKind.WAVEFORM:
                 with self.mdib.rt_sample_state_transaction() as mgr:
                     mgr.write_entity(entity)
             else:
                 with self.mdib.metric_state_transaction() as mgr:
                     mgr.write_entity(entity)
+
+    def _apply_samples(self, handle: str, samples: Sequence[Decimal]):  # noqa: ANN202 - an Entity
+        """Put a block on a state without committing it. Caller opens the transaction."""
+        for sample in samples:
+            if isinstance(sample, float):
+                msg = "samples must be Decimal, never float"
+                raise TypeError(msg)
+        entity = self.mdib.entities.by_handle(handle)
+        if entity is None:
+            msg = f"no metric with handle {handle!r}"
+            raise KeyError(msg)
+        # mk_metric_value raises if there already is one, so only ever call it once.
+        if entity.state.MetricValue is None:
+            entity.state.mk_metric_value()
+        entity.state.MetricValue.Samples = list(samples)
+        entity.state.MetricValue.DeterminationTime = time.time()
+        return entity
 
     def get_samples(self, handle: str) -> list[Decimal]:
         """The samples currently published for a sample-array metric."""
@@ -829,26 +832,59 @@ class ProviderService:
         return self._waveform_thread is not None and self._waveform_thread.is_alive()
 
     def _run_waveforms(self) -> None:
-        """Push one block of samples per waveform, per tick, until asked to stop."""
+        """Push one block per waveform, per tick, until asked to stop.
+
+        Every waveform goes into **one** transaction, so the tick produces one
+        WaveformStream carrying all of them rather than one report each. sdc11073 builds
+        that report from TransactionResult.rt_updates, which is already a list.
+        """
         while not self._waveform_stop.is_set():
             started = time.monotonic()
-            for handle, spec in list(self._specs.items()):
-                if spec.kind is not MetricKind.WAVEFORM:
-                    continue
-                try:
-                    self.set_samples(handle, self._next_block(handle, spec))
-                except (KeyError, ValueError, TypeError):
-                    # The metric was removed between listing and writing, or something
-                    # about it is unusable. Neither is worth killing the thread over.
-                    logger.debug("skipped a waveform block for %s", handle, exc_info=True)
-                except Exception:
-                    logger.exception("waveform generation failed for %s", handle)
+            try:
+                self._publish_one_block()
+            except Exception:
+                logger.exception("waveform generation failed")
             # Sleep the remainder of the block, so generation keeps real time rather than
             # drifting by however long the writes took.
             self._waveform_stop.wait(max(0.0, WAVEFORM_BLOCK_SECONDS - (time.monotonic() - started)))
 
-    def _next_block(self, handle: str, spec: MetricSpec) -> list[Decimal]:
-        """The next block of samples for one waveform, continuing where the last left off."""
+    def _publish_one_block(self) -> None:
+        """Advance every waveform by one block and send them together."""
+        with self._lock:
+            waveforms = [
+                (handle, spec)
+                for handle, spec in self._specs.items()
+                if spec.kind is MetricKind.WAVEFORM
+            ]
+            if not waveforms:
+                return
+
+            entities = []
+            advanced: dict[str, float] = {}
+            for handle, spec in waveforms:
+                block, next_phase = self._next_block(handle, spec)
+                try:
+                    entities.append(self._apply_samples(handle, block))
+                except (KeyError, TypeError):
+                    # Removed between listing and writing. Not worth stopping for.
+                    logger.debug("skipped a waveform block for %s", handle, exc_info=True)
+                    continue
+                advanced[handle] = next_phase
+
+            if not entities:
+                return
+            with self.mdib.rt_sample_state_transaction() as mgr:
+                for entity in entities:
+                    mgr.write_entity(entity)
+            # Only once the block is out. Advancing a phase for samples that were never
+            # published would leave a step in the curve the size of the lost block.
+            self._waveform_phase.update(advanced)
+
+    def _next_block(self, handle: str, spec: MetricSpec) -> tuple[list[Decimal], float]:
+        """The next block for one waveform, and the phase it leaves off at.
+
+        Deliberately does not store the phase: see _publish_one_block.
+        """
         period = float(spec.sample_period or DEFAULT_SAMPLE_PERIOD)
         count = max(1, int(round(WAVEFORM_BLOCK_SECONDS / period)))
         low = float(spec.minimum if spec.minimum is not None else 0)
@@ -857,11 +893,11 @@ class ProviderService:
             high = low + 1.0
 
         phase = self._waveform_phase.get(handle, 0.0)
-        samples = []
-        for index in range(count):
-            samples.append(_shape_sample(spec.shape, phase + index / WAVEFORM_CYCLE_SAMPLES, low, high))
-        self._waveform_phase[handle] = (phase + count / WAVEFORM_CYCLE_SAMPLES) % 1.0
-        return samples
+        block = [
+            _shape_sample(spec.shape, phase + index / WAVEFORM_CYCLE_SAMPLES, low, high)
+            for index in range(count)
+        ]
+        return block, (phase + count / WAVEFORM_CYCLE_SAMPLES) % 1.0
 
     # -- internals -----------------------------------------------------------------
 

@@ -150,6 +150,15 @@ class MetricWidget(QWidget):
 
     # -- helpers -----------------------------------------------------------------
 
+    def append_samples(self, samples: Any) -> None:
+        """Take a block of new samples.
+
+        Separate from show_value because they answer different questions: show_value says
+        what the metric currently holds and may be called at any time, while this says a
+        new block has arrived and must be called exactly once per block. Only the two
+        sample-array controls do anything with it.
+        """
+
     def busy_editing(self) -> bool:
         """Whether the user is mid-interaction and should not be interrupted.
 

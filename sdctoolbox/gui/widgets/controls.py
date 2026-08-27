@@ -76,9 +76,31 @@ class SampleArrayWidget(MetricWidget):
         layout.addWidget(self.plot)
 
     def show_value(self, value: Any) -> None:
-        """Accept a block of samples. A single value would be meaningless here."""
-        if isinstance(value, (list, tuple)):
+        """Show the metric's *current* content. Must be safe to call repeatedly.
+
+        This is the refresh path, and it fires for reasons that have nothing to do with new
+        data: a descriptor being added, an operation changing, the board being rebuilt. A
+        scrolling plot therefore must not append here, or every refresh would splice the
+        latest block into the trace a second time and the curve would come out jagged -
+        worse the more metrics there are, because each one refreshes the others.
+
+        New data arrives through append_samples instead.
+        """
+        if not isinstance(value, (list, tuple)):
+            return
+        if not self.plot.scrolling:
+            # A distribution is one whole picture of its domain, so replacing is both
+            # correct and idempotent.
             self.plot.add_samples(value)
+        elif not self.plot.samples:
+            # Nothing drawn yet, e.g. a card just rebuilt. Seed it so it is not blank
+            # until the next block arrives.
+            self.plot.add_samples(value)
+
+    def append_samples(self, samples: Any) -> None:
+        """Take a genuinely new block. Only the waveform stream calls this."""
+        if isinstance(samples, (list, tuple)) and samples:
+            self.plot.add_samples(samples)
 
     def set_editable(self, editable: bool) -> None:  # noqa: FBT001, ARG002
         # Nothing to enable: BICEPS defines no operation that writes a sample array, so

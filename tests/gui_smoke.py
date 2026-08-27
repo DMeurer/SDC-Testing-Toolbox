@@ -763,6 +763,80 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             str(dist_card.control.plot.samples),
         )
 
+        print("\n4c-2. A refresh must not splice the last block back into the trace")
+        # The bug this pins: the plot appends whatever it is shown, and show_value is the
+        # refresh path - it fires for a descriptor being added, an operation changing, the
+        # board being rebuilt. Appending there duplicated the newest block every time, and
+        # because each pane pushed *every* metric on *every* report, two waveforms made
+        # both of their traces jagged and a third made it worse.
+        service.stop_waveforms()
+        pump(app)
+        wave_plot = pane.board.card(wave).control.plot
+        wave_plot.clear()
+
+        block = [Decimal("10"), Decimal("20"), Decimal("30")]
+        service.set_samples(wave, block)
+        pump(app)
+        report.check(
+            wave_plot.samples == [10.0, 20.0, 30.0],
+            "a block arriving is drawn once",
+            str(wave_plot.samples),
+        )
+
+        before = list(wave_plot.samples)
+        pane.refresh()
+        pane._refresh_board()  # noqa: SLF001
+        pane.refresh_alerts()
+        pump(app)
+        report.check(
+            wave_plot.samples == before,
+            "and a refresh does not draw it again",
+            f"{len(before)} -> {len(wave_plot.samples)} samples",
+        )
+
+        # Adding any metric refreshes the pane. That is the hiccup, seen from the code.
+        spare = service.add_metric(MetricSpec(label="Spare", kind=MetricKind.NUMBER))
+        pane.refresh()
+        pump(app)
+        report.check(
+            pane.board.card(wave).control.plot.samples == before,
+            "adding another metric does not disturb a running trace",
+            f"{len(before)} -> {len(pane.board.card(wave).control.plot.samples)} samples",
+        )
+        service.remove_metric(spare)
+        pane.refresh()
+        pump(app)
+
+        # One waveform's report must not touch another's plot.
+        wave2 = service.add_metric(
+            MetricSpec(
+                label="Second",
+                kind=MetricKind.WAVEFORM,
+                minimum=Decimal("0"),
+                maximum=Decimal("100"),
+                sample_period=Decimal("0.5"),
+            ),
+        )
+        service.stop_waveforms()
+        pane.refresh()
+        pump(app)
+        first_plot = pane.board.card(wave).control.plot
+        first_plot.clear()
+        pane.board.card(wave2).control.plot.clear()
+        service.set_samples(wave, [Decimal("40")])
+        pump(app)
+        held = list(first_plot.samples)
+        service.set_samples(wave2, [Decimal("99")])
+        pump(app)
+        report.check(
+            first_plot.samples == held,
+            "a report for one waveform leaves the other's trace alone",
+            f"{held} -> {first_plot.samples}",
+        )
+        service.remove_metric(wave2)
+        pane.refresh()
+        pump(app)
+
         # It has to survive being painted, which is where a divide by zero would show up.
         window.set_use_widgets(False)
         pump(app)
@@ -1236,6 +1310,57 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                     "a disabled control is marked as such rather than writable",
                     str(remote_cell("m.locked_setting", COL_R_WRITABLE)),
                 )
+
+                # The peer publishes three waveforms, which is the case the consumer used
+                # to mangle: it pushed every metric's samples on every report, so each
+                # waveform's latest block was spliced into its own trace once per other
+                # waveform. Two made both jagged; three made it worse.
+                window.set_use_widgets(True)
+                pump(app)
+                got_trace = wait_for(
+                    app,
+                    lambda: consumer.board.card("m.saw") is not None
+                    and bool(consumer.board.card("m.saw").control.plot.samples),
+                    timeout=30.0,
+                )
+                report.check(got_trace, "the peer's waveform reaches a plot here")
+                if got_trace:
+                    saw_plot = consumer.board.card("m.saw").control.plot
+                    step = 100.0 / 40.0
+
+                    def saw_breaks() -> list[str]:
+                        """Where the drawn sawtooth stops rising by its fixed step.
+
+                        Continuity rather than length, because the peer keeps sending: a
+                        block legitimately arrives while the panel is being refreshed, so
+                        comparing sample counts across that window would be a race. A
+                        spliced block breaks the ramp; an honest one does not.
+                        """
+                        drawn = list(consumer.board.card("m.saw").control.plot.samples)
+                        return [
+                            f"{drawn[i - 1]}->{drawn[i]}"
+                            for i in range(1, len(drawn))
+                            if not (drawn[i] < drawn[i - 1] and drawn[i - 1] > 100.0 - step * 2)
+                            and abs(drawn[i] - drawn[i - 1] - step) > 0.05  # noqa: PLR2004
+                        ]
+
+                    report.check(
+                        not saw_breaks(),
+                        "and the trace drawn from it is continuous, with three waveforms running",
+                        f"{len(saw_plot.samples)} samples, breaks at {saw_breaks()[:4]}",
+                    )
+                    held = list(saw_plot.samples)
+                    consumer.refresh_values()
+                    consumer.refresh()
+                    pump(app)
+                    drawn_now = list(consumer.board.card("m.saw").control.plot.samples)
+                    report.check(
+                        drawn_now[: len(held)] == held and not saw_breaks(),
+                        "and refreshing the panel does not splice the last block back in",
+                        f"{len(held)} -> {len(drawn_now)} samples, breaks at {saw_breaks()[:4]}",
+                    )
+                window.set_use_widgets(False)
+                pump(app)
 
                 consumer.select_handle("m.mode")
                 pump(app)
