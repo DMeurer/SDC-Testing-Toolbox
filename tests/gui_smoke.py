@@ -604,6 +604,39 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         pump(app)
         report.check(cell(pane, mode, COL_VALUE) == "RUN", "choice set from the combo box")
 
+        print("\n4a. The table editor goes away with the table")
+        consumer_pane = window.network_pane
+        window.set_use_widgets(False)
+        pump(app)
+        report.check(not pane.editor_widget.isHidden(), "the editor is there in table mode")
+        report.check(not pane.remove_button.isHidden(), "and so is Remove")
+        report.check(
+            not consumer_pane.editor_widget.isHidden(),
+            "on the network panel too",
+        )
+
+        window.set_use_widgets(True)
+        pump(app)
+        # Both drive the table's selection, and the board has none: each card is its own
+        # editor and carries its own bin.
+        report.check(pane.editor_widget.isHidden(), "both go away in widget mode")
+        report.check(pane.remove_button.isHidden(), "including Remove")
+        report.check(
+            consumer_pane.editor_widget.isHidden(),
+            "and the network panel follows the same rule",
+        )
+        # The result of a write is not part of the editor. In widget mode a card is what
+        # sends it, so hiding whether the peer accepted would take the answer away with
+        # the question.
+        report.check(
+            not consumer_pane.invocation_label.isHidden(),
+            "but the invocation result stays, because a card still writes",
+        )
+
+        window.set_use_widgets(False)
+        pump(app)
+        report.check(not pane.editor_widget.isHidden(), "and come back with the table")
+
         print("\n4b. The wheel scrolls, it does not edit")
         # The board is a scroll area full of cards. A combo box or slider that takes the
         # wheel rewrites every value the pointer crosses on the way down the panel - and on

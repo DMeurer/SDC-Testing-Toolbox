@@ -193,10 +193,22 @@ class ConsumerPane(QWidget):
         self.invocation_label = QLabel("")
         self.invocation_label.setWordWrap(True)
 
+        # The editor drives whatever is selected in the table, so it goes away in widget
+        # mode where there is no selection. A widget rather than a bare layout, because a
+        # layout cannot be hidden.
+        editor_controls = QHBoxLayout()
+        editor_controls.setContentsMargins(0, 0, 0, 0)
+        editor_controls.addWidget(self.editor_label)
+        editor_controls.addWidget(self.editor_stack, 1)
+        editor_controls.addWidget(self.apply_button)
+        self.editor_widget = QWidget()
+        self.editor_widget.setLayout(editor_controls)
+
+        # The result of a write stays, though. In widget mode a card is what sends it, and
+        # whether the peer accepted or refused is the single most useful thing this panel
+        # reports - hiding it with the editor would take the answer away with the question.
         editor = QHBoxLayout()
-        editor.addWidget(self.editor_label)
-        editor.addWidget(self.editor_stack, 1)
-        editor.addWidget(self.apply_button)
+        editor.addWidget(self.editor_widget, 1)
         editor.addWidget(self.invocation_label)
 
         # Keep the panel from demanding more width than it needs. The two tables are
@@ -436,6 +448,9 @@ class ConsumerPane(QWidget):
     def set_use_widgets(self, enabled: bool) -> None:  # noqa: FBT001 - matches the Qt signal
         """Switch between a control per metric and the table."""
         self.metric_stack.setCurrentWidget(self.board if enabled else self.table)
+        # The editor edits the table's selection, and the board has none. Each card is its
+        # own editor instead.
+        self.editor_widget.setVisible(not enabled)
         if enabled:
             self._refresh_board()
 

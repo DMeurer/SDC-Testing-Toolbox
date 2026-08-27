@@ -188,9 +188,14 @@ class ProviderPane(QWidget):
         self.apply_button.clicked.connect(self._on_apply)
 
         editor = QHBoxLayout()
+        editor.setContentsMargins(0, 0, 0, 0)
         editor.addWidget(self.editor_label)
         editor.addWidget(self.editor_stack, 1)
         editor.addWidget(self.apply_button)
+        # A widget rather than a bare layout, because the whole row has to disappear in
+        # widget mode and a layout cannot be hidden.
+        self.editor_widget = QWidget()
+        self.editor_widget.setLayout(editor)
         self._set_editor_enabled(enabled=False)
 
         self._views = QSplitter(Qt.Vertical)
@@ -207,7 +212,7 @@ class ProviderPane(QWidget):
         layout.addLayout(buttons)
         layout.addWidget(self.views, 1)
         layout.addWidget(self.actions_widget)
-        layout.addLayout(editor)
+        layout.addWidget(self.editor_widget)
 
     @property
     def views(self) -> QSplitter:
@@ -224,10 +229,11 @@ class ProviderPane(QWidget):
     def set_use_widgets(self, enabled: bool) -> None:  # noqa: FBT001 - matches the Qt signal
         """Switch between a control per metric and the table."""
         self.metric_stack.setCurrentWidget(self.board if enabled else self.table)
-        # Remove works off the table's selection, and the board has no selection. In widget
-        # mode each card carries its own bin instead, so the button would only ever be
-        # disabled and confusing.
+        # Both of these work off the table's selection, and the board has no selection.
+        # In widget mode each card carries its own control and its own bin, so an editor
+        # and a Remove button down here would only ever be disabled and confusing.
         self.remove_button.setVisible(not enabled)
+        self.editor_widget.setVisible(not enabled)
         if enabled:
             self._refresh_board()
 

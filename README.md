@@ -291,7 +291,7 @@ Six suites, all runnable from a terminal, all printing PASS/FAIL per check.
 | Suite                       | Checks | Covers                                                                                |
 |-----------------------------|--------|---------------------------------------------------------------------------------------|
 | `tests/acceptance_core.py`  | 76     | two processes: discovery, control, rejections, runtime descriptors, alarms, waveforms  |
-| `tests/gui_smoke.py`        | 249    | the real window offscreen, plus a live peer process                                    |
+| `tests/gui_smoke.py`        | 257    | the real window offscreen, plus a live peer process                                    |
 | `tests/widget_controls.py`  | 64     | which control for which metric, then controls driven for real                          |
 | `tests/provider_core.py`    | 84     | descriptor rollback, sample arrays, signal handling, contexts, presets                 |
 | `tests/presets.py`          | 74     | every shipped preset builds into a working device                                      |
