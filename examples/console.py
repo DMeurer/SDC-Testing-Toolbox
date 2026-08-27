@@ -36,6 +36,8 @@ KIND_BY_NAME = {
     "number": MetricKind.NUMBER,
     "text": MetricKind.TEXT,
     "choice": MetricKind.CHOICE,
+    "waveform": MetricKind.WAVEFORM,
+    "distribution": MetricKind.DISTRIBUTION,
 }
 
 
@@ -65,18 +67,24 @@ class ProviderShell(Cmd):
     # -- commands ------------------------------------------------------------------
 
     def do_add(self, line: str) -> None:
-        """add <number|text|choice> <label...> [choice values...] [min..max]
+        """add <kind> <label...> [choice values...] [min..max]
 
-        Creates a data source, remote-controllable by default.
+        Creates a data source, remote-controllable where the standard allows it. A waveform
+        starts generating as soon as it exists; a distribution waits for `samples`.
 
             add number Zoom level
             add number Zoom level 1..100
             add text Patient note
             add choice Mode IDLE RUN PAUSE
+            add waveform Pleth 0..100
+            add distribution Spectrum -60..0
+
+        In every case min..max is the range of the *values*. A distribution's domain -
+        what those values are spread over - defaults to 0..1; use the window to set it.
         """
         parts = shlex.split(line)
         if len(parts) < 2:  # noqa: PLR2004
-            print("usage: add <number|text|choice> <label...>")
+            print(f"usage: add <{'|'.join(KIND_BY_NAME)}> <label...>")
             return
 
         kind_name, *rest = parts
@@ -86,7 +94,7 @@ class ProviderShell(Cmd):
             return
 
         minimum = maximum = None
-        if rest and ".." in rest[-1] and kind is MetricKind.NUMBER:
+        if rest and ".." in rest[-1] and kind is not MetricKind.TEXT and kind is not MetricKind.CHOICE:
             low, _, high = rest.pop().partition("..")
             try:
                 minimum = Decimal(low) if low else None
@@ -117,7 +125,7 @@ class ProviderShell(Cmd):
                 allowed_values=values,
                 minimum=minimum,
                 maximum=maximum,
-                controllable=True,
+                controllable=kind.controllable,
                 initial_value=values[0] if values else None,
             )
             handle = self.service.add_metric(spec)
@@ -132,6 +140,49 @@ class ProviderShell(Cmd):
             details.append(spec.range_text())
         suffix = f", {'; '.join(details)}" if details else ""
         print(f"created {handle}  ({kind.value}{suffix})")
+
+    def do_samples(self, line: str) -> None:
+        """samples <handle> [v1 v2 v3 ...]  -  show or set a sample array.
+
+        With no values it prints what is published. With values it replaces them, which is
+        how a distribution is driven; a waveform generates its own, so this shows the last
+        block that went out.
+
+            samples m.spectrum 3 9 27 9 3
+            samples m.pleth
+        """
+        parts = shlex.split(line)
+        if not parts:
+            print("usage: samples <handle> [v1 v2 ...]")
+            return
+        handle, rest = parts[0], parts[1:]
+        if rest:
+            try:
+                block = [Decimal(value) for value in rest]
+            except InvalidOperation:
+                print("every sample has to be a number")
+                return
+            try:
+                self.service.set_samples(handle, block)
+            except (KeyError, ValueError, TypeError) as exc:
+                print(f"rejected: {exc}")
+                return
+        current = self.service.get_samples(handle)
+        shown = " ".join(str(value) for value in current[:12])
+        suffix = " ..." if len(current) > 12 else ""  # noqa: PLR2004
+        print(f"  {len(current)} sample(s): {shown}{suffix}")
+
+    def do_waveforms(self, line: str) -> None:
+        """waveforms [on|off]  -  show or change whether waveform generation is running."""
+        text = line.strip().lower()
+        if text == "on":
+            self.service.start_waveforms()
+        elif text == "off":
+            self.service.stop_waveforms()
+        elif text:
+            print("usage: waveforms [on|off]")
+            return
+        print(f"  generator {'running' if self.service.waveforms_running else 'stopped'}")
 
     def do_set(self, line: str) -> None:
         """set <handle> <value>  -  change the value of one of our data sources."""
@@ -189,12 +240,22 @@ class ProviderShell(Cmd):
         if not specs:
             print("nothing published yet, try: add number Zoom level")
             return
-        print(f"  {'handle':<24} {'kind':<8} {'value':<14} {'range':<14} control")
+        print(f"  {'handle':<24} {'kind':<13} {'value':<14} {'range':<16} control")
         for handle, spec in sorted(specs.items()):
             operation = self.service.operation_handle_for(handle)
             control = "-" if operation is None else operation
-            value = show(self.service.get_value(handle))
-            print(f"  {handle:<24} {spec.kind.value:<8} {value:<14} {spec.range_text():<14} {control}")
+            if spec.is_sample_array:
+                value = f"{len(self.service.get_samples(handle))} sample(s)"
+                control = "-"
+            else:
+                value = show(self.service.get_value(handle))
+            # Always the value range here, so the column means the same thing on every
+            # row. A distribution's domain is a different axis and gets its own line.
+            print(f"  {handle:<24} {spec.kind.value:<13} {value:<14} {spec.range_text():<16} {control}")
+            if spec.kind is MetricKind.DISTRIBUTION:
+                print(f"      spread over {spec.domain_text()}")
+            if spec.kind is MetricKind.WAVEFORM:
+                print(f"      {spec.sample_period}s per sample, {spec.shape.value}")
 
     def do_alert(self, line: str) -> None:
         """alert <source handle> <label...> [min..max] [--delegable]
