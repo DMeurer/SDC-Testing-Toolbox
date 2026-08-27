@@ -1,10 +1,14 @@
 {
   "version": 1,
   "name": "Insufflator",
-  "description": "Eight data sources and three alarms, roughly what a laparoscopic insufflator publishes.",
+  "description": "Laparoscopic insufflator: gas flow, pressure control and the alarms around it. The smallest of the presets, and the first one this project had.",
   "device": {
     "instance_name": "insufflator",
-    "friendly_name": "Example insufflator"
+    "friendly_name": "Insufflator",
+    "manufacturer": "Fictional Surgical",
+    "model_name": "Pneumo 40",
+    "model_number": "40",
+    "firmware_version": "1.4.0"
   },
   "contexts": {
     "location": {
@@ -21,19 +25,46 @@
       "handle": "m.flow_rate",
       "label": "Flow rate",
       "kind": "number",
+      "section": "Gas",
       "controllable": true,
-      "unit": "L/min",
+      "unit": {"label": "L/min", "code": "MDC_DIM_L_PER_MIN", "system": "mdc"},
+      "type": {"code": "insuf_flow_rate", "system": "private"},
       "resolution": "0.1",
       "minimum": "0",
       "maximum": "40",
       "initial_value": "15"
     },
     {
+      "handle": "m.gas_supply",
+      "label": "Gas supply",
+      "kind": "choice",
+      "section": "Gas",
+      "controllable": false,
+      "allowed_values": ["OK", "LOW", "EMPTY"],
+      "initial_value": "OK",
+      "type": {"code": "insuf_gas_supply", "system": "private"}
+    },
+    {
+      "handle": "m.gas_used",
+      "label": "Gas used",
+      "kind": "number",
+      "section": "Gas",
+      "controllable": false,
+      "unit": {"label": "L", "code": "MDC_DIM_L", "system": "mdc"},
+      "type": {"code": "insuf_gas_used", "system": "private"},
+      "resolution": "0.1",
+      "minimum": "0",
+      "maximum": "500",
+      "initial_value": "3.4"
+    },
+    {
       "handle": "m.target_pressure",
       "label": "Target pressure",
       "kind": "number",
+      "section": "Pressure",
       "controllable": true,
-      "unit": "mmHg",
+      "unit": {"label": "mmHg", "code": "MDC_DIM_MMHG", "system": "mdc"},
+      "type": {"code": "insuf_target_pressure", "system": "private"},
       "resolution": "1",
       "minimum": "0",
       "maximum": "30",
@@ -43,57 +74,63 @@
       "handle": "m.measured_pressure",
       "label": "Measured pressure",
       "kind": "number",
+      "section": "Pressure",
       "controllable": false,
-      "unit": "mmHg",
+      "unit": {"label": "mmHg", "code": "MDC_DIM_MMHG", "system": "mdc"},
+      "type": {"code": "insuf_measured_pressure", "system": "private"},
       "resolution": "1",
       "minimum": "0",
       "maximum": "60",
       "initial_value": "12"
     },
     {
-      "handle": "m.mode",
-      "label": "Mode",
-      "kind": "choice",
-      "controllable": true,
-      "allowed_values": ["STANDBY", "INSUFFLATING", "PAUSED"],
-      "initial_value": "STANDBY"
-    },
-    {
-      "handle": "m.gas_supply",
-      "label": "Gas supply",
-      "kind": "choice",
-      "controllable": false,
-      "allowed_values": ["OK", "LOW", "EMPTY"],
-      "initial_value": "OK"
-    },
-    {
-      "handle": "m.operator_note",
-      "label": "Operator note",
-      "kind": "text",
-      "controllable": true
-    },
-    {
       "handle": "m.pressure_trace",
       "label": "Pressure trace",
       "kind": "waveform",
+      "section": "Pressure",
       "controllable": false,
-      "unit": "mmHg",
+      "unit": {"label": "mmHg", "code": "MDC_DIM_MMHG", "system": "mdc"},
+      "type": {"code": "insuf_pressure_trace", "system": "private"},
       "resolution": "0.1",
       "minimum": "0",
       "maximum": "30",
       "sample_period": "0.1",
-      "shape": "sine"
+      "shape": "respiration",
+      "cycle_samples": 60
     },
     {
       "handle": "m.flow_spectrum",
       "label": "Flow spectrum",
       "kind": "distribution",
+      "section": "Pressure",
       "controllable": false,
-      "unit": "dB",
+      "unit": {"label": "dB", "code": "MDC_DIM_DECIBEL", "system": "mdc"},
+      "type": {"code": "insuf_flow_spectrum", "system": "private"},
       "resolution": "0.1",
-      "domain_unit": "Hz",
+      "minimum": "0",
+      "maximum": "40",
+      "domain_unit": {"label": "Hz", "code": "MDC_DIM_HZ", "system": "mdc"},
       "domain_minimum": "0",
-      "domain_maximum": "50"
+      "domain_maximum": "50",
+      "distribution_shape": "spectrum"
+    },
+    {
+      "handle": "m.mode",
+      "label": "Mode",
+      "kind": "choice",
+      "section": "Control",
+      "controllable": true,
+      "allowed_values": ["STANDBY", "INSUFFLATING", "PAUSED"],
+      "initial_value": "STANDBY",
+      "type": {"code": "insuf_mode", "system": "private"}
+    },
+    {
+      "handle": "m.operator_note",
+      "label": "Operator note",
+      "kind": "text",
+      "section": "Control",
+      "controllable": true,
+      "type": {"code": "insuf_operator_note", "system": "private"}
     }
   ],
   "alerts": [
@@ -121,6 +158,21 @@
       "watches": "m.flow_rate",
       "kind": "Oth",
       "priority": "Lo"
+    }
+  ],
+  "actions": [
+    {
+      "handle": "act.vent",
+      "label": "Vent to atmosphere",
+      "target": "vmd.pressure",
+      "note": "Release the pneumoperitoneum. One press, and nothing to type",
+      "effects": {"m.mode": "STANDBY", "m.measured_pressure": "0", "m.flow_rate": "0"}
+    },
+    {
+      "handle": "act.reset_gas_used",
+      "label": "Reset gas counter",
+      "target": "vmd.gas",
+      "effects": {"m.gas_used": "0"}
     }
   ]
 }

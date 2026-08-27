@@ -1,0 +1,294 @@
+{
+  "version": 1,
+  "name": "Surgical microscope",
+  "description": "Robotic surgical microscope after the pattern of an Aesculap Aeos: six axes, positioning modes, optics, and fluorescence imaging. No parameter here has a standard term, which is the point.",
+  "device": {
+    "instance_name": "microscope",
+    "friendly_name": "Robotic Surgical Microscope",
+    "manufacturer": "Fictional Optics",
+    "model_name": "Scopus 6",
+    "model_number": "6",
+    "firmware_version": "1.9.0"
+  },
+  "metrics": [
+    {
+      "handle": "m.axis_x",
+      "label": "Axis X",
+      "kind": "number",
+      "section": "Motion",
+      "controllable": true,
+      "unit": {"label": "mm", "code": "MDC_DIM_MILLI_M", "system": "mdc"},
+      "type": {"code": "scope_axis_x", "system": "private"},
+      "resolution": "0.1",
+      "minimum": "-300",
+      "maximum": "300",
+      "initial_value": "0"
+    },
+    {
+      "handle": "m.axis_y",
+      "label": "Axis Y",
+      "kind": "number",
+      "section": "Motion",
+      "controllable": true,
+      "unit": {"label": "mm", "code": "MDC_DIM_MILLI_M", "system": "mdc"},
+      "type": {"code": "scope_axis_y", "system": "private"},
+      "resolution": "0.1",
+      "minimum": "-300",
+      "maximum": "300",
+      "initial_value": "0"
+    },
+    {
+      "handle": "m.axis_z",
+      "label": "Axis Z",
+      "kind": "number",
+      "section": "Motion",
+      "controllable": true,
+      "unit": {"label": "mm", "code": "MDC_DIM_MILLI_M", "system": "mdc"},
+      "type": {"code": "scope_axis_z", "system": "private"},
+      "resolution": "0.1",
+      "minimum": "0",
+      "maximum": "600",
+      "initial_value": "300"
+    },
+    {
+      "handle": "m.axis_yaw",
+      "label": "Yaw",
+      "kind": "number",
+      "section": "Motion",
+      "controllable": true,
+      "unit": {"label": "\u00b0", "code": "MDC_DIM_DEGREE", "system": "mdc"},
+      "type": {"code": "scope_axis_yaw", "system": "private"},
+      "resolution": "0.1",
+      "minimum": "-180",
+      "maximum": "180",
+      "initial_value": "0"
+    },
+    {
+      "handle": "m.axis_pitch",
+      "label": "Pitch",
+      "kind": "number",
+      "section": "Motion",
+      "controllable": true,
+      "unit": {"label": "\u00b0", "code": "MDC_DIM_DEGREE", "system": "mdc"},
+      "type": {"code": "scope_axis_pitch", "system": "private"},
+      "resolution": "0.1",
+      "minimum": "-90",
+      "maximum": "90",
+      "initial_value": "0"
+    },
+    {
+      "handle": "m.axis_roll",
+      "label": "Roll",
+      "kind": "number",
+      "section": "Motion",
+      "controllable": true,
+      "unit": {"label": "\u00b0", "code": "MDC_DIM_DEGREE", "system": "mdc"},
+      "type": {"code": "scope_axis_roll", "system": "private"},
+      "resolution": "0.1",
+      "minimum": "-180",
+      "maximum": "180",
+      "initial_value": "0"
+    },
+    {
+      "handle": "m.motion_mode",
+      "label": "Motion mode",
+      "kind": "choice",
+      "section": "Motion",
+      "controllable": true,
+      "allowed_values": ["LOCKED", "FREE", "FIXPOINT", "ALIGNED", "POSITIONING"],
+      "initial_value": "LOCKED",
+      "type": {"code": "scope_motion_mode", "system": "private"}
+    },
+    {
+      "handle": "m.brake_release",
+      "label": "Brakes",
+      "kind": "choice",
+      "section": "Motion",
+      "controllable": true,
+      "allowed_values": ["ENGAGED", "RELEASED"],
+      "initial_value": "ENGAGED",
+      "type": {"code": "scope_brake_state", "system": "private"}
+    },
+    {
+      "handle": "m.balance_load",
+      "label": "Arm balance load",
+      "kind": "number",
+      "section": "Motion",
+      "controllable": false,
+      "unit": {"label": "N", "code": "MDC_DIM_NEWTON", "system": "mdc"},
+      "type": {"code": "scope_balance_load", "system": "private"},
+      "resolution": "0.1",
+      "minimum": "0",
+      "maximum": "60",
+      "initial_value": "12.4"
+    },
+    {
+      "handle": "m.zoom",
+      "label": "Zoom",
+      "kind": "number",
+      "section": "Optics",
+      "controllable": true,
+      "unit": {"label": "\u00d7", "code": "scope_magnification", "system": "private"},
+      "type": {"code": "scope_zoom_factor", "system": "private"},
+      "resolution": "0.1",
+      "minimum": "1",
+      "maximum": "12",
+      "initial_value": "4"
+    },
+    {
+      "handle": "m.focus",
+      "label": "Focus",
+      "kind": "number",
+      "section": "Optics",
+      "controllable": true,
+      "unit": {"label": "mm", "code": "MDC_DIM_MILLI_M", "system": "mdc"},
+      "type": {"code": "scope_focus_position", "system": "private"},
+      "resolution": "0.1",
+      "minimum": "200",
+      "maximum": "500",
+      "initial_value": "350"
+    },
+    {
+      "handle": "m.working_distance",
+      "label": "Working distance",
+      "kind": "number",
+      "section": "Optics",
+      "controllable": false,
+      "unit": {"label": "mm", "code": "MDC_DIM_MILLI_M", "system": "mdc"},
+      "type": {"code": "scope_working_distance", "system": "private"},
+      "resolution": "1",
+      "minimum": "200",
+      "maximum": "500",
+      "initial_value": "350"
+    },
+    {
+      "handle": "m.image_mode",
+      "label": "Image mode",
+      "kind": "choice",
+      "section": "Imaging",
+      "controllable": true,
+      "allowed_values": ["WHITE_LIGHT", "ICG_FLUORESCENCE", "FL560", "BLUE_400", "PSEUDO_COLOUR"],
+      "initial_value": "WHITE_LIGHT",
+      "type": {"code": "scope_image_mode", "system": "private"}
+    },
+    {
+      "handle": "m.illumination",
+      "label": "Illumination intensity",
+      "kind": "number",
+      "section": "Imaging",
+      "controllable": true,
+      "unit": {"label": "%", "code": "MDC_DIM_PERCENT", "system": "mdc"},
+      "type": {"code": "scope_illumination_intensity", "system": "private"},
+      "resolution": "1",
+      "minimum": "0",
+      "maximum": "100",
+      "initial_value": "60"
+    },
+    {
+      "handle": "m.illumination_spectrum",
+      "label": "Illumination spectrum",
+      "kind": "distribution",
+      "section": "Imaging",
+      "controllable": false,
+      "unit": {"label": "rel.", "code": "scope_relative_intensity", "system": "private"},
+      "type": {"code": "scope_illumination_spectrum", "system": "private"},
+      "resolution": "0.1",
+      "minimum": "0",
+      "maximum": "100",
+      "domain_unit": {"label": "nm", "code": "MDC_DIM_NANO_M", "system": "mdc"},
+      "domain_minimum": "400",
+      "domain_maximum": "800",
+      "distribution_shape": "bell"
+    },
+    {
+      "handle": "m.recording",
+      "label": "Recording",
+      "kind": "choice",
+      "section": "Imaging",
+      "controllable": true,
+      "allowed_values": ["OFF", "RECORDING", "PAUSED"],
+      "initial_value": "OFF",
+      "type": {"code": "scope_recording_state", "system": "private"}
+    },
+    {
+      "handle": "m.surgeon_note",
+      "label": "Case note",
+      "kind": "text",
+      "section": "Imaging",
+      "controllable": true,
+      "type": {"code": "scope_case_note", "system": "private"}
+    }
+  ],
+  "alerts": [
+    {
+      "handle": "al.balance_out_of_range",
+      "label": "Arm out of balance",
+      "watches": "m.balance_load",
+      "kind": "Tec",
+      "priority": "Hi",
+      "upper_limit": "45",
+      "delegable": true
+    },
+    {
+      "handle": "al.focus_at_limit",
+      "label": "Focus at travel limit",
+      "watches": "m.focus",
+      "kind": "Tec",
+      "priority": "Lo",
+      "lower_limit": "210",
+      "upper_limit": "490"
+    },
+    {
+      "handle": "al.collision_risk",
+      "label": "Collision risk",
+      "watches": "m.axis_z",
+      "kind": "Tec",
+      "priority": "Hi",
+      "lower_limit": "40"
+    }
+  ],
+  "actions": [
+    {
+      "handle": "act.home_axes",
+      "label": "Home axes",
+      "target": "vmd.motion",
+      "note": "Return all six axes to the reference position. Nothing about this is expressible as writing a value",
+      "effects": {
+        "m.axis_x": "0",
+        "m.axis_y": "0",
+        "m.axis_z": "300",
+        "m.axis_yaw": "0",
+        "m.axis_pitch": "0",
+        "m.axis_roll": "0",
+        "m.motion_mode": "LOCKED"
+      }
+    },
+    {
+      "handle": "act.set_fixpoint",
+      "label": "Set fixpoint here",
+      "target": "vmd.motion",
+      "note": "Take the current position as the pivot the arm rotates about",
+      "effects": {"m.motion_mode": "FIXPOINT"}
+    },
+    {
+      "handle": "act.autofocus",
+      "label": "Autofocus",
+      "target": "vmd.optics",
+      "note": "Focus on the current working distance",
+      "effects": {"m.focus": "350", "m.working_distance": "350"}
+    },
+    {
+      "handle": "act.park",
+      "label": "Park",
+      "target": "mds0",
+      "note": "Fold the arm into its transport position and engage the brakes",
+      "effects": {
+        "m.axis_z": "600",
+        "m.axis_pitch": "-90",
+        "m.brake_release": "ENGAGED",
+        "m.motion_mode": "LOCKED",
+        "m.illumination": "0"
+      }
+    }
+  ]
+}

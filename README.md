@@ -27,8 +27,9 @@ Python 3.12 is deliberate: `python` on a typical Windows box may point at a newe
 - [x] **4a — Alarms and presets.** Alert conditions with their signals, and configs you can export, import and load at startup.
 - [x] **4b — Contexts and signal handling.** Editable patient and location, acknowledgement and delegation, a preset picker.
 - [x] **4c — Waveforms and distributions.** Both sample-array kinds, a generator for waveforms, and a plot to watch them on.
-- [ ] **4d — TLS.**
-- [ ] **5 - Presets for real devices.** Emulate a real device, so a consumer can be tested without the device being present.
+- [x] **4d — Realistic presets.** Coded values, device identity, subsystem structure, and actions. Seven machines, each tested.
+- [ ] **4e — TLS.**
+- [x] **5 - Presets for real devices.** Emulate a real device, so a consumer can be tested without the device being present.
 
 ## Try it
 
@@ -156,13 +157,64 @@ provider> presets
 Any of them can also be loaded at startup:
 
 ```powershell
-.venv\Scripts\python.exe run_toolbox.py --config presets\insufflator.json
-.venv\Scripts\python.exe examples\console.py provider --config presets\insufflator.json
+.venv\Scripts\python.exe run_toolbox.py --config presets\patient-monitor.json
+.venv\Scripts\python.exe examples\console.py provider --config presets\ventilator.json
 ```
 
-`presets/insufflator.json` is an example: eight data sources including a waveform and a distribution, three alarms and a location. A bad file is refused before anything starts, naming what is wrong with it.
+Load it at startup rather than importing it afterwards if you want the device to *be* that machine: DPWS metadata is fixed when the provider is built, so a preset imported into a running toolbox brings its metrics but keeps the name it started with.
 
-Handles are recorded in the file, so a preset reproduces the same MDIB every time. That matters if a script or another device refers to them by name.
+A bad file is refused before anything starts, naming what is wrong with it. Handles are recorded, so a preset reproduces the same MDIB every time — which matters if a script or another device refers to them by name.
+
+### The shipped devices
+
+| Preset | What it is | Worth looking at |
+|---|---|---|
+| `patient-monitor` | Bedside vitals | ECG, plethysmogram and arterial pressure running together; the one device whose parameters have real standard terms |
+| `ventilator` | Airway pressure, flow and volume | Three synchronised waveforms, and what a stream of sample arrays costs |
+| `infusion-pump` | Volumetric pump | The smallest, and the easiest to read end to end |
+| `hf-generator` | Electrosurgery | A bimodal impedance spectrum, and a *Stop output* action |
+| `surgical-microscope` | Robotic scope, after an Aesculap Aeos | Six axes, fixpoint and free modes, ICG fluorescence, and *Home axes* — none of which is a value you write |
+| `endoscopic-camera` | Camera and light source | Image profiles, and a *White balance now* action with nothing to type |
+| `insufflator` | Laparoscopic insufflator | The first preset this project had |
+
+### What the presets are actually demonstrating
+
+Every metric carries a **coded value**, because a label is not semantics. `"unit": "mmHg"` alone publishes a dimensionless number with a human comment attached; another device can do nothing with it. Two coding systems are allowed:
+
+- **`mdc`** — IEEE 11073-10101, for parameters that genuinely have a standard term.
+- **`private`** — `urn:sdc-testing-toolbox:private`, for everything that does not.
+
+Which is which is the interesting part, and `tests/presets.py` counts it:
+
+```
+patient-monitor         24 mdc,   2 private  (92% standard)
+ventilator              21 mdc,   3 private  (88% standard)
+infusion-pump           11 mdc,   5 private  (69% standard)
+hf-generator            10 mdc,  10 private  (50% standard)
+surgical-microscope     15 mdc,  19 private  (44% standard)
+endoscopic-camera        9 mdc,  13 private  (41% standard)
+```
+
+A patient monitor is almost entirely expressible in the standard's own vocabulary. A surgical microscope is not, and neither is an electrosurgery generator — for those, the parts with standard terms are mostly the *units* (mm, degrees, watts), while what the device actually does has no agreed term at all. That is not a shortcut taken here; it is the gap that work on extending the 1010X nomenclature exists to close, and marking it beats inventing codes that look official.
+
+> [!WARNING]
+> The codes in these presets are the standard's **reference IDs** (`MDC_PULS_OXIM_SAT_O2`), not its numeric CF codes, because IEEE 11073-10101 was not available to check them against. Anything meant to interoperate for real has to substitute the numbers.
+
+## Actions
+
+Not everything a device does is a value you can write. *Home the axes*, *give a bolus*, *white balance now* — there is nothing to type and nothing to read back, only something to invoke. BICEPS models that with an `ActivateOperation`, which is a different operation kind from the `SetValueOperation` behind a controllable metric.
+
+They appear as a row of buttons on both panels, enabled only while the device says the operation is. What one does here is apply declared effects to metrics:
+
+```json
+{
+  "label": "Home axes",
+  "target": "vmd.motion",
+  "effects": {"m.axis_x": "0", "m.axis_y": "0", "m.axis_z": "300", "m.motion_mode": "LOCKED"}
+}
+```
+
+That stands in for machinery a real device would have behind homing an axis, and it is deliberately visible: an action whose result cannot be seen cannot be checked, and here the result is exactly the values it moved. Invoke *Home axes* on a microscope from the other instance and watch six numbers change at once — without any of them having been sent.
 
 ## Waveforms and distributions
 
@@ -234,14 +286,15 @@ The patient fields are a subset of `pm:PatientDemographicsCoreData` — name, se
 
 ## Tests
 
-Five suites, all runnable from a terminal, all printing PASS/FAIL per check.
+Six suites, all runnable from a terminal, all printing PASS/FAIL per check.
 
 | Suite                       | Checks | Covers                                                                                |
 |-----------------------------|--------|---------------------------------------------------------------------------------------|
-| `tests/acceptance_core.py`  | 68     | two processes: discovery, control, rejections, runtime descriptors, alarms, waveforms  |
+| `tests/acceptance_core.py`  | 76     | two processes: discovery, control, rejections, runtime descriptors, alarms, waveforms  |
 | `tests/gui_smoke.py`        | 249    | the real window offscreen, plus a live peer process                                    |
 | `tests/widget_controls.py`  | 64     | which control for which metric, then controls driven for real                          |
-| `tests/provider_core.py`    | 66     | descriptor rollback, sample arrays, signal handling, contexts, presets                 |
+| `tests/provider_core.py`    | 84     | descriptor rollback, sample arrays, signal handling, contexts, presets                 |
+| `tests/presets.py`          | 74     | every shipped preset builds into a working device                                      |
 | `tests/config_roundtrip.py` | 25     | export, reimport, compare; broken files refused                                        |
 
 ```powershell
@@ -249,6 +302,7 @@ Five suites, all runnable from a terminal, all printing PASS/FAIL per check.
 .venv\Scripts\python.exe tests\gui_smoke.py
 .venv\Scripts\python.exe tests\widget_controls.py
 .venv\Scripts\python.exe tests\provider_core.py
+.venv\Scripts\python.exe tests\presets.py
 .venv\Scripts\python.exe tests\config_roundtrip.py
 ```
 
