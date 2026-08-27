@@ -779,6 +779,45 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         window.set_use_widgets(True)
         pump(app)
 
+        print("\n4d. The dialog offers all five kinds")
+        metric_dialog = NewMetricDialog()
+        captions = [metric_dialog.kind_box.itemText(i) for i in range(metric_dialog.kind_box.count())]
+        report.check(len(captions) == 5, "five kinds are offered", str(captions))  # noqa: PLR2004
+        for index, caption in enumerate(captions):
+            metric_dialog.kind_box.setCurrentIndex(index)
+            metric_dialog._on_kind_changed()  # noqa: SLF001
+            if caption == "Waveform":
+                report.check(
+                    not metric_dialog.sample_period_edit.isHidden()
+                    and metric_dialog.domain_unit_edit.isHidden(),
+                    "a waveform shows the sample period and hides the domain",
+                )
+                report.check(
+                    metric_dialog.controllable_box.isHidden(),
+                    "and hides the control checkbox, because nothing can write a waveform",
+                )
+            elif caption == "Distribution":
+                report.check(
+                    not metric_dialog.domain_unit_edit.isHidden()
+                    and metric_dialog.sample_period_edit.isHidden(),
+                    "a distribution shows the domain and hides the sample period",
+                )
+        metric_dialog.kind_box.setCurrentIndex(captions.index("Waveform"))
+        metric_dialog._on_kind_changed()  # noqa: SLF001
+        metric_dialog.label_edit.setText("From the dialog")
+        metric_dialog.sample_period_edit.setText("0.25")
+        metric_dialog._on_accept()  # noqa: SLF001
+        built = metric_dialog.spec()
+        report.check(built is not None, "a waveform can be built from the dialog")
+        if built is not None:
+            report.check(
+                built.sample_period == Decimal("0.25"),
+                "with the sample period entered",
+                str(built.sample_period),
+            )
+            report.check(not built.controllable, "and never controllable")
+        metric_dialog.deleteLater()
+
         service.remove_metric(wave)
         service.remove_metric(dist)
         service.stop_waveforms()
