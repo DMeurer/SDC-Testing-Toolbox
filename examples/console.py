@@ -29,8 +29,28 @@ from sdc11073.xml_types import msg_types  # noqa: E402
 
 from sdctoolbox import config, constants  # noqa: E402
 from sdctoolbox.consumer_service import ConsumerService  # noqa: E402
-from sdctoolbox.model import AlertSpec, LocationInfo, MetricKind, MetricSpec, PatientInfo  # noqa: E402
+from sdctoolbox.model import (  # noqa: E402
+    AlertSpec,
+    DistributionShape,
+    LocationInfo,
+    MetricKind,
+    MetricSpec,
+    PatientInfo,
+    WaveformShape,
+)
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
+
+def _take_option(parts: list[str], name: str) -> tuple[str | None, list[str]]:
+    """Pull "--name value" out of a token list, returning the value and what is left."""
+    if name not in parts:
+        return None, parts
+    index = parts.index(name)
+    value = parts[index + 1] if index + 1 < len(parts) else None
+    return value, parts[:index] + parts[index + 2 :]
+
+
+WAVEFORM_SHAPES = {shape.value: shape for shape in WaveformShape}
+DISTRIBUTION_SHAPES = {shape.value: shape for shape in DistributionShape}
 
 KIND_BY_NAME = {
     "number": MetricKind.NUMBER,
@@ -67,17 +87,22 @@ class ProviderShell(Cmd):
     # -- commands ------------------------------------------------------------------
 
     def do_add(self, line: str) -> None:
-        """add <kind> <label...> [choice values...] [min..max]
+        """add <kind> <label...> [choice values...] [min..max] [--shape S] [--cycle N]
 
-        Creates a data source, remote-controllable where the standard allows it. A waveform
-        starts generating as soon as it exists; a distribution waits for `samples`.
+        Creates a data source, remote-controllable where the standard allows it. Both
+        sample-array kinds start generating as soon as they exist.
 
             add number Zoom level
             add number Zoom level 1..100
             add text Patient note
             add choice Mode IDLE RUN PAUSE
-            add waveform Pleth 0..100
-            add distribution Spectrum -60..0
+            add waveform Pleth 0..100 --shape pulse --cycle 50
+            add waveform ECG -1..2 --shape ecg
+            add distribution Spectrum 0..60 --shape spectrum
+
+        --shape names the curve for a waveform or the shape for a distribution; `shapes`
+        lists what is available. --cycle is how many samples make one cycle of a waveform,
+        which with the sample period is what sets its rate.
 
         In every case min..max is the range of the *values*. A distribution's domain -
         what those values are spread over - defaults to 0..1; use the window to set it.
@@ -87,11 +112,37 @@ class ProviderShell(Cmd):
             print(f"usage: add <{'|'.join(KIND_BY_NAME)}> <label...>")
             return
 
+        shape_name, parts = _take_option(parts, "--shape")
+        cycle_name, parts = _take_option(parts, "--cycle")
+
         kind_name, *rest = parts
         kind = KIND_BY_NAME.get(kind_name.lower())
         if kind is None:
             print(f"unknown kind {kind_name!r}, expected one of {', '.join(KIND_BY_NAME)}")
             return
+
+        # --shape means a different enum depending on the kind, which is the honest way
+        # round: a sawtooth distribution and a bimodal waveform are both nonsense.
+        shape = WaveformShape.SINE
+        distribution_shape = DistributionShape.BELL
+        if shape_name:
+            table = WAVEFORM_SHAPES if kind is MetricKind.WAVEFORM else DISTRIBUTION_SHAPES
+            chosen = table.get(shape_name.lower())
+            if chosen is None:
+                print(f"unknown shape {shape_name!r} for a {kind.value}. Try: shapes")
+                return
+            if kind is MetricKind.WAVEFORM:
+                shape = chosen
+            else:
+                distribution_shape = chosen
+
+        cycle_samples = 40
+        if cycle_name:
+            try:
+                cycle_samples = int(cycle_name)
+            except ValueError:
+                print(f"--cycle wants a whole number, not {cycle_name!r}")
+                return
 
         minimum = maximum = None
         if rest and ".." in rest[-1] and kind is not MetricKind.TEXT and kind is not MetricKind.CHOICE:
@@ -127,6 +178,9 @@ class ProviderShell(Cmd):
                 maximum=maximum,
                 controllable=kind.controllable,
                 initial_value=values[0] if values else None,
+                shape=shape,
+                cycle_samples=cycle_samples,
+                distribution_shape=distribution_shape,
             )
             handle = self.service.add_metric(spec)
         except (ValueError, TypeError) as exc:
@@ -140,6 +194,16 @@ class ProviderShell(Cmd):
             details.append(spec.range_text())
         suffix = f", {'; '.join(details)}" if details else ""
         print(f"created {handle}  ({kind.value}{suffix})")
+
+    def do_shapes(self, _line: str) -> None:
+        """shapes  -  the curves and distribution shapes `add --shape` accepts."""
+        print("  waveform, for testing a renderer:")
+        print("    " + ", ".join(s.value for s in list(WaveformShape)[:4]))
+        print("  waveform, shaped like a real signal:")
+        print("    " + ", ".join(s.value for s in list(WaveformShape)[4:]))
+        print("  distribution:")
+        print("    " + ", ".join(s.value for s in DistributionShape))
+        print("  none of these is a BICEPS concept; the standard says nothing about shape")
 
     def do_samples(self, line: str) -> None:
         """samples <handle> [v1 v2 v3 ...]  -  show or set a sample array.

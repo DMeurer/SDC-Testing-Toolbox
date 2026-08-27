@@ -29,6 +29,11 @@ from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 
 from sdctoolbox.gui.main_window import MainWindow  # noqa: E402
 from sdctoolbox.gui.widgets import WidgetSpec, build_widget  # noqa: E402
+from sdctoolbox.gui.new_metric_dialog import (  # noqa: E402
+    OFFERED_DISTRIBUTIONS,
+    OFFERED_SHAPES,
+    NewMetricDialog,
+)
 from sdctoolbox.gui.widgets.controls import (
     SampleArrayWidget,  # noqa: E402
     MAX_SLIDER_STEPS,
@@ -39,7 +44,13 @@ from sdctoolbox.gui.widgets.controls import (
     TextWidget,
 )
 from sdctoolbox.gui.widgets.factory import CONTROLS, pick_control  # noqa: E402
-from sdctoolbox.model import AlertSpec, MetricKind, MetricSpec  # noqa: E402
+from sdctoolbox.model import (  # noqa: E402
+    AlertSpec,
+    DistributionShape,
+    MetricKind,
+    MetricSpec,
+    WaveformShape,
+)
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 
@@ -158,6 +169,45 @@ CHOICES = [
 ]
 
 
+def check_shapes_are_reachable(report: Report) -> None:
+    """Every shape the model defines has to be creatable from the window.
+
+    The dialog fell behind the model once already: five physiological curves and all five
+    distribution shapes existed and were reachable only from a preset, because OFFERED_SHAPES
+    was written before they were and nobody went back. This fails the moment that happens
+    again.
+    """
+    print("\nEvery shape is reachable from the dialog")
+    dialog = NewMetricDialog()
+
+    offered_waveforms = {shape for _, shape in OFFERED_SHAPES}
+    missing = sorted(s.value for s in set(WaveformShape) - offered_waveforms)
+    report.check(not missing, "the dialog offers every waveform shape", str(missing))
+
+    offered_distributions = {shape for _, shape in OFFERED_DISTRIBUTIONS}
+    missing = sorted(s.value for s in set(DistributionShape) - offered_distributions)
+    report.check(not missing, "and every distribution shape", str(missing))
+
+    # A separator sits between the geometric and physiological groups and takes an index
+    # of its own, so reading the combo's index straight off the list would be wrong for
+    # everything past it.
+    kinds = [dialog.kind_box.itemText(i) for i in range(dialog.kind_box.count())]
+    dialog.kind_box.setCurrentIndex(kinds.index("Waveform"))
+    dialog._on_kind_changed()  # noqa: SLF001
+    reached = set()
+    for index in range(dialog.shape_box.count()):
+        if not dialog.shape_box.itemText(index):
+            continue
+        dialog.shape_box.setCurrentIndex(index)
+        reached.add(dialog._shape)  # noqa: SLF001
+    report.check(
+        reached == set(WaveformShape),
+        "and picking each one yields it, separator and all",
+        str(sorted(s.value for s in set(WaveformShape) - reached)),
+    )
+    dialog.deleteLater()
+
+
 def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
     basic_logging_setup(level=logging.WARNING)
     report = Report()
@@ -177,6 +227,8 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
 
     QMessageBox.question = staticmethod(fake_question)
     QMessageBox.warning = staticmethod(lambda *_a, **_k: QMessageBox.StandardButton.Ok)
+
+    check_shapes_are_reachable(report)
 
     print("\n1. Which control represents which metric")
     for description, spec, expected in CHOICES:

@@ -245,6 +245,19 @@ provider> generator off
 
 `DistributionRange/StepWidth` is derived from how many samples are actually sent, so the descriptor and the data agree. It is **not** `Resolution`: StepWidth is how far apart two samples sit along the domain, Resolution is how finely one sample value is measured.
 
+### Why the trace moves smoothly
+
+A waveform arrives in blocks — a quarter of a second of signal, four times a second. Drawing a block the moment it lands makes the trace lurch rather than move, which is unreadable if you are trying to follow a curve.
+
+Sending smaller blocks would be legal — SDC exists to stream sample arrays and the report rate is nobody's business but the device's — but it is the wrong lever. It multiplies SOAP messages for a problem that is not about the network.
+
+Instead the plot buffers what arrives and reveals it at the rate the samples were taken at, which is what `SamplePeriod` on the descriptor is *for*: the standard tells a consumer how to place samples in time, and this is a consumer doing that. Two rules keep it honest:
+
+- **Nothing is invented.** When the buffer runs dry the trace stops until the next block. A device that has gone quiet looks like one.
+- **It cannot drift.** If the buffer runs more than 1.5 s long — a hiccup, or a peer sending faster than it declared — it drains faster than real time until the backlog is gone. A display that falls further behind every second is worse than a chunky one.
+
+A distribution is one picture of a domain rather than a signal in time, so it has nothing to pace and appears at once.
+
 The plot is painted by hand in `sdctoolbox/gui/widgets/plot.py`. It is a polyline and a couple of guide lines, and pulling in a charting library for that would have been the largest dependency in the project by a wide margin.
 
 ## Alarms
@@ -291,8 +304,8 @@ Six suites, all runnable from a terminal, all printing PASS/FAIL per check.
 | Suite                       | Checks | Covers                                                                                |
 |-----------------------------|--------|---------------------------------------------------------------------------------------|
 | `tests/acceptance_core.py`  | 76     | two processes: discovery, control, rejections, runtime descriptors, alarms, waveforms  |
-| `tests/gui_smoke.py`        | 257    | the real window offscreen, plus a live peer process                                    |
-| `tests/widget_controls.py`  | 64     | which control for which metric, then controls driven for real                          |
+| `tests/gui_smoke.py`        | 263    | the real window offscreen, plus a live peer process                                    |
+| `tests/widget_controls.py`  | 67     | which control for which metric, then controls driven for real                          |
 | `tests/provider_core.py`    | 84     | descriptor rollback, sample arrays, signal handling, contexts, presets                 |
 | `tests/presets.py`          | 74     | every shipped preset builds into a working device                                      |
 | `tests/config_roundtrip.py` | 25     | export, reimport, compare; broken files refused                                        |

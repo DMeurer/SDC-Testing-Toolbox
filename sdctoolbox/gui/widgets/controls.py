@@ -70,6 +70,9 @@ class SampleArrayWidget(MetricWidget):
             scrolling=self.spec.kind is MetricKind.WAVEFORM,
             minimum=self.spec.minimum,
             maximum=self.spec.maximum,
+            # What lets the trace move at the rate the samples were taken at rather than
+            # lurching once per report. It is on the descriptor for exactly this.
+            sample_period=self.spec.sample_period,
         )
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -80,21 +83,22 @@ class SampleArrayWidget(MetricWidget):
 
         This is the refresh path, and it fires for reasons that have nothing to do with new
         data: a descriptor being added, an operation changing, the board being rebuilt. A
-        scrolling plot therefore must not append here, or every refresh would splice the
-        latest block into the trace a second time and the curve would come out jagged -
-        worse the more metrics there are, because each one refreshes the others.
+        scrolling plot therefore must not touch its trace here, or every refresh would
+        splice the latest block into it a second time.
 
-        New data arrives through append_samples instead.
+        It used to seed an empty plot, so a rebuilt card was not blank until the next block.
+        That was a race: the block it seeded with could already be in flight, and the queued
+        waveform event then appended it a second time. On a sawtooth the duplicate shows as
+        a step *backwards*, which is how it was caught. A waveform card is blank for at most
+        one block after a rebuild instead, which nobody will notice at four blocks a second.
+
+        New data arrives through append_samples.
         """
         if not isinstance(value, (list, tuple)):
             return
         if not self.plot.scrolling:
             # A distribution is one whole picture of its domain, so replacing is both
-            # correct and idempotent.
-            self.plot.add_samples(value)
-        elif not self.plot.samples:
-            # Nothing drawn yet, e.g. a card just rebuilt. Seed it so it is not blank
-            # until the next block arrives.
+            # correct and idempotent - and it has no stream to collide with.
             self.plot.add_samples(value)
 
     def append_samples(self, samples: Any) -> None:

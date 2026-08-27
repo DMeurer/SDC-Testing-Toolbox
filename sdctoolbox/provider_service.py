@@ -54,7 +54,12 @@ logger = logging.getLogger("sdctoolbox.provider")
 # How much waveform data goes out per report. Samples are generated in blocks rather than
 # one at a time, because a report per sample would be all overhead: a 0.1s sample period
 # would mean ten SOAP messages a second per waveform.
-WAVEFORM_BLOCK_SECONDS = 0.5
+#
+# This sets latency, not smoothness. The consumer paces what it draws from SamplePeriod
+# (see widgets/plot.py), so a block only decides how stale the newest sample is when it
+# arrives. A quarter second is a reasonable trade against four SOAP messages per second
+# per waveform - and a preset with three of them is twelve.
+WAVEFORM_BLOCK_SECONDS = 0.25
 
 # Samples per full cycle of the generated curve. Fixed rather than derived from the sample
 # period, so a slow waveform and a fast one look the same on screen and only differ in how

@@ -22,7 +22,14 @@ from PySide6.QtWidgets import (
 )
 
 from ..constants import METRIC_HANDLE_PREFIX
-from ..model import DEFAULT_SAMPLE_PERIOD, MetricKind, MetricSpec, WaveformShape, slugify
+from ..model import (
+    DEFAULT_SAMPLE_PERIOD,
+    DistributionShape,
+    MetricKind,
+    MetricSpec,
+    WaveformShape,
+    slugify,
+)
 from .no_wheel import NoWheelComboBox
 from .styling import mark_as_error, mute
 
@@ -36,12 +43,37 @@ OFFERED_KINDS: list[tuple[str, MetricKind]] = [
 ]
 
 # Caption -> shape, read by index for the same reason the kind is. See NewMetricDialog._kind.
+#
+# Two groups, and the split is real: the geometric ones are for testing a renderer, where a
+# sawtooth makes a dropped block obvious in a way a sine never does, and the rest are shaped
+# like the signals real devices publish. A separator goes between them in the dropdown, so
+# the offset in this list is not the offset in the combo box - see _shape.
 OFFERED_SHAPES: list[tuple[str, WaveformShape]] = [
     ("Sine", WaveformShape.SINE),
     ("Sawtooth", WaveformShape.SAWTOOTH),
     ("Square", WaveformShape.SQUARE),
     ("Noise", WaveformShape.NOISE),
+    ("Pulse (plethysmogram)", WaveformShape.PULSE),
+    ("ECG", WaveformShape.ECG),
+    ("Arterial pressure", WaveformShape.ARTERIAL),
+    ("Respiration", WaveformShape.RESPIRATION),
+    ("Airway flow", WaveformShape.FLOW),
 ]
+
+# Where the physiological group starts, so the separator lands between the two.
+FIRST_PHYSIOLOGICAL = 4
+
+OFFERED_DISTRIBUTIONS: list[tuple[str, DistributionShape]] = [
+    ("Bell", DistributionShape.BELL),
+    ("Spectrum with harmonics", DistributionShape.SPECTRUM),
+    ("Bimodal", DistributionShape.BIMODAL),
+    ("Decay", DistributionShape.DECAY),
+    ("Flat with noise", DistributionShape.FLAT),
+]
+
+# What a manually created waveform gets if nothing is said. Forty samples a cycle at the
+# default period is a four second cycle, which is slow enough to watch.
+DEFAULT_CYCLE_SAMPLES = 40
 
 
 class NewMetricDialog(QDialog):
@@ -87,10 +119,25 @@ class NewMetricDialog(QDialog):
         self.sample_period_edit = QLineEdit()
         self.sample_period_edit.setPlaceholderText(str(DEFAULT_SAMPLE_PERIOD))
         self.shape_box = NoWheelComboBox()
-        for caption, shape in OFFERED_SHAPES:
+        for index, (caption, shape) in enumerate(OFFERED_SHAPES):
+            if index == FIRST_PHYSIOLOGICAL:
+                self.shape_box.insertSeparator(self.shape_box.count())
             self.shape_box.addItem(caption, shape)
+        self.cycle_edit = QLineEdit()
+        self.cycle_edit.setPlaceholderText(str(DEFAULT_CYCLE_SAMPLES))
+        self.rate_hint = QLabel("")
+        mute(self.rate_hint)
+        cycle_row = QHBoxLayout()
+        cycle_row.setContentsMargins(0, 0, 0, 0)
+        cycle_row.addWidget(self.cycle_edit)
+        cycle_row.addWidget(self.rate_hint, 1)
+        self.cycle_widget = QWidget()
+        self.cycle_widget.setLayout(cycle_row)
 
         # -- distribution
+        self.distribution_box = NoWheelComboBox()
+        for caption, shape in OFFERED_DISTRIBUTIONS:
+            self.distribution_box.addItem(caption, shape)
         self.domain_unit_edit = QLineEdit()
         self.domain_unit_edit.setPlaceholderText("Hz")
         self.domain_min_edit = QLineEdit()
@@ -122,6 +169,8 @@ class NewMetricDialog(QDialog):
         form.addRow("Range", self.limits_widget)
         form.addRow("Sample period", self.sample_period_edit)
         form.addRow("Shape", self.shape_box)
+        form.addRow("Samples per cycle", self.cycle_widget)
+        form.addRow("Distribution", self.distribution_box)
         form.addRow("Domain unit", self.domain_unit_edit)
         form.addRow("Domain", self.domain_widget)
         form.addRow("", self.controllable_box)
@@ -139,6 +188,9 @@ class NewMetricDialog(QDialog):
 
         self.kind_box.currentIndexChanged.connect(self._on_kind_changed)
         self.label_edit.textChanged.connect(self._update_preview)
+        self.cycle_edit.textChanged.connect(self._update_rate_hint)
+        self.sample_period_edit.textChanged.connect(self._update_rate_hint)
+        self._update_rate_hint()
 
         self._on_kind_changed()
         self._update_preview()
@@ -164,8 +216,40 @@ class NewMetricDialog(QDialog):
 
     @property
     def _shape(self) -> WaveformShape:
-        """The selected curve. Read by index, for the same reason as _kind."""
-        return OFFERED_SHAPES[self.shape_box.currentIndex()][1]
+        """The selected curve.
+
+        Read from the list rather than the combo box, for the same reason as _kind. The
+        separator between the geometric and physiological groups occupies an index of its
+        own, so the combo's index is not the list's: everything past the separator is one
+        further along.
+        """
+        index = self.shape_box.currentIndex()
+        if index > FIRST_PHYSIOLOGICAL:
+            index -= 1
+        return OFFERED_SHAPES[max(0, min(index, len(OFFERED_SHAPES) - 1))][1]
+
+    @property
+    def _distribution_shape(self) -> DistributionShape:
+        """The selected distribution shape. No separator here, so the index is direct."""
+        return OFFERED_DISTRIBUTIONS[self.distribution_box.currentIndex()][1]
+
+    def _update_rate_hint(self) -> None:
+        """Say what the sample period and cycle length come out as.
+
+        Samples per cycle is not a number anybody thinks in. What they want to know is how
+        fast the thing beats, so work it out for them rather than making them do it.
+        """
+        try:
+            period = Decimal(self.sample_period_edit.text().strip() or str(DEFAULT_SAMPLE_PERIOD))
+            cycle = int(self.cycle_edit.text().strip() or DEFAULT_CYCLE_SAMPLES)
+        except (InvalidOperation, ValueError):
+            self.rate_hint.setText("")
+            return
+        if period <= 0 or cycle < 2:  # noqa: PLR2004
+            self.rate_hint.setText("")
+            return
+        seconds = float(period) * cycle
+        self.rate_hint.setText(f"= {seconds:.2f} s per cycle, {60.0 / seconds:.0f}/min")
 
     def _set_row_visible(self, widget: QWidget, *, visible: bool) -> None:
         """Show or hide a form row, label included.
@@ -194,6 +278,8 @@ class NewMetricDialog(QDialog):
         self._set_row_visible(self.limits_widget, visible=has_scale)
         self._set_row_visible(self.sample_period_edit, visible=is_waveform)
         self._set_row_visible(self.shape_box, visible=is_waveform)
+        self._set_row_visible(self.cycle_widget, visible=is_waveform)
+        self._set_row_visible(self.distribution_box, visible=is_distribution)
         self._set_row_visible(self.domain_unit_edit, visible=is_distribution)
         self._set_row_visible(self.domain_widget, visible=is_distribution)
         # Neither sample-array kind can be written by anybody: BICEPS defines no operation
@@ -221,7 +307,20 @@ class NewMetricDialog(QDialog):
         self.shape_box.setToolTip(
             "The curve to generate. Nothing to do with BICEPS, which carries samples and\n"
             "says nothing about their shape - this is so there is something recognisable\n"
-            "to send.",
+            "to send.\n\n"
+            "The first four are for testing a renderer: a sawtooth makes a dropped block\n"
+            "obvious where a sine would hide it. The rest are shaped like the signals real\n"
+            "devices publish, and are caricatures rather than clinical models.",
+        )
+        self.cycle_widget.setToolTip(
+            "How many samples make one full cycle of that curve. With the sample period\n"
+            "this is what sets the rate: a heartbeat and a breath are the same machinery\n"
+            "at very different speeds.",
+        )
+        self.distribution_box.setToolTip(
+            "The shape to generate across the domain. A spectrum with harmonics looks like\n"
+            "a spectrum; a bell looks like a distribution. Nothing in BICEPS, same as the\n"
+            "waveform shapes.",
         )
         self.domain_unit_edit.setToolTip(
             "What the samples are spread over, as opposed to Unit, which is what each one\n"
@@ -296,6 +395,7 @@ class NewMetricDialog(QDialog):
                 return
 
         sample_period = None
+        cycle_samples = DEFAULT_CYCLE_SAMPLES
         if kind is MetricKind.WAVEFORM:
             raw = self.sample_period_edit.text().strip() or str(DEFAULT_SAMPLE_PERIOD)
             try:
@@ -305,6 +405,16 @@ class NewMetricDialog(QDialog):
                 return
             if sample_period <= 0:
                 self._fail("The sample period must be greater than zero.")
+                return
+
+            raw = self.cycle_edit.text().strip() or str(DEFAULT_CYCLE_SAMPLES)
+            try:
+                cycle_samples = int(raw)
+            except ValueError:
+                self._fail(f"{raw!r} is not a whole number of samples per cycle.")
+                return
+            if cycle_samples < 2:  # noqa: PLR2004
+                self._fail("A cycle needs at least two samples.")
                 return
 
         domain_unit = ""
@@ -352,6 +462,8 @@ class NewMetricDialog(QDialog):
                 initial_value=values[0] if values else None,
                 sample_period=sample_period,
                 shape=self._shape,
+                cycle_samples=cycle_samples,
+                distribution_shape=self._distribution_shape,
                 domain_unit_label=domain_unit,
                 domain_minimum=domain_minimum,
                 domain_maximum=domain_maximum,

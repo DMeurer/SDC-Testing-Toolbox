@@ -737,16 +737,15 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         pump(app)
 
         print("\n4c. Waveforms and distributions on the board")
-        wave = service.add_metric(
-            MetricSpec(
-                label="Pleth",
-                kind=MetricKind.WAVEFORM,
-                unit_label="%",
-                minimum=Decimal("0"),
-                maximum=Decimal("100"),
-                sample_period=Decimal("0.05"),
-            ),
+        wave_spec = MetricSpec(
+            label="Pleth",
+            kind=MetricKind.WAVEFORM,
+            unit_label="%",
+            minimum=Decimal("0"),
+            maximum=Decimal("100"),
+            sample_period=Decimal("0.05"),
         )
+        wave = service.add_metric(wave_spec)
         dist = service.add_metric(
             MetricSpec(
                 label="Spectrum",
@@ -818,6 +817,10 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         block = [Decimal("10"), Decimal("20"), Decimal("30")]
         service.set_samples(wave, block)
         pump(app)
+        # flush rather than waiting: a scrolling plot reveals gradually, so asserting on
+        # what happens to be on screen after an arbitrary pump is a race. See 4e.
+        wave_plot.flush()
+        pump(app, seconds=0.1)
         report.check(
             wave_plot.samples == [10.0, 20.0, 30.0],
             "a block arriving is drawn once",
@@ -829,6 +832,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         pane._refresh_board()  # noqa: SLF001
         pane.refresh_alerts()
         pump(app)
+        wave_plot.flush()
         report.check(
             wave_plot.samples == before,
             "and a refresh does not draw it again",
@@ -839,6 +843,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         spare = service.add_metric(MetricSpec(label="Spare", kind=MetricKind.NUMBER))
         pane.refresh()
         pump(app)
+        pane.board.card(wave).control.plot.flush()
         report.check(
             pane.board.card(wave).control.plot.samples == before,
             "adding another metric does not disturb a running trace",
@@ -866,9 +871,11 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         pane.board.card(wave2).control.plot.clear()
         service.set_samples(wave, [Decimal("40")])
         pump(app)
+        first_plot.flush()
         held = list(first_plot.samples)
         service.set_samples(wave2, [Decimal("99")])
         pump(app)
+        first_plot.flush()
         report.check(
             first_plot.samples == held,
             "a report for one waveform leaves the other's trace alone",
@@ -893,6 +900,46 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         )
         window.set_use_widgets(True)
         pump(app)
+
+        print("\n4e. A trace moves at the rate its samples were taken at")
+        # A waveform arrives in blocks - a quarter second of signal, four times a second -
+        # and drawing a block the moment it lands makes the trace lurch rather than move.
+        # SamplePeriod is on the descriptor so a consumer can place samples in time, and
+        # this is the consumer doing that.
+        paced = pane.board.card(wave).control.plot
+        paced.clear()
+        pump(app)
+        report.check(paced.paced, "a waveform plot paces itself", f"period {wave_spec.sample_period}s")
+
+        service.set_samples(wave, [Decimal(str(v)) for v in range(20)])
+        app.processEvents()
+        report.check(
+            len(paced.samples) < 20,  # noqa: PLR2004
+            "a block is not dumped on screen the instant it arrives",
+            f"{len(paced.samples)} drawn, {len(paced.pending)} waiting",
+        )
+        report.check(
+            len(paced.samples) + len(paced.pending) == 20,  # noqa: PLR2004
+            "but nothing is lost: everything given is drawn or waiting",
+            f"{len(paced.samples)} + {len(paced.pending)}",
+        )
+        report.check(
+            wait_for(app, lambda: not paced.pending, timeout=5.0),
+            "and it all arrives in its own time",
+            f"{len(paced.samples)} drawn",
+        )
+
+        # A distribution is one picture of a domain, not a signal in time, so it has
+        # nothing to pace and appears at once.
+        dist_plot = pane.board.card(dist).control.plot
+        report.check(not dist_plot.paced, "a distribution does not pace")
+        service.set_samples(dist, [Decimal("1"), Decimal("2")])
+        app.processEvents()
+        report.check(
+            dist_plot.samples == [1.0, 2.0],
+            "it is drawn immediately",
+            str(dist_plot.samples),
+        )
 
         print("\n4d. The dialog offers all five kinds")
         metric_dialog = NewMetricDialog()

@@ -13,10 +13,11 @@ the tool has to stay legible on a light theme and a dark one.
 
 from __future__ import annotations
 
+import time
 from collections import deque
 from decimal import Decimal
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QPointF, Qt, QTimer
 from PySide6.QtGui import QPainter, QPalette, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget
 
@@ -31,9 +32,30 @@ PLOT_HEIGHT = 76
 # Padding inside the frame, so the trace never touches the border.
 MARGIN = 3
 
+# How often a paced plot moves samples out of the buffer and repaints. Thirty a second is
+# smooth to the eye and cheap enough to run on every card at once.
+FRAME_MS = 33
+
+# How far behind real time the trace is allowed to fall before it starts catching up, in
+# seconds of signal. A display that drifts further behind with every block is worse than a
+# chunky one, so a backlog past this is drained faster than real time until it is gone.
+MAX_BACKLOG_SECONDS = 1.5
+
 
 class SamplePlot(QWidget):
-    """Draws a list of samples, either as a scrolling trace or as a static bar chart."""
+    """Draws a list of samples, either as a scrolling trace or as a static bar chart.
+
+    A waveform arrives in blocks - half a second of signal, twice a second - and drawing a
+    block the moment it lands makes the trace lurch rather than move. So a scrolling plot
+    buffers what it is given and reveals it at the rate the samples were taken at, which is
+    what SamplePeriod on the descriptor is for: the standard tells a consumer how to place
+    samples in time, and this is a consumer doing that.
+
+    Nothing is invented. When the buffer runs dry the trace simply stops until the next
+    block, which is honest about a device that has gone quiet. When the buffer runs long -
+    a hiccup, or a peer sending faster than declared - it drains faster than real time, so
+    the display cannot drift further and further behind what the device is actually doing.
+    """
 
     def __init__(
         self,
@@ -42,6 +64,7 @@ class SamplePlot(QWidget):
         scrolling: bool = True,
         minimum: Decimal | None = None,
         maximum: Decimal | None = None,
+        sample_period: Decimal | None = None,
     ) -> None:
         super().__init__(parent)
         self.scrolling = scrolling
@@ -52,12 +75,36 @@ class SamplePlot(QWidget):
         self._fixed_high = float(maximum) if maximum is not None else None
         self._samples: deque[float] = deque(maxlen=HISTORY if scrolling else None)
 
+        # Seconds between two samples, from the descriptor. Without it there is no way to
+        # know how fast to reveal, so a plot that has none shows blocks as they arrive.
+        self._sample_period = float(sample_period) if sample_period else 0.0
+        self._pending: deque[float] = deque()
+        # Fractional samples carried between frames, so a rate that does not divide evenly
+        # into the frame interval does not round down to nothing every time.
+        self._credit = 0.0
+        # When the last frame ran. Timers fire late under load, and assuming every tick is
+        # exactly FRAME_MS would make the trace run slow by however much they slipped.
+        self._last_tick = 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(FRAME_MS)
+        self._timer.timeout.connect(self._reveal)
+
     # -- content -------------------------------------------------------------------
 
     @property
     def samples(self) -> list[float]:
-        """What is currently on the plot."""
+        """What is currently drawn."""
         return list(self._samples)
+
+    @property
+    def pending(self) -> list[float]:
+        """Received but not yet revealed. Empty unless the plot is pacing."""
+        return list(self._pending)
+
+    @property
+    def paced(self) -> bool:
+        """Whether this plot reveals gradually rather than a block at a time."""
+        return self.scrolling and self._sample_period > 0
 
     def add_samples(self, samples) -> None:  # noqa: ANN001 - any sequence of numbers
         """Take a block of samples.
@@ -71,14 +118,69 @@ class SamplePlot(QWidget):
             # A peer may publish something that is not a number at all. Showing the last
             # good trace beats blanking the card.
             return
-        if not self.scrolling:
-            self._samples.clear()
-        self._samples.extend(values)
-        self.update()
+        if not values:
+            return
+
+        if not self.paced:
+            if not self.scrolling:
+                self._samples.clear()
+            self._samples.extend(values)
+            self.update()
+            return
+
+        self._pending.extend(values)
+        if not self._timer.isActive():
+            self._credit = 0.0
+            self._last_tick = time.monotonic()
+            self._timer.start()
+
+    def flush(self) -> None:
+        """Reveal everything at once, abandoning the pacing.
+
+        For when there is nobody to watch the animation: a hidden card, or a test that
+        wants to assert on a block rather than wait for it to trickle out.
+        """
+        self._timer.stop()
+        self._credit = 0.0
+        if self._pending:
+            self._samples.extend(self._pending)
+            self._pending.clear()
+            self.update()
 
     def clear(self) -> None:
-        """Forget every sample."""
+        """Forget every sample, drawn or waiting."""
+        self._timer.stop()
         self._samples.clear()
+        self._pending.clear()
+        self._credit = 0.0
+        self.update()
+
+    def _reveal(self) -> None:
+        """Move however many samples belong to one frame's worth of time."""
+        if not self._pending:
+            self._timer.stop()
+            self._credit = 0.0
+            return
+
+        now = time.monotonic()
+        elapsed = now - self._last_tick
+        self._last_tick = now
+        self._credit += elapsed / self._sample_period
+        due = int(self._credit)
+        self._credit -= due
+
+        # If the buffer has run long, take the excess as well. Otherwise a peer sending a
+        # little faster than it declared would push the trace further behind every second
+        # until it was showing minutes-old data.
+        backlog_limit = int(MAX_BACKLOG_SECONDS / self._sample_period)
+        excess = len(self._pending) - backlog_limit
+        if excess > 0:
+            due += excess
+
+        if due <= 0:
+            return
+        for _ in range(min(due, len(self._pending))):
+            self._samples.append(self._pending.popleft())
         self.update()
 
     # -- painting ------------------------------------------------------------------
