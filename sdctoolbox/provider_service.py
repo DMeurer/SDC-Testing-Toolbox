@@ -18,6 +18,7 @@ from sdc11073.location import SdcLocation
 from sdc11073.mdib import ProviderMdib
 from sdc11073.provider import SdcProvider
 from sdc11073.provider.baseproduct import BaseProduct
+from sdc11073.provider.operations import ActivateOperation
 from sdc11073.provider.providerimpl import RoleProviderComponents
 from sdc11073.wsdiscovery import WSDiscovery
 from sdc11073.xml_types import pm_qnames as pm
@@ -25,10 +26,11 @@ from sdc11073.xml_types import pm_types
 from sdc11073.xml_types.dpws_types import ThisDeviceType, ThisModelType
 
 from . import constants
-from .handlers import apply_metric_value, make_set_handler
+from .handlers import apply_metric_value, make_activate_handler, make_set_handler
 from .model import (
     DEFAULT_MANIFESTATIONS,
     DEFAULT_SAMPLE_PERIOD,
+    ActionSpec,
     AlertSpec,
     Coding,
     DeviceInfo,
@@ -36,6 +38,7 @@ from .model import (
     MetricKind,
     MetricSpec,
     PatientInfo,
+    DistributionShape,
     SignalInfo,
     WaveformShape,
     slugify,
@@ -103,24 +106,136 @@ def _domain_step(spec: MetricSpec) -> Decimal:
 
 
 def _distribution_samples(spec: MetricSpec, phase: float) -> list[Decimal]:
-    """A bell across the domain, its peak drifting with the phase.
+    """A block across the domain, in the shape the spec asks for.
 
     A distribution is a shape over a domain rather than a signal in time, so the generated
-    one is the shape people actually recognise as a distribution. It still moves, because a
-    card that never changes tells you nothing about whether reports are arriving.
+    one is whatever makes the device recognisable. It still moves, because a card that never
+    changes tells you nothing about whether reports are arriving.
     """
     low = float(spec.minimum if spec.minimum is not None else 0)
     high = float(spec.maximum if spec.maximum is not None else 100)
     if high <= low:
         high = low + 1.0
-    centre = 0.5 + 0.3 * math.sin(phase * 2.0 * math.pi)
+    shape = spec.distribution_shape
 
     samples = []
     for index in range(DISTRIBUTION_BINS):
         position = index / (DISTRIBUTION_BINS - 1)
-        weight = math.exp(-((position - centre) ** 2) / (2.0 * DISTRIBUTION_WIDTH**2))
-        samples.append(Decimal(str(round(low + weight * (high - low), 2))))
+        samples.append(Decimal(str(round(low + _bin_weight(shape, position, phase) * (high - low), 2))))
     return samples
+
+
+def _bin_weight(shape: DistributionShape, position: float, phase: float) -> float:
+    """How full one bin is, 0..1, at a position across the domain."""
+    if shape is DistributionShape.BELL:
+        centre = 0.5 + 0.3 * math.sin(phase * 2.0 * math.pi)
+        return _bump(position, centre, DISTRIBUTION_WIDTH)
+
+    if shape is DistributionShape.SPECTRUM:
+        # A fundamental near the low end with harmonics above it, each smaller than the
+        # last: what a power spectrum looks like, and why a spectrum is a distribution
+        # rather than a waveform.
+        fundamental = 0.12 + 0.02 * math.sin(phase * 2.0 * math.pi)
+        total = 0.0
+        for harmonic in range(1, 6):
+            total += (1.0 / harmonic**1.6) * _bump(position, fundamental * harmonic, 0.022)
+        return min(1.0, total)
+
+    if shape is DistributionShape.BIMODAL:
+        drift = 0.06 * math.sin(phase * 2.0 * math.pi)
+        return min(1.0, _bump(position, 0.28 + drift, 0.075) + 0.72 * _bump(position, 0.68 - drift, 0.09))
+
+    if shape is DistributionShape.DECAY:
+        wobble = 1.0 + 0.15 * math.sin(phase * 2.0 * math.pi)
+        return min(1.0, math.exp(-position * 3.2 * wobble))
+
+    # FLAT: a baseline with a little noise, for a reference channel.
+    return min(1.0, max(0.0, 0.5 + 0.05 * math.sin(phase * 2.0 * math.pi) + random.uniform(-0.04, 0.04)))  # noqa: S311
+
+
+def _bump(position: float, centre: float, width: float) -> float:
+    """A gaussian bump, clamped to something a bin can hold."""
+    offset = position - centre
+    return math.exp(-(offset * offset) / (2.0 * width * width))
+
+
+def _shape_fraction(shape: WaveformShape, position: float) -> float:  # noqa: PLR0911
+    """Where the curve sits between its ends, at a position through one cycle.
+
+    Returns 0..1. The physiological ones are caricatures - drawn so a person recognises the
+    signal and a consumer has something with structure to render - not clinical models.
+    """
+    if shape is WaveformShape.SINE:
+        return (math.sin(position * 2.0 * math.pi) + 1.0) / 2.0
+    if shape is WaveformShape.SAWTOOTH:
+        return position
+    if shape is WaveformShape.SQUARE:
+        return 1.0 if position < 0.5 else 0.0  # noqa: PLR2004
+    if shape is WaveformShape.NOISE:
+        return random.random()  # noqa: S311 - a test signal, not a secret
+
+    if shape is WaveformShape.PULSE:
+        # Steep systolic upstroke, dicrotic notch, slow diastolic decay.
+        if position < 0.15:  # noqa: PLR2004
+            return _ease(position / 0.15)
+        if position < 0.30:  # noqa: PLR2004
+            return 1.0 - 0.45 * _ease((position - 0.15) / 0.15)
+        if position < 0.38:  # noqa: PLR2004
+            # The notch: the aortic valve closing puts a bump in the downslope.
+            return 0.55 + 0.12 * math.sin((position - 0.30) / 0.08 * math.pi)
+        return 0.67 * math.exp(-(position - 0.38) * 4.0)
+
+    if shape is WaveformShape.ARTERIAL:
+        # The same beat, but blood pressure never returns to zero.
+        return 0.35 + 0.65 * _shape_fraction(WaveformShape.PULSE, position)
+
+    if shape is WaveformShape.ECG:
+        return _ecg_fraction(position)
+
+    if shape is WaveformShape.RESPIRATION:
+        # Rise, plateau, passive fall, pause. Inspiration is shorter than expiration.
+        if position < 0.30:  # noqa: PLR2004
+            return _ease(position / 0.30)
+        if position < 0.40:  # noqa: PLR2004
+            return 1.0
+        if position < 0.75:  # noqa: PLR2004
+            return 1.0 - _ease((position - 0.40) / 0.35)
+        return 0.0
+
+    # FLOW: inspiratory limb positive, expiratory negative, so it crosses the middle.
+    if position < 0.30:  # noqa: PLR2004
+        return 0.5 + 0.5 * math.sin(position / 0.30 * math.pi)
+    if position < 0.75:  # noqa: PLR2004
+        return 0.5 - 0.4 * math.sin((position - 0.30) / 0.45 * math.pi)
+    return 0.5
+
+
+def _ease(fraction: float) -> float:
+    """A smooth 0..1 ramp, so a caricature does not look like it was drawn with a ruler."""
+    clamped = min(1.0, max(0.0, fraction))
+    return (1.0 - math.cos(clamped * math.pi)) / 2.0
+
+
+# Where each feature of the ECG sits in a beat, how tall it is, and how wide.
+# The QRS is narrow and large; P and T are broad and small. Baseline sits low so the
+# S wave has somewhere to go.
+_ECG_FEATURES = (
+    (0.16, 0.13, 0.035),  # P wave
+    (0.36, -0.10, 0.012),  # Q
+    (0.40, 0.85, 0.012),  # R
+    (0.44, -0.22, 0.014),  # S
+    (0.62, 0.22, 0.055),  # T wave
+)
+_ECG_BASELINE = 0.25
+
+
+def _ecg_fraction(position: float) -> float:
+    """A recognisable PQRST complex, as a sum of bumps on a baseline."""
+    value = _ECG_BASELINE
+    for centre, height, width in _ECG_FEATURES:
+        offset = position - centre
+        value += height * math.exp(-(offset * offset) / (2.0 * width * width))
+    return min(1.0, max(0.0, value))
 
 
 def _shape_sample(shape: WaveformShape, phase: float, low: float, high: float) -> Decimal:
@@ -128,15 +243,7 @@ def _shape_sample(shape: WaveformShape, phase: float, low: float, high: float) -
 
     ``phase`` counts cycles, so its fractional part is the position within one.
     """
-    position = phase % 1.0
-    if shape is WaveformShape.SINE:
-        fraction = (math.sin(position * 2.0 * math.pi) + 1.0) / 2.0
-    elif shape is WaveformShape.SAWTOOTH:
-        fraction = position
-    elif shape is WaveformShape.SQUARE:
-        fraction = 1.0 if position < 0.5 else 0.0  # noqa: PLR2004
-    else:
-        fraction = random.random()  # noqa: S311 - a test signal, not a secret
+    fraction = _shape_fraction(shape, phase % 1.0)
     # Two decimal places: enough to draw a smooth curve, short enough that a block of
     # samples does not bloat the report.
     return Decimal(str(round(low + fraction * (high - low), 2)))
@@ -175,6 +282,7 @@ class ProviderService:
         self._mdib: ProviderMdib | None = None
         self._sco: AbstractScoOperationsRegistry | None = None
         self._handler = None
+        self._activate_handler = None
         # metric handle -> operation handle, for metrics that have a set operation
         self._operations: dict[str, str] = {}
         # metric handle -> the spec it was created from
@@ -183,6 +291,8 @@ class ProviderService:
         self._alerts: dict[str, AlertSpec] = {}
         # alarm handle -> the signals announcing it
         self._alert_signals: dict[str, list[str]] = {}
+        # action handle -> the spec it was created from
+        self._actions: dict[str, ActionSpec] = {}
         # section name -> the Channel handle its metrics were put in
         self._sections: dict[str, str] = {}
         # Guards the metric observer against re-entering itself.
@@ -221,6 +331,11 @@ class ProviderService:
         # does. It cannot be done from a metrics observable: sdc11073 fires those while
         # holding the transaction lock, and opening the alert transaction there deadlocks.
         self._handler = make_set_handler(self._mdib, on_applied=self._on_metric_applied)
+        self._activate_handler = make_activate_handler(
+            self._mdib,
+            effects_for=self._effects_for,
+            on_applied=self._on_metric_applied,
+        )
 
         this_model = ThisModelType(
             manufacturer=self.device.manufacturer,
@@ -277,6 +392,7 @@ class ProviderService:
         self._specs.clear()
         self._alerts.clear()
         self._alert_signals.clear()
+        self._actions.clear()
         self._sections.clear()
         self._waveform_phase.clear()
         self._pinned_samples.clear()
@@ -1011,12 +1127,76 @@ class ProviderService:
         if high <= low:
             high = low + 1.0
 
+        cycle = spec.cycle_samples or WAVEFORM_CYCLE_SAMPLES
         phase = self._waveform_phase.get(handle, 0.0)
-        block = [
-            _shape_sample(spec.shape, phase + index / WAVEFORM_CYCLE_SAMPLES, low, high)
-            for index in range(count)
-        ]
-        return block, (phase + count / WAVEFORM_CYCLE_SAMPLES) % 1.0
+        block = [_shape_sample(spec.shape, phase + index / cycle, low, high) for index in range(count)]
+        return block, (phase + count / cycle) % 1.0
+
+    # -- actions -------------------------------------------------------------------
+
+    def add_action(self, spec: ActionSpec) -> str:
+        """Publish something the device can be told to do, and return its handle.
+
+        An ActivateOperation, which is the BICEPS way of saying "do the thing" as opposed
+        to "take this value". Registering it with the SCO creates the descriptor and emits
+        the report, the same route a set operation takes.
+        """
+        with self._lock:
+            if self.mdib.entities.by_handle(spec.target_handle) is None:
+                msg = f"no descriptor with handle {spec.target_handle!r} for action {spec.label!r} to act on"
+                raise KeyError(msg)
+
+            handle = spec.handle or self._unique_handle(constants.ACTION_HANDLE_PREFIX + spec.slug)
+            operation = ActivateOperation(
+                handle=handle,
+                operation_target_handle=spec.target_handle,
+                operation_handler=self._activate_handler,
+                coded_value=_coded_value(spec.effective_type(), spec.label),
+            )
+            self._sco.register_operation(operation)
+            self._actions[handle] = spec
+            self._set_operating_mode(handle, pm_types.OperatingMode.ENABLED)
+            logger.info("added action %r (%s) on %s", spec.label, handle, spec.target_handle)
+            return handle
+
+    def remove_action(self, handle: str) -> None:
+        """Delete an action and its descriptor."""
+        with self._lock:
+            if self._actions.pop(handle, None) is None:
+                return
+            self._sco.unregister_operation_by_handle(handle)
+            entity = self.mdib.entities.by_handle(handle)
+            if entity is not None:
+                with self.mdib.descriptor_transaction() as mgr:
+                    mgr.remove_entity(entity)
+            logger.info("removed action %s", handle)
+
+    def list_actions(self) -> dict[str, ActionSpec]:
+        """The specs of every action we published, keyed by handle."""
+        return dict(self._actions)
+
+    def run_action(self, handle: str) -> None:
+        """Invoke one of our own actions locally, as a remote consumer would.
+
+        Deliberately routed through the same effects the remote path uses, so a button here
+        and an invocation over the network cannot drift apart.
+        """
+        with self._lock:
+            spec = self._actions.get(handle)
+            if spec is None:
+                msg = f"no action with handle {handle!r}"
+                raise KeyError(msg)
+            touched = list(spec.effects)
+            for target, value in spec.effects.items():
+                if self.mdib.entities.by_handle(target) is None:
+                    logger.warning("action %s: no metric %r to change", handle, target)
+                    continue
+                self.set_value(target, value)
+            logger.info("action %s ran locally, changing %d metric(s)", handle, len(touched))
+
+    def _effects_for(self, operation_handle: str) -> dict[str, object]:
+        spec = self._actions.get(operation_handle)
+        return dict(spec.effects) if spec is not None else {}
 
     # -- internals -----------------------------------------------------------------
 

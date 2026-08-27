@@ -18,11 +18,13 @@ from typing import TYPE_CHECKING, Any
 
 from .constants import METRIC_HANDLE_PREFIX, PRESET_DIR
 from .model import (
+    ActionSpec,
     AlertKind,
     AlertPriority,
     AlertSpec,
     Coding,
     DeviceInfo,
+    DistributionShape,
     LocationInfo,
     MetricKind,
     MetricSpec,
@@ -60,6 +62,7 @@ class DeviceConfig:
 
     metrics: list[MetricSpec] = field(default_factory=list)
     alerts: list[AlertSpec] = field(default_factory=list)
+    actions: list[ActionSpec] = field(default_factory=list)
     location: LocationInfo | None = None
     patient: PatientInfo | None = None
     # Who the device claims to be. Applied when the provider is constructed, not on import:
@@ -206,12 +209,14 @@ def metric_to_dict(handle: str, spec: MetricSpec) -> dict[str, Any]:
     if spec.kind is MetricKind.WAVEFORM:
         entry["sample_period"] = str(spec.sample_period)
         entry["shape"] = spec.shape.value
+        entry["cycle_samples"] = spec.cycle_samples
     if spec.kind is MetricKind.DISTRIBUTION:
         domain_unit = _coding_to_json(spec.domain_unit_coding, spec.domain_unit_label)
         if domain_unit is not None:
             entry["domain_unit"] = domain_unit
         entry["domain_minimum"] = str(spec.domain_minimum)
         entry["domain_maximum"] = str(spec.domain_maximum)
+        entry["distribution_shape"] = spec.distribution_shape.value
     return entry
 
 
@@ -231,6 +236,64 @@ def alert_to_dict(handle: str, spec: AlertSpec) -> dict[str, Any]:
     if spec.delegable:
         entry["delegable"] = True
     return entry
+
+
+def action_to_dict(handle: str, spec: ActionSpec) -> dict[str, Any]:
+    """One action as plain JSON types."""
+    entry: dict[str, Any] = {
+        "handle": handle,
+        "label": spec.label,
+        "target": spec.target_handle,
+    }
+    if spec.type_coding is not None:
+        entry["type"] = _coding_to_json(spec.type_coding, "")
+    if spec.note:
+        entry["note"] = spec.note
+    if spec.effects:
+        entry["effects"] = {h: str(v) for h, v in sorted(spec.effects.items())}
+    return entry
+
+
+def action_from_dict(entry: dict[str, Any]) -> ActionSpec:
+    """Rebuild one action. Raises ConfigError on anything unusable."""
+    if not isinstance(entry, dict):
+        msg = f"actions: expected an object, found {type(entry).__name__}"
+        raise ConfigError(msg)
+    label = entry.get("label")
+    if not label:
+        msg = "actions: an entry has no label"
+        raise ConfigError(msg)
+    target = entry.get("target")
+    if not target:
+        msg = f"actions[{label}]: no target to act on"
+        raise ConfigError(msg)
+
+    raw_effects = entry.get("effects") or {}
+    if not isinstance(raw_effects, dict):
+        msg = f"actions[{label}].effects: expected an object of handle to value"
+        raise ConfigError(msg)
+    effects: dict[str, Any] = {}
+    for handle, value in raw_effects.items():
+        text = str(value)
+        try:
+            effects[str(handle)] = Decimal(text)
+        except InvalidOperation:
+            # Not every effect is numeric: a mode is a string.
+            effects[str(handle)] = text
+
+    type_coding, _ = _coding_from_json(entry.get("type"), f"actions[{label}].type")
+    try:
+        return ActionSpec(
+            label=str(label),
+            target_handle=str(target),
+            effects=effects,
+            handle=entry.get("handle") or None,
+            type_coding=type_coding,
+            note=str(entry.get("note") or ""),
+        )
+    except (ValueError, TypeError) as exc:
+        msg = f"actions[{label}]: {exc}"
+        raise ConfigError(msg) from exc
 
 
 def _context_to_dict(service: ProviderService) -> dict[str, Any]:
@@ -303,6 +366,7 @@ def to_dict(service: ProviderService, *, include_values: bool = True) -> dict[st
         },
         "metrics": metrics,
         "alerts": [alert_to_dict(handle, spec) for handle, spec in sorted(service.list_alerts().items())],
+        "actions": [action_to_dict(handle, spec) for handle, spec in sorted(service.list_actions().items())],
     }
     contexts = _context_to_dict(service)
     if contexts:
@@ -384,6 +448,13 @@ def metric_from_dict(entry: dict[str, Any]) -> MetricSpec:
                 entry.get("shape"),
                 WaveformShape.SINE,
                 f"metrics[{label}].shape",
+            ),
+            cycle_samples=int(entry.get("cycle_samples") or 40),
+            distribution_shape=_enum_or_default(
+                DistributionShape,
+                entry.get("distribution_shape"),
+                DistributionShape.BELL,
+                f"metrics[{label}].distribution_shape",
             ),
             domain_unit_label=domain_label,
             domain_unit_coding=domain_coding,
@@ -493,6 +564,7 @@ def parse(data: Any) -> DeviceConfig:
     device, instance_name = _device_from_dict(data.get("device"))
     metrics = [metric_from_dict(entry) for entry in data.get("metrics") or []]
     alerts = [alert_from_dict(entry) for entry in data.get("alerts") or []]
+    actions = [action_from_dict(entry) for entry in data.get("actions") or []]
     location, patient = _contexts_from_dict(data.get("contexts"))
 
     # Catch a dangling reference here rather than half way through building the device.
@@ -509,6 +581,7 @@ def parse(data: Any) -> DeviceConfig:
     return DeviceConfig(
         metrics=metrics,
         alerts=alerts,
+        actions=actions,
         location=location,
         patient=patient,
         device=device,
@@ -547,6 +620,8 @@ def apply_to(
         already exist would collide.
     """
     if replace:
+        for handle in list(service.list_actions()):
+            service.remove_action(handle)
         for handle in list(service.list_alerts()):
             service.remove_alert(handle)
         for handle in list(service.list_metrics()):
@@ -562,6 +637,15 @@ def apply_to(
             msg = f"alarm {spec.label!r} watches {spec.source_handle!r}, which the file does not define"
             raise ConfigError(msg) from exc
         created_alerts += 1
+
+    # Actions last of the descriptors: one names the thing it acts on, and a section's Vmd
+    # only exists once a metric has put it there.
+    for action in device.actions:
+        try:
+            service.add_action(action)
+        except KeyError as exc:
+            msg = f"action {action.label!r} acts on {action.target_handle!r}, which does not exist"
+            raise ConfigError(msg) from exc
 
     # Contexts last, and only when the file mentions them. A file that says nothing about a
     # patient leaves the one already attached alone rather than silently detaching them.

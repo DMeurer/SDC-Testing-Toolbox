@@ -344,6 +344,7 @@ class MainWindow(QMainWindow):
 
         self.provider_pane.refresh()
         self.provider_pane.refresh_alerts()
+        self.provider_pane.refresh_actions()
         self.provider_pane.refresh_contexts()
         self.statusBar().showMessage(
             f"Imported {metrics} data source(s) and {alarms} alarm(s) from {Path(path).name}",

@@ -86,6 +86,7 @@ class ProviderPane(QWidget):
 
         self.refresh()
         self.refresh_alerts()
+        self.refresh_actions()
         self.refresh_contexts()
 
     # -- construction --------------------------------------------------------------
@@ -127,6 +128,17 @@ class ProviderPane(QWidget):
         buttons.addWidget(self.context_button)
         buttons.addWidget(self.context_label, 1)
         buttons.addStretch(0)
+
+        # Actions are the things the device *does*. They get their own row rather than a
+        # place in the metric table, because they are not values and behave nothing like
+        # one: there is nothing to read back, only something to invoke.
+        self.actions_row = QHBoxLayout()
+        self.actions_label = QLabel("Actions")
+        self.actions_row.addWidget(self.actions_label)
+        self.actions_row.addStretch(1)
+        self.action_buttons: dict[str, QPushButton] = {}
+        self.actions_widget = QWidget()
+        self.actions_widget.setLayout(self.actions_row)
 
         # -- alarms
         self.alert_table = QTableWidget(0, len(ALERT_COLUMNS))
@@ -194,6 +206,7 @@ class ProviderPane(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(buttons)
         layout.addWidget(self.views, 1)
+        layout.addWidget(self.actions_widget)
         layout.addLayout(editor)
 
     @property
@@ -565,6 +578,36 @@ class ProviderPane(QWidget):
         self.refresh_alerts()
 
     # -- contexts ------------------------------------------------------------------
+
+    def refresh_actions(self) -> None:
+        """Rebuild the action buttons from what the device publishes."""
+        specs = self.service.list_actions()
+        for handle, button in list(self.action_buttons.items()):
+            if handle not in specs:
+                self.actions_row.removeWidget(button)
+                button.deleteLater()
+                del self.action_buttons[handle]
+
+        for handle, spec in sorted(specs.items()):
+            button = self.action_buttons.get(handle)
+            if button is None:
+                button = QPushButton(spec.label)
+                button.clicked.connect(lambda _=False, h=handle: self._on_run_action(h))
+                # Before the stretch, so buttons stay left and the row does not jump about
+                # as actions come and go.
+                self.actions_row.insertWidget(self.actions_row.count() - 1, button)
+                self.action_buttons[handle] = button
+            button.setToolTip(f"{spec.note}\n{handle}: {spec.summary()}".strip())
+
+        # A device with no actions should not show an empty toolbar saying "Actions".
+        self.actions_widget.setVisible(bool(specs))
+
+    def _on_run_action(self, handle: str) -> None:
+        try:
+            self.service.run_action(handle)
+        except (KeyError, ValueError, TypeError) as exc:
+            QMessageBox.warning(self, "Could not run the action", str(exc))
+        self.refresh()
 
     def refresh_contexts(self) -> None:
         """Show who and where the device currently says it is."""

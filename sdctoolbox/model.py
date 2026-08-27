@@ -92,12 +92,49 @@ class WaveformShape(enum.Enum):
     Not a BICEPS concept at all - the standard carries samples and says nothing about their
     shape. This exists so the tool has something recognisable to send, and so a consumer
     being tested against it can be checked against a curve somebody can identify by eye.
+
+    The first four are geometric and are for testing rendering: a sawtooth makes a dropped
+    or duplicated block obvious in a way a sine does not. The rest are shaped like the
+    signals real devices publish, so a preset can look like the machine it names. They are
+    caricatures drawn to be recognisable, not clinical models, and nothing here should be
+    read as a statement about physiology.
     """
 
     SINE = "sine"
     SAWTOOTH = "sawtooth"
     SQUARE = "square"
     NOISE = "noise"
+    # A pulse oximeter's plethysmogram: a steep upstroke, a dicrotic notch on the way down,
+    # then a slow diastolic decay.
+    PULSE = "pulse"
+    # The QRS complex an ECG is recognised by, with its P and T waves.
+    ECG = "ecg"
+    # Arterial blood pressure: the same beat as the pulse but riding on a baseline, since
+    # it never returns to zero.
+    ARTERIAL = "arterial"
+    # Ventilation: a slow rise, a plateau, a passive fall, then a pause.
+    RESPIRATION = "respiration"
+    # Airway flow: inspiratory positive, expiratory negative, crossing zero between.
+    FLOW = "flow"
+
+
+class DistributionShape(enum.Enum):
+    """The shape a generated distribution takes across its domain.
+
+    Same standing as WaveformShape: nothing in BICEPS, and here so a distribution card
+    shows something a person can recognise as belonging to the device that publishes it.
+    """
+
+    # One peak, drifting. The generic distribution.
+    BELL = "bell"
+    # A fundamental with decaying harmonics, which is what a power spectrum looks like.
+    SPECTRUM = "spectrum"
+    # Two peaks, e.g. a tissue impedance spectrum with a second population.
+    BIMODAL = "bimodal"
+    # Falling from the low end of the domain, e.g. a particle size or intensity histogram.
+    DECAY = "decay"
+    # Flat with noise on it, for a baseline or a reference channel.
+    FLAT = "flat"
 
 
 # A tenth of a second: fast enough to look alive on screen, slow enough that two instances
@@ -263,6 +300,9 @@ class MetricSpec:
     sample_period: Decimal | None = None
     # The curve to generate. Nothing in BICEPS; see WaveformShape.
     shape: WaveformShape = WaveformShape.SINE
+    # How many samples make one full cycle of that curve. A heartbeat and a breath are the
+    # same shape machinery at very different rates, and this is what separates them.
+    cycle_samples: int = 40
 
     # -- distribution only -------------------------------------------------------------
     # DistributionSampleArrayMetricDescriptor/DomainUnit: what the samples are distributed
@@ -274,6 +314,8 @@ class MetricSpec:
     # minimum/maximum, which describe the samples themselves.
     domain_minimum: Decimal | None = None
     domain_maximum: Decimal | None = None
+    # The shape to generate across that domain. Nothing in BICEPS; see DistributionShape.
+    distribution_shape: DistributionShape = DistributionShape.BELL
     # Which subsystem of the device this belongs to. Empty puts it in the default channel;
     # a name gives it a Vmd and Channel of its own, so a consumer browsing the containment
     # tree sees a device with parts rather than one flat list of metrics.
@@ -310,11 +352,19 @@ class MetricSpec:
                 msg = f"sample_period must be positive, not {self.sample_period}"
                 raise ValueError(msg)
             self.shape = _coerce_enum(WaveformShape, self.shape, "shape")
+            if not isinstance(self.cycle_samples, int) or self.cycle_samples < 2:  # noqa: PLR2004
+                msg = f"cycle_samples must be an integer of at least 2, not {self.cycle_samples!r}"
+                raise ValueError(msg)
         elif self.sample_period is not None:
             msg = f"sample_period is only meaningful for {MetricKind.WAVEFORM.value} metrics"
             raise ValueError(msg)
 
         if self.kind is MetricKind.DISTRIBUTION:
+            self.distribution_shape = _coerce_enum(
+                DistributionShape,
+                self.distribution_shape,
+                "distribution_shape",
+            )
             if self.domain_minimum is None:
                 self.domain_minimum = Decimal("0")
             if self.domain_maximum is None:
@@ -618,6 +668,63 @@ class PatientInfo:
 
 
 @dataclass
+class ActionSpec:
+    """Something the device *does*, as opposed to a value it holds.
+
+    BICEPS calls this an ActivateOperation, and it is the difference between "set the zoom
+    to 4" and "home the axes". A set operation names a metric and carries the value it
+    should take; an activate operation names a target and means *do the thing*, with the
+    device deciding what that involves.
+
+    Real devices are full of them - home, park, calibrate, start coagulation, go to the
+    fixpoint - and none of them is expressible as writing a number to a metric. Without
+    them a robotic microscope modelled here would be a list of read-outs.
+
+    ``effects`` is what this build does when one is invoked: a map of metric handle to the
+    value it takes. That is a stand-in for machinery a real device would have, and it is
+    deliberately visible rather than hidden, so what an action did is inspectable in the
+    metrics it moved.
+    """
+
+    label: str
+    # The descriptor the operation acts on. A real device usually points these at the
+    # component being operated, so a Vmd or the Mds rather than a single metric.
+    target_handle: str
+    effects: dict[str, Decimal | str] = field(default_factory=dict)
+    handle: str | None = None
+    type_coding: Coding | None = None
+    # Free text shown next to the button, for what the action is for.
+    note: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.label.strip():
+            msg = "an action needs a label"
+            raise ValueError(msg)
+        if not str(self.target_handle).strip():
+            msg = f"action {self.label!r} needs a target handle"
+            raise ValueError(msg)
+        for handle, value in self.effects.items():
+            if isinstance(value, float):
+                msg = f"action {self.label!r}: effect on {handle} must be a Decimal or str, never a float"
+                raise TypeError(msg)
+
+    @property
+    def slug(self) -> str:
+        """Slug used to build handles."""
+        return slugify(self.label)
+
+    def effective_type(self) -> Coding:
+        """What this action is, as a code."""
+        return self.type_coding or Coding(code=self.slug, system="private", label=self.label)
+
+    def summary(self) -> str:
+        """What invoking it will do, in a few words."""
+        if not self.effects:
+            return "reports success and changes nothing"
+        return ", ".join(f"{handle} = {value}" for handle, value in sorted(self.effects.items()))
+
+
+@dataclass
 class RemoteAlert:
     """An alarm observed on a peer device.
 
@@ -652,6 +759,27 @@ def format_range(minimum: Decimal | None, maximum: Decimal | None) -> str:
     if maximum is not None:
         return f"up to {maximum}"
     return ""
+
+
+@dataclass(frozen=True)
+class RemoteAction:
+    """An ActivateOperation observed on a peer.
+
+    Everything optional, as with RemoteMetric: a foreign device may publish an operation
+    with no concept description and no readable code at all, and it still has to be listed
+    rather than dropped.
+    """
+
+    handle: str
+    label: str | None = None
+    type_code: str | None = None
+    target_handle: str | None = None
+    enabled: bool = False
+
+    @property
+    def caption(self) -> str:
+        """What to put on the button."""
+        return self.label or self.type_code or self.handle
 
 
 @dataclass

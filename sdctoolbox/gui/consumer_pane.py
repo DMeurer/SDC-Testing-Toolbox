@@ -121,6 +121,16 @@ class ConsumerPane(QWidget):
         top.addWidget(self.disconnect_button)
         top.addStretch(1)
 
+        # What the peer says it can be told to *do*, as opposed to the values it holds.
+        # A device may be able to home its axes without publishing a metric for it.
+        self.actions_row = QHBoxLayout()
+        self.actions_row.addWidget(QLabel("Actions"))
+        self.actions_row.addStretch(1)
+        self.action_buttons: dict[str, QPushButton] = {}
+        self.actions_widget = QWidget()
+        self.actions_widget.setLayout(self.actions_row)
+        self.actions_widget.setVisible(False)
+
         self.device_list = QListWidget()
         self.device_list.setMaximumHeight(90)
         self.device_list.itemSelectionChanged.connect(self._update_buttons)
@@ -202,6 +212,7 @@ class ConsumerPane(QWidget):
         layout.addWidget(self.device_list)
         layout.addWidget(self.status_label)
         layout.addWidget(self.views, 1)
+        layout.addWidget(self.actions_widget)
         layout.addLayout(editor)
 
     def _wire_async(self) -> None:
@@ -304,6 +315,7 @@ class ConsumerPane(QWidget):
         self._rebuild_tree()
         self._rebuild_table()
         self._rebuild_alerts()
+        self.refresh_actions()
         self._refresh_board()
         self._on_selection_changed()
 
@@ -443,6 +455,39 @@ class ConsumerPane(QWidget):
         self.select_handle(handle)
         self.invocation_label.setText("waiting\u2026")
         if not self._set_call.start(self.remote.set_value, handle, value):
+            self.invocation_label.setText("busy, try again")
+
+    def refresh_actions(self) -> None:
+        """Rebuild the buttons for the peer's actions."""
+        actions = {} if self.remote is None else self.remote.actions()
+        for handle, button in list(self.action_buttons.items()):
+            if handle not in actions:
+                self.actions_row.removeWidget(button)
+                button.deleteLater()
+                del self.action_buttons[handle]
+
+        for handle, action in sorted(actions.items()):
+            button = self.action_buttons.get(handle)
+            if button is None:
+                button = QPushButton(action.caption)
+                button.clicked.connect(lambda _=False, h=handle: self._on_run_action(h))
+                self.actions_row.insertWidget(self.actions_row.count() - 1, button)
+                self.action_buttons[handle] = button
+            button.setText(action.caption)
+            # Same rule as a metric editor: offered only while the device says it is
+            # enabled, and OperatingMode can change under us.
+            button.setEnabled(action.enabled and not self._set_call.busy)
+            button.setToolTip(
+                f"{handle}\nacts on {action.target_handle}"
+                + ("" if action.enabled else "\ndisabled by the device"),
+            )
+        self.actions_widget.setVisible(bool(actions))
+
+    def _on_run_action(self, handle: str) -> None:
+        if self.remote is None:
+            return
+        self.invocation_label.setText("waiting\u2026")
+        if not self._set_call.start(self.remote.run_action, handle):
             self.invocation_label.setText("busy, try again")
 
     def _rebuild_alerts(self) -> None:

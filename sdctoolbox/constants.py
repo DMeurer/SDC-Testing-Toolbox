@@ -32,6 +32,8 @@ LOCATION_CONTEXT_HANDLE = "LC.mds0"
 # numeric suffix.
 METRIC_HANDLE_PREFIX = "m."
 OPERATION_HANDLE_PREFIX = "op."
+# ActivateOperations: something the device does, rather than a value it holds.
+ACTION_HANDLE_PREFIX = "act."
 
 # Subsystems created on demand, one Vmd and one Channel per named section, so a device
 # published from a preset has a containment tree with parts rather than one flat channel.

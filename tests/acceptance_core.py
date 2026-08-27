@@ -43,6 +43,7 @@ from sdctoolbox.model import MetricKind  # noqa: E402
 
 from acceptance_provider import (  # noqa: E402
     DIST,
+    HOME_ACTION,
     LATE,
     LIMIT_ALARM,
     LOCKED,
@@ -502,6 +503,48 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
             report.check(
                 not remote.alerts()[LIMIT_ALARM].present,
                 "and clears it again",
+            )
+
+            # --------------------------------------------------------------- actions
+            print("\n7. Actions", flush=True)
+            actions = remote.actions()
+            report.check(HOME_ACTION in actions, "the peer's action is discovered", str(sorted(actions)))
+            action = actions.get(HOME_ACTION)
+            if action is not None:
+                report.check(action.enabled, "and reports itself enabled")
+                report.check(
+                    action.caption == "Home axes",
+                    "its concept description survives the round trip",
+                    action.caption,
+                )
+                report.check(
+                    action.target_handle == constants.MDS_HANDLE,
+                    "and it names what it acts on",
+                    str(action.target_handle),
+                )
+
+                # An action is not a set: nothing here says what value anything takes. The
+                # device decides, and the proof is in the metrics it moves.
+                remote.set_value(ZOOM, Decimal("42"))
+                remote.set_value(MODE, "RUN")
+                time.sleep(1.5)
+                state = remote.run_action(HOME_ACTION)
+                report.check(state in FINISHED, "invoking it finishes", str(state))
+                time.sleep(2.0)
+                report.check(
+                    remote.metrics()[ZOOM].value == Decimal("1"),
+                    "and the device did what the action means, without being told a value",
+                    str(remote.metrics()[ZOOM].value),
+                )
+                report.check(
+                    remote.metrics()[MODE].value == "IDLE",
+                    "including on a metric of a different kind",
+                    str(remote.metrics()[MODE].value),
+                )
+
+            report.check(
+                remote.run_action("act.no_such_thing") is msg_types.InvocationState.FAILED,
+                "an unknown action fails rather than raising",
             )
 
             remote.close()

@@ -25,7 +25,7 @@ from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types.actions import periodic_actions
 
 from . import constants
-from .model import MetricKind, RemoteAlert, RemoteMetric
+from .model import MetricKind, RemoteAction, RemoteAlert, RemoteMetric
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -322,6 +322,54 @@ class RemoteDevice:
             "set %s via %s -> %s%s",
             metric_handle,
             operation_handle,
+            info.InvocationState,
+            f" ({info.InvocationErrorMessage})" if info.InvocationErrorMessage else "",
+        )
+        return info.InvocationState
+
+    def actions(self) -> dict[str, RemoteAction]:
+        """The things the peer says it can be told to do.
+
+        ActivateOperations, as opposed to the set operations behind metrics/. A device with
+        no metric for "home the axes" may still be able to do it, and this is where that
+        shows up.
+        """
+        with self._lock:
+            found: dict[str, RemoteAction] = {}
+            for handle, entity in self._mdib.entities.items():
+                if getattr(entity, "node_type", None) is not pm.ActivateOperationDescriptor:
+                    continue
+                descriptor = getattr(entity, "descriptor", None)
+                state = getattr(entity, "state", None)
+                mode = _enum_value(getattr(state, "OperatingMode", None))
+                found[handle] = RemoteAction(
+                    handle=handle,
+                    label=_first_text(getattr(descriptor, "Type", None)),
+                    type_code=getattr(getattr(descriptor, "Type", None), "Code", None),
+                    target_handle=getattr(descriptor, "OperationTarget", None),
+                    # Same rule as a metric editor: offer it only when the device says it
+                    # is enabled, and follow operation_by_handle for changes.
+                    enabled=mode == pm_types.OperatingMode.ENABLED,
+                )
+            return found
+
+    def run_action(self, action_handle: str, timeout: float = 10.0) -> msg_types.InvocationState:
+        """Tell the peer to do something, and wait for the final InvocationState.
+
+        Returns FAILED rather than raising when the action is unknown, so a caller has one
+        failure mode to handle instead of two.
+        """
+        action = self.actions().get(action_handle)
+        if action is None:
+            logger.warning("no action %s on this device", action_handle)
+            return msg_types.InvocationState.FAILED
+
+        future = self._consumer.set_service_client.activate(action_handle, arguments=None)
+        report_part = future.result(timeout=timeout)
+        info = report_part.InvocationInfo
+        logger.info(
+            "ran %s -> %s%s",
+            action_handle,
             info.InvocationState,
             f" ({info.InvocationErrorMessage})" if info.InvocationErrorMessage else "",
         )

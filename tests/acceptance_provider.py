@@ -23,6 +23,7 @@ from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 
 from sdctoolbox import constants  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
+    ActionSpec,
     AlertKind,
     AlertPriority,
     AlertSpec,
@@ -44,6 +45,7 @@ SAW = "m.saw"
 # The generator advances a fixed fraction of a cycle per sample, so a sawtooth from 0 to
 # 100 rises by exactly 100/40 each time. acceptance_core relies on that being exact.
 SAW_CYCLE = 40
+HOME_ACTION = "act.home_axes"
 LIMIT_ALARM = "al.zoom_out_of_range"
 MANUAL_ALARM = "al.service_due"
 
@@ -153,6 +155,16 @@ def main() -> int:
             sample_period=Decimal("0.1"),
             shape=WaveformShape.SAWTOOTH,
             handle=SAW,
+        ),
+    )
+    # An ActivateOperation: something the device does, rather than a value it holds.
+    service.add_action(
+        ActionSpec(
+            label="Home axes",
+            target_handle=constants.MDS_HANDLE,
+            effects={ZOOM: Decimal("1"), MODE: "IDLE"},
+            handle=HOME_ACTION,
+            note="Return the device to its reference state",
         ),
     )
     # A distribution has nothing driving it, so it gets one block and keeps it.
