@@ -79,7 +79,18 @@ def main(argv: list[str] | None = None) -> int:
 
     basic_logging_setup(level=logging.INFO if settings.verbose else logging.WARNING)
 
-    service = ProviderService(ip=settings.ip, instance_name=settings.name)
+    # Read the config before the provider exists, not after. A preset can say which machine
+    # it describes, and sdc11073 fixes ThisModel and ThisDevice when the provider is built -
+    # so a device loaded afterwards would still announce itself as the toolbox.
+    device = None
+    if settings.config_path:
+        try:
+            device = config.load_file(settings.config_path).device
+        except config.ConfigError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
+    service = ProviderService(ip=settings.ip, instance_name=settings.name, device=device)
     service.start()
     try:
         window = MainWindow(service)

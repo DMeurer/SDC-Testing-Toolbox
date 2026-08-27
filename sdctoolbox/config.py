@@ -21,6 +21,8 @@ from .model import (
     AlertKind,
     AlertPriority,
     AlertSpec,
+    Coding,
+    DeviceInfo,
     LocationInfo,
     MetricKind,
     MetricSpec,
@@ -60,6 +62,10 @@ class DeviceConfig:
     alerts: list[AlertSpec] = field(default_factory=list)
     location: LocationInfo | None = None
     patient: PatientInfo | None = None
+    # Who the device claims to be. Applied when the provider is constructed, not on import:
+    # sdc11073 fixes ThisModel and ThisDevice at that point.
+    device: DeviceInfo | None = None
+    instance_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -135,6 +141,43 @@ def _enum_or_default(enum_cls: Any, value: Any, default: Any, field: str) -> Any
 # --------------------------------------------------------------------------------------
 
 
+def _coding_to_json(coding: Coding | None, label: str) -> Any:
+    """A coding as the shortest thing that still says what it means.
+
+    A bare string when there is no code worth recording, so simple presets stay readable;
+    an object once semantics are involved, because a label alone is not semantics.
+    """
+    if coding is None:
+        return label or None
+    entry: dict[str, Any] = {"code": coding.code, "system": coding.system}
+    if label or coding.label:
+        entry["label"] = label or coding.label
+    return entry
+
+
+def _coding_from_json(raw: Any, field: str) -> tuple[Coding | None, str]:
+    """Read either shape back, returning the coding and its label."""
+    if raw is None:
+        return None, ""
+    if isinstance(raw, str):
+        return None, raw
+    if not isinstance(raw, dict):
+        msg = f"{field}: expected a string or an object, found {type(raw).__name__}"
+        raise ConfigError(msg)
+    label = str(raw.get("label") or "")
+    if "code" not in raw:
+        return None, label
+    try:
+        return Coding(
+            code=str(raw["code"]),
+            system=str(raw.get("system") or "private"),
+            label=label,
+        ), label
+    except ValueError as exc:
+        msg = f"{field}: {exc}"
+        raise ConfigError(msg) from exc
+
+
 def metric_to_dict(handle: str, spec: MetricSpec) -> dict[str, Any]:
     """One data source as plain JSON types."""
     entry: dict[str, Any] = {
@@ -143,8 +186,13 @@ def metric_to_dict(handle: str, spec: MetricSpec) -> dict[str, Any]:
         "kind": spec.kind.value,
         "controllable": spec.controllable,
     }
-    if spec.unit_label:
-        entry["unit"] = spec.unit_label
+    if spec.section:
+        entry["section"] = spec.section
+    unit = _coding_to_json(spec.unit_coding, spec.unit_label)
+    if unit is not None:
+        entry["unit"] = unit
+    if spec.type_coding is not None:
+        entry["type"] = _coding_to_json(spec.type_coding, "")
     if spec.allowed_values:
         entry["allowed_values"] = list(spec.allowed_values)
     if spec.resolution is not None:
@@ -159,8 +207,9 @@ def metric_to_dict(handle: str, spec: MetricSpec) -> dict[str, Any]:
         entry["sample_period"] = str(spec.sample_period)
         entry["shape"] = spec.shape.value
     if spec.kind is MetricKind.DISTRIBUTION:
-        if spec.domain_unit_label:
-            entry["domain_unit"] = spec.domain_unit_label
+        domain_unit = _coding_to_json(spec.domain_unit_coding, spec.domain_unit_label)
+        if domain_unit is not None:
+            entry["domain_unit"] = domain_unit
         entry["domain_minimum"] = str(spec.domain_minimum)
         entry["domain_maximum"] = str(spec.domain_maximum)
     return entry
@@ -243,7 +292,15 @@ def to_dict(service: ProviderService, *, include_values: bool = True) -> dict[st
 
     payload: dict[str, Any] = {
         "version": CONFIG_VERSION,
-        "device": {"instance_name": service.instance_name, "friendly_name": service.friendly_name},
+        "device": {
+            "instance_name": service.instance_name,
+            "friendly_name": service.friendly_name,
+            "manufacturer": service.device.manufacturer,
+            "manufacturer_url": service.device.manufacturer_url,
+            "model_name": service.device.model_name,
+            "model_number": service.device.model_number,
+            "firmware_version": service.device.firmware_version,
+        },
         "metrics": metrics,
         "alerts": [alert_to_dict(handle, spec) for handle, spec in sorted(service.list_alerts().items())],
     }
@@ -299,11 +356,21 @@ def metric_from_dict(entry: dict[str, Any]) -> MetricSpec:
     elif initial is not None:
         initial = str(initial)
 
+    unit_coding, unit_label = _coding_from_json(entry.get("unit"), f"metrics[{label}].unit")
+    type_coding, _ = _coding_from_json(entry.get("type"), f"metrics[{label}].type")
+    domain_coding, domain_label = _coding_from_json(
+        entry.get("domain_unit"),
+        f"metrics[{label}].domain_unit",
+    )
+
     try:
         return MetricSpec(
             label=str(label),
             kind=kind,
-            unit_label=str(entry.get("unit") or ""),
+            unit_label=unit_label,
+            unit_coding=unit_coding,
+            type_coding=type_coding,
+            section=str(entry.get("section") or ""),
             allowed_values=tuple(str(v) for v in entry.get("allowed_values") or ()),
             resolution=_decimal_or_none(entry.get("resolution"), f"metrics[{label}].resolution"),
             minimum=_decimal_or_none(entry.get("minimum"), f"metrics[{label}].minimum"),
@@ -318,7 +385,8 @@ def metric_from_dict(entry: dict[str, Any]) -> MetricSpec:
                 WaveformShape.SINE,
                 f"metrics[{label}].shape",
             ),
-            domain_unit_label=str(entry.get("domain_unit") or ""),
+            domain_unit_label=domain_label,
+            domain_unit_coding=domain_coding,
             domain_minimum=_decimal_or_none(entry.get("domain_minimum"), f"metrics[{label}].domain_minimum"),
             domain_maximum=_decimal_or_none(entry.get("domain_maximum"), f"metrics[{label}].domain_maximum"),
         )
@@ -361,6 +429,22 @@ def alert_from_dict(entry: dict[str, Any]) -> AlertSpec:
     except (ValueError, TypeError) as exc:
         msg = f"alerts[{label}]: {exc}"
         raise ConfigError(msg) from exc
+
+
+def _device_from_dict(data: Any) -> tuple[DeviceInfo | None, str]:
+    """Read the device block, which used to be written and never read back."""
+    if data is None:
+        return None, ""
+    if not isinstance(data, dict):
+        msg = f"device: expected an object, found {type(data).__name__}"
+        raise ConfigError(msg)
+    known = {f.name for f in fields(DeviceInfo)} | {"instance_name"}
+    unknown = sorted(set(data) - known)
+    if unknown:
+        msg = f"device: does not understand {', '.join(unknown)}. It takes: {', '.join(sorted(known))}"
+        raise ConfigError(msg)
+    values = {key: str(value) for key, value in data.items() if key != "instance_name"}
+    return DeviceInfo(**values), str(data.get("instance_name") or "")
 
 
 def _contexts_from_dict(data: Any) -> tuple[LocationInfo | None, PatientInfo | None]:
@@ -406,6 +490,7 @@ def parse(data: Any) -> DeviceConfig:
         msg = f"this file is version {version}, but this build only understands up to {CONFIG_VERSION}"
         raise ConfigError(msg)
 
+    device, instance_name = _device_from_dict(data.get("device"))
     metrics = [metric_from_dict(entry) for entry in data.get("metrics") or []]
     alerts = [alert_from_dict(entry) for entry in data.get("alerts") or []]
     location, patient = _contexts_from_dict(data.get("contexts"))
@@ -421,7 +506,14 @@ def parse(data: Any) -> DeviceConfig:
             )
             raise ConfigError(msg)
 
-    return DeviceConfig(metrics=metrics, alerts=alerts, location=location, patient=patient)
+    return DeviceConfig(
+        metrics=metrics,
+        alerts=alerts,
+        location=location,
+        patient=patient,
+        device=device,
+        instance_name=instance_name,
+    )
 
 
 def load_file(path: str | Path) -> DeviceConfig:

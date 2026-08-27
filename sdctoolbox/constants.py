@@ -33,6 +33,11 @@ LOCATION_CONTEXT_HANDLE = "LC.mds0"
 METRIC_HANDLE_PREFIX = "m."
 OPERATION_HANDLE_PREFIX = "op."
 
+# Subsystems created on demand, one Vmd and one Channel per named section, so a device
+# published from a preset has a containment tree with parts rather than one flat channel.
+VMD_HANDLE_PREFIX = "vmd."
+CHANNEL_HANDLE_PREFIX = "ch."
+
 # An alert condition and the signals that announce it. One condition can drive several
 # signals, which is the distinction BICEPS draws and the reason they are separate objects.
 ALERT_HANDLE_PREFIX = "al."

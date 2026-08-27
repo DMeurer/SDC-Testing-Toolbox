@@ -678,7 +678,17 @@ class ConsumerShell(Cmd):
 
 
 def run_provider(args: argparse.Namespace) -> int:
-    service = ProviderService(ip=args.ip, instance_name=args.name)
+    # Before the provider exists: a preset says which machine it is, and sdc11073 fixes
+    # ThisModel and ThisDevice at construction.
+    device = None
+    if args.config:
+        try:
+            device = config.load_file(args.config).device
+        except config.ConfigError as exc:
+            print(f"error: {exc}")
+            return 2
+
+    service = ProviderService(ip=args.ip, instance_name=args.name, device=device)
     service.start()
     try:
         if args.config:

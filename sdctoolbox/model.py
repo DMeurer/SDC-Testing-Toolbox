@@ -142,6 +142,91 @@ def slugify(label: str) -> str:
     return slug or "metric"
 
 
+# Which coding system a code belongs to. Presets name these rather than repeating an OID.
+CODING_SYSTEMS = {
+    "mdc": constants.CODING_SYSTEM_MDC,
+    "private": constants.CODING_SYSTEM_PRIVATE,
+}
+
+
+@dataclass(frozen=True)
+class Coding:
+    """A BICEPS CodedValue: what a thing *is*, as opposed to what it is called.
+
+    The label is for people and the code is for machines, and only the code makes a metric
+    mean the same thing to a device that has never met this one. That distinction is the
+    reason SDC exists, so the two are kept apart here rather than a label being allowed to
+    stand in for semantics.
+
+    ``system`` is a key of CODING_SYSTEMS:
+
+    * ``mdc`` — IEEE 11073-10101. Use it only where a term genuinely exists. The codes this
+      project ships are the standard's *reference IDs* (``MDC_PULS_OXIM_SAT_O2``), not its
+      numeric CF codes, because 11073-10101 itself was not available to check them against.
+      Anything claiming to interoperate for real has to substitute the numbers.
+    * ``private`` — ``urn:sdc-testing-toolbox:private``. Everything with no standard term,
+      which for surgical devices is most of it. Marked rather than disguised: that gap is
+      real and is the subject of active work on extending the nomenclature.
+    """
+
+    code: str
+    system: str = "private"
+    label: str = ""
+
+    def __post_init__(self) -> None:
+        if self.system not in CODING_SYSTEMS:
+            allowed = ", ".join(sorted(CODING_SYSTEMS))
+            msg = f"unknown coding system {self.system!r}. Use one of: {allowed}"
+            raise ValueError(msg)
+        if not str(self.code).strip():
+            msg = "a coding needs a code"
+            raise ValueError(msg)
+
+    @property
+    def coding_system(self) -> str:
+        """The URI that goes on the wire."""
+        return CODING_SYSTEMS[self.system]
+
+    @property
+    def is_standard(self) -> bool:
+        """Whether this claims a term from the standard nomenclature."""
+        return self.system == "mdc"
+
+    def summary(self) -> str:
+        """Something short enough for a table cell."""
+        return f"{self.code}" if self.is_standard else f"{self.code} (private)"
+
+
+# MDC_DIM_DIMLESS, for a metric that measures a bare number.
+DIMENSIONLESS = Coding(code=constants.CODE_DIMENSIONLESS, system="mdc", label="")
+
+
+@dataclass(frozen=True)
+class DeviceInfo:
+    """Who the device says it is, in DPWS terms.
+
+    This is ThisModel and ThisDevice, which a consumer fetches as metadata before it has
+    looked at a single metric. A preset that describes a ventilator and then announces
+    itself as "SDC Toolbox" is not modelling a ventilator, and until this existed that is
+    exactly what every preset did: the block was written to the file and never read back.
+
+    Fixed at construction on purpose. sdc11073 takes ThisModel and ThisDevice when the
+    provider is built, so changing them afterwards would not re-announce anything - see
+    ProviderService.start.
+    """
+
+    friendly_name: str = ""
+    manufacturer: str = constants.MANUFACTURER
+    manufacturer_url: str = constants.MANUFACTURER_URL
+    model_name: str = constants.MODEL_NAME
+    model_number: str = constants.MODEL_NUMBER
+    firmware_version: str = constants.FIRMWARE_VERSION
+
+    def is_empty(self) -> bool:
+        """Whether this says anything the defaults do not."""
+        return self == DeviceInfo()
+
+
 @dataclass
 class MetricSpec:
     """A data source as the user describes it, before it is turned into BICEPS descriptors."""
@@ -151,8 +236,11 @@ class MetricSpec:
     # Human readable unit. Empty means dimensionless; the descriptor still carries the
     # MDC_DIM_DIMLESS code, we simply do not invent a description for it.
     unit_label: str = ""
-    unit_code: str = constants.CODE_DIMENSIONLESS
-    unit_coding_system: str = constants.CODING_SYSTEM_MDC
+    # What the metric *is* and what its values are *in*, as codes rather than words. Left
+    # as None they fall back to a private code derived from the label and to
+    # MDC_DIM_DIMLESS - fine for a scratch metric, not enough to model a real device.
+    type_coding: Coding | None = None
+    unit_coding: Coding | None = None
     allowed_values: tuple[str, ...] = ()
     resolution: Decimal | None = None
     # Lower and upper limit for a number. Either may be left open.
@@ -166,9 +254,6 @@ class MetricSpec:
     controllable: bool = False
     # Explicit handle. When None, ProviderService derives one from the label.
     handle: str | None = None
-    # Free-form code for the metric's own Type. Defaults to the slug in our private system.
-    type_code: str | None = None
-    type_coding_system: str = constants.CODING_SYSTEM_PRIVATE
     # Value applied right after creation. None leaves the metric without a MetricValue.
     initial_value: Decimal | str | None = None
 
@@ -184,12 +269,15 @@ class MetricSpec:
     # *over*, as opposed to Unit, which is what the samples themselves measure. A power
     # spectrum is measured in dB (Unit) across a range of Hz (DomainUnit). Mandatory.
     domain_unit_label: str = ""
-    domain_unit_code: str = constants.CODE_DIMENSIONLESS
-    domain_unit_coding_system: str = constants.CODING_SYSTEM_MDC
+    domain_unit_coding: Coding | None = None
     # DistributionRange: the extent of that domain, i.e. the x axis. Distinct from
     # minimum/maximum, which describe the samples themselves.
     domain_minimum: Decimal | None = None
     domain_maximum: Decimal | None = None
+    # Which subsystem of the device this belongs to. Empty puts it in the default channel;
+    # a name gives it a Vmd and Channel of its own, so a consumer browsing the containment
+    # tree sees a device with parts rather than one flat list of metrics.
+    section: str = ""
 
     def __post_init__(self) -> None:
         if self.controllable and not self.kind.controllable:
@@ -287,9 +375,25 @@ class MetricSpec:
         """Slug used to build handles."""
         return slugify(self.label)
 
-    def effective_type_code(self) -> str:
-        """Code for this metric's Type element."""
-        return self.type_code or self.slug
+    def effective_type(self) -> Coding:
+        """What this metric is, as a code.
+
+        Without one it falls back to the slug in the private system, which is honest: a
+        metric nobody has given a term to does not have one.
+        """
+        return self.type_coding or Coding(code=self.slug, system="private", label=self.label)
+
+    def effective_unit(self) -> Coding:
+        """What this metric's values are in, as a code."""
+        if self.unit_coding is not None:
+            return self.unit_coding
+        return Coding(code=constants.CODE_DIMENSIONLESS, system="mdc", label=self.unit_label)
+
+    def effective_domain_unit(self) -> Coding:
+        """What a distribution's samples are spread over, as a code."""
+        if self.domain_unit_coding is not None:
+            return self.domain_unit_coding
+        return Coding(code=constants.CODE_DIMENSIONLESS, system="mdc", label=self.domain_unit_label)
 
     @property
     def has_range(self) -> bool:

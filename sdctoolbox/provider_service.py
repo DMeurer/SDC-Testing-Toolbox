@@ -30,12 +30,15 @@ from .model import (
     DEFAULT_MANIFESTATIONS,
     DEFAULT_SAMPLE_PERIOD,
     AlertSpec,
+    Coding,
+    DeviceInfo,
     LocationInfo,
     MetricKind,
     MetricSpec,
     PatientInfo,
     SignalInfo,
     WaveformShape,
+    slugify,
 )
 
 if TYPE_CHECKING:
@@ -65,6 +68,20 @@ DISTRIBUTION_WIDTH = 0.12
 
 # How far the bell's peak moves per tick, as a fraction of a full sweep.
 DISTRIBUTION_DRIFT = 0.02
+
+
+def _coded_value(coding: Coding, label: str = "") -> pm_types.CodedValue:
+    """Turn one of our Codings into the BICEPS element.
+
+    The label rides along as a ConceptDescription, which is documentation. The code and its
+    coding system are the part another device can act on.
+    """
+    text = label or coding.label
+    return pm_types.CodedValue(
+        code=coding.code,
+        coding_system=coding.coding_system,
+        concept_descriptions=[pm_types.LocalizedText(text, lang="en-US")] if text else None,
+    )
 
 
 def _domain_step(spec: MetricSpec) -> Decimal:
@@ -142,10 +159,15 @@ class ProviderService:
             ip: str = constants.DEFAULT_IP,
             instance_name: str = constants.DEFAULT_INSTANCE_NAME,
             friendly_name: str | None = None,
+            device: DeviceInfo | None = None,
     ) -> None:
         self.ip = ip
         self.instance_name = instance_name
-        self.friendly_name = friendly_name or f"Toolbox {instance_name}"
+        # A preset describing a ventilator should announce itself as one. sdc11073 takes
+        # ThisModel and ThisDevice when the provider is constructed, so this cannot be
+        # changed later - run_toolbox reads the config before starting for that reason.
+        self.device = device or DeviceInfo()
+        self.friendly_name = friendly_name or self.device.friendly_name or f"Toolbox {instance_name}"
         self.epr = constants.epr_for(instance_name)
 
         self._discovery: WSDiscovery | None = None
@@ -161,6 +183,8 @@ class ProviderService:
         self._alerts: dict[str, AlertSpec] = {}
         # alarm handle -> the signals announcing it
         self._alert_signals: dict[str, list[str]] = {}
+        # section name -> the Channel handle its metrics were put in
+        self._sections: dict[str, str] = {}
         # Guards the metric observer against re-entering itself.
         self._evaluating_alerts = False
         # Waveform generation: one thread for every waveform, and where each curve had
@@ -199,16 +223,16 @@ class ProviderService:
         self._handler = make_set_handler(self._mdib, on_applied=self._on_metric_applied)
 
         this_model = ThisModelType(
-            manufacturer=constants.MANUFACTURER,
-            manufacturer_url=constants.MANUFACTURER_URL,
-            model_name=constants.MODEL_NAME,
-            model_number=constants.MODEL_NUMBER,
-            model_url=constants.MANUFACTURER_URL,
-            presentation_url=constants.MANUFACTURER_URL,
+            manufacturer=self.device.manufacturer,
+            manufacturer_url=self.device.manufacturer_url,
+            model_name=self.device.model_name,
+            model_number=self.device.model_number,
+            model_url=self.device.manufacturer_url,
+            presentation_url=self.device.manufacturer_url,
         )
         this_device = ThisDeviceType(
             friendly_name=self.friendly_name,
-            firmware_version=constants.FIRMWARE_VERSION,
+            firmware_version=self.device.firmware_version,
             serial_number=self.instance_name,
         )
 
@@ -253,6 +277,7 @@ class ProviderService:
         self._specs.clear()
         self._alerts.clear()
         self._alert_signals.clear()
+        self._sections.clear()
         self._waveform_phase.clear()
         self._pinned_samples.clear()
         logger.info("provider %r stopped", self.instance_name)
@@ -289,7 +314,7 @@ class ProviderService:
             entity = self.mdib.entities.new_entity(
                 spec.kind.descriptor_qname,
                 handle,
-                constants.CHANNEL_HANDLE,
+                self._channel_for(spec.section),
             )
             self._apply_spec_to_descriptor(entity.descriptor, spec)
 
@@ -408,8 +433,10 @@ class ProviderService:
                     handle=operation_handle,
                     operation_target_handle=handle,
                     operation_handler=self._handler,
+                    # The operation is our own construct, not a term from anywhere, so it
+                    # stays in the private system even when its target carries an MDC code.
                     coded_value=pm_types.CodedValue(
-                        code=f"set_{spec.effective_type_code()}",
+                        code=f"set_{spec.effective_type().code}",
                         coding_system=constants.CODING_SYSTEM_PRIVATE,
                     ),
                 )
@@ -1038,6 +1065,47 @@ class ProviderService:
             else:
                 logger.error("could not undo %s: it is still in the mdib", handle)
 
+    def _channel_for(self, section: str) -> str:
+        """The Channel a metric belongs in, creating its subsystem if this is the first.
+
+        A device is not a flat list of readings. A microscope has motion, optics and
+        illumination; a monitor has a channel per parameter group. BICEPS models that with
+        a Vmd per subsystem and a Channel inside it, and a consumer browsing the containment
+        tree sees the difference immediately - which is the whole reason the tree is part of
+        the standard rather than an afterthought.
+
+        Sections are created lazily rather than declared, so a preset only has to name one
+        against each metric.
+        """
+        if not section:
+            return constants.CHANNEL_HANDLE
+
+        slug = slugify(section)
+        vmd_handle = f"{constants.VMD_HANDLE_PREFIX}{slug}"
+        channel_handle = f"{constants.CHANNEL_HANDLE_PREFIX}{slug}"
+        if self.mdib.entities.by_handle(channel_handle) is not None:
+            return channel_handle
+
+        coding = Coding(code=slug, system="private", label=section)
+        # The Vmd has to be committed before the Channel can name it: new_entity looks the
+        # parent up in mdib.descriptions, so an uncommitted one is not there yet.
+        if self.mdib.entities.by_handle(vmd_handle) is None:
+            vmd = self.mdib.entities.new_entity(pm.VmdDescriptor, vmd_handle, constants.MDS_HANDLE)
+            vmd.descriptor.Type = _coded_value(coding, section)
+            self._create_entities([vmd])
+
+        channel = self.mdib.entities.new_entity(pm.ChannelDescriptor, channel_handle, vmd_handle)
+        channel.descriptor.Type = _coded_value(coding, section)
+        self._create_entities([channel])
+
+        self._sections[section] = channel_handle
+        logger.info("created section %r as %s / %s", section, vmd_handle, channel_handle)
+        return channel_handle
+
+    def sections(self) -> dict[str, str]:
+        """Section name -> the Channel handle its metrics live in."""
+        return dict(self._sections)
+
     def _unique_handle(self, candidate: str) -> str:
         if self.mdib.entities.by_handle(candidate) is None:
             return candidate
@@ -1047,20 +1115,10 @@ class ProviderService:
         return f"{candidate}.{counter}"
 
     def _apply_spec_to_descriptor(self, descriptor, spec: MetricSpec) -> None:  # noqa: ANN001
-        descriptor.Type = pm_types.CodedValue(
-            code=spec.effective_type_code(),
-            coding_system=spec.type_coding_system,
-            concept_descriptions=[pm_types.LocalizedText(spec.label, lang="en-US")],
-        )
+        descriptor.Type = _coded_value(spec.effective_type(), spec.label)
         # A dimensionless metric still needs a Unit; it just gets no concept description,
         # rather than a made-up one such as "no unit".
-        descriptor.Unit = pm_types.CodedValue(
-            code=spec.unit_code,
-            coding_system=spec.unit_coding_system,
-            concept_descriptions=(
-                [pm_types.LocalizedText(spec.unit_label, lang="en-US")] if spec.unit_label else None
-            ),
-        )
+        descriptor.Unit = _coded_value(spec.effective_unit(), spec.unit_label)
         descriptor.MetricCategory = (
             pm_types.MetricCategory.SETTING if spec.controllable else pm_types.MetricCategory.MEASUREMENT
         )
@@ -1097,15 +1155,7 @@ class ProviderService:
         if spec.kind is MetricKind.DISTRIBUTION:
             # What the samples are spread *over*, as opposed to Unit, which is what each
             # sample measures. Mandatory, and the field this kind fails on first.
-            descriptor.DomainUnit = pm_types.CodedValue(
-                code=spec.domain_unit_code,
-                coding_system=spec.domain_unit_coding_system,
-                concept_descriptions=(
-                    [pm_types.LocalizedText(spec.domain_unit_label, lang="en-US")]
-                    if spec.domain_unit_label
-                    else None
-                ),
-            )
+            descriptor.DomainUnit = _coded_value(spec.effective_domain_unit(), spec.domain_unit_label)
             descriptor.DistributionRange = pm_types.Range(
                 lower=spec.domain_minimum,
                 upper=spec.domain_maximum,
