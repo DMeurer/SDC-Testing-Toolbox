@@ -347,25 +347,19 @@ class ProviderPane(QWidget):
         finally:
             self._refreshing = False
 
-    def _on_waveforms_changed(self, states_by_handle: dict) -> None:
+    def _on_waveforms_changed(self, blocks_by_handle: dict) -> None:
         """A block of samples arrived. Only the cards need it; the table shows a summary.
 
-        Scoped to the handles the report carried, and appended rather than shown, because
-        the plot has to be told the difference between new data and a refresh.
+        The blocks come with the signal rather than being read back out of the mdib, which
+        by the time Qt delivers this may already hold a later one - see
+        MdibBridge._on_waveforms.
 
-        Creating a waveform descriptor also lands here, with a state that has no MetricValue
+        Creating a waveform descriptor also lands here, with a state that had no MetricValue
         yet: a descriptor transaction puts the new sample-array state in the same bucket a
-        WaveformStream comes from. Such an event carries no samples and appends nothing.
+        WaveformStream comes from. Such an event carries an empty block and appends nothing.
         """
-        specs = self.service.list_metrics()
-        self.board.append_samples(
-            {
-                handle: self.service.get_samples(handle)
-                for handle in states_by_handle
-                if handle in specs
-            },
-        )
-        self._refresh_sample_cells(states_by_handle)
+        self.board.append_samples(blocks_by_handle)
+        self._refresh_sample_cells(blocks_by_handle)
 
     def _on_values_changed(self, states_by_handle: dict) -> None:
         """Update just the value cells. Cheaper than a rebuild and keeps the selection."""

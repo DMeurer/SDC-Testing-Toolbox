@@ -5,7 +5,7 @@
   "device": {
     "instance_name": "monitor",
     "friendly_name": "Bedside Monitor",
-    "manufacturer": "Fictional Medical Systems",
+    "manufacturer": "SDC Testing Toolbox",
     "model_name": "Vitalis 500",
     "model_number": "500",
     "firmware_version": "3.4.1"

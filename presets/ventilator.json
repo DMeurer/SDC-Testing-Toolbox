@@ -5,7 +5,7 @@
   "device": {
     "instance_name": "ventilator",
     "friendly_name": "Ventilator",
-    "manufacturer": "Fictional Respiratory",
+    "manufacturer": "SDC Testing Toolbox",
     "model_name": "Aeris 700",
     "model_number": "700",
     "firmware_version": "4.1.2"

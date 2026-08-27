@@ -84,9 +84,9 @@ DEFAULT_LOCATION = {"facility": "HOSP", "point_of_care": "CU1", "bed": "Toolbox"
 # DPWS device metadata
 # --------------------------------------------------------------------------------------
 
-MANUFACTURER = "Dominik Meurer"
+MANUFACTURER = "SDC Testing Toolbox"
 MANUFACTURER_URL = "https://d-meurer.com"
-MODEL_NAME = "SDC Toolbox"
+MODEL_NAME = "Fictional SDC Device"
 MODEL_NUMBER = "0.1"
 FIRMWARE_VERSION = "0.1"
 

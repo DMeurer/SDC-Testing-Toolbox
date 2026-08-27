@@ -418,24 +418,20 @@ class ConsumerPane(QWidget):
             if item is not None:
                 item.setText(_value_text(metric))
 
-    def _on_waveforms_changed(self, states_by_handle: dict) -> None:
+    def _on_waveforms_changed(self, blocks_by_handle: dict) -> None:
         """A block arrived from the peer.
 
-        Only the handles the report carried, and appended rather than shown. Pushing every
-        metric on every report - which is what calling refresh_values here used to do -
-        spliced each waveform's latest block into its trace once per *other* waveform, so
-        two waveforms made both of them jagged and three made it worse.
+        The blocks come with the signal, snapshotted when the report landed. Re-reading the
+        mdib here would see whatever is newest by the time Qt delivers this, which is not
+        the block this event is about - see MdibBridge._on_waveforms.
+
+        Only the handles the report carried, too. Pushing every metric on every report -
+        which is what calling refresh_values here used to do - spliced each waveform's
+        latest block into its trace once per *other* waveform.
         """
         if self.remote is None:
             return
-        metrics = self.remote.metrics()
-        self.board.append_samples(
-            {
-                handle: list(metrics[handle].samples)
-                for handle in states_by_handle
-                if handle in metrics
-            },
-        )
+        self.board.append_samples(blocks_by_handle)
         self.refresh_values()
 
     # -- widgets or table ----------------------------------------------------------

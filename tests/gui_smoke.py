@@ -790,6 +790,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
 
         service.set_samples(dist, [Decimal("1"), Decimal("5"), Decimal("2")])
         pump(app)
+        dist_card.control.plot.flush()
         report.check(
             dist_card.control.plot.samples == [1.0, 5.0, 2.0],
             "a distribution block reaches its plot",
@@ -797,6 +798,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         )
         service.set_samples(dist, [Decimal("7")])
         pump(app)
+        dist_card.control.plot.flush()
         report.check(
             dist_card.control.plot.samples == [7.0],
             "and the next block replaces it rather than appending",
@@ -929,16 +931,33 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             f"{len(paced.samples)} drawn",
         )
 
-        # A distribution is one picture of a domain, not a signal in time, so it has
-        # nothing to pace and appears at once.
+        # A distribution has no time base to pace against - the whole picture is replaced
+        # at once - so it eases from the old bar heights to the new ones instead. Same
+        # purpose, different mechanism.
         dist_plot = pane.board.card(dist).control.plot
         report.check(not dist_plot.paced, "a distribution does not pace")
-        service.set_samples(dist, [Decimal("1"), Decimal("2")])
+        report.check(dist_plot.tweening, "it eases between blocks instead")
+
+        dist_plot.clear()
+        dist_plot.add_samples([Decimal("10"), Decimal("90")])
+        dist_plot.flush()
+        pump(app, seconds=0.1)
+        service.set_samples(dist, [Decimal("90"), Decimal("10")])
         app.processEvents()
+        drawn = dist_plot.samples
         report.check(
-            dist_plot.samples == [1.0, 2.0],
-            "it is drawn immediately",
-            str(dist_plot.samples),
+            drawn != [90.0, 10.0] and dist_plot.target == [90.0, 10.0],
+            "a new block is aimed at, not snapped to",
+            f"drawn {[round(v, 1) for v in drawn]}, target {dist_plot.target}",
+        )
+        report.check(
+            wait_for(app, lambda: dist_plot.samples == [90.0, 10.0], timeout=3.0),
+            "and the bars arrive there",
+            str([round(v, 1) for v in dist_plot.samples]),
+        )
+        report.check(
+            not dist_plot._timer.isActive(),  # noqa: SLF001
+            "then stop, rather than animating an unchanging picture for ever",
         )
 
         print("\n4d. The dialog offers all five kinds")

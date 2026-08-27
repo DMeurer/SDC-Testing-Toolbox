@@ -5,7 +5,7 @@
   "device": {
     "instance_name": "pump",
     "friendly_name": "Infusion Pump",
-    "manufacturer": "Fictional Infusion",
+    "manufacturer": "SDC Testing Toolbox",
     "model_name": "Fluvia 1",
     "model_number": "1",
     "firmware_version": "2.3.0"

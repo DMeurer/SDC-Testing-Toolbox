@@ -5,7 +5,7 @@
   "device": {
     "instance_name": "endoscope",
     "friendly_name": "Endoscopic Camera",
-    "manufacturer": "Fictional Optics",
+    "manufacturer": "SDC Testing Toolbox",
     "model_name": "Endovision 4K",
     "model_number": "4K-2",
     "firmware_version": "5.2.0"

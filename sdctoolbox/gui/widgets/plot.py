@@ -13,6 +13,7 @@ the tool has to stay legible on a light theme and a dark one.
 
 from __future__ import annotations
 
+import math
 import time
 from collections import deque
 from decimal import Decimal
@@ -41,6 +42,12 @@ FRAME_MS = 33
 # chunky one, so a backlog past this is drained faster than real time until it is gone.
 MAX_BACKLOG_SECONDS = 1.5
 
+# How long a distribution takes to move from one set of bar heights to the next. A whole
+# block is replaced at once, so without this the bars jump. Deliberately shorter than the
+# interval blocks arrive at, so the move finishes and settles rather than being permanently
+# chased by the next one.
+TWEEN_MS = 180
+
 
 class SamplePlot(QWidget):
     """Draws a list of samples, either as a scrolling trace or as a static bar chart.
@@ -55,6 +62,11 @@ class SamplePlot(QWidget):
     block, which is honest about a device that has gone quiet. When the buffer runs long -
     a hiccup, or a peer sending faster than declared - it drains faster than real time, so
     the display cannot drift further and further behind what the device is actually doing.
+
+    A distribution has no time base to pace against - it is one picture of a domain, and the
+    whole picture is replaced at once - so it eases from the old bar heights to the new ones
+    instead. Same purpose, different mechanism: a value that moves is readable where one that
+    jumps is not.
     """
 
     def __init__(
@@ -85,15 +97,21 @@ class SamplePlot(QWidget):
         # When the last frame ran. Timers fire late under load, and assuming every tick is
         # exactly FRAME_MS would make the trace run slow by however much they slipped.
         self._last_tick = 0.0
+
+        # Where a distribution's bars are heading, where they set off from, and when.
+        self._target: list[float] = []
+        self._tween_from: list[float] = []
+        self._tween_started = 0.0
+
         self._timer = QTimer(self)
         self._timer.setInterval(FRAME_MS)
-        self._timer.timeout.connect(self._reveal)
+        self._timer.timeout.connect(self._on_frame)
 
     # -- content -------------------------------------------------------------------
 
     @property
     def samples(self) -> list[float]:
-        """What is currently drawn."""
+        """What is currently drawn. Mid-move for a distribution, so not always the block."""
         return list(self._samples)
 
     @property
@@ -102,15 +120,25 @@ class SamplePlot(QWidget):
         return list(self._pending)
 
     @property
+    def target(self) -> list[float]:
+        """The block a distribution's bars are moving towards."""
+        return list(self._target)
+
+    @property
     def paced(self) -> bool:
-        """Whether this plot reveals gradually rather than a block at a time."""
+        """Whether this plot reveals samples gradually over time."""
         return self.scrolling and self._sample_period > 0
+
+    @property
+    def tweening(self) -> bool:
+        """Whether this plot eases between blocks rather than replacing them."""
+        return not self.scrolling
 
     def add_samples(self, samples) -> None:  # noqa: ANN001 - any sequence of numbers
         """Take a block of samples.
 
-        A waveform appends, because each block continues the last. A distribution replaces,
-        because each one is a whole picture of the same domain.
+        A waveform appends, because each block continues the last. A distribution moves
+        towards the new block, because each one is a whole picture of the same domain.
         """
         try:
             values = [float(sample) for sample in samples]
@@ -121,9 +149,11 @@ class SamplePlot(QWidget):
         if not values:
             return
 
+        if self.tweening:
+            self._retarget(values)
+            return
+
         if not self.paced:
-            if not self.scrolling:
-                self._samples.clear()
             self._samples.extend(values)
             self.update()
             return
@@ -134,17 +164,46 @@ class SamplePlot(QWidget):
             self._last_tick = time.monotonic()
             self._timer.start()
 
-    def flush(self) -> None:
-        """Reveal everything at once, abandoning the pacing.
+    def _retarget(self, values: list[float]) -> None:
+        """Aim a distribution's bars at a new block, starting from wherever they are now.
 
-        For when there is nobody to watch the animation: a hidden card, or a test that
-        wants to assert on a block rather than wait for it to trickle out.
+        Re-aiming mid-move rather than queueing: the newest block is the truth, and a
+        distribution that worked through a backlog of stale pictures would be showing the
+        wrong one on purpose.
+        """
+        self._target = values
+        current = list(self._samples)
+        if len(current) != len(values):
+            # A different number of bins is not something to interpolate through. The very
+            # first block grows up from the floor, which reads as the card filling in;
+            # anything else simply takes effect.
+            low, _ = self._bounds()
+            current = [low] * len(values) if not current else list(values)
+        self._tween_from = current
+        self._tween_started = time.monotonic()
+        if not self._timer.isActive():
+            self._timer.start()
+        self._advance_tween()
+
+    def flush(self) -> None:
+        """Show the newest block at once, abandoning the animation.
+
+        For when there is nobody to watch it: a hidden card, or a test that wants to assert
+        on a block rather than wait for it to arrive.
         """
         self._timer.stop()
         self._credit = 0.0
+        changed = False
         if self._pending:
             self._samples.extend(self._pending)
             self._pending.clear()
+            changed = True
+        if self.tweening and self._target and list(self._samples) != self._target:
+            self._samples.clear()
+            self._samples.extend(self._target)
+            self._tween_from = list(self._target)
+            changed = True
+        if changed:
             self.update()
 
     def clear(self) -> None:
@@ -152,7 +211,38 @@ class SamplePlot(QWidget):
         self._timer.stop()
         self._samples.clear()
         self._pending.clear()
+        self._target = []
+        self._tween_from = []
         self._credit = 0.0
+        self.update()
+
+    def _on_frame(self) -> None:
+        """One animation frame, for whichever kind of movement this plot does."""
+        if self.tweening:
+            self._advance_tween()
+        else:
+            self._reveal()
+
+    def _advance_tween(self) -> None:
+        """Move a distribution's bars a frame's worth towards the newest block."""
+        if not self._target or len(self._tween_from) != len(self._target):
+            self._timer.stop()
+            return
+
+        elapsed = (time.monotonic() - self._tween_started) * 1000.0
+        progress = 1.0 if elapsed >= TWEEN_MS else elapsed / TWEEN_MS
+        # Ease in and out, so the bars set off and arrive gently instead of sliding at a
+        # constant speed and stopping dead.
+        eased = (1.0 - math.cos(progress * math.pi)) / 2.0
+
+        self._samples.clear()
+        self._samples.extend(
+            start + (end - start) * eased
+            for start, end in zip(self._tween_from, self._target)
+        )
+        if progress >= 1.0:
+            self._tween_from = list(self._target)
+            self._timer.stop()
         self.update()
 
     def _reveal(self) -> None:

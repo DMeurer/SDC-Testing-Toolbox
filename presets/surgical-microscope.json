@@ -5,7 +5,7 @@
   "device": {
     "instance_name": "microscope",
     "friendly_name": "Robotic Surgical Microscope",
-    "manufacturer": "Fictional Optics",
+    "manufacturer": "SDC Testing Toolbox",
     "model_name": "Scopus 6",
     "model_number": "6",
     "firmware_version": "1.9.0"

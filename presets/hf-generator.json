@@ -5,7 +5,7 @@
   "device": {
     "instance_name": "hf-generator",
     "friendly_name": "HF Generator",
-    "manufacturer": "Fictional Surgical",
+    "manufacturer": "SDC Testing Toolbox",
     "model_name": "Electron 300",
     "model_number": "300",
     "firmware_version": "2.0.7"

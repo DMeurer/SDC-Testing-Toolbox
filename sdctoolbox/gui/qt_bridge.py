@@ -42,7 +42,8 @@ class MdibBridge(QObject):
     operations_changed = Signal(dict)
     # handle -> state, for alerts
     alerts_changed = Signal(dict)
-    # handle -> state, for waveforms. Separate from metrics_by_handle because sdc11073
+    # handle -> the block of samples it carried. Not the state: see _on_waveforms.
+    # Separate from metrics_by_handle because sdc11073
     # routes a RealTimeSampleArrayMetricState down its own path, as a WaveformStream
     # rather than an EpisodicMetricReport - so a waveform never appears in the other one.
     waveforms_changed = Signal(dict)
@@ -87,7 +88,24 @@ class MdibBridge(QObject):
         self.alerts_changed.emit(dict(values))
 
     def _on_waveforms(self, values: dict) -> None:
-        self.waveforms_changed.emit(dict(values))
+        """Snapshot the samples here, and send those rather than the states.
+
+        This runs on whichever thread sdc11073 used, and the emission is queued for the GUI
+        thread. By the time a slot runs, the MDIB has moved on - so a slot that re-reads it
+        sees the newest block rather than the one its own event was about. Two reports
+        arriving close together then both draw the newest, the older is lost, and on a
+        sawtooth the duplicate reads as a step backwards.
+
+        The state carried in the event is no safer: it is the live object the MDIB updates.
+        Copying the values out now is the only point at which the block is definitely the
+        one this event means.
+        """
+        blocks = {}
+        for handle, state in values.items():
+            metric_value = getattr(state, "MetricValue", None)
+            # A descriptor being created also lands here, with no MetricValue yet.
+            blocks[handle] = list(getattr(metric_value, "Samples", None) or [])
+        self.waveforms_changed.emit(blocks)
 
     def _on_peer_restarted(self, changed: bool) -> None:  # noqa: FBT001 - the observable is a flag
         if changed:
