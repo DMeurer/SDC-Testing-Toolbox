@@ -7,6 +7,11 @@ __pycache__/
 # Virtual environment
 .venv/
 
+# Application builds
+/build/
+/dist/
+smoke-test-error.txt
+
 # Diagnostic runtime artifacts
 diagnostics/*.log
 diagnostics/*.log.err

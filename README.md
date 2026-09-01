@@ -18,6 +18,47 @@ py -3.12 -m venv .venv
 
 Python 3.12 is deliberate: `python` on a typical Windows box may point at a newer release, and an explicit `py -3.12` keeps the environment reproducible. Both dependencies also work on 3.13 and 3.14 if you prefer.
 
+## Application builds
+
+PyInstaller produces a standalone Windows executable and a standalone Linux application
+bundle. Builds are platform-specific: build Windows on Windows and Linux on Linux rather than
+trying to cross-compile either artifact.
+
+Install the pinned build tooling alongside the runtime dependencies, then run the tracked
+specification:
+
+```powershell
+.venv\Scripts\python.exe -m pip install -r requirements-build.txt
+.venv\Scripts\python.exe -m PyInstaller --clean --noconfirm SDC-Testing-Toolbox.spec
+```
+
+The Windows result is `dist\SDC-Testing-Toolbox.exe`.
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  binutils libbrotli1 libdbus-1-3 libegl1 libfontconfig1 libfreetype6 libgl1 \
+  libglib2.0-0 libgtk-3-0 libx11-xcb1 libxcb-cursor0 libxcb-icccm4 \
+  libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+  libxcb-render0 libxcb-shape0 libxcb-shm0 libxcb-sync1 libxcb-xfixes0 \
+  libxcb-xkb1 libxkbcommon-x11-0 libxkbcommon0
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt -r requirements-build.txt
+.venv/bin/python -m PyInstaller --clean --noconfirm SDC-Testing-Toolbox.spec
+tar -C dist -czf dist/SDC-Testing-Toolbox-linux-x86_64.tar.gz SDC-Testing-Toolbox
+```
+
+The workflow's Linux archive targets x86-64 desktop distributions with glibc 2.35 or newer
+because it is built on Ubuntu 22.04. A local build inherits its build host's glibc baseline.
+The archive contains application-specific shared libraries, while normal desktop system
+libraries remain host dependencies. Keep the bundle together after extracting it; the
+executable is `SDC-Testing-Toolbox/SDC-Testing-Toolbox`.
+
+The `Build application` GitHub Actions workflow performs both native builds, smoke-tests the
+actual packaged applications and uploads the Windows executable and Linux archive. Run it
+manually when an artifact is needed; it also runs for pull requests to `develop` and version
+tags.
+
 ## Milestones
 
 - [x] **0 — Groundwork.** Pinned environment, sdc11073 API verified, networking settled.
