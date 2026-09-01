@@ -902,40 +902,59 @@ def apply_to(
         already exist would collide.
     """
     _preflight_apply(service, device, replace=replace)
+    snapshot = None
     if replace:
-        for handle in list(service.list_actions()):
-            service.remove_action(handle)
-        for handle in list(service.list_alerts()):
-            service.remove_alert(handle)
-        for handle in list(service.list_metrics()):
-            service.remove_metric(handle)
-
-    for spec in device.metrics:
-        service.add_metric(spec)
-    created_alerts = 0
-    for spec in device.alerts:
         try:
+            snapshot = service._snapshot_configuration()  # noqa: SLF001 - config owns replacement rollback
+        except Exception as exc:  # noqa: BLE001 - provider/library failures become profile errors
+            msg = f"profile: could not prepare transactional import: {exc}"
+            raise ConfigError(msg) from exc
+
+    field = "profile"
+    try:
+        if replace:
+            for handle in list(service.list_actions()):
+                field = f"profile.replace.actions[{handle}]"
+                service.remove_action(handle)
+            for handle in list(service.list_alerts()):
+                field = f"profile.replace.alerts[{handle}]"
+                service.remove_alert(handle)
+            for handle in list(service.list_metrics()):
+                field = f"profile.replace.metrics[{handle}]"
+                service.remove_metric(handle)
+
+        for spec in device.metrics:
+            field = f"metrics[{spec.label}]"
+            service.add_metric(spec)
+        created_alerts = 0
+        for spec in device.alerts:
+            field = f"alerts[{spec.label}]"
             service.add_alert(spec)
-        except KeyError as exc:
-            msg = f"alarm {spec.label!r} watches {spec.source_handle!r}, which the file does not define"
-            raise ConfigError(msg) from exc
-        created_alerts += 1
+            created_alerts += 1
 
-    # Actions last of the descriptors: one names the thing it acts on, and a section's Vmd
-    # only exists once a metric has put it there.
-    for action in device.actions:
-        try:
+        # Actions last of the descriptors: one names the thing it acts on, and a section's
+        # Vmd only exists once a metric has put it there.
+        for action in device.actions:
+            field = f"actions[{action.label}]"
             service.add_action(action)
-        except KeyError as exc:
-            msg = f"action {action.label!r} acts on {action.target_handle!r}, which does not exist"
-            raise ConfigError(msg) from exc
 
-    # Contexts last, and only when the file mentions them. A file that says nothing about a
-    # patient leaves the one already attached alone rather than silently detaching them.
-    if device.location is not None:
-        service.set_location(device.location)
-    if device.patient is not None:
-        service.set_patient(device.patient)
+        # Contexts last, and only when the file mentions them. A file that says nothing about
+        # a patient leaves the one already attached alone rather than silently detaching them.
+        if device.location is not None:
+            field = "contexts.location"
+            service.set_location(device.location)
+        if device.patient is not None:
+            field = "contexts.patient"
+            service.set_patient(device.patient)
+    except Exception as exc:  # noqa: BLE001 - all operational failures need profile context
+        if snapshot is not None:
+            try:
+                service._restore_configuration(snapshot)  # noqa: SLF001 - paired with snapshot above
+            except Exception as rollback_exc:  # noqa: BLE001 - preserve both failure causes
+                msg = f"{field}: profile import failed ({exc}); rollback failed: {rollback_exc}"
+                raise ConfigError(msg) from exc
+        msg = f"{field}: profile import failed: {exc}"
+        raise ConfigError(msg) from exc
 
     return len(device.metrics), created_alerts
 

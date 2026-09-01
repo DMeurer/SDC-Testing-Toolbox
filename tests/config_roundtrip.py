@@ -17,6 +17,8 @@ import tempfile
 from decimal import Decimal
 from pathlib import Path
 
+from lxml import etree
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -24,6 +26,7 @@ from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 
 from sdctoolbox import config  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
+    ActionSpec,
     AlertKind,
     AlertManifestation,
     AlertPriority,
@@ -100,6 +103,77 @@ def snapshot(service: ProviderService) -> dict:
         },
         "location": service.get_location(),
         "patient": service.get_patient(),
+    }
+
+
+def complete_snapshot(service: ProviderService) -> dict:
+    """Provider configuration, descriptors, and live bookkeeping changed by import."""
+    descriptors = {}
+    for handle, entity in service.mdib.entities.items():
+        descriptor = entity.descriptor
+        descriptors[handle] = (
+            descriptor.NODETYPE.localname,
+            descriptor.parent_handle,
+            descriptor.DescriptorVersion,
+            str(getattr(descriptor, "OperationTarget", "")),
+            str(getattr(descriptor, "ConditionSignaled", "")),
+            tuple(getattr(descriptor, "Source", ()) or ()),
+        )
+    mdib_node = service.mdib.reconstruct_mdib_with_context_states()[0]
+    for node in reversed(list(mdib_node.iter())):
+        node[:] = sorted(
+            node,
+            key=lambda child: (
+                child.tag,
+                child.get("Handle", ""),
+                child.get("DescriptorHandle", ""),
+                etree.tostring(child, method="c14n"),
+            ),
+        )
+    return {
+        "mdib": etree.tostring(mdib_node, method="c14n"),
+        "mdib_versions": (
+            service.mdib.mdib_version,
+            service.mdib.mdstate_version,
+            service.mdib.mddescription_version,
+        ),
+        "version_lookups": (
+            dict(service.mdib.descriptions.handle_version_lookup),
+            dict(service.mdib.states.handle_version_lookup),
+            dict(service.mdib.context_states.handle_version_lookup),
+        ),
+        "descriptors": descriptors,
+        **snapshot(service),
+        "alert_presence": {
+            handle: (service.alert_present(handle), tuple(service.signal_states(handle)))
+            for handle in service.list_alerts()
+        },
+        "actions": service.list_actions(),
+        "sections": service.sections(),
+        "operations": {
+            handle: service.operation_handle_for(handle)
+            for handle in service.list_metrics()
+        },
+        "registered_operations": set(service._sco._registered_operations),  # noqa: SLF001
+        "operation_targets": {
+            handle: (type(operation).__name__, operation.operation_target_handle)
+            for handle, operation in service._sco._registered_operations.items()  # noqa: SLF001
+        },
+        "context_states": {
+            state.Handle: (
+                state.DescriptorHandle,
+                str(state.ContextAssociation),
+                state.StateVersion,
+            )
+            for state in service.mdib.context_states.objects
+        },
+        "location": service.get_location(),
+        "patient": service.get_patient(),
+        "provider_location": vars(service._provider._location).copy(),  # noqa: SLF001
+        "pending_alert_sources": set(service._pending_alert_sources),  # noqa: SLF001
+        "waveform_phase": dict(service._waveform_phase),  # noqa: SLF001
+        "pinned_samples": set(service._pinned_samples),  # noqa: SLF001
+        "generator_running": service.generator_running,
     }
 
 
@@ -223,6 +297,73 @@ def check_preflight_preserves_device(report: Report, service: ProviderService) -
         report.check(False, "an empty location is rejected before import", "it was accepted")  # noqa: FBT003
     report.check(set(service.list_metrics()) == before, "a rejected location import leaves existing metrics intact")
     service.remove_metric("m.existing")
+
+
+def check_operational_failure_rolls_back(report: Report, service: ProviderService) -> None:
+    """A failure after one successful creation restores the complete live provider."""
+    metric = service.add_metric(
+        MetricSpec(
+            label="Existing controlled",
+            kind=MetricKind.NUMBER,
+            section="Existing section",
+            controllable=True,
+            initial_value=Decimal("20"),
+        ),
+    )
+    alert = service.add_alert(
+        AlertSpec(
+            label="Existing alert",
+            source_handle=metric,
+            upper_limit=Decimal("10"),
+            delegable=True,
+        ),
+    )
+    service.set_signal_delegated(service.signal_handles_for(alert)[0], delegated=True)
+    service.add_action(ActionSpec(label="Existing action", target_handle=metric, effects={metric: Decimal("5")}))
+    service.set_location(LocationInfo(facility="OLD", point_of_care="OR", bed="7"))
+    service.set_patient(PatientInfo(given_name="Before", family_name="Import"))
+    before = complete_snapshot(service)
+
+    replacement = config.parse(
+        {
+            "metrics": [
+                {"label": "First replacement", "kind": "number", "section": "New section"},
+                {"label": "Second replacement", "kind": "number"},
+            ],
+            "contexts": {
+                "location": {"facility": "NEW", "bed": "1"},
+                "patient": {"given_name": "After"},
+            },
+        },
+    )
+    original_set_patient = service.set_patient
+    replacement_created = False
+
+    def fail_after_patient(info: PatientInfo) -> None:
+        nonlocal replacement_created
+        replacement_created = service.mdib.entities.by_handle("m.first_replacement") is not None
+        original_set_patient(info)
+        raise RuntimeError("injected context creation failure")
+
+    service.set_patient = fail_after_patient
+    try:
+        try:
+            config.apply_to(service, replacement, replace=True)
+        except config.ConfigError as exc:
+            report.check(
+                "contexts.patient" in str(exc) and "injected" in str(exc),
+                "an operational import failure reports profile field context",
+                str(exc),
+            )
+        else:
+            report.check(False, "an operational import failure reports profile field context", "it was accepted")  # noqa: FBT003
+    finally:
+        service.set_patient = original_set_patient
+
+    after = complete_snapshot(service)
+    report.check(replacement_created, "fault injection runs after a replacement descriptor succeeds")
+    changed = [name for name in before if before[name] != after[name]]
+    report.check(after == before, "a failed replacement restores the complete provider state", str(changed))
 
 
 def check_action_effect_types(report: Report) -> None:
@@ -480,10 +621,18 @@ def main() -> int:
     finally:
         guarded.stop()
 
-    print("\n5. Action effects follow target metric kinds")
+    print("\n5. Operational failures roll back replacements")
+    transactional = ProviderService(instance_name="config-transaction")
+    transactional.start()
+    try:
+        check_operational_failure_rolls_back(report, transactional)
+    finally:
+        transactional.stop()
+
+    print("\n6. Action effects follow target metric kinds")
     check_action_effect_types(report)
 
-    print("\n6. Bad files are refused with a usable message")
+    print("\n7. Bad files are refused with a usable message")
     for text, description in BAD_FILES:
         bad = workdir / "bad.json"
         bad.write_text(text, encoding="utf-8")
@@ -494,7 +643,7 @@ def main() -> int:
         else:
             report.check(False, f"refuses {description}", "it was accepted")  # noqa: FBT003
 
-    print("\n7. A missing file says so")
+    print("\n8. A missing file says so")
     try:
         config.load_file(workdir / "does-not-exist.json")
     except config.ConfigError as exc:

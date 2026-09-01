@@ -11,6 +11,8 @@ import math
 import random
 import threading
 import time
+from copy import deepcopy
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -53,6 +55,30 @@ if TYPE_CHECKING:
     from sdc11073.provider.sco import AbstractScoOperationsRegistry
 
 logger = logging.getLogger("sdctoolbox.provider")
+
+
+@dataclass
+class _ConfigurationSnapshot:
+    descriptors: list
+    states: list
+    context_states: list
+    descriptor_versions: dict
+    state_versions: dict
+    context_state_versions: dict
+    mdib_versions: tuple[int, int, int]
+    operations: dict[str, str]
+    specs: dict[str, MetricSpec]
+    alerts: dict[str, AlertSpec]
+    alert_signals: dict[str, list[str]]
+    actions: dict[str, ActionSpec]
+    sections: dict[str, str]
+    registered_operations: dict
+    provider_location: SdcLocation
+    pending_alert_sources: set[str]
+    waveform_phase: dict[str, float]
+    pinned_samples: set[str]
+    generator_running: bool
+
 
 # How much waveform data goes out per report. Samples are generated in blocks rather than
 # one at a time, because a report per sample would be all overhead: a 0.1s sample period
@@ -416,6 +442,73 @@ class ProviderService:
         self._waveform_phase.clear()
         self._pinned_samples.clear()
         logger.info("provider %r stopped", self.instance_name)
+
+    def _snapshot_configuration(self) -> _ConfigurationSnapshot:
+        """Clone all mutable provider state needed to undo a profile replacement."""
+        with self._lock:
+            mdib = self.mdib
+            return _ConfigurationSnapshot(
+                descriptors=deepcopy(list(mdib.descriptions.objects)),
+                states=deepcopy(list(mdib.states.objects)),
+                context_states=deepcopy(list(mdib.context_states.objects)),
+                descriptor_versions=dict(mdib.descriptions.handle_version_lookup),
+                state_versions=dict(mdib.states.handle_version_lookup),
+                context_state_versions=dict(mdib.context_states.handle_version_lookup),
+                mdib_versions=(mdib.mdib_version, mdib.mdstate_version, mdib.mddescription_version),
+                operations=dict(self._operations),
+                specs=dict(self._specs),
+                alerts=dict(self._alerts),
+                alert_signals={handle: list(signals) for handle, signals in self._alert_signals.items()},
+                actions=dict(self._actions),
+                sections=dict(self._sections),
+                registered_operations=dict(self._sco._registered_operations),  # noqa: SLF001
+                provider_location=deepcopy(self._provider._location),  # noqa: SLF001
+                pending_alert_sources=set(self._pending_alert_sources),
+                waveform_phase=dict(self._waveform_phase),
+                pinned_samples=set(self._pinned_samples),
+                generator_running=self.generator_running,
+            )
+
+    def _restore_configuration(self, snapshot: _ConfigurationSnapshot) -> None:
+        """Restore a snapshot without routing the old state through creation APIs."""
+        if not snapshot.generator_running:
+            self.stop_generator()
+        with self._lock:
+            mdib = self.mdib
+            location_changed = self._provider._location != snapshot.provider_location  # noqa: SLF001
+            mdib.descriptions.clear()
+            mdib.states.clear()
+            mdib.context_states.clear()
+            mdib.descriptions.add_objects(snapshot.descriptors)
+
+            descriptors = {descriptor.Handle: descriptor for descriptor in snapshot.descriptors}
+            for state in [*snapshot.states, *snapshot.context_states]:
+                state.descriptor_container = descriptors[state.DescriptorHandle]
+            mdib.states.add_objects(snapshot.states)
+            mdib.context_states.add_objects(snapshot.context_states)
+            mdib.descriptions.handle_version_lookup = snapshot.descriptor_versions
+            mdib.states.handle_version_lookup = snapshot.state_versions
+            mdib.context_states.handle_version_lookup = snapshot.context_state_versions
+            mdib.mdib_version, mdib.mdstate_version, mdib.mddescription_version = snapshot.mdib_versions
+
+            self._operations = snapshot.operations
+            self._specs = snapshot.specs
+            self._alerts = snapshot.alerts
+            self._alert_signals = snapshot.alert_signals
+            self._actions = snapshot.actions
+            self._sections = snapshot.sections
+            self._pending_alert_sources = snapshot.pending_alert_sources
+            self._waveform_phase = snapshot.waveform_phase
+            self._pinned_samples = snapshot.pinned_samples
+            self._sco._registered_operations = snapshot.registered_operations  # noqa: SLF001
+            for operation in snapshot.registered_operations.values():
+                operation._operation_entity = mdib.entities.by_handle(operation.handle)  # noqa: SLF001
+            self._provider._location = snapshot.provider_location  # noqa: SLF001
+
+        if location_changed:
+            self._provider.publish()
+        if snapshot.generator_running:
+            self.start_generator()
 
     def __enter__(self) -> ProviderService:
         self.start()
