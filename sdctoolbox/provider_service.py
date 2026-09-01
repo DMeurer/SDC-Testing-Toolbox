@@ -41,6 +41,8 @@ from .model import (
     DistributionShape,
     SignalInfo,
     WaveformShape,
+    patient_info_from_biceps,
+    patient_measurement_wire_value,
     slugify,
 )
 
@@ -873,19 +875,7 @@ class ProviderService:
         """Who the device says it is attached to."""
         state = self._associated_context_state(constants.PATIENT_CONTEXT_HANDLE)
         core = getattr(state, "CoreData", None) if state is not None else None
-        if core is None:
-            return PatientInfo()
-        birth = getattr(core, "DateOfBirth", None)
-        return PatientInfo(
-            given_name=core.Givenname or "",
-            family_name=core.Familyname or "",
-            sex=str(core.Sex) if core.Sex else "",
-            patient_type=str(core.PatientType) if core.PatientType else "",
-            # XsdDateInformation renders itself back to the xsd form it was parsed from,
-            # so a date entered as 1815-12-10 comes back as 1815-12-10 rather than a
-            # datetime with a made-up midnight on the end.
-            date_of_birth=str(birth) if birth is not None else "",
-        )
+        return patient_info_from_biceps(core)
 
     def set_patient(self, info: PatientInfo) -> None:
         """Associate a patient with the device, replacing whoever was there before.
@@ -894,13 +884,15 @@ class ProviderService:
         overwritten, so the MDIB keeps the history of who was attached when. That is why
         this cannot simply write over one state the way a metric does.
         """
+        if info.is_empty():
+            self.clear_patient()
+            return
         with self._lock:
             entity = self.mdib.entities.by_handle(constants.PATIENT_CONTEXT_HANDLE)
             if entity is None:
                 msg = f"the bootstrap MDIB has no {constants.PATIENT_CONTEXT_HANDLE}"
                 raise RuntimeError(msg)
 
-            state = entity.new_state()
             core = pm_types.PatientDemographicsCoreData()
             core.Givenname = info.given_name or None
             core.Familyname = info.family_name or None
@@ -910,6 +902,29 @@ class ProviderService:
                 # Raises ValueError on anything xsd:date cannot express, which is what we want:
                 # a silently dropped birth date would look like the field does not work.
                 core.set_birthdate(info.date_of_birth)
+            if info.height is not None:
+                core.Height = pm_types.Measurement(
+                    patient_measurement_wire_value(info.height.value),
+                    _coded_value(info.height.unit),
+                )
+            if info.weight is not None:
+                core.Weight = pm_types.Measurement(
+                    patient_measurement_wire_value(info.weight.value),
+                    _coded_value(info.weight.unit),
+                )
+            if info.race is not None:
+                core.Race = _coded_value(info.race)
+
+            # Context transactions commit before report serialization. Serialize the complete
+            # demographics first so malformed user/profile data cannot disassociate the prior
+            # patient and leave an unpublishable replacement in the MDIB.
+            try:
+                core.as_etree_node(pm.CoreData, {})
+            except (TypeError, ValueError) as exc:
+                msg = f"patient demographics cannot be serialized: {exc}"
+                raise ValueError(msg) from exc
+
+            state = entity.new_state()
             state.CoreData = core
             state.ContextAssociation = pm_types.ContextAssociation.ASSOCIATED
             state.BindingStartTime = time.time()

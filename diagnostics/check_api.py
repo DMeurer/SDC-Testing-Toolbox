@@ -25,6 +25,7 @@ CHECKS: list[tuple[str, str, str]] = [
     ("sdc11073.mdib", "ProviderMdib.metric_state_transaction", "set metric values"),
     ("sdc11073.mdib", "ProviderMdib.operational_state_transaction", "set OperatingMode"),
     ("sdc11073.mdib", "ProviderMdib.context_state_transaction", "contexts"),
+    ("sdc11073.mdib", "ProviderMdib.reconstruct_mdib_with_context_states", "context serialization"),
     ("sdc11073.mdib", "ProviderMdib.alert_state_transaction", "alerts (stage 4)"),
     ("sdc11073.mdib", "ProviderMdib.rt_sample_state_transaction", "waveforms (stage 4)"),
     # --- Entity API (used throughout) ---
@@ -59,6 +60,10 @@ CHECKS: list[tuple[str, str, str]] = [
     ("sdc11073.xml_types.pm_types", "AllowedValue", "enum values"),
     ("sdc11073.xml_types.pm_types", "ComponentActivation.ON", "metric active"),
     ("sdc11073.xml_types.pm_types", "MeasurementValidity.VALID", "value valid"),
+    ("sdc11073.xml_types.pm_types", "Measurement", "patient height and weight"),
+    ("sdc11073.xml_types.pm_types", "CodedValue", "patient race and measurement units"),
+    ("sdc11073.xml_types.pm_types", "PatientDemographicsCoreData", "patient demographics"),
+    ("sdc11073.xml_types.dataconverters", "DecimalConverter", "lossless demographic decimal check"),
     # --- Consumer ---
     # Note: SdcConsumer is NOT re-exported from the sdc11073.consumer package,
     # it must be imported from sdc11073.consumer.consumerimpl.

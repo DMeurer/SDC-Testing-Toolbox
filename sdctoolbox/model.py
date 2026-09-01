@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import enum
 import re
+from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
@@ -16,6 +17,7 @@ from typing import Any
 from sdc11073.provider.operations import OperationDefinitionBase, SetStringOperation, SetValueOperation
 from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types import pm_types
+from sdc11073.xml_types.dataconverters import DecimalConverter
 
 from . import constants
 
@@ -186,6 +188,43 @@ CODING_SYSTEMS = {
 }
 
 
+def _xml_compatible(value: str) -> bool:
+    """Whether a string can be written in an XML 1.0 document."""
+    return all(
+        codepoint in (0x9, 0xA, 0xD)
+        or 0x20 <= codepoint <= 0xD7FF
+        or 0xE000 <= codepoint <= 0xFFFD
+        or 0x10000 <= codepoint <= 0x10FFFF
+        for codepoint in map(ord, value)
+    )
+
+
+_URI_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+_URI_CHARACTERS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    "-._~:/?#[]@!$&'()*+,;=%",
+)
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+
+
+def _is_absolute_uri(value: str) -> bool:
+    """Check the URI form accepted for explicit coding-system identifiers."""
+    if _URI_SCHEME.match(value) is None or not value.partition(":")[2]:
+        return False
+    if any(character not in _URI_CHARACTERS for character in value):
+        return False
+    if any(
+        character == "%"
+        and (index + 2 >= len(value) or value[index + 1] not in _HEX_DIGITS or value[index + 2] not in _HEX_DIGITS)
+        for index, character in enumerate(value)
+    ):
+        return False
+    try:
+        return bool(urlsplit(value).scheme)
+    except ValueError:
+        return False
+
+
 @dataclass(frozen=True)
 class Coding:
     """A BICEPS CodedValue: what a thing *is*, as opposed to what it is called.
@@ -195,7 +234,7 @@ class Coding:
     reason SDC exists, so the two are kept apart here rather than a label being allowed to
     stand in for semantics.
 
-    ``system`` is a key of CODING_SYSTEMS:
+    ``system`` is either a key of CODING_SYSTEMS or an explicit coding-system URI:
 
     * ``mdc`` — IEEE 11073-10101. Use it only where a term genuinely exists. The codes this
       project ships are the standard's *reference IDs* (``MDC_PULS_OXIM_SAT_O2``), not its
@@ -204,6 +243,8 @@ class Coding:
     * ``private`` — ``urn:sdc-testing-toolbox:private``. Everything with no standard term,
       which for surgical devices is most of it. Marked rather than disguised: that gap is
       real and is the subject of active work on extending the nomenclature.
+    * An explicit URI lets a profile preserve a coding system not represented by the two
+      toolbox aliases. This matters for externally defined patient demographics such as race.
     """
 
     code: str
@@ -211,27 +252,118 @@ class Coding:
     label: str = ""
 
     def __post_init__(self) -> None:
-        if self.system not in CODING_SYSTEMS:
-            allowed = ", ".join(sorted(CODING_SYSTEMS))
-            msg = f"unknown coding system {self.system!r}. Use one of: {allowed}"
+        if not isinstance(self.code, str) or not self.code.strip():
+            msg = "a coding needs a non-empty string code"
             raise ValueError(msg)
-        if not str(self.code).strip():
-            msg = "a coding needs a code"
+        if not _xml_compatible(self.code):
+            msg = "a coding code contains characters not allowed in XML 1.0"
+            raise ValueError(msg)
+        if not isinstance(self.system, str):
+            msg = "a coding system must be a string"
+            raise TypeError(msg)
+        if not _xml_compatible(self.system):
+            msg = "a coding system contains characters not allowed in XML 1.0"
+            raise ValueError(msg)
+        if not isinstance(self.label, str):
+            msg = "a coding label must be a string"
+            raise TypeError(msg)
+        if not _xml_compatible(self.label):
+            msg = "a coding label contains characters not allowed in XML 1.0"
+            raise ValueError(msg)
+        if self.system not in CODING_SYSTEMS and not _is_absolute_uri(self.system):
+            allowed = ", ".join(sorted(CODING_SYSTEMS))
+            msg = f"unknown coding system {self.system!r}. Use {allowed}, or a valid coding-system URI"
             raise ValueError(msg)
 
     @property
     def coding_system(self) -> str:
         """The URI that goes on the wire."""
-        return CODING_SYSTEMS[self.system]
+        return CODING_SYSTEMS.get(self.system, self.system)
 
     @property
     def is_standard(self) -> bool:
         """Whether this claims a term from the standard nomenclature."""
-        return self.system == "mdc"
+        return self.coding_system == constants.CODING_SYSTEM_MDC
 
     def summary(self) -> str:
         """Something short enough for a table cell."""
-        return f"{self.code}" if self.is_standard else f"{self.code} (private)"
+        if self.is_standard:
+            return self.code
+        if self.system == "private":
+            return f"{self.code} (private)"
+        return f"{self.code} ({self.system})"
+
+    @classmethod
+    def from_wire(
+        cls,
+        *,
+        code: str,
+        coding_system: str | None,
+        label: str = "",
+    ) -> Coding:
+        """Build a Coding from a BICEPS CodedValue's wire fields.
+
+        A missing CodingSystem has BICEPS's IEEE 11073-10101 default. Known toolbox URIs
+        become their concise aliases; every other URI is retained verbatim.
+        """
+        system = next(
+            (name for name, uri in CODING_SYSTEMS.items() if uri == coding_system),
+            coding_system or "mdc",
+        )
+        return cls(code=code, system=system, label=label)
+
+
+# Bound expansion before fixed-point formatting: Decimal('1E+999999') is legal in Python but
+# is not practical to materialize or send as an xsd:decimal attribute.
+MAX_PATIENT_MEASUREMENT_WIRE_CHARS = 1024
+
+
+class _FixedPointDecimal(Decimal):
+    """A Decimal that bypasses sdc11073's lossy exponent-to-float conversion."""
+
+    def __str__(self) -> str:
+        return format(self, "f")
+
+
+def _fixed_point_length(value: Decimal) -> int:
+    """Length of ``format(value, 'f')`` without expanding an unbounded exponent."""
+    sign, digits, exponent = value.as_tuple()
+    if not any(digits):
+        return 1 + sign
+    if exponent >= 0:
+        return sign + len(digits) + exponent
+    decimal_index = len(digits) + exponent
+    if decimal_index > 0:
+        return sign + len(digits) + 1
+    return sign + 2 + len(digits) - decimal_index
+
+
+def patient_measurement_wire_value(value: Decimal) -> Decimal:
+    """Return a lossless BICEPS-serializable Decimal for a demographic Measurement.
+
+    sdc11073 3.0.0 sends exponent-form Decimals through ``float``. Force fixed-point
+    formatting, reject unbounded expansions, and verify the library will not truncate the
+    value before it is allowed into a context state.
+    """
+    if not isinstance(value, Decimal):
+        msg = "patient measurement value must be a Decimal, never a float"
+        raise TypeError(msg)
+    if not value.is_finite():
+        msg = "patient measurement value must be finite"
+        raise ValueError(msg)
+    if _fixed_point_length(value) > MAX_PATIENT_MEASUREMENT_WIRE_CHARS:
+        msg = f"patient measurement value exceeds {MAX_PATIENT_MEASUREMENT_WIRE_CHARS} wire characters"
+        raise ValueError(msg)
+    wire_value = _FixedPointDecimal("0") if value.is_zero() else _FixedPointDecimal(value)
+    serialized = DecimalConverter.to_xml(wire_value)
+    try:
+        lossless = Decimal(serialized) == value
+    except (ArithmeticError, ValueError):
+        lossless = False
+    if not lossless:
+        msg = "patient measurement value cannot be serialized without losing precision"
+        raise ValueError(msg)
+    return wire_value
 
 
 # MDC_DIM_DIMLESS, for a metric that measures a bare number.
@@ -635,13 +767,31 @@ class LocationInfo:
 
 
 @dataclass(frozen=True)
-class PatientInfo:
-    """Who the device is attached to. A subset of pm:PatientDemographicsCoreData.
+class PatientMeasurement:
+    """One demographic Measurement: a Decimal value and its required coded unit."""
 
-    Deliberately a subset: height, weight and race are carried by the standard but inviting
-    someone to type a weight into a learning tool suggests a clinical purpose this has none
-    of. Name, sex, patient type and date of birth are enough to show how a context works.
-    """
+    value: Decimal
+    unit: Coding
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.value, Decimal):
+            msg = "patient measurement value must be a Decimal, never a float"
+            raise TypeError(msg)
+        if not self.value.is_finite():
+            msg = "patient measurement value must be finite"
+            raise ValueError(msg)
+        if not isinstance(self.unit, Coding):
+            msg = "patient measurement unit must be a Coding"
+            raise TypeError(msg)
+
+    def summary(self) -> str:
+        """Short human representation using a label when the coding supplies one."""
+        return f"{self.value} {self.unit.label or self.unit.code}"
+
+
+@dataclass(frozen=True)
+class PatientInfo:
+    """Who the device is attached to. Mirrors pm:PatientDemographicsCoreData."""
 
     given_name: str = ""
     family_name: str = ""
@@ -651,20 +801,110 @@ class PatientInfo:
     patient_type: str = ""
     # An xsd:date, xsd:gYearMonth or xsd:gYear string, e.g. '1980-04-01'.
     date_of_birth: str = ""
+    # Height and weight are BICEPS Measurements, each with a required coded unit.
+    height: PatientMeasurement | None = None
+    weight: PatientMeasurement | None = None
+    # Race is a BICEPS CodedValue, not a free-text demographic field.
+    race: Coding | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("given_name", "family_name", "sex", "patient_type", "date_of_birth"):
+            value = getattr(self, name)
+            if not isinstance(value, str):
+                msg = f"patient {name} must be a string"
+                raise TypeError(msg)
+            if not _xml_compatible(value):
+                msg = f"patient {name} contains characters not allowed in XML 1.0"
+                raise ValueError(msg)
+        for name in ("height", "weight"):
+            measurement = getattr(self, name)
+            if measurement is not None and not isinstance(measurement, PatientMeasurement):
+                msg = f"patient {name} must be a PatientMeasurement"
+                raise TypeError(msg)
+        if self.race is not None and not isinstance(self.race, Coding):
+            msg = "patient race must be a Coding"
+            raise TypeError(msg)
 
     def is_empty(self) -> bool:
         """Whether nothing at all was given."""
         return not any(
-            (self.given_name, self.family_name, self.sex, self.patient_type, self.date_of_birth),
+            (
+                self.given_name,
+                self.family_name,
+                self.sex,
+                self.patient_type,
+                self.date_of_birth,
+                self.height,
+                self.weight,
+                self.race,
+            ),
         )
 
     def summary(self) -> str:
         """Something short enough for a status line."""
         name = " ".join(part for part in (self.given_name, self.family_name) if part)
-        extras = ", ".join(part for part in (self.sex, self.patient_type, self.date_of_birth) if part)
+        details = [part for part in (self.sex, self.patient_type, self.date_of_birth) if part]
+        if self.height is not None:
+            details.append(f"height {self.height.summary()}")
+        if self.weight is not None:
+            details.append(f"weight {self.weight.summary()}")
+        if self.race is not None:
+            details.append(f"race {self.race.label or self.race.code}")
+        extras = ", ".join(details)
         if name and extras:
             return f"{name} ({extras})"
         return name or extras
+
+
+def coding_from_biceps(coded_value: Any) -> Coding | None:
+    """Convert a BICEPS CodedValue-like object into the toolbox model."""
+    if coded_value is None:
+        return None
+    code = getattr(coded_value, "Code", None)
+    if not code:
+        return None
+    label = ""
+    for description in getattr(coded_value, "ConceptDescription", None) or []:
+        text = getattr(description, "text", None)
+        if text:
+            label = str(text)
+            break
+    try:
+        return Coding.from_wire(
+            code=str(code),
+            coding_system=getattr(coded_value, "CodingSystem", None),
+            label=label,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def patient_measurement_from_biceps(measurement: Any) -> PatientMeasurement | None:
+    """Convert a BICEPS Measurement-like object when both required members are present."""
+    if measurement is None:
+        return None
+    value = getattr(measurement, "MeasuredValue", None)
+    unit = coding_from_biceps(getattr(measurement, "MeasurementUnit", None))
+    if not isinstance(value, Decimal) or unit is None:
+        return None
+    return PatientMeasurement(value=value, unit=unit)
+
+
+def patient_info_from_biceps(core_data: Any) -> PatientInfo:
+    """Convert BICEPS PatientDemographicsCoreData into a stable toolbox value object."""
+    if core_data is None:
+        return PatientInfo()
+    birth = getattr(core_data, "DateOfBirth", None)
+    return PatientInfo(
+        given_name=getattr(core_data, "Givenname", None) or "",
+        family_name=getattr(core_data, "Familyname", None) or "",
+        sex=str(getattr(core_data, "Sex", None) or ""),
+        patient_type=str(getattr(core_data, "PatientType", None) or ""),
+        date_of_birth=str(birth) if birth is not None else "",
+        height=patient_measurement_from_biceps(getattr(core_data, "Height", None)),
+        weight=patient_measurement_from_biceps(getattr(core_data, "Weight", None)),
+        race=coding_from_biceps(getattr(core_data, "Race", None)),
+    )
 
 
 @dataclass

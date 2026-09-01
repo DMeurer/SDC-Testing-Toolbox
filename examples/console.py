@@ -31,12 +31,15 @@ from sdctoolbox import config, constants  # noqa: E402
 from sdctoolbox.consumer_service import ConsumerService  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
     AlertSpec,
+    Coding,
     DistributionShape,
     LocationInfo,
     MetricKind,
     MetricSpec,
     PatientInfo,
+    PatientMeasurement,
     WaveformShape,
+    patient_measurement_wire_value,
 )
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
@@ -482,13 +485,16 @@ class ProviderShell(Cmd):
         print(f"  {self.service.get_location().summary() or 'nowhere'}")
 
     def do_patient(self, line: str) -> None:
-        """patient [given family [sex] [type] [birth]]  -  show, set or detach the patient.
+        """patient [given family [sex] [type] [birth]] [demographic options]  -  set patient.
 
         `patient` on its own shows who is attached, `patient off` detaches them. Setting one
         does not overwrite the last: the previous state is disassociated and kept, which is
         what makes a context different from a metric.
 
             patient Ada Lovelace F Ad 1815-12-10
+            patient Ada Lovelace --height 170.5 --height-unit 264184 --height-system mdc --height-label cm
+            patient Ada Lovelace --weight 72.4 --weight-unit 266016 --weight-system mdc --weight-label kg
+            patient Ada Lovelace --race 2054-5 --race-system urn:oid:2.16.840.1.113883.6.238 --race-label "Black or African American"
             patient off
         """
         parts = shlex.split(line)
@@ -499,6 +505,69 @@ class ProviderShell(Cmd):
             self.service.clear_patient()
             print("  nobody attached")
             return
+
+        options: dict[str, str | None] = {}
+        option_names = (
+            "--height",
+            "--height-unit",
+            "--height-system",
+            "--height-label",
+            "--weight",
+            "--weight-unit",
+            "--weight-system",
+            "--weight-label",
+            "--race",
+            "--race-system",
+            "--race-label",
+        )
+        provided = {name for name in option_names if name in parts}
+        for name in option_names:
+            value, parts = _take_option(parts, name)
+            options[name] = value
+        missing = [name for name in provided if options[name] is None]
+        if missing:
+            print(f"usage: {missing[0]} needs a value")
+            return
+        unknown = [part for part in parts if part.startswith("--")]
+        if unknown:
+            print(f"usage: unknown patient option {unknown[0]}")
+            return
+
+        def measurement(name: str) -> PatientMeasurement | None:
+            value = options[f"--{name}"]
+            unit = options[f"--{name}-unit"]
+            system = options[f"--{name}-system"]
+            label = options[f"--{name}-label"] or ""
+            if not any((value, unit, system, label)):
+                return None
+            if not value or not unit or not system:
+                raise ValueError(f"{name} needs --{name}, --{name}-unit and --{name}-system")
+            try:
+                decimal_value = Decimal(value)
+                patient_measurement_wire_value(decimal_value)
+                return PatientMeasurement(
+                    value=decimal_value,
+                    unit=Coding(code=unit, system=system, label=label),
+                )
+            except (InvalidOperation, TypeError, ValueError) as exc:
+                raise ValueError(f"{name}: {exc}") from exc
+
+        try:
+            height = measurement("height")
+            weight = measurement("weight")
+            race_code = options["--race"]
+            race_system = options["--race-system"]
+            race_label = options["--race-label"] or ""
+            if any((race_code, race_system, race_label)) and (not race_code or not race_system):
+                raise ValueError("race needs --race and --race-system")
+            race = Coding(code=race_code, system=race_system, label=race_label) if race_code else None
+        except (TypeError, ValueError) as exc:
+            print(f"rejected: {exc}")
+            return
+
+        if len(parts) > 5:  # noqa: PLR2004
+            print("usage: patient [given family [sex] [type] [birth]] [demographic options]")
+            return
         padded = (parts + [""] * 5)[:5]
         try:
             self.service.set_patient(
@@ -508,6 +577,9 @@ class ProviderShell(Cmd):
                     sex=padded[2],
                     patient_type=padded[3],
                     date_of_birth=padded[4],
+                    height=height,
+                    weight=weight,
+                    race=race,
                 ),
             )
         except (RuntimeError, ValueError, TypeError) as exc:
@@ -528,7 +600,7 @@ class ProviderShell(Cmd):
             print(f"      import {preset.path}")
 
     def do_export(self, line: str) -> None:
-        """export <file>  -  write the current data sources and alarms to a config file."""
+        """export <file>  -  write the current virtual-device profile to a config file."""
         path = line.strip()
         if not path:
             print("usage: export <file>")
@@ -539,8 +611,8 @@ class ProviderShell(Cmd):
             print(f"could not write: {exc}")
             return
         print(
-            f"wrote {len(self.service.list_metrics())} data source(s) "
-            f"and {len(self.service.list_alerts())} alarm(s) to {written}",
+            f"wrote {len(self.service.list_metrics())} data source(s), "
+            f"{len(self.service.list_alerts())} alarm(s), and contexts to {written}",
         )
 
     def do_import(self, line: str) -> None:
@@ -647,6 +719,17 @@ class ConsumerShell(Cmd):
             )
             if metric.allowed_values:
                 print(f"      allowed: {', '.join(metric.allowed_values)}    ({label})")
+
+    def do_patient(self, _line: str) -> None:
+        """patient  -  show associated patient demographics on the peer."""
+        if not self._require_connection():
+            return
+        patients = self.remote.patient_contexts()
+        if not patients:
+            print("  nobody attached")
+            return
+        for handle, patient in patients.items():
+            print(f"  {handle}: {patient.summary() or 'no demographics'}")
 
     def do_set(self, line: str) -> None:
         """set <handle> <value>  -  remote-control a metric on the peer."""

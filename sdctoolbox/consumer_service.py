@@ -25,7 +25,14 @@ from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types.actions import periodic_actions
 
 from . import constants
-from .model import MetricKind, RemoteAction, RemoteAlert, RemoteMetric
+from .model import (
+    MetricKind,
+    PatientInfo,
+    RemoteAction,
+    RemoteAlert,
+    RemoteMetric,
+    patient_info_from_biceps,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -204,6 +211,34 @@ class RemoteDevice:
                     controllable_now=handle in enabled_targets,
                 )
             return result
+
+    def patient_contexts(self) -> dict[str, PatientInfo]:
+        """Associated peer patients keyed by PatientContext descriptor handle.
+
+        A multi-MDS device can expose more than one PatientContext. Entity getters already
+        return MDIB-locked copies, so do not update those copies again while reading them.
+        """
+        with self._lock:
+            entities = self._mdib.entities.by_node_type(pm.PatientContextDescriptor)
+        patients: dict[str, PatientInfo] = {}
+        for entity in sorted(entities, key=lambda candidate: candidate.handle):
+            associated = [
+                state
+                for state in entity.states.values()
+                if getattr(state, "ContextAssociation", None) == pm_types.ContextAssociation.ASSOCIATED
+            ]
+            if len(associated) == 1:
+                patients[entity.handle] = patient_info_from_biceps(getattr(associated[0], "CoreData", None))
+            elif len(associated) > 1:
+                logger.warning("peer has %d associated states for patient context %s", len(associated), entity.handle)
+        return patients
+
+    def patient(self) -> PatientInfo:
+        """The associated peer patient when the peer exposes exactly one context."""
+        patients = self.patient_contexts()
+        if len(patients) == 1:
+            return next(iter(patients.values()))
+        return PatientInfo()
 
     def _operation_index(self) -> tuple[dict[str, list[str]], set[str], dict[str, tuple[Any, Any]]]:
         """Index the peer's set operations by the metric they target.

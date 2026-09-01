@@ -23,6 +23,7 @@ import threading
 import time
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 # Must be set before QApplication is created, otherwise Qt wants a real display.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -38,6 +39,7 @@ from PySide6.QtWidgets import (  # noqa: E402
     QHeaderView,
     QLabel,
     QMessageBox,
+    QSizePolicy,
 )
 
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
@@ -71,10 +73,12 @@ from sdctoolbox.model import (  # noqa: E402
     AlertKind,
     AlertPriority,
     AlertSpec,
+    Coding,
     LocationInfo,
     MetricKind,
     MetricSpec,
     PatientInfo,
+    PatientMeasurement,
 )
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
@@ -145,6 +149,18 @@ def wait_for(app: QApplication, predicate, timeout: float = 30.0) -> bool:  # no
         app.processEvents()
         time.sleep(0.05)
     return predicate()
+
+
+def wait_for_peer_ready(process: subprocess.Popen, timeout: float = 40.0) -> bool:
+    """Wait for the subprocess marker after its provider HTTP service is ready."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        line = process.stdout.readline()
+        if not line:
+            return False
+        if "READY" in line:
+            return True
+    return False
 
 
 def cell_of(table, handle: str, column: int) -> str | None:  # noqa: ANN001
@@ -545,6 +561,17 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         context_dialog.birth_edit.setText("1980-04-01")
         context_dialog.given_edit.setText("Ada")
         context_dialog.room_edit.setText("12")
+        context_dialog.height_value_edit.setText("170.5")
+        context_dialog.height_unit_code_edit.setText("demo-cm")
+        context_dialog.height_unit_system_edit.setText("private")
+        context_dialog.height_unit_label_edit.setText("cm")
+        context_dialog.weight_value_edit.setText("72.4")
+        context_dialog.weight_unit_code_edit.setText("demo-kg")
+        context_dialog.weight_unit_system_edit.setText("private")
+        context_dialog.weight_unit_label_edit.setText("kg")
+        context_dialog.race_code_edit.setText("demo-race")
+        context_dialog.race_system_edit.setText("private")
+        context_dialog.race_label_edit.setText("Demo race")
         for index in range(context_dialog.sex_box.count()):
             if context_dialog.sex_box.itemData(index) == "F":
                 context_dialog.sex_box.setCurrentIndex(index)
@@ -559,9 +586,58 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                 "and sex comes out as its BICEPS code, not its caption",
                 entered_patient.sex,
             )
+            report.check(
+                entered_patient.height is not None
+                and entered_patient.height.value == Decimal("170.5")
+                and entered_patient.height.unit.code == "demo-cm"
+                and entered_patient.weight is not None
+                and entered_patient.weight.value == Decimal("72.4")
+                and entered_patient.race is not None
+                and entered_patient.race.code == "demo-race",
+                "and height, weight and race keep their BICEPS value shapes",
+            )
         if entered_location is not None:
             report.check(entered_location.room == "12", "and the location too", entered_location.room)
         context_dialog.deleteLater()
+
+        bad_measurement_dialog = ContextDialog(LocationInfo(), PatientInfo())
+        bad_measurement_dialog.height_value_edit.setText("170")
+        bad_measurement_dialog._on_accept()  # noqa: SLF001
+        report.check(
+            bad_measurement_dialog.patient() is None and "unit code" in bad_measurement_dialog.error_label.text(),
+            "a partial demographic measurement is refused in the dialog",
+            bad_measurement_dialog.error_label.text(),
+        )
+        bad_measurement_dialog.deleteLater()
+
+        bad_patient_dialog = ContextDialog(LocationInfo(), PatientInfo())
+        bad_patient_dialog.given_edit.setText("Bad\ufffe")
+        bad_patient_dialog._on_accept()  # noqa: SLF001
+        report.check(
+            bad_patient_dialog.patient() is None
+            and "not allowed in XML" in bad_patient_dialog.error_label.text(),
+            "invalid basic patient text is reported by the dialog",
+            bad_patient_dialog.error_label.text(),
+        )
+        bad_patient_dialog.deleteLater()
+
+        bad_error_dialog = ContextDialog(LocationInfo(), PatientInfo())
+        markup = "<img src=not-found width=10000 height=1>"
+        bad_error_dialog.race_code_edit.setText("demo-race")
+        bad_error_dialog.race_system_edit.setText(markup)
+        bad_error_dialog._on_accept()  # noqa: SLF001
+        report.check(
+            bad_error_dialog.patient() is None
+            and bad_error_dialog.error_label.textFormat() == Qt.PlainText
+            and markup in bad_error_dialog.error_label.text(),
+            "demographic validation errors render markup-looking input as plain text",
+            bad_error_dialog.error_label.text(),
+        )
+        report.check(
+            bad_error_dialog.error_label.sizePolicy().horizontalPolicy() == QSizePolicy.Ignored,
+            "demographic validation errors cannot force the dialog wider",
+        )
+        bad_error_dialog.deleteLater()
 
         print("\n3. Creating data sources")
         zoom = service.add_metric(spec)
@@ -1219,28 +1295,84 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         pane.refresh_alerts()
         pump(app)
 
-        pane.refresh_contexts()
         report.check(
             "HOSP" in pane.context_label.text(),
             "the pane shows the default location",
             pane.context_label.text(),
         )
-        service.set_patient(PatientInfo(given_name="Ada", family_name="Lovelace"))
-        pane.refresh_contexts()
+        service.set_patient(
+            PatientInfo(
+                given_name="Ada",
+                family_name="Lovelace",
+                height=PatientMeasurement(
+                    value=Decimal("170.5"),
+                    unit=Coding(code="demo-cm", system="private", label="cm"),
+                ),
+                weight=PatientMeasurement(
+                    value=Decimal("72.4"),
+                    unit=Coding(code="demo-kg", system="private", label="kg"),
+                ),
+                race=Coding(
+                    code="demo-race",
+                    system="private",
+                    label="A deliberately long demographic display label that must wrap instead of widening the window",
+                ),
+            ),
+        )
+        report.check(
+            wait_for(app, lambda: "Ada Lovelace" in pane.context_label.text()),
+            "and the patient once one is attached without a manual refresh",
+            pane.context_label.text(),
+        )
+        report.check(
+            "height 170.5 cm" in pane.context_label.text(),
+            "the provider pane summarizes demographic measurements",
+            pane.context_label.text(),
+        )
+        window.resize(1100, 620)
         pump(app)
         report.check(
-            "Ada Lovelace" in pane.context_label.text(),
-            "and the patient once one is attached",
-            pane.context_label.text(),
+            window.minimumWidth() <= 1100,  # noqa: PLR2004
+            "demographic text does not force an oversized window",
+            str(window.minimumWidth()),
         )
         service.clear_patient()
-        pane.refresh_contexts()
-        pump(app)
         report.check(
-            "Ada" not in pane.context_label.text(),
-            "and drops them again when they are detached",
+            wait_for(app, lambda: "Ada" not in pane.context_label.text()),
+            "and drops them again when they are detached without a manual refresh",
             pane.context_label.text(),
         )
+
+        # Peer labels are untrusted text. The Network pane must show markup-looking content
+        # literally and must not let it dictate the splitter's minimum width.
+        consumer = window.network_pane
+        consumer.remote = SimpleNamespace(
+            patient_contexts=lambda: {
+                "PC.foreign": PatientInfo(
+                    given_name="<b>Foreign</b>",
+                    race=Coding(
+                        code="foreign-race",
+                        system="private",
+                        label="<img src=not-found width=10000 height=1>",
+                    ),
+                ),
+            },
+        )
+        consumer._refresh_contexts()  # noqa: SLF001 - exercise peer context presentation
+        pump(app)
+        report.check(
+            consumer.context_label.textFormat() == Qt.PlainText
+            and "<b>Foreign</b>" in consumer.context_label.text()
+            and "<img src=not-found width=10000 height=1>" in consumer.context_label.text(),
+            "peer demographic markup is rendered as literal plain text",
+            consumer.context_label.text(),
+        )
+        report.check(
+            consumer.context_label.sizePolicy().horizontalPolicy() == QSizePolicy.Ignored,
+            "peer demographic text cannot force the network pane wider",
+        )
+        consumer.remote = None
+        consumer._refresh_contexts()  # noqa: SLF001 - restore the disconnected state
 
         print("\n9. Column sizing, all four tables")
         # A table only has a width while it is the visible page.
@@ -1362,10 +1494,14 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         peer = subprocess.Popen(  # noqa: S603
             [sys.executable, str(ROOT / "tests" / "acceptance_provider.py"), "--seconds", "120"],
             cwd=str(ROOT),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
         )
         try:
+            if not report.check(wait_for_peer_ready(peer), "the peer reports ready before connection"):
+                return report.summary()
             report.check(not consumer.disconnect_button.isEnabled(), "disconnect is off before connecting")
             report.check(consumer.tree.topLevelItemCount() == 0, "tree starts empty")
 
@@ -1400,6 +1536,16 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                 report.check(consumer.tree.topLevelItemCount() > 0, "the MDIB tree is populated")
                 report.check(consumer.table.rowCount() >= 4, "metrics are listed", str(consumer.table.rowCount()))  # noqa: PLR2004
                 report.check(consumer.disconnect_button.isEnabled(), "disconnect becomes available")
+                report.check(
+                    wait_for(app, lambda: "height 170.5 cm" in consumer.context_label.text(), timeout=20),
+                    "peer patient demographics are shown",
+                    consumer.context_label.text(),
+                )
+                report.check(
+                    wait_for(app, lambda: "Grace Hopper" in consumer.context_label.text(), timeout=30),
+                    "peer context reports update the patient display automatically",
+                    consumer.context_label.text(),
+                )
 
                 remote_cell = lambda h, c: cell_of(consumer.table, h, c)  # noqa: E731
                 report.check(

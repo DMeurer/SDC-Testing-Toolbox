@@ -21,23 +21,31 @@ import json
 import logging
 import sys
 import tempfile
+import threading
 import time
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
+
+from lxml import etree
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 from sdc11073.xml_types import pm_qnames as pm  # noqa: E402
+from sdc11073.xml_types import pm_types  # noqa: E402
 
 from sdctoolbox import config, constants  # noqa: E402
+from sdctoolbox.consumer_service import RemoteDevice  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
     AlertSpec,
+    Coding,
     LocationInfo,
     MetricKind,
     MetricSpec,
     PatientInfo,
+    PatientMeasurement,
     WaveformShape,
 )
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
@@ -445,6 +453,15 @@ def check_contexts(report: Report, service: ProviderService) -> None:
             sex="F",
             patient_type="Ad",
             date_of_birth="1815-12-10",
+            height=PatientMeasurement(
+                value=Decimal("170.5"),
+                unit=Coding(code="demo-cm", system="private", label="cm"),
+            ),
+            weight=PatientMeasurement(
+                value=Decimal("72.4"),
+                unit=Coding(code="demo-kg", system="private", label="kg"),
+            ),
+            race=Coding(code="demo-race", system="private", label="Demo race"),
         ),
     )
     patient = service.get_patient()
@@ -456,6 +473,55 @@ def check_contexts(report: Report, service: ProviderService) -> None:
         "the date of birth comes back in the form it was given",
         patient.date_of_birth,
     )
+    report.check(
+        patient.height is not None
+        and patient.height.value == Decimal("170.5")
+        and patient.height.unit.code == "demo-cm",
+        "height survives as a measured value with its coded unit",
+        patient.height.summary() if patient.height else "none",
+    )
+    report.check(
+        patient.weight is not None
+        and patient.weight.value == Decimal("72.4")
+        and patient.weight.unit.code == "demo-kg",
+        "and weight does too",
+        patient.weight.summary() if patient.weight else "none",
+    )
+    report.check(
+        patient.race is not None and patient.race.code == "demo-race",
+        "race survives as a coded value",
+        patient.race.summary() if patient.race else "none",
+    )
+
+    entity = service.mdib.entities.by_handle(constants.PATIENT_CONTEXT_HANDLE)
+    entity.update()
+    associated = next(
+        state
+        for state in entity.states.values()
+        if state.ContextAssociation == pm_types.ContextAssociation.ASSOCIATED
+    )
+    core = associated.CoreData
+    report.check(
+        isinstance(core.Height, pm_types.Measurement)
+        and core.Height.MeasuredValue == Decimal("170.5")
+        and core.Height.MeasurementUnit.Code == "demo-cm"
+        and isinstance(core.Weight, pm_types.Measurement)
+        and core.Weight.MeasuredValue == Decimal("72.4")
+        and core.Weight.MeasurementUnit.Code == "demo-kg"
+        and isinstance(core.Race, pm_types.CodedValue)
+        and core.Race.Code == "demo-race",
+        "the MDIB uses BICEPS Measurement and CodedValue members",
+    )
+    mdib_node, _ = service.mdib.reconstruct_mdib_with_context_states()
+    xml = etree.tostring(mdib_node, encoding="unicode")
+    report.check(
+        'Height MeasuredValue="170.5"' in xml
+        and 'MeasurementUnit Code="demo-cm"' in xml
+        and 'Weight MeasuredValue="72.4"' in xml
+        and 'MeasurementUnit Code="demo-kg"' in xml
+        and 'Race Code="demo-race"' in xml,
+        "and those demographics serialise into the MDIB",
+    )
 
     # A context is a multi-state entity: the old state is disassociated, not overwritten.
     service.set_patient(PatientInfo(given_name="Grace", family_name="Hopper"))
@@ -464,7 +530,6 @@ def check_contexts(report: Report, service: ProviderService) -> None:
         "a new patient replaces the old one",
         service.get_patient().summary(),
     )
-    entity = service.mdib.entities.by_handle(constants.PATIENT_CONTEXT_HANDLE)
     entity.update()
     associations = sorted(str(state.ContextAssociation) for state in entity.states.values())
     report.check(
@@ -473,8 +538,8 @@ def check_contexts(report: Report, service: ProviderService) -> None:
         str(associations),
     )
 
-    service.clear_patient()
-    report.check(service.get_patient().is_empty(), "clearing detaches everyone")
+    service.set_patient(PatientInfo())
+    report.check(service.get_patient().is_empty(), "an empty patient detaches everyone")
     entity.update()
     report.check(
         all(
@@ -482,6 +547,125 @@ def check_contexts(report: Report, service: ProviderService) -> None:
             for state in entity.states.values()
         ),
         "and leaves no associated state behind",
+    )
+
+    # sdc11073 3.0.0 would route an exponent-form Decimal through float while serialising.
+    # The provider must preserve a representable exponent value as fixed-point xsd:decimal.
+    service.set_patient(
+        PatientInfo(
+            given_name="Tiny",
+            height=PatientMeasurement(
+                value=Decimal("1E-7"),
+                unit=Coding(code="demo-m", system="private", label="m"),
+            ),
+        ),
+    )
+    tiny = service.get_patient()
+    report.check(
+        tiny.height is not None and tiny.height.value == Decimal("1E-7"),
+        "an exponent-form demographic value survives without becoming zero",
+        str(tiny.height.value) if tiny.height else "none",
+    )
+    mdib_node, _ = service.mdib.reconstruct_mdib_with_context_states()
+    report.check(
+        'Height MeasuredValue="0.0000001"' in etree.tostring(mdib_node, encoding="unicode"),
+        "and serialises as lossless fixed-point xsd:decimal",
+    )
+    try:
+        service.set_patient(
+            PatientInfo(
+                height=PatientMeasurement(
+                    value=Decimal("1E+999999"),
+                    unit=Coding(code="demo-m", system="private", label="m"),
+                ),
+            ),
+        )
+    except ValueError as exc:
+        report.check("wire characters" in str(exc), "an impractical exponent is refused before commit", str(exc))
+    else:
+        report.check(False, "an impractical exponent is refused before commit", "it was accepted")  # noqa: FBT003
+    report.check(
+        service.get_patient().given_name == "Tiny",
+        "a rejected demographic update leaves the associated patient unchanged",
+        service.get_patient().summary(),
+    )
+    try:
+        service.set_patient(
+            PatientInfo(
+                height=PatientMeasurement(
+                    value=Decimal("1.234567890123456789012345E-7"),
+                    unit=Coding(code="demo-m", system="private", label="m"),
+                ),
+            ),
+        )
+    except ValueError as exc:
+        report.check("losing precision" in str(exc), "a truncating decimal is refused before commit", str(exc))
+    else:
+        report.check(False, "a truncating decimal is refused before commit", "it was accepted")  # noqa: FBT003
+
+    invalid_coding_messages = []
+    for kwargs in (
+        {"code": "bad\x01", "system": "private"},
+        {"code": "demo", "system": "urn:\x01"},
+        {"code": "demo", "system": "private", "label": "bad\x01"},
+        {"code": "demo", "system": "urn:%"},
+    ):
+        try:
+            Coding(**kwargs)
+        except ValueError as exc:
+            invalid_coding_messages.append(str(exc))
+    report.check(
+        len(invalid_coding_messages) == 4,  # noqa: PLR2004
+        "demographic coding rejects XML-invalid values and malformed system URIs",
+        str(invalid_coding_messages),
+    )
+    try:
+        PatientInfo(given_name="Broken\x01")
+    except ValueError as exc:
+        report.check(
+            "not allowed in XML" in str(exc),
+            "an XML-invalid patient is refused before its context transaction",
+            str(exc)[:70],
+        )
+    else:
+        report.check(False, "an XML-invalid patient is refused before its context transaction", "it was accepted")  # noqa: FBT003
+    report.check(
+        service.get_patient().given_name == "Tiny",
+        "a rejected patient leaves the prior associated patient unchanged",
+        service.get_patient().summary(),
+    )
+
+    # A peer can have one PatientContext below each MDS. The consumer must not select an
+    # arbitrary context merely because entity iteration happens to return it first.
+    def patient_entity(handle: str, name: str):  # noqa: ANN202 - minimal RemoteDevice fixture
+        core = pm_types.PatientDemographicsCoreData()
+        core.Givenname = name
+        return SimpleNamespace(
+            handle=handle,
+            states={
+                f"{handle}.state": SimpleNamespace(
+                    ContextAssociation=pm_types.ContextAssociation.ASSOCIATED,
+                    CoreData=core,
+                ),
+            },
+        )
+
+    first = patient_entity("PC.first", "First")
+    second = patient_entity("PC.second", "Second")
+    remote = RemoteDevice.__new__(RemoteDevice)
+    remote._lock = threading.RLock()  # noqa: SLF001 - fixture for the public read API
+    remote._mdib = SimpleNamespace(  # noqa: SLF001 - fixture for the public read API
+        entities=SimpleNamespace(by_node_type=lambda _: [second, first]),
+    )
+    contexts = remote.patient_contexts()
+    report.check(
+        list(contexts) == ["PC.first", "PC.second"] and {p.given_name for p in contexts.values()} == {"First", "Second"},
+        "multiple peer patient contexts stay distinct and deterministic",
+        str(contexts),
+    )
+    report.check(
+        remote.patient().is_empty(),
+        "the singular peer-patient helper declines an ambiguous multi-context device",
     )
 
     bad = PatientInfo(date_of_birth="not a date")

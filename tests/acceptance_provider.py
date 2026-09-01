@@ -27,8 +27,11 @@ from sdctoolbox.model import (  # noqa: E402
     AlertKind,
     AlertPriority,
     AlertSpec,
+    Coding,
     MetricKind,
     MetricSpec,
+    PatientInfo,
+    PatientMeasurement,
     WaveformShape,
 )
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
@@ -53,6 +56,7 @@ MANUAL_ALARM = "al.service_due"
 # toolbox window left open would publish the same EPR as this process and a test could
 # connect to whichever answered first.
 PEER_INSTANCE = "acceptance-peer"
+UPDATED_PATIENT = "Grace Hopper"
 
 
 def parse_args() -> argparse.Namespace:
@@ -60,6 +64,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ip", default=constants.DEFAULT_IP)
     parser.add_argument("--instance", default=PEER_INSTANCE)
     parser.add_argument("--late-after", type=float, default=8.0, help="seconds before adding the late metric")
+    parser.add_argument(
+        "--context-update-after",
+        type=float,
+        default=20.0,
+        help="seconds before replacing the patient context",
+    )
     parser.add_argument("--seconds", type=float, default=70.0, help="total run time")
     return parser.parse_args()
 
@@ -71,6 +81,27 @@ def main() -> int:
     service = ProviderService(ip=args.ip, instance_name=args.instance)
     service.start()
     print(f"[provider] up, EPR {service.epr.urn}", flush=True)
+
+    # A complete BICEPS PatientDemographicsCoreData fixture for consumer acceptance checks.
+    # These are explicitly private test codes, not a claim about real nomenclature values.
+    service.set_patient(
+        PatientInfo(
+            given_name="Ada",
+            family_name="Lovelace",
+            sex="F",
+            patient_type="Ad",
+            date_of_birth="1815-12-10",
+            height=PatientMeasurement(
+                value=Decimal("170.5"),
+                unit=Coding(code="demo-cm", system="private", label="cm"),
+            ),
+            weight=PatientMeasurement(
+                value=Decimal("72.4"),
+                unit=Coding(code="demo-kg", system="private", label="kg"),
+            ),
+            race=Coding(code="demo-race", system="private", label="Demo race"),
+        ),
+    )
 
     service.add_metric(
         MetricSpec(
@@ -197,6 +228,7 @@ def main() -> int:
 
     started = time.monotonic()
     late_added = False
+    context_updated = False
     deadline = started + args.seconds
 
     while time.monotonic() < deadline:
@@ -214,6 +246,24 @@ def main() -> int:
             )
             late_added = True
             print(f"[provider] added {LATE} at runtime", flush=True)
+        if not context_updated and time.monotonic() - started >= args.context_update_after:
+            service.set_patient(
+                PatientInfo(
+                    given_name="Grace",
+                    family_name="Hopper",
+                    height=PatientMeasurement(
+                        value=Decimal("1E-7"),
+                        unit=Coding(code="demo-m", system="private", label="m"),
+                    ),
+                    race=Coding(
+                        code="updated-race",
+                        system="urn:example:race",
+                        label="Updated race",
+                    ),
+                ),
+            )
+            context_updated = True
+            print(f"[provider] patient changed to {UPDATED_PATIENT}", flush=True)
         time.sleep(0.5)
 
     service.stop()

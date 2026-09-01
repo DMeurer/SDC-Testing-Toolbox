@@ -23,23 +23,25 @@ Python 3.12 is deliberate: `python` on a typical Windows box may point at a newe
 - [x] **0 — Groundwork.** Pinned environment, sdc11073 API verified, networking settled.
 - [x] **1 — Core.** Create data sources at runtime, publish them, remote-control them. Headless, with a console front end and an acceptance test.
 - [x] **2 — Provider UI.** Metric list with live values, "New data source" dialog.
-- [x] **3 — Consumer UI.** Discovery, MDIB browser, editors for controllable metrics. Works against foreign devices, not just our own.
+- [x] **3 — Consumer UI.** Discovery, MDIB browser, editors for controllable metrics. Accepts foreign MDIBs defensively; detailed metric and operation views cover the supported subset.
 - [x] **4a — Alarms and presets.** Alert conditions with their signals, and configs you can export, import and load at startup.
 - [x] **4b — Contexts and signal handling.** Editable patient and location, acknowledgement and delegation, a preset picker.
-- [x] **4c — Waveforms and distributions.** Both sample-array kinds, a generator for waveforms, and a plot to watch them on.
-- [x] **4d — Realistic presets.** Coded values, device identity, subsystem structure, and actions. Seven machines, each tested.
+- [x] **4c — Waveforms and distributions.** Both sample-array kinds, a generator for both, and a plot to watch them on.
+- [x] **4d — Realistic presets.** Coded values, device identity, subsystem structure, and actions. Seven virtual device profiles, each built by tests.
 - [ ] **4e — TLS.**
-- [x] **5 - Presets for real devices.** Emulate a real device, so a consumer can be tested without the device being present.
+- [x] **5 - Device presets.** Provide virtual device profiles, so a consumer can be tested without physical hardware being present.
 
 ## Try it
 
-Run it with no arguments and it asks how to start: device name, which address to bind discovery to, an optional config file, and whether to log verbosely. Everything is filled in with a working default, so Start is usually enough.
+Run it with no arguments and it asks how to start: device name, which address to bind discovery to, an optional config file, and whether to log verbosely.
+Everything is filled in with a working default, so Start is usually enough.
 
 ```powershell
 .venv\Scripts\python.exe run_toolbox.py
 ```
 
-Two of those fields are dropdowns rather than plain boxes, for the same reason. The address list matters because discovery binds to a **single** IPv4 address and a normal machine has eight or nine: each entry names its adapter, usable addresses come first, and link-local ones are marked as the dead ends they are. The config list offers the presets that ship with the tool, so the common case needs no file dialog at all. Both stay editable if you want something that is not on the list.
+Two of those fields are dropdowns rather than plain boxes, for the same reason.
+The address list matters because discovery binds to a **single** IPv4 address and a normal machine has eight or nine: each entry names its adapter, usable addresses come first, and link-local ones are marked as the dead ends they are. The config list offers the presets that ship with the tool, so the common case needs no file dialog at all. Both stay editable if you want something that is not on the list.
 
 Give it any argument and it starts straight away instead, which is what you want for a shortcut or a script:
 
@@ -50,11 +52,18 @@ Give it any argument and it starts straight away instead, which is what you want
 
 Start it twice under different names to have two devices find each other. The name decides the EPR, so restarting under the same name keeps that device's identity on the network — and two instances must not share one.
 
-The **My device** panel is the device you publish. *New data source…* creates a number, text or choice; the checkbox in the last column decides whether other devices may write to it. The value column is live — it updates whether you edit it here or somebody changes it over the network. *Patient and location…* edits the two contexts, and the line beside it shows what they currently say.
+The **My device** panel is the device you publish. *New data source…* creates a number, text, choice, waveform or distribution.
+The remote-control checkbox is offered only for number, text and choice sources. The value column is live — it updates whether you edit it here or somebody changes it over the network.
+*Patient and location…* edits the two contexts, and the line beside it shows what they currently say.
 
-The **Network** panel is everybody else's. *Scan* finds providers, *Connect* loads one, and you get its containment tree above and its metrics below. Rows the device will accept writes for are marked writable; select one and the editor underneath adapts to it — a combo box for a choice, a plain field with the permitted range for a number. The result of a write is reported as the provider's own `InvocationState`.
+The **Network** panel is everybody else's. *Scan* finds providers, *Connect* loads one, and you get its containment tree above and its metrics below.
+Rows the device will accept writes for are marked writable; select one and the editor underneath adapts to it — a combo box for a choice, a plain field with the permitted range for a number.
+The result of a write is reported as the provider's own `InvocationState`.
 
-The menu bar is on screen by default. *View → Always show menu bar* hides it until you press **Alt**, if you would rather have the room. *View → Split view* (F8) swaps between the two panels sitting side by side with a movable divider, and the same two stacked as tabs. *View → Use widgets if possible* (F9) swaps the metric tables for a control per metric.
+The menu bar is on screen by default.\
+*View → Always show menu bar* hides it until you press **Alt**, if you would rather have the room.\
+*View → Split view* (F8) swaps between the two panels sitting side by side with a movable divider, and the same two stacked as tabs.\
+*View → Use widgets if possible* (F9) swaps the metric tables for a control per metric.\
 
 ## Widgets
 
@@ -67,11 +76,13 @@ By default each metric gets the control that suits it rather than a row in a tab
 | Number with a minimum **and** a maximum | slider, labelled with both ends           |
 | Number without both                     | the value, with −10 −1 +1 +10 either side |
 | Text                                    | a field                                   |
-| Anything else                           | the value, read-only                      |
+| Other peer entity or extension          | containment tree only                     |
 
-"If possible" is the operative part. A metric type this tool has never heard of still gets a card showing its value — it just cannot be edited. Nothing disappears because no control fits it.
+"If possible" is the operative part. The widgets cover the five BICEPS metric types this tool recognizes.
+Other MDIB entities and extensions remain in the containment tree, but are not turned into metric cards or editable controls.
 
-The fallbacks are deliberate too. A slider needs both ends of the range to mean anything, so a one-sided limit gets the stepper. A range that would need more than 100 000 slider steps gets the stepper as well, because at that point a slider is a lie.
+The fallbacks are deliberate too. A slider needs both ends of the range to mean anything, so a one-sided limit gets the stepper.
+A range that would need more than 100 000 slider steps gets the stepper as well, because at that point a slider is a lie.
 
 Switch to the table with *View → Use widgets if possible* whenever you want the details:
 handles, units, ranges and writability all at once.
@@ -114,7 +125,9 @@ Numbers can carry limits. Those become two different things in BICEPS, because t
 | `NumericMetricDescriptor/TechnicalRange` | on the metric — what it can produce         |
 | `SetValueOperationState/AllowedRange`    | on the set operation — what you may request |
 
-The second is on a *state*, so the permitted window can be narrowed while the device runs, the same way `OperatingMode` can. Neither is enforced by the library, so the provider checks incoming values itself and answers `FAILED`.
+The second is on a *state*, so BICEPS permits the window to be narrowed while the device runs, the same way `OperatingMode` can.
+For a controllable bounded numeric metric, this toolbox initializes both ranges from one metric specification and does not yet expose later narrowing.
+Neither is enforced by the library, so the provider checks incoming values itself and answers `FAILED`.
 
 There is also a console provider, if you would rather have both sides in text:
 
@@ -122,7 +135,8 @@ There is also a console provider, if you would rather have both sides in text:
 .venv\Scripts\python.exe examples\console.py provider
 ```
 
-It reaches everything the window does, which makes it the quickest way to watch an acknowledgement not clear an alarm:
+It covers the core provider and consumer workflows in text, but does not mirror every GUI view or action button.
+It is the quickest way to watch an acknowledgement not clear an alarm:
 
 ```
 provider> alert m.pressure Pressure high 0..30 --delegable
@@ -150,9 +164,15 @@ provider> presets
 
 ## Presets
 
-*File → Export config* writes everything you have set up — the data sources, the alarms and the contexts — to a JSON file. *File → Import config* builds it again, replacing whatever the device currently has.
+*File → Export config* writes device metadata, data-source definitions and scalar current values, alarm and action definitions, and currently associated patient/location contexts to a JSON file.
+It is not a full live-device snapshot: sample blocks, alert/signal state, control mode, generator state and context history are not exported.
+*File → Import config* removes tracked metrics, alarms and actions before rebuilding them.
+It is neither a whole-MDIB replacement nor transactional: existing sections and contexts omitted by the file remain, and an error discovered while applying a profile can leave a device partly empty or partly rebuilt.
+Export before experimenting with imports.
 
-*File → Load preset* lists the ready-made devices in `presets/`, so the ones that ship with the tool need no file dialog. The same list appears in the startup window. A preset that will not parse is left out of the menu rather than breaking it; open it with *Import config* if you want to know why.
+*File → Load preset* lists the ready-made devices in `presets/`, so the ones that ship with the tool need no file dialog.
+The same list appears in the startup window. Preset discovery skips files that raise JSON or configuration errors.
+Its validation is not exhaustive: a malformed field type can still interrupt preset-list construction; use *Import config* to inspect ordinary validation errors.
 
 Any of them can also be loaded at startup:
 
@@ -161,25 +181,29 @@ Any of them can also be loaded at startup:
 .venv\Scripts\python.exe examples\console.py provider --config presets\ventilator.json
 ```
 
-Load it at startup rather than importing it afterwards if you want the device to *be* that machine: DPWS metadata is fixed when the provider is built, so a preset imported into a running toolbox brings its metrics but keeps the name it started with.
+Load it at startup rather than importing it afterwards if you want the device to announce that model:
+DPWS metadata is fixed when the provider is built, so a preset imported into a running toolbox brings its metrics but keeps the metadata it started with.
+The profile is parsed before startup where possible, but applied after the provider starts; an error found during application can leave that provider partially configured.
+The startup name still decides the EPR and serial number; a saved `device.instance_name` does not override it.
 
-A bad file is refused before anything starts, naming what is wrong with it. Handles are recorded, so a preset reproduces the same MDIB every time — which matters if a script or another device refers to them by name.
+For a profile that imports successfully, recorded handles make its defined metrics, alerts and actions addressable under stable names. They do not reproduce an identical live MDIB or provider identity.
 
 ### The shipped devices
 
-| Preset | What it is | Worth looking at |
-|---|---|---|
-| `patient-monitor` | Bedside vitals | ECG, plethysmogram and arterial pressure running together; the one device whose parameters have real standard terms |
-| `ventilator` | Airway pressure, flow and volume | Three synchronised waveforms, and what a stream of sample arrays costs |
-| `infusion-pump` | Volumetric pump | The smallest, and the easiest to read end to end |
-| `hf-generator` | Electrosurgery | A bimodal impedance spectrum, and a *Stop output* action |
-| `surgical-microscope` | Robotic scope, after an Aesculap Aeos | Six axes, fixpoint and free modes, ICG fluorescence, and *Home axes* — none of which is a value you write |
-| `endoscopic-camera` | Camera and light source | Image profiles, and a *White balance now* action with nothing to type |
-| `insufflator` | Laparoscopic insufflator | The first preset this project had |
+| Preset                | What it is                            | Worth looking at                                                                                                    |
+|-----------------------|---------------------------------------|---------------------------------------------------------------------------------------------------------------------|
+| `patient-monitor`     | Bedside vitals                        | ECG, plethysmogram and arterial pressure running together; the one device whose parameters have real standard terms |
+| `ventilator`          | Airway pressure, flow and volume      | Three synchronised waveforms, and what a stream of sample arrays costs                                              |
+| `infusion-pump`       | Volumetric pump                       | The smallest, and the easiest to read end to end                                                                    |
+| `hf-generator`        | Electrosurgery                        | A bimodal impedance spectrum, and a *Stop output* action                                                            |
+| `surgical-microscope` | Robotic scope, after an Aesculap Aeos | Six axes, fixpoint and free modes, ICG fluorescence, and *Home axes* — none of which is a value you write           |
+| `endoscopic-camera`   | Camera and light source               | Image profiles, and a *White balance now* action with nothing to type                                               |
+| `insufflator`         | Laparoscopic insufflator              | The first preset this project had                                                                                   |
 
 ### What the presets are actually demonstrating
 
-Every metric carries a **coded value**, because a label is not semantics. `"unit": "mmHg"` alone publishes a dimensionless number with a human comment attached; another device can do nothing with it. Two coding systems are allowed:
+Every metric carries a **coded value**, because a label is not semantics. `"unit": "mmHg"` alone publishes a dimensionless number with a human comment attached; another device can do nothing with it.
+The shipped metric profiles use two coding-system aliases:
 
 - **`mdc`** — IEEE 11073-10101, for parameters that genuinely have a standard term.
 - **`private`** — `urn:sdc-testing-toolbox:private`, for everything that does not.
@@ -195,46 +219,63 @@ surgical-microscope     15 mdc,  19 private  (44% standard)
 endoscopic-camera        9 mdc,  13 private  (41% standard)
 ```
 
-A patient monitor is almost entirely expressible in the standard's own vocabulary. A surgical microscope is not, and neither is an electrosurgery generator — for those, the parts with standard terms are mostly the *units* (mm, degrees, watts), while what the device actually does has no agreed term at all. That is not a shortcut taken here; it is the gap that work on extending the 1010X nomenclature exists to close, and marking it beats inventing codes that look official.
+A patient monitor is almost entirely expressible in the standard's own vocabulary.
+A surgical microscope is not, and neither is an electrosurgery generator — for those, the parts with standard terms are mostly the *units* (mm, degrees, watts), while what the device actually does has no agreed term at all.
+That is not a shortcut taken here; it is the gap that work on extending the 1010X nomenclature exists to close, and marking it beats inventing codes that look official.
 
 > [!WARNING]
-> The codes in these presets are the standard's **reference IDs** (`MDC_PULS_OXIM_SAT_O2`), not its numeric CF codes, because IEEE 11073-10101 was not available to check them against. Anything meant to interoperate for real has to substitute the numbers.
+> The codes in these presets are the standard's **reference IDs** (`MDC_PULS_OXIM_SAT_O2`), not its numeric CF codes, because IEEE 11073-10101 was not available to check them against.
+Anything meant to interoperate for real has to substitute the numbers.
 
 ## Actions
 
-Not everything a device does is a value you can write. *Home the axes*, *give a bolus*, *white balance now* — there is nothing to type and nothing to read back, only something to invoke. BICEPS models that with an `ActivateOperation`, which is a different operation kind from the `SetValueOperation` behind a controllable metric.
+Not everything a device does is a value you can write. *Home the axes*, *give a bolus*, *white balance now* — there is nothing to type and nothing to read back, only something to invoke.
+BICEPS models that with an `ActivateOperation`, which is a different operation kind from the `SetValueOperation` behind a controllable metric.
 
-They appear as a row of buttons on both panels, enabled only while the device says the operation is. What one does here is apply declared effects to metrics:
+They appear as a row of buttons on both panels. Network buttons follow the peer operation's `OperatingMode`.
+My device buttons run their declared effects and do not currently mirror a locally changed operation mode.
+What one does here is apply declared effects to metrics:
 
 ```json
 {
-  "label": "Home axes",
-  "target": "vmd.motion",
-  "effects": {"m.axis_x": "0", "m.axis_y": "0", "m.axis_z": "300", "m.motion_mode": "LOCKED"}
+	"label": "Home axes",
+	"target": "vmd.motion",
+	"effects": {
+		"m.axis_x": "0",
+		"m.axis_y": "0",
+		"m.axis_z": "300",
+		"m.motion_mode": "LOCKED"
+	}
 }
 ```
 
-That stands in for machinery a real device would have behind homing an axis, and it is deliberately visible: an action whose result cannot be seen cannot be checked, and here the result is exactly the values it moved. Invoke *Home axes* on a microscope from the other instance and watch six numbers change at once — without any of them having been sent.
+That stands in for machinery a real device would have behind homing an axis, and it is deliberately visible: an action whose result cannot be seen cannot be checked, and here the result is exactly the values it moved.
+Invoke *Home axes* on a microscope from the other instance and watch six numbers change at once — without any of them having been sent.
 
 ## Waveforms and distributions
 
-These are the two BICEPS metric types whose state carries *many* values instead of one, and the two the toolbox could not create until milestone 4c. They look similar and are not:
+These are the two BICEPS metric types whose state carries *many* values instead of one. They look similar and are not:
 
-|                  | Waveform (`RealTimeSampleArrayMetric`)      | Distribution (`DistributionSampleArrayMetric`) |
-|------------------|---------------------------------------------|------------------------------------------------|
-| samples are over | **time**                                     | a **domain** — the `DomainUnit`, e.g. Hz       |
-| arrives as       | a `WaveformStream`                           | an `EpisodicMetricReport`                       |
-| behaves like     | a moving window; blocks keep coming          | one whole picture that gets replaced            |
-| mandatory extras | `Resolution`, `SamplePeriod`                 | `Resolution`, `DomainUnit`                      |
-| drawn as         | a scrolling trace                            | bars across its `DistributionRange`             |
+|                  | Waveform (`RealTimeSampleArrayMetric`) | Distribution (`DistributionSampleArrayMetric`) |
+|------------------|----------------------------------------|------------------------------------------------|
+| samples are over | **time**                               | a **domain** — the `DomainUnit`, e.g. Hz       |
+| arrives as       | a `WaveformStream`                     | an `EpisodicMetricReport`                      |
+| behaves like     | a moving window; blocks keep coming    | one whole picture that gets replaced           |
+| mandatory extras | `Resolution`, `SamplePeriod`           | `Resolution`, `DomainUnit`                     |
+| drawn as         | a scrolling trace                      | bars across its `DistributionRange`            |
 
-The distinction between `Unit` and `DomainUnit` is the one worth seeing on screen: a spectrum is measured in dB (`Unit`) *across* a range of Hz (`DomainUnit`), and they are separate elements for that reason. The card says `over 0 to 500 Hz` underneath for exactly this.
+The distinction between `Unit` and `DomainUnit` is the one worth seeing on screen: a spectrum is measured in dB (`Unit`) *across* a range of Hz (`DomainUnit`), and they are separate elements for that reason.
+The card says `over 0 to 500 Hz` underneath for exactly this.
 
-**Neither can be remote-controlled.** That is not a limitation of this tool: BICEPS defines no operation whose argument is a sample array, so the New data source dialog hides the control checkbox for both, and a peer's waveform is marked `samples, read-only`.
+**Neither can be remote-controlled.**
+That is not a limitation of this tool: BICEPS defines no operation whose argument is a sample array, so the New data source dialog hides the control checkbox for both, and a peer's waveform is marked `samples, read-only`.
 
-Add either kind and it starts generating immediately — a waveform with nothing driving it publishes a descriptor and never a sample, which looks like a broken device rather than an idle one. Pick the curve from *Shape*; sine, sawtooth, square and noise are there so a consumer you are testing can be checked against something recognisable by eye. The shape is **not** a BICEPS concept: the standard carries samples and says nothing about what they look like.
+Add either kind and it starts generating immediately — a waveform with nothing driving it publishes a descriptor and never a sample, which looks like a broken device rather than an idle one.
+Pick the curve from *Shape*; sine, sawtooth, square and noise are there so a consumer you are testing can be checked against something recognisable by eye.
+The shape is **not** a BICEPS concept: the standard carries samples and says nothing about what they look like. The generators just make you see something without having to fill in too much dummy data by hand.
 
-A distribution gets a drifting bell across its domain, which is the shape that makes one recognisable as a distribution rather than a signal. Push your own block instead and that metric comes off the generator, so what you set stays put:
+A distribution gets a drifting bell across its domain, which is the shape that makes one recognisable as a distribution rather than a signal.
+Push your own block instead and that metric comes off the generator, so what you set stays put:
 
 ```
 provider> samples m.spectrum 3 9 27 9 3
@@ -243,22 +284,30 @@ provider> generator off
   generator stopped
 ```
 
-`DistributionRange/StepWidth` is derived from how many samples are actually sent, so the descriptor and the data agree. It is **not** `Resolution`: StepWidth is how far apart two samples sit along the domain, Resolution is how finely one sample value is measured.
+For generated distributions with a positive-width domain, `DistributionRange/StepWidth` is derived from the generator's fixed 32-bin block.
+A zero-width domain uses a fallback StepWidth, and supplying a distribution block manually does not update it, so a manually supplied block can disagree with the descriptor.
+It is **not** `Resolution`: StepWidth is how far apart two samples sit along the domain, Resolution is how finely one sample value is measured.
 
 ### Why the trace moves smoothly
 
 A waveform arrives in blocks — a quarter of a second of signal, four times a second. Drawing a block the moment it lands makes the trace lurch rather than move, which is unreadable if you are trying to follow a curve.
 
-Sending smaller blocks would be legal — SDC exists to stream sample arrays and the report rate is nobody's business but the device's — but it is the wrong lever. It multiplies SOAP messages for a problem that is not about the network.
+Sending smaller blocks would be legal — SDC exists to stream sample arrays and the report rate is nobody's business but the device's — but it is the wrong lever for this tool.
+It multiplies SOAP messages and will make this a network problem.
 
-Instead the plot buffers what arrives and reveals it at the rate the samples were taken at, which is what `SamplePeriod` on the descriptor is *for*: the standard tells a consumer how to place samples in time, and this is a consumer doing that. Two rules keep it honest:
+Instead, the plot buffers what arrives and reveals it at the rate the samples were taken at, which is what `SamplePeriod` on the descriptor is *for*:
+the standard tells a consumer how to place samples in time, and this is a consumer doing that. Two rules keep it honest:
 
 - **Nothing is invented.** When the buffer runs dry the trace stops until the next block. A device that has gone quiet looks like one.
-- **It cannot drift.** If the buffer runs more than 1.5 s long — a hiccup, or a peer sending faster than it declared — it drains faster than real time until the backlog is gone. A display that falls further behind every second is worse than a chunky one.
+- **It cannot drift.** If the buffer runs more than 1.5 s long — a hiccup, or a peer sending faster than it declared — it drains faster than real time until the backlog is gone.
+  A display that falls further behind every second is worse than a chunky one.
 
-A distribution has no time base to pace against - the whole picture is replaced at once - so it eases from the old bar heights to the new ones instead. Same purpose, different mechanism: a value that moves is readable where one that jumps is not. The first block grows up from the floor, and a block arriving mid-move re-aims from wherever the bars have got to rather than queueing, because the newest picture is the true one.
+A distribution has no time base to pace against - the whole picture is replaced at once - so it eases from the old bar heights to the new ones instead.
+Same purpose, different mechanism: a value that moves is readable where one that jumps is not.
+The first block grows up from the floor, and a block arriving mid-move re-aims from wherever the bars have got to rather than queueing, because the newest picture is the true one.
 
-The plot is painted by hand in `sdctoolbox/gui/widgets/plot.py`. It is a polyline and a couple of guide lines, and pulling in a charting library for that would have been the largest dependency in the project by a wide margin.
+The plot is painted by hand in `sdctoolbox/gui/widgets/plot.py`.
+It is a polyline and a couple of guide lines, and pulling in a charting library for that would have been the largest dependency in the project by a wide margin.
 
 ## Alarms
 
@@ -271,7 +320,10 @@ BICEPS keeps two things apart that are easy to confuse:
 
 One condition can drive several signals, which is why they are separate objects rather than flags on one. Every alarm this tool creates gets a visual and an audible signal, so the split is visible in the MDIB tree.
 
-Give an alarm limits and it becomes a `LimitAlertCondition` that follows its source metric by itself; leave them out and it stays a plain `AlertCondition` that only moves when you raise or clear it. Either way a value written by a remote consumer moves it exactly as a local edit does.
+The GUI allows alarm limits only for numeric sources.
+For a decimal numeric source, limits make it a `LimitAlertCondition` that follows its source metric; without limits it stays a plain `AlertCondition` that only moves when you raise or clear it by hand.
+The console and config loader currently accept limits for text and choice sources too, but those conditions never become present automatically.
+Either way a value written by a remote consumer moves a supported numeric source exactly as a local edit does.
 
 The Signals column is where the split stops being academic. Two buttons act on it:
 
@@ -280,9 +332,14 @@ The Signals column is where the split stops being academic. Two buttons act on i
 | **Acknowledge** | each signal's `Presence`, from `On` to `Ack`  |
 | **Delegate**    | each signal's `Location`, from `Loc` to `Rem` |
 
-Acknowledging is the interesting one, because it does **not** clear the alarm. The condition keeps its `Presence`; only the announcement changes. Watch the State and Signals columns while you do it — State stays `PRESENT` and Signals goes to `Vis:Ack Aud:Ack`. Push the source further out of range and the acknowledgement survives, because the fact has not changed. Bring it back into range and out again and it does not, because that is a new occurrence.
+Acknowledging is the interesting one, because it does **not** clear the alarm.
+The condition keeps its `Presence`; only the announcement changes.
+Watch the State and Signals columns while you do it — State stays `PRESENT` and Signals goes to `Vis:Ack Aud:Ack`.
+Push the source further out of range and the acknowledgement survives, because the fact has not changed. Bring it back into range and out again, and it does not, because that is a new occurrence.
 
-Delegation records that another device announces the signal instead. BICEPS only permits it where the descriptor sets `SignalDelegationSupported`, which is the *Delegation* checkbox in the New alarm dialog, and nothing in sdc11073 enforces that — so the provider does. Note what this is: it marks where the announcement belongs. It does not arrange for anybody to pick it up, which would need a second device offering a delegable signal of its own.
+Delegation records that another device announces the signal instead.
+BICEPS only permits it where the descriptor sets `SignalDelegationSupported`, which is the *Delegation* checkbox in the New alarm dialog, and nothing in sdc11073 enforces that — so the provider does.
+Note what this is: it marks where the announcement belongs. It does not arrange for anybody to pick it up, which would need a second device offering a delegable signal of its own.
 
 ## Contexts
 
@@ -290,12 +347,66 @@ Contexts are the part of BICEPS that says *who* and *where*, as opposed to what 
 
 They are worth a look because they behave unlike anything else in the MDIB:
 
-- **They are multi-state.** Setting a patient does not overwrite the previous one. The old state is *disassociated* and kept, and a new one is associated, so the MDIB records who was attached when. Attach two patients in a row and look at `PC.mds0` in the consumer's containment tree: there are two states, one `Assoc` and one `Dis`.
+- **They are multi-state.** Setting a patient does not overwrite the previous one.
+  The old state is *disassociated* and kept, and a new one is associated, so the MDIB records who was attached when.
+  Attach two patients in a row and look at `PC.mds0` in the consumer's containment tree: there are two states, one `Assoc` and one `Dis`.
 - **The location is also a discovery scope.** Changing it re-announces the device, so a consumer filtering on the old location stops seeing it. The patient never leaves the MDIB.
 
 Clearing every patient field detaches the patient rather than attaching a nameless one.
 
-The patient fields are a subset of `pm:PatientDemographicsCoreData` — name, sex, patient type and date of birth. Height, weight and race are in the standard and deliberately left out: inviting someone to type a weight into a learning tool suggests a clinical purpose it has none of.
+The patient editor supports name, sex, patient type, date of birth, height, weight and race from `pm:PatientDemographicsCoreData`. The Network panel and consumer console show associated peer patient contexts read-only.
+
+Height and weight are BICEPS `Measurement` values: each needs a Decimal value and a coded measurement unit. Race is a BICEPS `CodedValue`, not free text. The editor and JSON profile therefore require a code and coding system for each of those values. Use `mdc`, `private`, or an explicit coding-system URI, and use verified terminology when testing interoperability. The fields are informational demographics; a device's own measured height or weight should be modelled as a metric when quality and timing matter.
+
+New exports use profile format version 2. Version 1 profiles without these demographic fields remain readable.
+
+An exported patient block has this shape:
+
+```json
+{
+  "contexts": {
+    "patient": {
+      "given_name": "Ada",
+      "height": {
+        "value": "170.5",
+        "unit": {"code": "<verified-unit-code>", "system": "<coding-system-uri>", "label": "cm"}
+      },
+      "weight": {
+        "value": "72.4",
+        "unit": {"code": "<verified-unit-code>", "system": "<coding-system-uri>", "label": "kg"}
+      },
+      "race": {"code": "<verified-race-code>", "system": "<coding-system-uri>", "label": "display label"}
+    }
+  }
+}
+```
+
+## Not Supported at the Moment - What might cause Problems
+
+This is a focused SDC learning fixture, not an IEEE 11073 conformance claim. IEEE 11073-10207 (BICEPS) defines a wider information and service model than one device must use; IEEE 11073-20701 and IEEE 11073-20702 define the surrounding SDC architecture and medical-device web-services profile. `sdc11073` supplies much of the DPWS/BICEPS wire plumbing, but a library capability is not automatically an end-to-end toolbox feature.
+
+| Label                    | Meaning in this tool                                                                                                              |
+|--------------------------|-----------------------------------------------------------------------------------------------------------------------------------|
+| **Invisible**            | A normal two-toolbox demonstration still works, but valid peer information or a discovery feature is not surfaced by the toolbox. |
+| **Might cause problems** | A valid device or deployment can use the capability, so a test can be incomplete, misleading or need manual recovery.             |
+| **Will cause problems**  | A test or deployment that depends on the capability cannot succeed safely or correctly with the current toolbox.                  |
+
+| Severity                 | Not supported or partial                                                                                                                                                                                                                                                                                | Practical consequence                                                                                                                                                                                                   |
+|--------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Will cause problems**  | Secure SDC deployment: there is no TLS, certificate handling, mutual authentication or authorization.                                                                                                                                                                                                   | SDC service and event traffic uses plain HTTP; WS-Discovery is also unsecured UDP multicast. Do not use it outside an isolated, trusted lab network.                                                                    |
+| **Will cause problems**  | Config import is not transactional and up-front validation is incomplete.                                                                                                                                                                                                                               | An invalid profile whose error is detected during application can remove existing tracked items and leave a partially rebuilt provider; malformed types can also interrupt preset discovery rather than being skipped.  |
+| **Will cause problems**  | Periodic state reports are deliberately not subscribed to by the consumer.                                                                                                                                                                                                                              | A peer that relies on periodic metric, alert, component, operational-state or context reports can appear stale after the initial MDIB retrieval.                                                                        |
+| **Will cause problems**  | The preset `mdc` values are IEEE 11073-10101 reference-ID strings, not verified numeric CF codes.                                                                                                                                                                                                       | A peer that needs wire-level nomenclature codes cannot reliably interpret those claimed standard terms. See the warning in [What the presets are actually demonstrating](#what-the-presets-are-actually-demonstrating). |
+| **Will cause problems**  | Remote control covers `SetValueOperation`, `SetStringOperation`, and argumentless `ActivateOperation` only. The toolbox does not publish or drive `SetContextState`, `SetAlertState`, `SetMetricState` or `SetComponentState` operations.                                                               | Valid state-changing workflows, actions requiring arguments, remote context association, and remote alert handling cannot be exercised end to end.                                                                      |
+| **Might cause problems** | Contexts cover patient and location only. The Network panel shows associated peer patients read-only, but ensemble, workflow, means and operator contexts are not modelled or shown.                                                                                                                      | Tests involving care-team, workflow or multi-device context coordination need another fixture or direct access to the raw MDIB.                                                                                         |
+| **Might cause problems** | The locally published alert model is intentionally narrow: one source metric per condition, visual/audible non-latching signals, local acknowledgement/delegation only, and automatic limits only for decimal scalar values. The consumer still displays peer source handles and signal manifestations. | Latching, remote alert control, interoperable delegation, and limit conditions on text or choice sources cannot be exercised correctly.                                                                                 |
+| **Might cause problems** | The provider is a small MDIB model: scalar writes set `Validity=Valid` and `ActivationState=On`, with no controls for quality, component state or lifecycle transitions.                                                                                                                                | It cannot simulate many degraded, unavailable, inactive or quality-qualified states a consumer may need to handle.                                                                                                      |
+| **Might cause problems** | Sample arrays have no waveform annotations and use one non-real-time generator thread. A manually injected distribution can have a different sample count from the descriptor's fixed `StepWidth`; a zero-width domain also uses a fallback StepWidth.                                                  | It is useful for basic streaming and display tests, not for timing, annotation, or strict distribution-geometry conformance tests.                                                                                      |
+| **Might cause problems** | The GUI keeps one active peer. When a peer changes MDIB sequence or instance identity, it disconnects and requires a manual reconnect.                                                                                                                                                                  | Multi-peer monitoring and automatic restart/reload recovery are not covered.                                                                                                                                            |
+| **Might cause problems** | There is no declared conformance profile and no end-to-end test against an independent SDC implementation or product.                                                                                                                                                                                   | A passing repository suite demonstrates this toolbox talking to itself across processes, not product interoperability or standards conformance.                                                                         |
+| **Invisible**            | The consumer gives detailed metric views only for the five BICEPS metric descriptor types it recognizes. Other entities and extensions remain in the generic containment tree or raw `RemoteDevice.mdib`.                                                                                               | A simple peer appears complete, while foreign extensions and most non-metric state are not available through the high-level UI/API.                                                                                     |
+| **Invisible**            | The GUI takes the first inline concept description it finds. It does not select a language or use the peer's LocalizationService.                                                                                                                                                                       | The English labels in shipped presets look normal; localized or service-supplied text is not tested.                                                                                                                    |
+| **Invisible**            | Discovery scans the selected IPv4 interface without a location-scope filter and does not exclude the toolbox's own provider.                                                                                                                                                                            | A scan can list the local device and unrelated SDC providers, so test selection must be deliberate.                                                                                                                     |
 
 ## Tests
 
@@ -303,12 +414,12 @@ Six suites, all runnable from a terminal, all printing PASS/FAIL per check.
 
 | Suite                       | Checks | Covers                                                                                |
 |-----------------------------|--------|---------------------------------------------------------------------------------------|
-| `tests/acceptance_core.py`  | 76     | two processes: discovery, control, rejections, runtime descriptors, alarms, waveforms  |
-| `tests/gui_smoke.py`        | 266    | the real window offscreen, plus a live peer process                                    |
-| `tests/widget_controls.py`  | 67     | which control for which metric, then controls driven for real                          |
-| `tests/provider_core.py`    | 84     | descriptor rollback, sample arrays, signal handling, contexts, presets                 |
-| `tests/presets.py`          | 74     | every shipped preset builds into a working device                                      |
-| `tests/config_roundtrip.py` | 25     | export, reimport, compare; broken files refused                                        |
+| `tests/acceptance_core.py`  | 80     | two processes: discovery, context updates, control, rejections, runtime descriptors, alarms, waveforms |
+| `tests/gui_smoke.py`        | 278    | the real window offscreen, including live peer patient demographics                  |
+| `tests/widget_controls.py`  | 67     | which control for which metric, then controls driven for real                         |
+| `tests/provider_core.py`    | 99     | descriptor rollback, sample arrays, signal handling, demographics, contexts, presets  |
+| `tests/presets.py`          | 74     | every shipped preset builds into a working device                                     |
+| `tests/config_roundtrip.py` | 38     | versioned export/reimport, demographics, broken files refused                         |
 
 ```powershell
 .venv\Scripts\python.exe tests\acceptance_core.py
@@ -319,13 +430,13 @@ Six suites, all runnable from a terminal, all printing PASS/FAIL per check.
 .venv\Scripts\python.exe tests\config_roundtrip.py
 ```
 
-The acceptance test runs a provider in one process and checks it from a consumer in another. The GUI suite builds the real window on Qt's offscreen backend and drives the actual widgets, including a live connection to a provider in another process — no display needed.
+The acceptance test runs a provider in one process and checks it from a consumer in another. The GUI suite builds the real window on Qt's offscreen backend and drives the actual widgets, including a live connection to a provider in another process — no display needed. All end-to-end suites use providers bundled with this repository; they test this implementation across processes, not interoperability with an independent SDC stack or product.
 
 `provider_core.py` is the odd one out: it is about what the MDIB must never be left in. Its first section deliberately writes a descriptor BICEPS cannot serialise *without* the rollback, watches the orphan appear, and only then checks that the guarded path leaves nothing behind — so a passing run means the check is still capable of failing.
 
 ## Security
 
-Everything runs over plain `http://`. Neither `ProviderService` nor `ConsumerService` passes an `ssl_context_container`, so there is no TLS, no certificates and no authentication — treat it as a lab tool on a network you trust.
+SDC service and event traffic runs over plain `http://`; WS-Discovery uses unsecured UDP multicast. Neither `ProviderService` nor `ConsumerService` passes an `ssl_context_container`, so there is no TLS, no certificates, no authentication and no authorization — treat it as a lab tool on an isolated network you trust.
 
 The log line `Using SSL is enabled. TLS 1.3 Support = True` is a capability message from sdc11073, not a statement about the connection.
 
@@ -333,7 +444,15 @@ The log line `Using SSL is enabled. TLS 1.3 Support = True` is a capability mess
 
 ```python
 from decimal import Decimal
-from sdctoolbox.model import AlertSpec, LocationInfo, MetricKind, MetricSpec, PatientInfo
+from sdctoolbox.model import (
+    AlertSpec,
+    Coding,
+    LocationInfo,
+    MetricKind,
+    MetricSpec,
+    PatientInfo,
+    PatientMeasurement,
+)
 from sdctoolbox.provider_service import ProviderService
 
 with ProviderService(instance_name="alpha") as provider:
@@ -350,7 +469,16 @@ with ProviderService(instance_name="alpha") as provider:
     provider.disable_control(handle)  # keeps the operation, refuses writes
 
     provider.set_location(LocationInfo(facility="HOSP", point_of_care="OR1", bed="A"))
-    provider.set_patient(PatientInfo(given_name="Ada", family_name="Lovelace"))
+    provider.set_patient(
+        PatientInfo(
+            given_name="Ada",
+            family_name="Lovelace",
+            height=PatientMeasurement(
+                Decimal("170.5"),
+                Coding("demo-cm", "private", "cm"),
+            ),
+        ),
+    )
 
     alarm = provider.add_alert(
         AlertSpec(label="Zoom high", source_handle=handle, upper_limit=Decimal("90"), delegable=True)
@@ -392,4 +520,3 @@ with ConsumerService() as service:
 
 WS-Discovery in sdc11073 binds to a **single IPv4 address**. On a machine with several adapters (VPN, Hyper-V, Wi-Fi Direct, Bluetooth PAN) you have to say which one, hence the
 `--ip` argument everywhere. Loopback is the default so two instances on one machine can talk without involving the network.
-

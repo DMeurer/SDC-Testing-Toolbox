@@ -42,6 +42,8 @@ class MdibBridge(QObject):
     operations_changed = Signal(dict)
     # handle -> state, for alerts
     alerts_changed = Signal(dict)
+    # handle -> state, for context-state changes such as patient association
+    contexts_changed = Signal(dict)
     # handle -> the block of samples it carried. Not the state: see _on_waveforms.
     # Separate from metrics_by_handle because sdc11073
     # routes a RealTimeSampleArrayMetricState down its own path, as a WaveformStream
@@ -60,6 +62,7 @@ class MdibBridge(QObject):
             "deleted_descriptors_by_handle": self._on_descriptors_deleted,
             "operation_by_handle": self._on_operations,
             "alert_by_handle": self._on_alerts,
+            "context_by_handle": self._on_contexts,
             "waveform_by_handle": self._on_waveforms,
         }
         # Only a ConsumerMdib reports that the far end restarted; a provider has no peer.
@@ -86,6 +89,9 @@ class MdibBridge(QObject):
 
     def _on_alerts(self, values: dict) -> None:
         self.alerts_changed.emit(dict(values))
+
+    def _on_contexts(self, values: dict) -> None:
+        self.contexts_changed.emit(dict(values))
 
     def _on_waveforms(self, values: dict) -> None:
         """Snapshot the samples here, and send those rather than the states.

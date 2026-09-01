@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QStackedWidget,
     QTableWidget,
@@ -40,7 +41,7 @@ from ..model import MetricKind
 from .async_call import AsyncCall
 from .no_wheel import NoWheelComboBox
 from .qt_bridge import MdibBridge
-from .styling import apply_row_selection_style, muted_colour
+from .styling import apply_row_selection_style, mute, muted_colour
 from .table_columns import TableColumns
 from .widgets import WidgetBoard, from_remote_metric
 
@@ -114,6 +115,12 @@ class ConsumerPane(QWidget):
 
         self.status_label = QLabel("Not connected")
         self.status_label.setWordWrap(True)
+        self.context_label = QLabel("")
+        self.context_label.setWordWrap(True)
+        self.context_label.setTextFormat(Qt.PlainText)
+        self.context_label.setTextInteractionFlags(Qt.NoTextInteraction)
+        self.context_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        mute(self.context_label)
 
         top = QHBoxLayout()
         top.addWidget(self.scan_button)
@@ -223,6 +230,7 @@ class ConsumerPane(QWidget):
         layout.addLayout(top)
         layout.addWidget(self.device_list)
         layout.addWidget(self.status_label)
+        layout.addWidget(self.context_label)
         layout.addWidget(self.views, 1)
         layout.addWidget(self.actions_widget)
         layout.addLayout(editor)
@@ -292,6 +300,7 @@ class ConsumerPane(QWidget):
         self.bridge.descriptors_updated.connect(lambda _: self.refresh())
         self.bridge.operations_changed.connect(lambda _: self.refresh())
         self.bridge.alerts_changed.connect(lambda _: self._rebuild_alerts())
+        self.bridge.contexts_changed.connect(lambda _: self._refresh_contexts())
         # A peer's waveforms arrive as a WaveformStream, on their own observable.
         self.bridge.waveforms_changed.connect(self._on_waveforms_changed)
         self.bridge.peer_restarted.connect(self._on_peer_restarted)
@@ -327,6 +336,7 @@ class ConsumerPane(QWidget):
         self._rebuild_tree()
         self._rebuild_table()
         self._rebuild_alerts()
+        self._refresh_contexts()
         self.refresh_actions()
         self._refresh_board()
         self._on_selection_changed()
@@ -525,6 +535,22 @@ class ConsumerPane(QWidget):
                     item.setToolTip("\n".join(f"{h}: {m}" for h, m in sorted(alert.signals.items())))
                 self.alert_table.setItem(row, column, item)
         self._alert_columns.refit()
+
+    def _refresh_contexts(self) -> None:
+        """Show associated peer patients without making remote contexts editable."""
+        if self.remote is None:
+            self.context_label.setText("")
+            return
+        patients = self.remote.patient_contexts()
+        if not patients:
+            self.context_label.setText("Patient: none attached")
+            return
+        lines = [
+            f"{handle}: {patient.summary() or 'no demographics'}"
+            for handle, patient in patients.items()
+        ]
+        prefix = "Patient" if len(lines) == 1 else "Patients"
+        self.context_label.setText(f"{prefix}: " + " | ".join(lines))
 
     # -- selection and editing -----------------------------------------------------
 

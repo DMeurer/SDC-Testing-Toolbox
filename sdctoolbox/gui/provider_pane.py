@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -80,6 +81,7 @@ class ProviderPane(QWidget):
         self.bridge.descriptors_deleted.connect(lambda _: self.refresh())
         self.bridge.operations_changed.connect(lambda _: self.refresh())
         self.bridge.alerts_changed.connect(lambda _: self.refresh_alerts())
+        self.bridge.contexts_changed.connect(lambda _: self.refresh_contexts())
         # Waveforms travel as a WaveformStream, not an EpisodicMetricReport, so they
         # never reach metrics_changed.
         self.bridge.waveforms_changed.connect(self._on_waveforms_changed)
@@ -120,14 +122,17 @@ class ProviderPane(QWidget):
         self.context_button = QPushButton("Patient and location\u2026")
         self.context_button.clicked.connect(self._on_edit_contexts)
         self.context_label = QLabel("")
+        self.context_label.setWordWrap(True)
+        self.context_label.setTextFormat(Qt.PlainText)
+        self.context_label.setTextInteractionFlags(Qt.NoTextInteraction)
+        self.context_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         mute(self.context_label)
 
         buttons = QHBoxLayout()
         buttons.addWidget(self.new_button)
         buttons.addWidget(self.remove_button)
         buttons.addWidget(self.context_button)
-        buttons.addWidget(self.context_label, 1)
-        buttons.addStretch(0)
+        buttons.addStretch(1)
 
         # Actions are the things the device *does*. They get their own row rather than a
         # place in the metric table, because they are not values and behave nothing like
@@ -210,6 +215,7 @@ class ProviderPane(QWidget):
         # two panels disagreed by 9px at the top and the bottom.
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(buttons)
+        layout.addWidget(self.context_label)
         layout.addWidget(self.views, 1)
         layout.addWidget(self.actions_widget)
         layout.addWidget(self.editor_widget)
@@ -630,11 +636,7 @@ class ProviderPane(QWidget):
             if location is not None:
                 self.service.set_location(location)
             if patient is not None:
-                # An empty patient means "detach", not "attach a nameless one".
-                if patient.is_empty():
-                    self.service.clear_patient()
-                else:
-                    self.service.set_patient(patient)
+                self.service.set_patient(patient)
         except (RuntimeError, ValueError, TypeError) as exc:
             QMessageBox.warning(self, "Could not change the contexts", str(exc))
         self.refresh_contexts()

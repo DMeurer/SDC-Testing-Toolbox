@@ -1,11 +1,8 @@
-"""Saving a configured device to a file and building it again from one.
+"""Saving a configured virtual device to a file and building it again from one.
 
-A config records what the user set up - the data sources and the alarms - not the values
-those data sources happen to be holding, except for an explicit initial value. Loading one
-into a running provider replaces whatever it had.
-
-The format is JSON with a version field. Handles are recorded so that a preset reproduces
-the same MDIB every time, which matters when a consumer or a script refers to them by name.
+A config records descriptors, scalar current values, associated patient/location contexts,
+and device metadata. It does not capture all live state. Loading one into a running provider
+replaces tracked metrics, alerts, and actions before applying the new profile.
 """
 
 from __future__ import annotations
@@ -29,16 +26,17 @@ from .model import (
     MetricKind,
     MetricSpec,
     PatientInfo,
+    PatientMeasurement,
     WaveformShape,
+    patient_measurement_wire_value,
 )
 
 if TYPE_CHECKING:
     from .provider_service import ProviderService
 
-# Bumped when the layout changes in a way older files would not survive. Still 1: everything
-# added since is optional, so a version 1 file written by an earlier build still loads and a
-# file written by this one still loads there, minus the parts it does not know about.
-CONFIG_VERSION = 1
+# Version 2 adds nested patient Measurements and CodedValues. Version 1 profiles remain
+# readable because all new fields are optional, but older builds reject new exports cleanly.
+CONFIG_VERSION = 2
 
 FILE_SUFFIX = ".sdcprofile.json"
 
@@ -101,7 +99,7 @@ def list_presets(directory: str | Path | None = None) -> list[Preset]:
     found = []
     for path in sorted(folder.glob("*.json")):
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"), parse_float=Decimal)
             device = parse(data)
         except (OSError, json.JSONDecodeError, ConfigError):
             continue
@@ -320,7 +318,7 @@ def _context_to_dict(service: ProviderService) -> dict[str, Any]:
         }
     patient = service.get_patient()
     if not patient.is_empty():
-        contexts["patient"] = {
+        patient_data = {
             key: value
             for key, value in {
                 "given_name": patient.given_name,
@@ -331,6 +329,16 @@ def _context_to_dict(service: ProviderService) -> dict[str, Any]:
             }.items()
             if value
         }
+        for name in ("height", "weight"):
+            measurement = getattr(patient, name)
+            if measurement is not None:
+                patient_data[name] = {
+                    "value": str(measurement.value),
+                    "unit": _coding_to_json(measurement.unit, ""),
+                }
+        if patient.race is not None:
+            patient_data["race"] = _coding_to_json(patient.race, "")
+        contexts["patient"] = patient_data
     return contexts
 
 
@@ -518,6 +526,109 @@ def _device_from_dict(data: Any) -> tuple[DeviceInfo | None, str]:
     return DeviceInfo(**values), str(data.get("instance_name") or "")
 
 
+def _required_coding_from_json(raw: Any, field: str) -> Coding:
+    """Read one required CodedValue without accepting a display-only string."""
+    if not isinstance(raw, dict):
+        msg = f"{field}: expected an object with code and system"
+        raise ConfigError(msg)
+    unknown = sorted(set(raw) - {"code", "system", "label"})
+    if unknown:
+        msg = f"{field}: does not understand {', '.join(unknown)}. It takes: code, label, system"
+        raise ConfigError(msg)
+    if "code" not in raw:
+        msg = f"{field}: needs a code"
+        raise ConfigError(msg)
+    if "system" not in raw:
+        msg = f"{field}: needs a coding system"
+        raise ConfigError(msg)
+    if raw["code"] is None or not str(raw["code"]).strip():
+        msg = f"{field}: needs a code"
+        raise ConfigError(msg)
+    if raw["system"] is None or not str(raw["system"]).strip():
+        msg = f"{field}: needs a coding system"
+        raise ConfigError(msg)
+    try:
+        return Coding(
+            code=str(raw["code"]),
+            system=str(raw["system"]),
+            label=str(raw.get("label") or ""),
+        )
+    except ValueError as exc:
+        msg = f"{field}: {exc}"
+        raise ConfigError(msg) from exc
+
+
+def _patient_measurement_from_dict(raw: Any, field: str) -> PatientMeasurement:
+    """Read a BICEPS Measurement from its JSON value/unit representation."""
+    if not isinstance(raw, dict):
+        msg = f"{field}: expected an object with value and unit"
+        raise ConfigError(msg)
+    unknown = sorted(set(raw) - {"value", "unit"})
+    if unknown:
+        msg = f"{field}: does not understand {', '.join(unknown)}. It takes: unit, value"
+        raise ConfigError(msg)
+    if "value" not in raw:
+        msg = f"{field}: needs a value"
+        raise ConfigError(msg)
+    if "unit" not in raw:
+        msg = f"{field}: needs a unit"
+        raise ConfigError(msg)
+    raw_value = raw["value"]
+    if isinstance(raw_value, float):
+        msg = f"{field}.value: use a decimal string or Decimal, never float"
+        raise ConfigError(msg)
+    value = _decimal_or_none(raw_value, f"{field}.value")
+    if value is None:
+        msg = f"{field}: needs a value"
+        raise ConfigError(msg)
+    try:
+        patient_measurement_wire_value(value)
+        return PatientMeasurement(
+            value=value,
+            unit=_required_coding_from_json(raw["unit"], f"{field}.unit"),
+        )
+    except (TypeError, ValueError) as exc:
+        msg = f"{field}: {exc}"
+        raise ConfigError(msg) from exc
+
+
+def _patient_from_dict(raw: Any) -> PatientInfo | None:
+    """Read the optional patient block, including BICEPS Measurements and CodedValue."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        msg = f"contexts.patient: expected an object, found {type(raw).__name__}"
+        raise ConfigError(msg)
+    simple = {"given_name", "family_name", "sex", "patient_type", "date_of_birth"}
+    allowed = simple | {"height", "weight", "race"}
+    unknown = sorted(set(raw) - allowed)
+    if unknown:
+        msg = f"contexts.patient: does not understand {', '.join(unknown)}. It takes: {', '.join(sorted(allowed))}"
+        raise ConfigError(msg)
+    try:
+        return PatientInfo(
+            **{name: str(raw[name]) for name in simple if name in raw},
+            height=(
+                _patient_measurement_from_dict(raw["height"], "contexts.patient.height")
+                if "height" in raw
+                else None
+            ),
+            weight=(
+                _patient_measurement_from_dict(raw["weight"], "contexts.patient.weight")
+                if "weight" in raw
+                else None
+            ),
+            race=(
+                _required_coding_from_json(raw["race"], "contexts.patient.race")
+                if "race" in raw
+                else None
+            ),
+        )
+    except (TypeError, ValueError) as exc:
+        msg = f"contexts.patient: {exc}"
+        raise ConfigError(msg) from exc
+
+
 def _contexts_from_dict(data: Any) -> tuple[LocationInfo | None, PatientInfo | None]:
     """Rebuild the patient and location contexts, if the file carries any.
 
@@ -547,7 +658,7 @@ def _contexts_from_dict(data: Any) -> tuple[LocationInfo | None, PatientInfo | N
             raise ConfigError(msg)
         return cls(**{key: str(value) for key, value in raw.items()})
 
-    return block("location", LocationInfo), block("patient", PatientInfo)
+    return block("location", LocationInfo), _patient_from_dict(data.get("patient"))
 
 
 def parse(data: Any) -> DeviceConfig:
@@ -557,6 +668,9 @@ def parse(data: Any) -> DeviceConfig:
         raise ConfigError(msg)
 
     version = data.get("version")
+    if version is not None and (not isinstance(version, int) or isinstance(version, bool)):
+        msg = f"version: expected an integer, found {type(version).__name__}"
+        raise ConfigError(msg)
     if version is not None and version > CONFIG_VERSION:
         msg = f"this file is version {version}, but this build only understands up to {CONFIG_VERSION}"
         raise ConfigError(msg)
@@ -598,7 +712,7 @@ def load_file(path: str | Path) -> DeviceConfig:
         msg = f"cannot read {source}: {exc}"
         raise ConfigError(msg) from exc
     try:
-        data = json.loads(text)
+        data = json.loads(text, parse_float=Decimal)
     except json.JSONDecodeError as exc:
         msg = f"{source} is not valid JSON: {exc}"
         raise ConfigError(msg) from exc

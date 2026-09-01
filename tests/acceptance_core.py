@@ -50,8 +50,10 @@ from acceptance_provider import (  # noqa: E402
     MANUAL_ALARM,
     MODE,
     NOTE,
+    PEER_INSTANCE,
     SAW,
     SAW_CYCLE,
+    UPDATED_PATIENT,
     WAVE,
     ZOOM,
 )
@@ -141,11 +143,20 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
         # ---------------------------------------------------------------- discovery
         print("\n1. Discovery and connection", flush=True)
         with ConsumerService(ip=args.ip) as consumer_service:
-            devices = consumer_service.scan(timeout=25, expected=1)
+            expected_epr = constants.epr_for(PEER_INSTANCE).urn
+            deadline = time.monotonic() + 25.0
+            devices = []
+            device = None
+            while device is None and time.monotonic() < deadline:
+                devices = consumer_service.scan(
+                    timeout=min(5.0, deadline - time.monotonic()),
+                    expected=99,
+                )
+                device = next((candidate for candidate in devices if candidate.epr == expected_epr), None)
             if not report.check(bool(devices), "provider discovered"):
                 return report.summary()
-
-            device = devices[0]
+            if not report.check(device is not None, "the acceptance provider is selected", expected_epr):
+                return report.summary()
             report.check(bool(device.x_addrs), "discovery hit carries an XAddr", device.epr)
             report.check(
                 device.location_scope is not None,
@@ -154,6 +165,22 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
             )
 
             remote = consumer_service.connect(device)
+
+            patient = remote.patient()
+            report.check(
+                patient.given_name == "Ada"
+                and patient.family_name == "Lovelace"
+                and patient.height is not None
+                and patient.height.value == Decimal("170.5")
+                and patient.height.unit.code == "demo-cm"
+                and patient.weight is not None
+                and patient.weight.value == Decimal("72.4")
+                and patient.weight.unit.code == "demo-kg"
+                and patient.race is not None
+                and patient.race.code == "demo-race",
+                "patient demographics arrive as BICEPS measurements and coded race",
+                patient.summary(),
+            )
 
             # Record runtime descriptor arrivals before the late metric is created.
             new_descriptor_events: list[str] = []
@@ -166,13 +193,20 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
                         seen.set()
 
             value_events: list[str] = []
+            context_events: list[str] = []
+            context_changed = threading.Event()
 
             def on_metrics(metrics_by_handle: dict) -> None:
                 value_events.extend(metrics_by_handle)
 
+            def on_contexts(context_by_handle: dict) -> None:
+                context_events.extend(context_by_handle)
+                context_changed.set()
+
             remote.bind(
                 new_descriptors_by_handle=on_new_descriptors,
                 metrics_by_handle=on_metrics,
+                context_by_handle=on_contexts,
             )
 
             # ------------------------------------------------------ initial metrics
@@ -338,6 +372,21 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
                 )
 
             report.check(bool(value_events), "metrics_by_handle fired at least once")
+            report.check(
+                context_changed.wait(timeout=30),
+                "context_by_handle fires when the peer replaces its patient",
+                str(context_events),
+            )
+            updated_patient = remote.patient()
+            report.check(
+                updated_patient.summary().startswith(UPDATED_PATIENT)
+                and updated_patient.height is not None
+                and updated_patient.height.value == Decimal("1E-7")
+                and updated_patient.race is not None
+                and updated_patient.race.system == "urn:example:race",
+                "a changed patient context arrives without reconnecting",
+                updated_patient.summary(),
+            )
 
             # ------------------------------------------------------------ sample arrays
             print("\n5b. Waveforms and distributions over the wire", flush=True)

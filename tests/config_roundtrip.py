@@ -27,8 +27,12 @@ from sdctoolbox.model import (  # noqa: E402
     AlertKind,
     AlertPriority,
     AlertSpec,
+    Coding,
+    LocationInfo,
     MetricKind,
     MetricSpec,
+    PatientInfo,
+    PatientMeasurement,
     WaveformShape,
 )
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
@@ -91,6 +95,8 @@ def snapshot(service: ProviderService) -> dict:
             )
             for handle, spec in service.list_alerts().items()
         },
+        "location": service.get_location(),
+        "patient": service.get_patient(),
     }
 
 
@@ -149,6 +155,25 @@ def build_reference(service: ProviderService) -> None:
         ),
     )
     service.add_alert(AlertSpec(label="Service due", source_handle="m.zoom_level"))
+    service.set_location(LocationInfo(facility="HOSP", point_of_care="OR1", bed="A"))
+    service.set_patient(
+        PatientInfo(
+            given_name="Ada",
+            family_name="Lovelace",
+            sex="F",
+            patient_type="Ad",
+            date_of_birth="1815-12-10",
+            height=PatientMeasurement(
+                value=Decimal("170.5"),
+                unit=Coding(code="demo-cm", system="private", label="cm"),
+            ),
+            weight=PatientMeasurement(
+                value=Decimal("72.4"),
+                unit=Coding(code="demo-kg", system="private", label="kg"),
+            ),
+            race=Coding(code="demo-race", system="urn:example:race", label="Demo race"),
+        ),
+    )
 
 
 BAD_FILES = [
@@ -163,7 +188,40 @@ BAD_FILES = [
     ('{"metrics": [{"label": "x", "kind": "choice"}]}', "a choice with no values"),
     ('{"alerts": [{"label": "a", "watches": "m.nothing"}]}', "an alarm watching nothing"),
     ('{"alerts": [{"label": "a"}]}', "an alarm with no source"),
+    (
+        '{"contexts": {"patient": {"height": {"value": "170"}}}}',
+        "a patient height without a unit",
+    ),
+    (
+        '{"contexts": {"patient": {"weight": {"unit": {"code": "kg", "system": "private"}}}}}',
+        "a patient weight without a value",
+    ),
+    (
+        '{"contexts": {"patient": {"race": {"code": "demo-race"}}}}',
+        "a patient race without a coding system",
+    ),
+    (
+        '{"contexts": {"patient": {"height": {"value": "1e999999", "unit": {"code": "m", "system": "private"}}}}}',
+        "an impractical patient measurement exponent",
+    ),
+    (
+        '{"contexts": {"patient": {"height": {"value": 1e-1000, "unit": {"code": "m", "system": "private"}}}}}',
+        "an underflowing patient measurement literal",
+    ),
+    (
+        '{"contexts": {"patient": {"race": {"code": "bad\\u0001", "system": "private"}}}}',
+        "an XML-invalid patient race code",
+    ),
+    (
+        '{"contexts": {"patient": {"race": {"code": "demo-race", "system": "urn:%"}}}}',
+        "a malformed patient race coding-system URI",
+    ),
+    (
+        '{"contexts": {"patient": {"given_name": "bad\\u0001"}}}',
+        "an XML-invalid patient name",
+    ),
     ("not json at all", "a file that is not JSON"),
+    ('{"version": "2"}', "a non-integer version"),
     ('{"version": 99}', "a file from a newer build"),
     ("[]", "a top level list"),
 ]
@@ -188,13 +246,54 @@ def main() -> int:
         config.save(source, path)
         report.check(path.exists(), "the file is written", f"{path.stat().st_size} bytes")
         data = json.loads(path.read_text(encoding="utf-8"))
-        report.check(data.get("version") == config.CONFIG_VERSION, "it records a version")
+        report.check(data.get("version") == 2, "new profiles use version 2")  # noqa: PLR2004
         report.check(len(data.get("metrics", [])) == 5, "all data sources are in it")  # noqa: PLR2004
         report.check(len(data.get("alerts", [])) == 2, "and both alarms")  # noqa: PLR2004
         report.check(
             all("handle" in entry for entry in data["metrics"]),
-            "handles are recorded, so a preset reproduces the same MDIB",
+            "handles are recorded for stable metric references",
         )
+        patient_data = data.get("contexts", {}).get("patient", {})
+        report.check(
+            patient_data.get("height", {}).get("value") == "170.5"
+            and patient_data.get("height", {}).get("unit", {}).get("code") == "demo-cm"
+            and patient_data.get("weight", {}).get("value") == "72.4"
+            and patient_data.get("race", {}).get("code") == "demo-race"
+            and patient_data.get("race", {}).get("system") == "urn:example:race",
+            "patient measurements and race are exported as coded structures",
+            str(patient_data),
+        )
+        precise = workdir / "precise-patient.json"
+        precise.write_text(
+            '{"contexts": {"patient": {"height": {"value": 0.12345678901234567, '
+            '"unit": {"code": "demo-unit", "system": "private"}}}}}',
+            encoding="utf-8",
+        )
+        parsed_patient = config.load_file(precise).patient
+        report.check(
+            parsed_patient is not None
+            and parsed_patient.height is not None
+            and parsed_patient.height.value == Decimal("0.12345678901234567"),
+            "JSON measurement literals retain Decimal precision",
+            str(parsed_patient.height.value) if parsed_patient and parsed_patient.height else "none",
+        )
+        try:
+            config.parse(
+                {
+                    "contexts": {
+                        "patient": {
+                            "height": {
+                                "value": 0.12345678901234567,
+                                "unit": {"code": "demo-unit", "system": "private"},
+                            },
+                        },
+                    },
+                },
+            )
+        except config.ConfigError as exc:
+            report.check("never float" in str(exc), "programmatic float measurements are refused", str(exc))
+        else:
+            report.check(False, "programmatic float measurements are refused", "it was accepted")  # noqa: FBT003
         source.set_value("m.zoom_level", Decimal("42"))
         config.save(source, workdir / "with-values.json")
         with_values = json.loads((workdir / "with-values.json").read_text(encoding="utf-8"))
@@ -232,6 +331,20 @@ def main() -> int:
             target.mdib.entities.by_handle("al.zoom_high").descriptor.NODETYPE.localname
             == "LimitAlertConditionDescriptor",
             "an alarm with limits comes back as a LimitAlertCondition",
+        )
+
+        legacy = config.parse(
+            {
+                "version": 1,
+                "contexts": {"patient": {"given_name": "Legacy"}},
+                "metrics": [{"label": "Legacy metric", "kind": "number"}],
+            },
+        )
+        report.check(
+            legacy.patient is not None
+            and legacy.patient.given_name == "Legacy"
+            and len(legacy.metrics) == 1,
+            "version 1 profiles remain readable",
         )
 
         print("\n3. Import replaces rather than appends")
