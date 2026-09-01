@@ -98,6 +98,8 @@ class ConsumerPane(QWidget):
         self.devices: list[DiscoveredDevice] = []
         self.remote: RemoteDevice | None = None
         self.bridge: MdibBridge | None = None
+        self._generation = 0
+        self._shutdown = False
 
         self._build_ui()
         self._wire_async()
@@ -236,28 +238,42 @@ class ConsumerPane(QWidget):
         layout.addLayout(editor)
 
     def _wire_async(self) -> None:
-        self._scan_call = AsyncCall(self)
-        self._scan_call.finished.connect(self._on_scan_finished)
-        self._scan_call.failed.connect(lambda msg: self._set_status(f"Scan failed: {msg}"))
-        self._scan_call.busy_changed.connect(self._on_busy_changed)
+        self._worker = AsyncCall(self)
+        self._worker.managed_finished.connect(self._on_work_finished)
+        self._worker.managed_failed.connect(self._on_work_failed)
 
-        self._connect_call = AsyncCall(self)
-        self._connect_call.finished.connect(self._on_connected)
-        self._connect_call.failed.connect(lambda msg: self._set_status(f"Could not connect: {msg}"))
-        self._connect_call.busy_changed.connect(self._on_busy_changed)
+    def _advance_generation(self) -> int:
+        self._generation += 1
+        return self._generation
 
-        self._set_call = AsyncCall(self)
-        self._set_call.finished.connect(self._on_set_finished)
-        self._set_call.failed.connect(self._on_set_failed)
-        self._set_call.busy_changed.connect(self._on_busy_changed)
+    def _work_key(self, operation: str, remote: RemoteDevice | None = None) -> tuple:
+        return operation, self._generation, remote
+
+    def _work_is_current(self, key: tuple, remote: RemoteDevice | None = None) -> bool:
+        return (
+            not self._shutdown
+            and key[1] == self._generation
+            and (remote is None or self.remote is remote)
+        )
 
     # -- discovery -----------------------------------------------------------------
 
     def _on_scan(self) -> None:
+        if self._shutdown:
+            return
         self._set_status("Searching\u2026")
         self.device_list.clear()
         self.devices = []
-        self._scan_call.start(self.service.scan, timeout=8.0, expected=99)
+        key = self._work_key("scan")
+        self._worker.start_managed(
+            key,
+            self.service,
+            self.service.scan,
+            timeout=8.0,
+            expected=99,
+            cancel_event=self._worker.cancellation_event,
+        )
+        self._update_buttons()
 
     def _on_scan_finished(self, devices: list) -> None:
         self.devices = devices
@@ -285,30 +301,59 @@ class ConsumerPane(QWidget):
 
     def _on_connect(self) -> None:
         device = self._selected_device()
-        if device is None:
+        if device is None or self._shutdown:
             return
+        self._advance_generation()
         self._teardown_remote()
         self._set_status(f"Connecting to {device.epr}\u2026")
-        self._connect_call.start(self.service.connect, device)
+        key = self._work_key("connect")
+        self._worker.start_managed(
+            key,
+            self.service,
+            self.service.connect,
+            device,
+            discard_result=lambda remote: remote.close(),
+        )
+        self._update_buttons()
 
-    def _on_connected(self, remote: RemoteDevice) -> None:
+    def _on_connected(self, remote: RemoteDevice, generation: int) -> None:
+        if self._shutdown or generation != self._generation:
+            remote.close()
+            return
         self.remote = remote
         self.bridge = MdibBridge(remote.mdib, self)
-        self.bridge.metrics_changed.connect(lambda _: self.refresh_values())
-        self.bridge.descriptors_added.connect(lambda _: self.refresh())
-        self.bridge.descriptors_deleted.connect(lambda _: self.refresh())
-        self.bridge.descriptors_updated.connect(lambda _: self.refresh())
-        self.bridge.operations_changed.connect(lambda _: self.refresh())
-        self.bridge.alerts_changed.connect(lambda _: self._rebuild_alerts())
-        self.bridge.contexts_changed.connect(lambda _: self._refresh_contexts())
+        def current() -> bool:
+            return not self._shutdown and generation == self._generation and self.remote is remote
+
+        self.bridge.metrics_changed.connect(
+            lambda _: self.refresh_values() if current() else None,
+        )
+        for signal in (
+            self.bridge.descriptors_added,
+            self.bridge.descriptors_deleted,
+            self.bridge.descriptors_updated,
+            self.bridge.operations_changed,
+        ):
+            signal.connect(lambda _: self.refresh() if current() else None)
+        self.bridge.alerts_changed.connect(
+            lambda _: self._rebuild_alerts() if current() else None,
+        )
+        self.bridge.contexts_changed.connect(
+            lambda _: self._refresh_contexts() if current() else None,
+        )
         # A peer's waveforms arrive as a WaveformStream, on their own observable.
-        self.bridge.waveforms_changed.connect(self._on_waveforms_changed)
-        self.bridge.peer_restarted.connect(self._on_peer_restarted)
+        self.bridge.waveforms_changed.connect(
+            lambda blocks: self._on_waveforms_changed(blocks) if current() else None,
+        )
+        self.bridge.peer_restarted.connect(
+            lambda: self._on_peer_restarted() if current() else None,
+        )
         self._set_status(f"Connected to {remote.epr}")
         self.refresh()
         self._update_buttons()
 
     def _on_disconnect(self) -> None:
+        self._advance_generation()
         self._teardown_remote()
         self._set_status("Not connected")
         self.refresh()
@@ -319,12 +364,14 @@ class ConsumerPane(QWidget):
             self.bridge.deleteLater()
             self.bridge = None
         if self.remote is not None:
-            self.remote.close()
+            remote = self.remote
             self.remote = None
+            self._worker.retire(remote, remote.close)
 
     def _on_peer_restarted(self) -> None:
         """The far end restarted, so everything we cached about it is worthless."""
         self._set_status("The device restarted. Reconnect to see it again.")
+        self._advance_generation()
         self._teardown_remote()
         self.refresh()
         self._update_buttons()
@@ -475,8 +522,11 @@ class ConsumerPane(QWidget):
             return
         self.select_handle(handle)
         self.invocation_label.setText("waiting\u2026")
-        if not self._set_call.start(self.remote.set_value, handle, value):
+        remote = self.remote
+        key = self._work_key("invoke", remote)
+        if not self._worker.start_managed(key, remote, remote.set_value, handle, value):
             self.invocation_label.setText("busy, try again")
+        self._update_buttons()
 
     def refresh_actions(self) -> None:
         """Rebuild the buttons for the peer's actions."""
@@ -497,7 +547,7 @@ class ConsumerPane(QWidget):
             button.setText(action.caption)
             # Same rule as a metric editor: offered only while the device says it is
             # enabled, and OperatingMode can change under us.
-            button.setEnabled(action.enabled and not self._set_call.busy)
+            button.setEnabled(action.enabled and not self._invocation_busy())
             button.setToolTip(
                 f"{handle}\nacts on {action.target_handle}"
                 + ("" if action.enabled else "\ndisabled by the device"),
@@ -508,8 +558,11 @@ class ConsumerPane(QWidget):
         if self.remote is None:
             return
         self.invocation_label.setText("waiting\u2026")
-        if not self._set_call.start(self.remote.run_action, handle):
+        remote = self.remote
+        key = self._work_key("invoke", remote)
+        if not self._worker.start_managed(key, remote, remote.run_action, handle):
             self.invocation_label.setText("busy, try again")
+        self._update_buttons()
 
     def _rebuild_alerts(self) -> None:
         """Show the peer's alarms, including how each one is announced."""
@@ -608,7 +661,7 @@ class ConsumerPane(QWidget):
 
     def _set_editor_enabled(self, *, enabled: bool) -> None:
         self.editor_stack.setEnabled(enabled)
-        self.apply_button.setEnabled(enabled and not self._set_call.busy)
+        self.apply_button.setEnabled(enabled and not self._invocation_busy())
 
     def _on_apply(self) -> None:
         handle = self.selected_handle()
@@ -631,7 +684,10 @@ class ConsumerPane(QWidget):
             value = self.value_edit.text()
 
         self.invocation_label.setText("waiting\u2026")
-        self._set_call.start(self.remote.set_value, handle, value)
+        remote = self.remote
+        key = self._work_key("invoke", remote)
+        self._worker.start_managed(key, remote, remote.set_value, handle, value)
+        self._update_buttons()
 
     def _on_set_finished(self, state: Any) -> None:
         if state in FINISHED_STATES:
@@ -643,29 +699,65 @@ class ConsumerPane(QWidget):
     def _on_set_failed(self, message: str) -> None:
         self.invocation_label.setText(f"failed: {message}")
 
+    def _on_work_finished(self, key: tuple, result: object) -> None:
+        operation, generation, remote = key
+        if operation == "connect":
+            if not self._worker.claim_result(result):
+                return
+            self._on_connected(result, generation)
+            return
+        if not self._work_is_current(key, remote):
+            return
+        if operation == "scan":
+            self._on_scan_finished(result)
+        elif operation == "invoke":
+            self._on_set_finished(result)
+        self._update_buttons()
+
+    def _on_work_failed(self, key: tuple, message: str) -> None:
+        operation, _generation, remote = key
+        if not self._work_is_current(key, remote):
+            return
+        if operation == "scan":
+            self._set_status(f"Scan failed: {message}")
+        elif operation == "connect":
+            self._set_status(f"Could not connect: {message}")
+        elif operation == "invoke":
+            self._on_set_failed(message)
+        self._update_buttons()
+
     # -- chrome --------------------------------------------------------------------
 
     def _set_status(self, text: str) -> None:
         self.status_label.setText(text)
 
-    def _on_busy_changed(self, busy: bool) -> None:  # noqa: FBT001 - matches the Qt signal
-        if not busy:
-            self._update_buttons()
-            self._set_editor_enabled(enabled=self.editor_stack.isEnabled())
-        else:
-            self.scan_button.setEnabled(False)
-            self.connect_button.setEnabled(False)
-            self.apply_button.setEnabled(False)
+    def _invocation_busy(self) -> bool:
+        return self.remote is not None and self._worker.busy_for(
+            self._work_key("invoke", self.remote),
+        )
 
     def _update_buttons(self) -> None:
-        working = self._scan_call.busy or self._connect_call.busy
-        self.scan_button.setEnabled(not working)
-        self.connect_button.setEnabled(not working and self._selected_device() is not None)
-        self.disconnect_button.setEnabled(self.remote is not None)
+        scan_busy = self._worker.busy_matching(lambda key: key[0] == "scan")
+        connect_busy = self._worker.busy_matching(lambda key: key[0] == "connect")
+        working = scan_busy or connect_busy
+        self.scan_button.setEnabled(not self._shutdown and not working)
+        self.connect_button.setEnabled(
+            not self._shutdown and not working and self._selected_device() is not None,
+        )
+        self.disconnect_button.setEnabled(
+            not self._shutdown and self.remote is not None,
+        )
+        self._set_editor_enabled(enabled=self.editor_stack.isEnabled())
+        self.refresh_actions()
 
     # -- teardown ------------------------------------------------------------------
 
     def shutdown(self) -> None:
         """Disconnect and stop discovery. Called when the window closes."""
+        if self._shutdown:
+            return
+        self._shutdown = True
+        self._advance_generation()
         self._teardown_remote()
-        self.service.stop()
+        self._worker.retire(self.service, self.service.stop)
+        self._worker.close(timeout=0.25)

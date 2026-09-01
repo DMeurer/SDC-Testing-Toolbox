@@ -514,7 +514,12 @@ class ConsumerService:
     def __exit__(self, *exc_info: object) -> None:
         self.stop()
 
-    def scan(self, timeout: float = 10.0, expected: int = 1) -> list[DiscoveredDevice]:
+    def scan(
+        self,
+        timeout: float = 10.0,
+        expected: int = 1,
+        cancel_event: threading.Event | None = None,
+    ) -> list[DiscoveredDevice]:
         """Search for SDC providers until `expected` are found or `timeout` expires."""
         if self._discovery is None:
             msg = "consumer service is not started"
@@ -522,7 +527,9 @@ class ConsumerService:
 
         deadline = time.monotonic() + timeout
         found: list[DiscoveredDevice] = []
-        while time.monotonic() < deadline:
+        while time.monotonic() < deadline and not (
+            cancel_event is not None and cancel_event.is_set()
+        ):
             services = self._discovery.search_services(types=SdcV1Definitions.MedicalDeviceTypesFilter)
             if self._own_epr is not None:
                 services = [service for service in services if service.epr != self._own_epr]
@@ -537,7 +544,10 @@ class ConsumerService:
             ]
             if len(found) >= expected:
                 break
-            time.sleep(1.0)
+            if cancel_event is None:
+                time.sleep(1.0)
+            elif cancel_event.wait(1.0):
+                break
 
         logger.info("discovered %d provider(s)", len(found))
         return found
