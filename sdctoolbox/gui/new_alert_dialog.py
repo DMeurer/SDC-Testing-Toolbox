@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..constants import ALERT_HANDLE_PREFIX
-from ..model import AlertKind, AlertPriority, AlertSpec, MetricKind, MetricSpec, slugify
+from ..model import AlertKind, AlertManifestation, AlertPriority, AlertSignalSpec, AlertSpec, MetricKind, MetricSpec, slugify
 from .no_wheel import NoWheelComboBox
 from .styling import mark_as_error, mute
 
@@ -36,6 +36,13 @@ PRIORITY_CAPTIONS = [
     ("Medium", AlertPriority.MEDIUM),
     ("Low", AlertPriority.LOW),
     ("None", AlertPriority.NONE),
+]
+
+MANIFESTATION_CAPTIONS = [
+    ("Visual", AlertManifestation.VIS),
+    ("Audible", AlertManifestation.AUD),
+    ("Tangible", AlertManifestation.TAN),
+    ("Other", AlertManifestation.OTH),
 ]
 
 
@@ -83,13 +90,30 @@ class NewAlertDialog(QDialog):
 
         self.delegable_box = QCheckBox("Another device may announce this alarm")
         self.delegable_box.setToolTip(
-            "Sets SignalDelegationSupported on both signals. Without it a delegation is\n"
+            "Sets SignalDelegationSupported on every configured signal. Without it a delegation is\n"
             "refused, because BICEPS only allows one where the descriptor says so.",
         )
 
+        self.signal_boxes: list[tuple[AlertManifestation, QCheckBox, QCheckBox]] = []
+        signals = QVBoxLayout()
+        signals.setContentsMargins(0, 0, 0, 0)
+        for index, (caption, manifestation) in enumerate(MANIFESTATION_CAPTIONS):
+            enabled = QCheckBox(caption)
+            enabled.setChecked(index < 2)
+            latching = QCheckBox("Latching")
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.addWidget(enabled)
+            row.addWidget(latching)
+            row.addStretch(1)
+            signals.addLayout(row)
+            self.signal_boxes.append((manifestation, enabled, latching))
+        self.signals_widget = QWidget()
+        self.signals_widget.setLayout(signals)
+
         self.hint = QLabel(
             "Leave the limits blank for an alarm you raise by hand. "
-            "A visual and an audible signal are created either way.",
+            "Select the signals to create. A latching signal keeps announcing a cleared alarm until stopped.",
         )
         self.hint.setWordWrap(True)
         mute(self.hint)
@@ -109,6 +133,7 @@ class NewAlertDialog(QDialog):
         form.addRow("Priority", self.priority_box)
         form.addRow("Raise when", self.limits_widget)
         form.addRow("Delegation", self.delegable_box)
+        form.addRow("Signals", self.signals_widget)
         form.addRow("Handle", self.handle_preview)
         self.form = form
 
@@ -207,6 +232,15 @@ class NewAlertDialog(QDialog):
                 else:
                     upper = parsed
 
+        signals = tuple(
+            AlertSignalSpec(manifestation, latching=latching.isChecked())
+            for manifestation, enabled, latching in self.signal_boxes
+            if enabled.isChecked()
+        )
+        if not signals:
+            self._fail("Select at least one signal.")
+            return
+
         try:
             self._spec = AlertSpec(
                 label=label,
@@ -216,6 +250,7 @@ class NewAlertDialog(QDialog):
                 lower_limit=lower,
                 upper_limit=upper,
                 delegable=self.delegable_box.isChecked(),
+                signals=signals,
             )
         except (ValueError, TypeError) as exc:
             self._fail(str(exc))

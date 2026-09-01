@@ -93,7 +93,7 @@ class MainWindow(QMainWindow):
         self.resize(1100, 560)
 
         self.provider_pane = ProviderPane(service, self)
-        self.network_pane = ConsumerPane(service.ip, self)
+        self.network_pane = ConsumerPane(service.ip, self, own_epr=service.epr.urn)
 
         self.provider_panel = TitledPanel(PROVIDER_TITLE, self.provider_pane)
         self.network_panel = TitledPanel(NETWORK_TITLE, self.network_pane)

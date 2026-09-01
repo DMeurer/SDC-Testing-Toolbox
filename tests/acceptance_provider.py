@@ -199,7 +199,7 @@ def main() -> int:
         ),
     )
     # A distribution has nothing driving it, so it gets one block and keeps it.
-    service.set_samples(DIST, [Decimal(str(v)) for v in ("3", "9", "27", "9", "3")])
+    service.set_samples(DIST, [Decimal(index) for index in range(32)])
 
     # A limit alarm that follows the zoom metric, plus one raised only by hand.
     service.add_alert(

@@ -40,6 +40,8 @@ from sdctoolbox import config, constants  # noqa: E402
 from sdctoolbox.consumer_service import RemoteDevice  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
     AlertSpec,
+    AlertManifestation,
+    AlertSignalSpec,
     Coding,
     LocationInfo,
     MetricKind,
@@ -48,7 +50,7 @@ from sdctoolbox.model import (  # noqa: E402
     PatientMeasurement,
     WaveformShape,
 )
-from sdctoolbox.provider_service import ProviderService  # noqa: E402
+from sdctoolbox.provider_service import DISTRIBUTION_BINS, ProviderService  # noqa: E402
 
 
 class Report:
@@ -272,7 +274,7 @@ def check_sample_arrays(report: Report, service: ProviderService) -> None:
         f"descriptor implies {implied:.1f}, {len(service.get_samples(dist))} sent",
     )
 
-    block = [Decimal(str(v)) for v in ("1.5", "2.5", "3.5")]
+    block = [Decimal(index) for index in range(DISTRIBUTION_BINS)]
     service.set_samples(dist, block)
     report.check(service.get_samples(dist) == block, "a distribution takes samples it is given")
     report.check(
@@ -280,12 +282,19 @@ def check_sample_arrays(report: Report, service: ProviderService) -> None:
         "and setting one by hand takes it off the generator, so the block survives",
         str(service.get_samples(dist)),
     )
-    service.set_samples(dist, [Decimal("9")])
+    replacement = [Decimal("9")] * DISTRIBUTION_BINS
+    service.set_samples(dist, replacement)
     report.check(
-        service.get_samples(dist) == [Decimal("9")],
+        service.get_samples(dist) == replacement,
         "a second block replaces the first rather than appending",
         str(service.get_samples(dist)),
     )
+    try:
+        service.set_samples(dist, [Decimal("9")] * (DISTRIBUTION_BINS - 1))
+    except ValueError as exc:
+        report.check("exactly" in str(exc), "a distribution rejects a block with the wrong geometry", str(exc))
+    else:
+        report.check(False, "a distribution rejects a block with the wrong geometry", "it was accepted")  # noqa: FBT003
 
     plain = service.add_metric(MetricSpec(label="Plain", kind=MetricKind.NUMBER))
     for handle, samples_in, why in [
@@ -426,8 +435,43 @@ def check_signals(report: Report, service: ProviderService) -> None:
     service.remove_metric("m.pressure")
 
 
+def check_latching_signals(report: Report, service: ProviderService) -> None:
+    print("\n5. Configurable signal manifestations and latching")
+    service.add_metric(MetricSpec(label="Latch source", kind=MetricKind.NUMBER, initial_value=Decimal("0")))
+    alarm = service.add_alert(
+        AlertSpec(
+            label="Latched alarm",
+            source_handle="m.latch_source",
+            upper_limit=Decimal("10"),
+            signals=(
+                AlertSignalSpec(AlertManifestation.VIS, latching=True),
+                AlertSignalSpec(AlertManifestation.TAN),
+            ),
+        ),
+    )
+    states = service.signal_states(alarm)
+    report.check(
+        [(state.manifestation, state.latching) for state in states] == [("Vis", True), ("Tan", False)],
+        "configured manifestations and latching reach their descriptors",
+        str(states),
+    )
+    service.set_value("m.latch_source", Decimal("11"))
+    service.set_value("m.latch_source", Decimal("0"))
+    report.check(
+        [state.summary() for state in service.signal_states(alarm)] == ["Vis:Latch", "Tan:Off"],
+        "a clear condition latches only configured signals",
+    )
+    report.check(service.stop_latched_signals(alarm) == 1, "a latched signal can be stopped deliberately")
+    report.check(
+        [state.summary() for state in service.signal_states(alarm)] == ["Vis:Off", "Tan:Off"],
+        "stopping a latched signal turns it off",
+    )
+    service.remove_alert(alarm)
+    service.remove_metric("m.latch_source")
+
+
 def check_contexts(report: Report, service: ProviderService) -> None:
-    print("\n5. Patient and location contexts")
+    print("\n6. Patient and location contexts")
 
     default = service.get_location()
     report.check(
@@ -435,7 +479,11 @@ def check_contexts(report: Report, service: ProviderService) -> None:
         "a provider starts with the default location associated",
         default.summary(),
     )
-    report.check(service.get_patient().is_empty(), "and with nobody attached")
+    report.check(
+        service.get_patient().height is not None and service.get_patient().weight is not None,
+        "and with a default metric patient attached",
+        service.get_patient().summary(),
+    )
 
     service.set_location(
         LocationInfo(facility="HOSP", building="B2", floor="3", point_of_care="OR1", bed="A"),
@@ -533,8 +581,8 @@ def check_contexts(report: Report, service: ProviderService) -> None:
     entity.update()
     associations = sorted(str(state.ContextAssociation) for state in entity.states.values())
     report.check(
-        associations == ["Assoc", "Dis"],
-        "the previous patient is kept as a disassociated state, not deleted",
+        associations.count("Assoc") == 1 and associations.count("Dis") >= 2,
+        "previous patients are kept as disassociated states, not deleted",
         str(associations),
     )
 
@@ -678,7 +726,7 @@ def check_contexts(report: Report, service: ProviderService) -> None:
 
 
 def check_presets(report: Report) -> None:
-    print("\n6. Presets")
+    print("\n7. Presets")
 
     presets = config.list_presets()
     report.check(bool(presets), "the shipped presets are found", f"{len(presets)} found")
@@ -723,6 +771,7 @@ def main() -> int:
         check_sample_arrays(report, service)
         check_alarm_rollback(report, service)
         check_signals(report, service)
+        check_latching_signals(report, service)
         check_contexts(report, service)
         check_presets(report)
     finally:

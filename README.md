@@ -166,8 +166,8 @@ provider> presets
 
 *File → Export config* writes device metadata, data-source definitions and scalar current values, alarm and action definitions, and currently associated patient/location contexts to a JSON file.
 It is not a full live-device snapshot: sample blocks, alert/signal state, control mode, generator state and context history are not exported.
-*File → Import config* removes tracked metrics, alarms and actions before rebuilding them.
-It is neither a whole-MDIB replacement nor transactional: existing sections and contexts omitted by the file remain, and an error discovered while applying a profile can leave a device partly empty or partly rebuilt.
+*File → Import config* validates descriptor references before removing tracked metrics, alarms and actions, then rebuilds them.
+It is neither a whole-MDIB replacement nor transactional: existing sections and contexts omitted by the file remain, and an operational error after validation can still leave a device partly rebuilt.
 Export before experimenting with imports.
 
 *File → Load preset* lists the ready-made devices in `presets/`, so the ones that ship with the tool need no file dialog.
@@ -275,17 +275,8 @@ Pick the curve from *Shape*; sine, sawtooth, square and noise are there so a con
 The shape is **not** a BICEPS concept: the standard carries samples and says nothing about what they look like. The generators just make you see something without having to fill in too much dummy data by hand.
 
 A distribution gets a drifting bell across its domain, which is the shape that makes one recognisable as a distribution rather than a signal.
-Push your own block instead and that metric comes off the generator, so what you set stays put:
-
-```
-provider> samples m.spectrum 3 9 27 9 3
-  5 sample(s): 3 9 27 9 3
-provider> generator off
-  generator stopped
-```
-
-For generated distributions with a positive-width domain, `DistributionRange/StepWidth` is derived from the generator's fixed 32-bin block.
-A zero-width domain uses a fallback StepWidth, and supplying a distribution block manually does not update it, so a manually supplied block can disagree with the descriptor.
+Push your own 32-sample block instead and that metric comes off the generator, so what you set stays put. A distribution domain must have positive width.
+`DistributionRange/StepWidth` is derived from that fixed 32-bin geometry and does not change when sample values change.
 It is **not** `Resolution`: StepWidth is how far apart two samples sit along the domain, Resolution is how finely one sample value is measured.
 
 ### Why the trace moves smoothly
@@ -318,7 +309,7 @@ BICEPS keeps two things apart that are easy to confuse:
 | **condition** | the fact — "the pressure is too high". Has a kind and a priority, and is either present or not. |
 | **signal**    | how that fact is announced — visually, audibly, or by vibration.                                |
 
-One condition can drive several signals, which is why they are separate objects rather than flags on one. Every alarm this tool creates gets a visual and an audible signal, so the split is visible in the MDIB tree.
+One condition can drive several signals, which is why they are separate objects rather than flags on one. New alarms default to visual and audible signals; their manifestation and latching behavior can be configured independently.
 
 The GUI allows alarm limits only for numeric sources.
 For a decimal numeric source, limits make it a `LimitAlertCondition` that follows its source metric; without limits it stays a plain `AlertCondition` that only moves when you raise or clear it by hand.
@@ -330,6 +321,7 @@ The Signals column is where the split stops being academic. Two buttons act on i
 | Button          | What it changes                               |
 |-----------------|-----------------------------------------------|
 | **Acknowledge** | each signal's `Presence`, from `On` to `Ack`  |
+| **Stop latched** | each cleared latching signal's `Presence`, from `Latch` to `Off` |
 | **Delegate**    | each signal's `Location`, from `Loc` to `Rem` |
 
 Acknowledging is the interesting one, because it does **not** clear the alarm.
@@ -356,9 +348,9 @@ Clearing every patient field detaches the patient rather than attaching a namele
 
 The patient editor supports name, sex, patient type, date of birth, height, weight and race from `pm:PatientDemographicsCoreData`. The Network panel and consumer console show associated peer patient contexts read-only.
 
-Height and weight are BICEPS `Measurement` values: each needs a Decimal value and a coded measurement unit. Race is a BICEPS `CodedValue`, not free text. The editor and JSON profile therefore require a code and coding system for each of those values. Use `mdc`, `private`, or an explicit coding-system URI, and use verified terminology when testing interoperability. The fields are informational demographics; a device's own measured height or weight should be modelled as a metric when quality and timing matter.
+Height and weight are BICEPS `Measurement` values: each needs a Decimal value and a coded measurement unit. Fresh providers start with Alex Example, a 170 cm height and a 70 kg weight, using MDC metric units. Race is a BICEPS `CodedValue`, not free text. The editor and JSON profile therefore require a code and coding system for each of those values. Use `mdc`, `private`, or an explicit coding-system URI, and use verified terminology when testing interoperability. The fields are informational demographics; a device's own measured height or weight should be modelled as a metric when quality and timing matter.
 
-New exports use profile format version 2. Version 1 profiles without these demographic fields remain readable.
+New exports use profile format version 3. Earlier profiles without these demographic fields or alert signal definitions remain readable.
 
 An exported patient block has this shape:
 
@@ -394,19 +386,17 @@ This is a focused SDC learning fixture, not an IEEE 11073 conformance claim. IEE
 | Severity                 | Not supported or partial                                                                                                                                                                                                                                                                                | Practical consequence                                                                                                                                                                                                   |
 |--------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **Will cause problems**  | Secure SDC deployment: there is no TLS, certificate handling, mutual authentication or authorization.                                                                                                                                                                                                   | SDC service and event traffic uses plain HTTP; WS-Discovery is also unsecured UDP multicast. Do not use it outside an isolated, trusted lab network.                                                                    |
-| **Will cause problems**  | Config import is not transactional and up-front validation is incomplete.                                                                                                                                                                                                                               | An invalid profile whose error is detected during application can remove existing tracked items and leave a partially rebuilt provider; malformed types can also interrupt preset discovery rather than being skipped.  |
-| **Will cause problems**  | Periodic state reports are deliberately not subscribed to by the consumer.                                                                                                                                                                                                                              | A peer that relies on periodic metric, alert, component, operational-state or context reports can appear stale after the initial MDIB retrieval.                                                                        |
 | **Will cause problems**  | The preset `mdc` values are IEEE 11073-10101 reference-ID strings, not verified numeric CF codes.                                                                                                                                                                                                       | A peer that needs wire-level nomenclature codes cannot reliably interpret those claimed standard terms. See the warning in [What the presets are actually demonstrating](#what-the-presets-are-actually-demonstrating). |
 | **Will cause problems**  | Remote control covers `SetValueOperation`, `SetStringOperation`, and argumentless `ActivateOperation` only. The toolbox does not publish or drive `SetContextState`, `SetAlertState`, `SetMetricState` or `SetComponentState` operations.                                                               | Valid state-changing workflows, actions requiring arguments, remote context association, and remote alert handling cannot be exercised end to end.                                                                      |
 | **Might cause problems** | Contexts cover patient and location only. The Network panel shows associated peer patients read-only, but ensemble, workflow, means and operator contexts are not modelled or shown.                                                                                                                      | Tests involving care-team, workflow or multi-device context coordination need another fixture or direct access to the raw MDIB.                                                                                         |
-| **Might cause problems** | The locally published alert model is intentionally narrow: one source metric per condition, visual/audible non-latching signals, local acknowledgement/delegation only, and automatic limits only for decimal scalar values. The consumer still displays peer source handles and signal manifestations. | Latching, remote alert control, interoperable delegation, and limit conditions on text or choice sources cannot be exercised correctly.                                                                                 |
+| **Might cause problems** | The locally published alert model has one source metric per condition, local acknowledgement/delegation, and automatic limits only for decimal scalar values. Signals can use every standard manifestation and latching option. The consumer still displays peer source handles and signal manifestations. | Remote alert control, interoperable delegation, and limit conditions on text or choice sources cannot be exercised correctly.                                                                                 |
 | **Might cause problems** | The provider is a small MDIB model: scalar writes set `Validity=Valid` and `ActivationState=On`, with no controls for quality, component state or lifecycle transitions.                                                                                                                                | It cannot simulate many degraded, unavailable, inactive or quality-qualified states a consumer may need to handle.                                                                                                      |
-| **Might cause problems** | Sample arrays have no waveform annotations and use one non-real-time generator thread. A manually injected distribution can have a different sample count from the descriptor's fixed `StepWidth`; a zero-width domain also uses a fallback StepWidth.                                                  | It is useful for basic streaming and display tests, not for timing, annotation, or strict distribution-geometry conformance tests.                                                                                      |
+| **Might cause problems** | Sample arrays have no waveform annotations and use one non-real-time generator thread.                                                  | It is useful for basic streaming and display tests, not for timing or annotation conformance tests.                                                                                      |
 | **Might cause problems** | The GUI keeps one active peer. When a peer changes MDIB sequence or instance identity, it disconnects and requires a manual reconnect.                                                                                                                                                                  | Multi-peer monitoring and automatic restart/reload recovery are not covered.                                                                                                                                            |
 | **Might cause problems** | There is no declared conformance profile and no end-to-end test against an independent SDC implementation or product.                                                                                                                                                                                   | A passing repository suite demonstrates this toolbox talking to itself across processes, not product interoperability or standards conformance.                                                                         |
 | **Invisible**            | The consumer gives detailed metric views only for the five BICEPS metric descriptor types it recognizes. Other entities and extensions remain in the generic containment tree or raw `RemoteDevice.mdib`.                                                                                               | A simple peer appears complete, while foreign extensions and most non-metric state are not available through the high-level UI/API.                                                                                     |
 | **Invisible**            | The GUI takes the first inline concept description it finds. It does not select a language or use the peer's LocalizationService.                                                                                                                                                                       | The English labels in shipped presets look normal; localized or service-supplied text is not tested.                                                                                                                    |
-| **Invisible**            | Discovery scans the selected IPv4 interface without a location-scope filter and does not exclude the toolbox's own provider.                                                                                                                                                                            | A scan can list the local device and unrelated SDC providers, so test selection must be deliberate.                                                                                                                     |
+| **Invisible**            | Discovery scans the selected IPv4 interface without a location-scope filter, but excludes the provider published by the same toolbox window by EPR.                                                                                                                                                                            | A scan can list unrelated SDC providers, so test selection must still be deliberate.                                                                                                                     |
 
 ## Tests
 

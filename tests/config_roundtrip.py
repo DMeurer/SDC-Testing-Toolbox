@@ -25,7 +25,9 @@ from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 from sdctoolbox import config  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
     AlertKind,
+    AlertManifestation,
     AlertPriority,
+    AlertSignalSpec,
     AlertSpec,
     Coding,
     LocationInfo,
@@ -92,6 +94,7 @@ def snapshot(service: ProviderService) -> dict:
                 spec.priority.value,
                 spec.lower_limit,
                 spec.upper_limit,
+                tuple((signal.manifestation.value, signal.latching) for signal in spec.signals),
             )
             for handle, spec in service.list_alerts().items()
         },
@@ -152,6 +155,10 @@ def build_reference(service: ProviderService) -> None:
             kind=AlertKind.PHYSIOLOGICAL,
             priority=AlertPriority.HIGH,
             upper_limit=Decimal("90"),
+            signals=(
+                AlertSignalSpec(AlertManifestation.VIS, latching=True),
+                AlertSignalSpec(AlertManifestation.TAN),
+            ),
         ),
     )
     service.add_alert(AlertSpec(label="Service due", source_handle="m.zoom_level"))
@@ -176,6 +183,48 @@ def build_reference(service: ProviderService) -> None:
     )
 
 
+def check_preflight_preserves_device(report: Report, service: ProviderService) -> None:
+    """Reference failures must be reported before replace=True removes live descriptors."""
+    service.add_metric(MetricSpec(label="Existing", kind=MetricKind.NUMBER, initial_value=Decimal("7")))
+    before = set(service.list_metrics())
+    invalid = config.parse(
+        {
+            "metrics": [{"label": "New", "kind": "number"}],
+            "actions": [{"label": "Broken", "target": "missing", "effects": {"m.new": "1"}}],
+        },
+    )
+    try:
+        config.apply_to(service, invalid)
+    except config.ConfigError as exc:
+        report.check("target" in str(exc), "an invalid action target is rejected before import", str(exc))
+    else:
+        report.check(False, "an invalid action target is rejected before import", "it was accepted")  # noqa: FBT003
+    report.check(set(service.list_metrics()) == before, "a rejected import leaves existing metrics intact")
+
+    missing_effect = config.parse(
+        {
+            "metrics": [{"label": "New", "kind": "number"}],
+            "actions": [{"label": "Broken", "target": "mds0", "effects": {"m.missing": "1"}}],
+        },
+    )
+    try:
+        config.apply_to(service, missing_effect)
+    except config.ConfigError as exc:
+        report.check("effects" in str(exc), "a missing effect metric is rejected before import", str(exc))
+    else:
+        report.check(False, "a missing effect metric is rejected before import", "it was accepted")  # noqa: FBT003
+    report.check(set(service.list_metrics()) == before, "a rejected effect import leaves existing metrics intact")
+    empty_location = config.parse({"contexts": {"location": {}}})
+    try:
+        config.apply_to(service, empty_location)
+    except config.ConfigError as exc:
+        report.check("location" in str(exc), "an empty location is rejected before import", str(exc))
+    else:
+        report.check(False, "an empty location is rejected before import", "it was accepted")  # noqa: FBT003
+    report.check(set(service.list_metrics()) == before, "a rejected location import leaves existing metrics intact")
+    service.remove_metric("m.existing")
+
+
 BAD_FILES = [
     ('{"metrics": [{"label": "x"}]}', "a metric with no kind"),
     ('{"metrics": [{"label": "x", "kind": "nope"}]}', "an unknown kind"),
@@ -185,9 +234,21 @@ BAD_FILES = [
         '{"metrics": [{"label": "x", "kind": "number", "minimum": "10", "maximum": "1"}]}',
         "a minimum above its maximum",
     ),
+    (
+        '{"metrics": [{"label": "x", "kind": "distribution", "domain_minimum": "0", "domain_maximum": "0"}]}',
+        "a zero-width distribution domain",
+    ),
     ('{"metrics": [{"label": "x", "kind": "choice"}]}', "a choice with no values"),
     ('{"alerts": [{"label": "a", "watches": "m.nothing"}]}', "an alarm watching nothing"),
     ('{"alerts": [{"label": "a"}]}', "an alarm with no source"),
+    (
+        '{"metrics": [{"handle": "m.x", "label": "x", "kind": "number"}], "alerts": [{"label": "a", "watches": "m.x", "signals": []}]}',
+        "an alarm with no signals",
+    ),
+    (
+        '{"metrics": [{"handle": "m.x", "label": "x", "kind": "number"}], "alerts": [{"label": "a", "watches": "m.x", "signals": [{"manifestation": "Vis", "latching": "false"}]}]}',
+        "a non-boolean signal latching value",
+    ),
     (
         '{"contexts": {"patient": {"height": {"value": "170"}}}}',
         "a patient height without a unit",
@@ -246,12 +307,21 @@ def main() -> int:
         config.save(source, path)
         report.check(path.exists(), "the file is written", f"{path.stat().st_size} bytes")
         data = json.loads(path.read_text(encoding="utf-8"))
-        report.check(data.get("version") == 2, "new profiles use version 2")  # noqa: PLR2004
+        report.check(data.get("version") == 3, "new profiles use version 3")  # noqa: PLR2004
         report.check(len(data.get("metrics", [])) == 5, "all data sources are in it")  # noqa: PLR2004
         report.check(len(data.get("alerts", [])) == 2, "and both alarms")  # noqa: PLR2004
         report.check(
             all("handle" in entry for entry in data["metrics"]),
             "handles are recorded for stable metric references",
+        )
+        zoom_alert = next(alert for alert in data["alerts"] if alert["handle"] == "al.zoom_high")
+        report.check(
+            zoom_alert["signals"] == [
+                {"manifestation": "Vis", "latching": True},
+                {"manifestation": "Tan", "latching": False},
+            ],
+            "signal manifestation and latching settings are exported",
+            str(zoom_alert["signals"]),
         )
         patient_data = data.get("contexts", {}).get("patient", {})
         report.check(
@@ -361,7 +431,15 @@ def main() -> int:
     finally:
         target.stop()
 
-    print("\n4. Bad files are refused with a usable message")
+    print("\n4. Invalid imports do not mutate the device")
+    guarded = ProviderService(instance_name="config-preflight")
+    guarded.start()
+    try:
+        check_preflight_preserves_device(report, guarded)
+    finally:
+        guarded.stop()
+
+    print("\n5. Bad files are refused with a usable message")
     for text, description in BAD_FILES:
         bad = workdir / "bad.json"
         bad.write_text(text, encoding="utf-8")
@@ -372,7 +450,7 @@ def main() -> int:
         else:
             report.check(False, f"refuses {description}", "it was accepted")  # noqa: FBT003
 
-    print("\n5. A missing file says so")
+    print("\n6. A missing file says so")
     try:
         config.load_file(workdir / "does-not-exist.json")
     except config.ConfigError as exc:

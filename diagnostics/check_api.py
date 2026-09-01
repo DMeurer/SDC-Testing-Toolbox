@@ -69,8 +69,15 @@ CHECKS: list[tuple[str, str, str]] = [
     # it must be imported from sdc11073.consumer.consumerimpl.
     ("sdc11073.consumer.consumerimpl", "SdcConsumer", "consumer"),
     ("sdc11073.consumer.consumerimpl", "SdcConsumer.from_wsd_service", "from a discovery hit"),
+    ("sdc11073.consumer.consumerimpl", "SdcConsumer.start_all", "subscribe to all reports"),
+    ("sdc11073.consumer.consumerimpl", "SdcConsumer.periodic_metric_report", "periodic metric report"),
+    ("sdc11073.consumer.consumerimpl", "SdcConsumer.periodic_alert_report", "periodic alert report"),
+    ("sdc11073.consumer.consumerimpl", "SdcConsumer.periodic_component_report", "periodic component report"),
+    ("sdc11073.consumer.consumerimpl", "SdcConsumer.periodic_operational_state_report", "periodic operational report"),
+    ("sdc11073.consumer.consumerimpl", "SdcConsumer.periodic_context_report", "periodic context report"),
     ("sdc11073.mdib", "ConsumerMdib", "consumer MDIB"),
     ("sdc11073.mdib", "ConsumerMdib.init_mdib", "load the MDIB"),
+    ("sdc11073.mdib.consumermdibxtra", "ConsumerMdibMethods", "extend MDIB report handling"),
     # --- Discovery ---
     ("sdc11073.wsdiscovery", "WSDiscovery", "discovery bound to an IP"),
     ("sdc11073.wsdiscovery", "WSDiscoverySingleAdapter", "discovery bound to an adapter name"),

@@ -28,7 +28,7 @@ from sdc11073.xml_types.dpws_types import ThisDeviceType, ThisModelType
 from . import constants
 from .handlers import apply_metric_value, make_activate_handler, make_set_handler
 from .model import (
-    DEFAULT_MANIFESTATIONS,
+    DEFAULT_PATIENT,
     DEFAULT_SAMPLE_PERIOD,
     ActionSpec,
     AlertSpec,
@@ -107,7 +107,8 @@ def _domain_step(spec: MetricSpec) -> Decimal:
     lower = spec.domain_minimum if spec.domain_minimum is not None else Decimal("0")
     span = upper - lower
     if span <= 0:
-        return Decimal("1")
+        msg = f"distribution domain must increase, not {lower} to {upper}"
+        raise ValueError(msg)
     step = span / Decimal(DISTRIBUTION_BINS - 1)
     return step.quantize(Decimal("0.000001")).normalize()
 
@@ -377,6 +378,7 @@ class ProviderService:
         # No waveform provider configured, so the real-time sample loop must stay off.
         self._provider.start_all(start_rtsample_loop=False)
         self.set_location(LocationInfo(**constants.DEFAULT_LOCATION))
+        self.set_patient(DEFAULT_PATIENT)
 
         if self._sco is None:
             msg = "no SCO registry was created - the bootstrap MDIB is missing its Sco element"
@@ -427,6 +429,15 @@ class ProviderService:
                     f"this build cannot create {spec.kind.value} metrics yet: it never sets "
                     f"{missing}, which BICEPS makes mandatory"
                 )
+                raise ValueError(msg)
+            if spec.kind is MetricKind.DISTRIBUTION:
+                lower = spec.domain_minimum if spec.domain_minimum is not None else Decimal("0")
+                upper = spec.domain_maximum if spec.domain_maximum is not None else Decimal("1")
+                if lower >= upper:
+                    msg = f"distribution domain must increase, not {lower} to {upper}"
+                    raise ValueError(msg)
+            if spec.is_sample_array and spec.initial_value is not None:
+                msg = f"initial_value is not meaningful for {spec.kind.value} metrics; use samples instead"
                 raise ValueError(msg)
 
             handle = spec.handle or self._unique_handle(constants.METRIC_HANDLE_PREFIX + spec.slug)
@@ -626,7 +637,8 @@ class ProviderService:
                 entity.state.Limits = pm_types.Range(lower=spec.lower_limit, upper=spec.upper_limit)
 
             signal_entities = []
-            for manifestation in DEFAULT_MANIFESTATIONS:
+            for signal_spec in spec.signals:
+                manifestation = signal_spec.manifestation
                 signal_handle = self._unique_handle(
                     f"{constants.SIGNAL_HANDLE_PREFIX}{spec.slug}.{manifestation.value.lower()}",
                 )
@@ -637,7 +649,7 @@ class ProviderService:
                 )
                 signal.descriptor.ConditionSignaled = handle
                 signal.descriptor.Manifestation = manifestation
-                signal.descriptor.Latching = False
+                signal.descriptor.Latching = signal_spec.latching
                 signal.descriptor.SignalDelegationSupported = spec.delegable
                 signal.state.ActivationState = pm_types.AlertActivation.ON
                 signal.state.Presence = pm_types.AlertSignalPresence.OFF
@@ -710,6 +722,7 @@ class ProviderService:
                     presence=str(entity.state.Presence),
                     location=str(entity.state.Location),
                     delegable=bool(entity.descriptor.SignalDelegationSupported),
+                    latching=bool(entity.descriptor.Latching),
                 ),
             )
         return infos
@@ -745,6 +758,27 @@ class ProviderService:
                     mgr.write_entity(entity)
             logger.info("acknowledged %d signal(s) of %s", len(acknowledged), handle)
             return len(acknowledged)
+
+    def stop_latched_signals(self, handle: str) -> int:
+        """Deliberately stop signals that are currently latching after a cleared condition."""
+        with self._lock:
+            if handle not in self._alert_signals:
+                msg = f"no alarm with handle {handle!r}"
+                raise KeyError(msg)
+            latched = [
+                entity
+                for entity in (self.mdib.entities.by_handle(h) for h in self._alert_signals[handle])
+                if entity is not None and entity.state.Presence == pm_types.AlertSignalPresence.LATCH
+            ]
+            if not latched:
+                return 0
+            for entity in latched:
+                entity.state.Presence = pm_types.AlertSignalPresence.OFF
+            with self.mdib.alert_state_transaction() as mgr:
+                for entity in latched:
+                    mgr.write_entity(entity)
+            logger.info("stopped %d latched signal(s) of %s", len(latched), handle)
+            return len(latched)
 
     def set_signal_delegated(self, signal_handle: str, *, delegated: bool) -> None:
         """Hand a signal over to another device, or take it back.
@@ -821,9 +855,14 @@ class ProviderService:
         for signal in signals:
             # A fresh occurrence has not been acknowledged, so Ack does not survive the
             # condition going away and coming back.
-            signal.state.Presence = (
-                pm_types.AlertSignalPresence.ON if present else pm_types.AlertSignalPresence.OFF
-            )
+            if present:
+                signal.state.Presence = pm_types.AlertSignalPresence.ON
+            elif signal.state.Presence == pm_types.AlertSignalPresence.ACK:
+                signal.state.Presence = pm_types.AlertSignalPresence.OFF
+            elif signal.descriptor.Latching:
+                signal.state.Presence = pm_types.AlertSignalPresence.LATCH
+            else:
+                signal.state.Presence = pm_types.AlertSignalPresence.OFF
 
         with self.mdib.alert_state_transaction() as mgr:
             mgr.write_entity(entity)
@@ -980,6 +1019,9 @@ class ProviderService:
                 raise KeyError(msg)
             if not spec.is_sample_array:
                 msg = f"{handle!r} is a {spec.kind.value}, which holds one value; use set_value"
+                raise ValueError(msg)
+            if spec.kind is MetricKind.DISTRIBUTION and len(samples) != DISTRIBUTION_BINS:
+                msg = f"a distribution needs exactly {DISTRIBUTION_BINS} samples, not {len(samples)}"
                 raise ValueError(msg)
 
             entity = self._apply_samples(handle, samples)

@@ -13,11 +13,25 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .constants import METRIC_HANDLE_PREFIX, PRESET_DIR
+from sdc11073.xml_types import pm_types
+from sdc11073.xml_types.xml_structure import DateOfBirthProperty
+
+from .constants import (
+    ACTION_HANDLE_PREFIX,
+    ALERT_HANDLE_PREFIX,
+    CHANNEL_HANDLE_PREFIX,
+    METRIC_HANDLE_PREFIX,
+    OPERATION_HANDLE_PREFIX,
+    PRESET_DIR,
+    SIGNAL_HANDLE_PREFIX,
+    VMD_HANDLE_PREFIX,
+)
 from .model import (
     ActionSpec,
     AlertKind,
+    AlertManifestation,
     AlertPriority,
+    AlertSignalSpec,
     AlertSpec,
     Coding,
     DeviceInfo,
@@ -29,14 +43,15 @@ from .model import (
     PatientMeasurement,
     WaveformShape,
     patient_measurement_wire_value,
+    slugify,
 )
 
 if TYPE_CHECKING:
     from .provider_service import ProviderService
 
-# Version 2 adds nested patient Measurements and CodedValues. Version 1 profiles remain
-# readable because all new fields are optional, but older builds reject new exports cleanly.
-CONFIG_VERSION = 2
+# Version 3 adds per-alert signal manifestation and latching settings. Earlier profiles remain
+# readable because absent signal definitions retain the original visual/audible defaults.
+CONFIG_VERSION = 3
 
 FILE_SUFFIX = ".sdcprofile.json"
 
@@ -226,6 +241,10 @@ def alert_to_dict(handle: str, spec: AlertSpec) -> dict[str, Any]:
         "watches": spec.source_handle,
         "kind": spec.kind.value,
         "priority": spec.priority.value,
+        "signals": [
+            {"manifestation": signal.manifestation.value, "latching": signal.latching}
+            for signal in spec.signals
+        ],
     }
     if spec.lower_limit is not None:
         entry["lower_limit"] = str(spec.lower_limit)
@@ -474,6 +493,31 @@ def metric_from_dict(entry: dict[str, Any]) -> MetricSpec:
         raise ConfigError(msg) from exc
 
 
+def _alert_signal_from_dict(raw: Any, field: str) -> AlertSignalSpec:
+    if not isinstance(raw, dict):
+        msg = f"{field}: expected an object"
+        raise ConfigError(msg)
+    unknown = sorted(set(raw) - {"manifestation", "latching"})
+    if unknown:
+        msg = f"{field}: does not understand {', '.join(unknown)}. It takes: latching, manifestation"
+        raise ConfigError(msg)
+    if "manifestation" not in raw:
+        msg = f"{field}: needs a manifestation"
+        raise ConfigError(msg)
+    latching = raw.get("latching", False)
+    if not isinstance(latching, bool):
+        msg = f"{field}.latching: expected a boolean"
+        raise ConfigError(msg)
+    try:
+        return AlertSignalSpec(
+            manifestation=_enum_or_default(AlertManifestation, raw["manifestation"], None, f"{field}.manifestation"),
+            latching=latching,
+        )
+    except (TypeError, ValueError) as exc:
+        msg = f"{field}: {exc}"
+        raise ConfigError(msg) from exc
+
+
 def alert_from_dict(entry: dict[str, Any]) -> AlertSpec:
     """Rebuild one alarm definition. Raises ConfigError on anything unusable."""
     if not isinstance(entry, dict):
@@ -488,6 +532,16 @@ def alert_from_dict(entry: dict[str, Any]) -> AlertSpec:
     if not source:
         msg = f"alerts[{label}]: no metric to watch"
         raise ConfigError(msg)
+    signals = None
+    if "signals" in entry:
+        raw_signals = entry["signals"]
+        if not isinstance(raw_signals, list):
+            msg = f"alerts[{label}].signals: expected a list"
+            raise ConfigError(msg)
+        signals = tuple(
+            _alert_signal_from_dict(raw, f"alerts[{label}].signals[{index}]")
+            for index, raw in enumerate(raw_signals)
+        )
 
     try:
         return AlertSpec(
@@ -504,6 +558,7 @@ def alert_from_dict(entry: dict[str, Any]) -> AlertSpec:
             upper_limit=_decimal_or_none(entry.get("upper_limit"), f"alerts[{label}].upper_limit"),
             handle=entry.get("handle") or None,
             delegable=bool(entry.get("delegable", False)),
+            **({"signals": signals} if signals is not None else {}),
         )
     except (ValueError, TypeError) as exc:
         msg = f"alerts[{label}]: {exc}"
@@ -719,6 +774,98 @@ def load_file(path: str | Path) -> DeviceConfig:
     return parse(data)
 
 
+def _unique_in(handles: set[str], candidate: str) -> str:
+    """Mirror ProviderService's handle allocation without touching the live MDIB."""
+    if candidate not in handles:
+        return candidate
+    counter = 2
+    while f"{candidate}.{counter}" in handles:
+        counter += 1
+    return f"{candidate}.{counter}"
+
+
+def _claim_handle(handles: set[str], explicit: str | None, generated: str, field: str) -> str:
+    handle = explicit or _unique_in(handles, generated)
+    if explicit and handle in handles:
+        msg = f"{field}: handle {handle!r} already exists"
+        raise ConfigError(msg)
+    handles.add(handle)
+    return handle
+
+
+def _preflight_apply(service: ProviderService, device: DeviceConfig, *, replace: bool) -> None:
+    """Validate the final descriptor graph before replacing any live descriptors.
+
+    This is intentionally a pure namespace simulation. Calling the provider's creation
+    methods to validate references would create sections and defeat the point of preflight.
+    """
+    descriptors = {handle for handle, _ in service.mdib.entities.items()}
+    metrics = set(service.list_metrics())
+    if replace:
+        removed = set(service.list_actions()) | set(service.list_alerts()) | set(service.list_metrics())
+        for alert_handle in service.list_alerts():
+            removed.update(service.signal_handles_for(alert_handle))
+        for metric_handle in service.list_metrics():
+            operation_handle = service.operation_handle_for(metric_handle)
+            if operation_handle is not None:
+                removed.add(operation_handle)
+        descriptors.difference_update(removed)
+        metrics.clear()
+
+    for spec in device.metrics:
+        if spec.section:
+            section_slug = slugify(spec.section)
+            descriptors.add(VMD_HANDLE_PREFIX + section_slug)
+            descriptors.add(CHANNEL_HANDLE_PREFIX + section_slug)
+        handle = _claim_handle(descriptors, spec.handle, METRIC_HANDLE_PREFIX + spec.slug, f"metrics[{spec.label}]")
+        metrics.add(handle)
+        if spec.controllable:
+            _claim_handle(
+                descriptors,
+                None,
+                OPERATION_HANDLE_PREFIX + handle.removeprefix(METRIC_HANDLE_PREFIX),
+                f"metrics[{spec.label}] control",
+            )
+
+    for spec in device.alerts:
+        if spec.source_handle not in metrics:
+            msg = f"alerts[{spec.label}]: watches {spec.source_handle!r}, which is not a metric available after import"
+            raise ConfigError(msg)
+        handle = _claim_handle(descriptors, spec.handle, ALERT_HANDLE_PREFIX + spec.slug, f"alerts[{spec.label}]")
+        for signal in spec.signals:
+            _claim_handle(
+                descriptors,
+                None,
+                SIGNAL_HANDLE_PREFIX + spec.slug + "." + signal.manifestation.value.lower(),
+                f"alerts[{spec.label}] signal",
+            )
+
+    for spec in device.actions:
+        if spec.target_handle not in descriptors:
+            msg = f"actions[{spec.label}]: target {spec.target_handle!r} is not available after import"
+            raise ConfigError(msg)
+        for effect_handle in spec.effects:
+            if effect_handle not in metrics:
+                msg = f"actions[{spec.label}].effects: {effect_handle!r} is not a metric available after import"
+                raise ConfigError(msg)
+        _claim_handle(descriptors, spec.handle, ACTION_HANDLE_PREFIX + spec.slug, f"actions[{spec.label}]")
+
+    if device.location is not None and device.location.is_empty():
+        msg = "contexts.location: an explicit location needs at least one detail"
+        raise ConfigError(msg)
+    if device.patient is not None:
+        try:
+            if device.patient.sex:
+                pm_types.Sex(device.patient.sex)
+            if device.patient.patient_type:
+                pm_types.PatientType(device.patient.patient_type)
+            if device.patient.date_of_birth:
+                DateOfBirthProperty.mk_value_object(device.patient.date_of_birth)
+        except (TypeError, ValueError) as exc:
+            msg = f"contexts.patient: {exc}"
+            raise ConfigError(msg) from exc
+
+
 def apply_to(
     service: ProviderService,
     device: DeviceConfig,
@@ -733,6 +880,7 @@ def apply_to(
     :param replace: clear whatever the provider already had first. Without it, handles that
         already exist would collide.
     """
+    _preflight_apply(service, device, replace=replace)
     if replace:
         for handle in list(service.list_actions()):
             service.remove_action(handle)

@@ -90,9 +90,9 @@ FINISHED_STATES = (msg_types.InvocationState.FINISHED, msg_types.InvocationState
 class ConsumerPane(QWidget):
     """Find SDC providers, inspect what they publish, and drive the parts that allow it."""
 
-    def __init__(self, ip: str, parent: QWidget | None = None) -> None:
+    def __init__(self, ip: str, parent: QWidget | None = None, *, own_epr: str | None = None) -> None:
         super().__init__(parent)
-        self.service = ConsumerService(ip=ip)
+        self.service = ConsumerService(ip=ip, own_epr=own_epr)
         self.service.start()
 
         self.devices: list[DiscoveredDevice] = []

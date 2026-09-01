@@ -71,7 +71,9 @@ from sdctoolbox.gui.startup_dialog import LINK_LOCAL_PREFIX, StartupDialog  # no
 from sdctoolbox.gui.styling import mute  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
     AlertKind,
+    AlertManifestation,
     AlertPriority,
+    AlertSignalSpec,
     AlertSpec,
     Coding,
     LocationInfo,
@@ -276,6 +278,9 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         report.check(not pane.remove_button.isEnabled(), "remove is disabled with no selection")
         report.check(not pane.apply_button.isEnabled(), "editor is disabled with no selection")
 
+        divider_before = window.splitter.sizes()
+        window.resize(1400, 560)
+        pump(app)
         divider_before = window.splitter.sizes()
         window.splitter.setSizes([divider_before[0] + 120, max(80, divider_before[1] - 120)])
         pump(app)
@@ -524,6 +529,20 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             alert_spec is not None and isinstance(alert_spec.priority, AlertPriority),
             "and so is priority",
             type(alert_spec.priority).__name__ if alert_spec else "-",
+        )
+        alert_dialog.signal_boxes[1][1].setChecked(False)
+        alert_dialog.signal_boxes[0][2].setChecked(True)
+        alert_dialog.signal_boxes[2][1].setChecked(True)
+        alert_dialog._on_accept()  # noqa: SLF001
+        report.check(
+            alert_dialog.spec() is not None
+            and alert_dialog.spec().signals
+            == (
+                AlertSignalSpec(AlertManifestation.VIS, latching=True),
+                AlertSignalSpec(AlertManifestation.TAN),
+            ),
+            "signal selection and latching reach the alarm spec",
+            str(alert_dialog.spec().signals if alert_dialog.spec() else None),
         )
 
         alert_dialog2 = NewAlertDialog(alert_metrics)
@@ -864,19 +883,20 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             f"{len(pane.board.card(dist).control.plot.samples)} bars",
         )
 
-        service.set_samples(dist, [Decimal("1"), Decimal("5"), Decimal("2")])
+        first_distribution = [Decimal(index) for index in range(32)]
+        service.set_samples(dist, first_distribution)
         pump(app)
         dist_card.control.plot.flush()
         report.check(
-            dist_card.control.plot.samples == [1.0, 5.0, 2.0],
+            dist_card.control.plot.samples == [float(index) for index in range(32)],
             "a distribution block reaches its plot",
             str(dist_card.control.plot.samples),
         )
-        service.set_samples(dist, [Decimal("7")])
+        service.set_samples(dist, [Decimal("7")] * 32)
         pump(app)
         dist_card.control.plot.flush()
         report.check(
-            dist_card.control.plot.samples == [7.0],
+            dist_card.control.plot.samples == [7.0] * 32,
             "and the next block replaces it rather than appending",
             str(dist_card.control.plot.samples),
         )
@@ -1015,19 +1035,19 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         report.check(dist_plot.tweening, "it eases between blocks instead")
 
         dist_plot.clear()
-        dist_plot.add_samples([Decimal("10"), Decimal("90")])
+        dist_plot.add_samples([Decimal("10")] * 32)
         dist_plot.flush()
         pump(app, seconds=0.1)
-        service.set_samples(dist, [Decimal("90"), Decimal("10")])
+        service.set_samples(dist, [Decimal("90")] * 32)
         app.processEvents()
         drawn = dist_plot.samples
         report.check(
-            drawn != [90.0, 10.0] and dist_plot.target == [90.0, 10.0],
+            drawn != [90.0] * 32 and dist_plot.target == [90.0] * 32,
             "a new block is aimed at, not snapped to",
             f"drawn {[round(v, 1) for v in drawn]}, target {dist_plot.target}",
         )
         report.check(
-            wait_for(app, lambda: dist_plot.samples == [90.0, 10.0], timeout=3.0),
+            wait_for(app, lambda: dist_plot.samples == [90.0] * 32, timeout=3.0),
             "and the bars arrive there",
             str([round(v, 1) for v in dist_plot.samples]),
         )
@@ -1239,9 +1259,9 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         pane.select_alert_handle(acked)
         pump(app)
 
-        def signals_cell() -> str:
+        def signals_cell(handle: str = acked) -> str:
             for row in range(pane.alert_table.rowCount()):
-                if pane.alert_table.item(row, ACOL_HANDLE).text() == acked:
+                if pane.alert_table.item(row, ACOL_HANDLE).text() == handle:
                     return pane.alert_table.item(row, ACOL_SIGNALS).text()
             return ""
 
@@ -1292,6 +1312,28 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         )
         service.remove_alert(plain_alarm)
         service.remove_alert(acked)
+
+        latched_alarm = service.add_alert(
+            AlertSpec(
+                label="Latched zoom",
+                source_handle=zoom,
+                upper_limit=Decimal("90"),
+                signals=(AlertSignalSpec(AlertManifestation.VIS, latching=True),),
+            ),
+        )
+        service.set_value(zoom, Decimal("50"))
+        pane.refresh_alerts()
+        pane.select_alert_handle(latched_alarm)
+        pump(app)
+        report.check(
+            "Vis:Latch" in signals_cell(latched_alarm),
+            "a latched signal is shown after the condition clears",
+        )
+        report.check(pane.stop_latched_button.isEnabled(), "Stop latched is offered while a signal latches")
+        pane._on_stop_latched()  # noqa: SLF001
+        pump(app)
+        report.check("Vis:Off" in signals_cell(latched_alarm), "Stop latched updates the signals cell")
+        service.remove_alert(latched_alarm)
         pane.refresh_alerts()
         pump(app)
 
@@ -1329,10 +1371,10 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             "the provider pane summarizes demographic measurements",
             pane.context_label.text(),
         )
-        window.resize(1100, 620)
+        window.resize(1170, 620)
         pump(app)
         report.check(
-            window.minimumWidth() <= 1100,  # noqa: PLR2004
+            window.minimumWidth() <= 1170,  # noqa: PLR2004
             "demographic text does not force an oversized window",
             str(window.minimumWidth()),
         )

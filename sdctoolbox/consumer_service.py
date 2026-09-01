@@ -19,10 +19,10 @@ from sdc11073 import observableproperties
 from sdc11073.consumer.consumerimpl import SdcConsumer
 from sdc11073.definitions_sdc import SdcV1Definitions
 from sdc11073.mdib import ConsumerMdib
+from sdc11073.mdib.consumermdibxtra import ConsumerMdibMethods
 from sdc11073.wsdiscovery import WSDiscovery
 from sdc11073.xml_types import msg_types, pm_types
 from sdc11073.xml_types import pm_qnames as pm
-from sdc11073.xml_types.actions import periodic_actions
 
 from . import constants
 from .model import (
@@ -123,6 +123,41 @@ def _first_range(ranges: Any) -> tuple[Any, Any]:
     for item in ranges or []:
         return getattr(item, "Lower", None), getattr(item, "Upper", None)
     return None, None
+
+
+class _PeriodicConsumerMdibMethods(ConsumerMdibMethods):
+    """Apply periodic reports because sdc11073's stock MDIB helper only binds episodic ones."""
+
+    def bind_to_client_observables(self) -> None:
+        super().bind_to_client_observables()
+        observableproperties.bind(
+            self._sdc_client,
+            periodic_metric_report=self._on_periodic_metric_report,
+            periodic_alert_report=self._on_periodic_alert_report,
+            periodic_component_report=self._on_periodic_component_report,
+            periodic_operational_state_report=self._on_periodic_operational_state_report,
+            periodic_context_report=self._on_periodic_context_report,
+        )
+
+    def _on_periodic_metric_report(self, received_message_data: Any) -> None:
+        report = self._mdib.data_model.msg_types.PeriodicMetricReport.from_node(received_message_data.p_msg.msg_node)
+        self._mdib.process_incoming_metric_states_report(received_message_data.mdib_version_group, report)
+
+    def _on_periodic_alert_report(self, received_message_data: Any) -> None:
+        report = self._mdib.data_model.msg_types.PeriodicAlertReport.from_node(received_message_data.p_msg.msg_node)
+        self._mdib.process_incoming_alert_states_report(received_message_data.mdib_version_group, report)
+
+    def _on_periodic_component_report(self, received_message_data: Any) -> None:
+        report = self._mdib.data_model.msg_types.PeriodicComponentReport.from_node(received_message_data.p_msg.msg_node)
+        self._mdib.process_incoming_component_states_report(received_message_data.mdib_version_group, report)
+
+    def _on_periodic_operational_state_report(self, received_message_data: Any) -> None:
+        report = self._mdib.data_model.msg_types.PeriodicOperationalStateReport.from_node(received_message_data.p_msg.msg_node)
+        self._mdib.process_incoming_operational_states_report(received_message_data.mdib_version_group, report)
+
+    def _on_periodic_context_report(self, received_message_data: Any) -> None:
+        report = self._mdib.data_model.msg_types.PeriodicContextReport.from_node(received_message_data.p_msg.msg_node)
+        self._mdib.process_incoming_context_states_report(received_message_data.mdib_version_group, report)
 
 
 @dataclass
@@ -452,8 +487,9 @@ class RemoteDevice:
 class ConsumerService:
     """Discovery plus connection management for the consumer side."""
 
-    def __init__(self, ip: str = constants.DEFAULT_IP) -> None:
+    def __init__(self, ip: str = constants.DEFAULT_IP, *, own_epr: str | None = None) -> None:
         self.ip = ip
+        self._own_epr = own_epr
         self._discovery: WSDiscovery | None = None
 
     def start(self) -> None:
@@ -488,6 +524,8 @@ class ConsumerService:
         found: list[DiscoveredDevice] = []
         while time.monotonic() < deadline:
             services = self._discovery.search_services(types=SdcV1Definitions.MedicalDeviceTypesFilter)
+            if self._own_epr is not None:
+                services = [service for service in services if service.epr != self._own_epr]
             found = [
                 DiscoveredDevice(
                     epr=service.epr,
@@ -507,8 +545,8 @@ class ConsumerService:
     def connect(self, device: DiscoveredDevice) -> RemoteDevice:
         """Connect to a discovered provider and load its MDIB."""
         consumer = SdcConsumer.from_wsd_service(device.service, ssl_context_container=None)
-        consumer.start_all(not_subscribed_actions=periodic_actions)
-        mdib = ConsumerMdib(consumer)
+        consumer.start_all()
+        mdib = ConsumerMdib(consumer, extras_cls=_PeriodicConsumerMdibMethods)
         mdib.init_mdib()
         logger.info("connected to %s, %d entities", device.epr, len(mdib.entities))
         return RemoteDevice(consumer, mdib, device.epr)

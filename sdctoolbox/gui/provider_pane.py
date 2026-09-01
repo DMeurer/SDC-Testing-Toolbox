@@ -164,6 +164,8 @@ class ProviderPane(QWidget):
         self.toggle_alert_button.clicked.connect(self._on_toggle_alert)
         self.acknowledge_button = QPushButton("Acknowledge")
         self.acknowledge_button.clicked.connect(self._on_acknowledge)
+        self.stop_latched_button = QPushButton("Stop latched")
+        self.stop_latched_button.clicked.connect(self._on_stop_latched)
         self.delegate_button = QPushButton("Delegate")
         self.delegate_button.clicked.connect(self._on_delegate)
 
@@ -172,6 +174,7 @@ class ProviderPane(QWidget):
         alert_buttons.addStretch(1)
         alert_buttons.addWidget(self.toggle_alert_button)
         alert_buttons.addWidget(self.acknowledge_button)
+        alert_buttons.addWidget(self.stop_latched_button)
         alert_buttons.addWidget(self.delegate_button)
         alert_buttons.addWidget(self.new_alert_button)
         alert_buttons.addWidget(self.remove_alert_button)
@@ -421,7 +424,8 @@ class ProviderPane(QWidget):
                     item.setToolTip(
                         "How each signal is announcing the condition. Ack means it has been\n"
                         "acknowledged; the condition itself is still present. ->Rem means it\n"
-                        "has been delegated to another device.",
+                        "has been delegated to another device. Latch means a latching signal\n"
+                        "continues to announce a cleared condition until stopped.",
                     )
                     if not present:
                         item.setForeground(muted_colour(self))
@@ -491,6 +495,12 @@ class ProviderPane(QWidget):
                 "Mark the signals as seen. The condition stays present - acknowledging\n"
                 "changes how an alarm is announced, not whether it is true.",
             )
+
+        latched = [signal for signal in signals if signal.latched]
+        self.stop_latched_button.setEnabled(bool(latched))
+        self.stop_latched_button.setToolTip(
+            "Stop signals that are latching after the condition cleared" if latched else "No signals are latching"
+        )
 
         delegable = [signal for signal in signals if signal.delegable]
         self.delegate_button.setEnabled(bool(delegable))
@@ -564,6 +574,16 @@ class ProviderPane(QWidget):
             self.service.acknowledge_alert(handle)
         except (KeyError, ValueError) as exc:
             QMessageBox.warning(self, "Could not acknowledge", str(exc))
+        self.refresh_alerts()
+
+    def _on_stop_latched(self) -> None:
+        handle = self.selected_alert_handle()
+        if handle is None:
+            return
+        try:
+            self.service.stop_latched_signals(handle)
+        except KeyError as exc:
+            QMessageBox.warning(self, "Could not stop latched signals", str(exc))
         self.refresh_alerts()
 
     def _on_delegate(self) -> None:

@@ -167,8 +167,7 @@ AlertSignalPresence = pm_types.AlertSignalPresence
 # only be delegated when its descriptor says SignalDelegationSupported.
 AlertSignalLocation = pm_types.AlertSignalPrimaryLocation
 
-# Every condition this tool creates gets one signal per manifestation listed here. One
-# condition driving several signals is the whole point of keeping them separate.
+# Default signal definitions preserve the original visual and audible behavior.
 DEFAULT_MANIFESTATIONS = (AlertManifestation.VIS, AlertManifestation.AUD)
 
 
@@ -514,9 +513,9 @@ class MetricSpec:
         if (
             self.domain_minimum is not None
             and self.domain_maximum is not None
-            and self.domain_minimum > self.domain_maximum
+            and self.domain_minimum >= self.domain_maximum
         ):
-            msg = f"domain_minimum {self.domain_minimum} is above domain_maximum {self.domain_maximum}"
+            msg = f"domain_minimum {self.domain_minimum} must be below domain_maximum {self.domain_maximum}"
             raise ValueError(msg)
         if self.domain_unit_label and self.kind is not MetricKind.DISTRIBUTION:
             msg = f"domain_unit_label is only meaningful for {MetricKind.DISTRIBUTION.value} metrics"
@@ -540,6 +539,9 @@ class MetricSpec:
         if isinstance(self.initial_value, float):
             msg = "initial_value must be a Decimal or str, never a float"
             raise TypeError(msg)
+        if self.kind in SAMPLE_ARRAY_KINDS and self.initial_value is not None:
+            msg = f"initial_value is not meaningful for {self.kind.value} metrics; use samples instead"
+            raise ValueError(msg)
         if self.kind is MetricKind.NUMBER and isinstance(self.initial_value, Decimal):
             if self.minimum is not None and self.initial_value < self.minimum:
                 msg = f"initial_value {self.initial_value} is below minimum {self.minimum}"
@@ -616,6 +618,24 @@ def _coerce_enum(enum_cls: Any, value: Any, field_name: str) -> Any:
         raise ValueError(msg) from exc
 
 
+@dataclass(frozen=True)
+class AlertSignalSpec:
+    """The static descriptor settings for one signal of an alert condition."""
+
+    manifestation: AlertManifestation
+    latching: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "manifestation", _coerce_enum(AlertManifestation, self.manifestation, "manifestation"))
+        if not isinstance(self.latching, bool):
+            msg = "latching must be a bool"
+            raise TypeError(msg)
+
+
+def _default_alert_signals() -> tuple[AlertSignalSpec, ...]:
+    return tuple(AlertSignalSpec(manifestation) for manifestation in DEFAULT_MANIFESTATIONS)
+
+
 @dataclass
 class AlertSpec:
     """An alarm condition as the user describes it.
@@ -627,8 +647,8 @@ class AlertSpec:
     * the **signal** is how that fact is announced - visually, audibly, or by vibration.
 
     One condition can drive several signals, which is why they are separate objects rather
-    than flags on one. This tool creates a visual and an audible signal for every condition,
-    so the split is visible in the tree.
+    than flags on one. Signal definitions preserve the current visual/audible defaults while
+    allowing a profile to model the manifestation and latching of each one.
     """
 
     label: str
@@ -644,6 +664,7 @@ class AlertSpec:
     # Whether another device may take this alarm's signals over. Sets
     # SignalDelegationSupported on every signal; without it a delegation is refused.
     delegable: bool = False
+    signals: tuple[AlertSignalSpec, ...] = field(default_factory=_default_alert_signals)
 
     def __post_init__(self) -> None:
         # AlertKind and AlertPriority are the BICEPS enums, and those subclass str. Anything
@@ -652,6 +673,13 @@ class AlertSpec:
         # here so every entry point gets the same treatment.
         self.kind = _coerce_enum(AlertKind, self.kind, "kind")
         self.priority = _coerce_enum(AlertPriority, self.priority, "priority")
+        self.signals = tuple(self.signals)
+        if not self.signals:
+            msg = "an alarm needs at least one signal"
+            raise ValueError(msg)
+        if any(not isinstance(signal, AlertSignalSpec) for signal in self.signals):
+            msg = "signals must be AlertSignalSpec values"
+            raise TypeError(msg)
 
         for name in ("lower_limit", "upper_limit"):
             limit = getattr(self, name)
@@ -707,6 +735,7 @@ class SignalInfo:
     presence: str
     location: str
     delegable: bool
+    latching: bool = False
 
     @property
     def acknowledged(self) -> bool:
@@ -717,6 +746,11 @@ class SignalInfo:
     def delegated(self) -> bool:
         """Whether another device has taken this signal over."""
         return self.location == AlertSignalLocation.REMOTE
+
+    @property
+    def latched(self) -> bool:
+        """Whether the signal is currently announcing a cleared condition."""
+        return self.presence == AlertSignalPresence.LATCH
 
     def summary(self) -> str:
         """Short form for a table cell or a console line, e.g. 'Vis:Ack', 'Aud:On->Rem'.
@@ -854,6 +888,25 @@ class PatientInfo:
         if name and extras:
             return f"{name} ({extras})"
         return name or extras
+
+
+# A visible, metric default makes a fresh toolbox useful for patient-context tests without
+# requiring every user to enter the mandatory coded measurement units first.
+DEFAULT_PATIENT = PatientInfo(
+    given_name="Alex",
+    family_name="Example",
+    sex="Unspec",
+    patient_type="Ad",
+    date_of_birth="1990-01-01",
+    height=PatientMeasurement(
+        value=Decimal("170"),
+        unit=Coding(code="264184", system="mdc", label="cm"),
+    ),
+    weight=PatientMeasurement(
+        value=Decimal("70"),
+        unit=Coding(code="266016", system="mdc", label="kg"),
+    ),
+)
 
 
 def coding_from_biceps(coded_value: Any) -> Coding | None:

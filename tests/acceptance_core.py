@@ -475,7 +475,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
             if dist is not None:
                 report.check(dist.kind is MetricKind.DISTRIBUTION, "it is a distribution")
                 report.check(
-                    dist.samples == tuple(Decimal(v) for v in ("3", "9", "27", "9", "3")),
+                    dist.samples == tuple(Decimal(index) for index in range(32)),
                     "its samples arrive exactly as sent",
                     str(dist.samples),
                 )

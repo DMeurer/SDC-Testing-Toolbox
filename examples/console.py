@@ -215,12 +215,12 @@ class ProviderShell(Cmd):
         how a distribution is driven; a waveform generates its own, so this shows the last
         block that went out.
 
-            samples m.spectrum 3 9 27 9 3
+            samples m.spectrum 0 1 2 ... 31
             samples m.pleth
         """
         parts = shlex.split(line)
         if not parts:
-            print("usage: samples <handle> [v1 v2 ...]")
+            print("usage: samples <handle> [v1 v2 ...] (distributions need exactly 32 values)")
             return
         handle, rest = parts[0], parts[1:]
         if rest:
