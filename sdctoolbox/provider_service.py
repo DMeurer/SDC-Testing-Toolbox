@@ -304,8 +304,10 @@ class ProviderService:
         self._actions: dict[str, ActionSpec] = {}
         # section name -> the Channel handle its metrics were put in
         self._sections: dict[str, str] = {}
-        # Guards the metric observer against re-entering itself.
-        self._evaluating_alerts = False
+        # Sources arriving during an alert evaluation are retained for its next pass. The
+        # service lock protects the set; the non-blocking lock elects exactly one drainer.
+        self._pending_alert_sources: set[str] = set()
+        self._alert_evaluator_lock = threading.Lock()
         # Waveform generation: one thread for every waveform, and where each curve had
         # got to, so a new block continues rather than restarting.
         self._waveform_thread: threading.Thread | None = None
@@ -407,6 +409,8 @@ class ProviderService:
         self._specs.clear()
         self._alerts.clear()
         self._alert_signals.clear()
+        with self._lock:
+            self._pending_alert_sources.clear()
         self._actions.clear()
         self._sections.clear()
         self._waveform_phase.clear()
@@ -823,17 +827,50 @@ class ProviderService:
         self._evaluate_alerts({metric_handle})
 
     def _evaluate_alerts(self, source_handles: set[str]) -> None:
-        if self._evaluating_alerts or self._mdib is None:
+        if not source_handles:
             return
-        self._evaluating_alerts = True
+
+        with self._lock:
+            if self._mdib is None:
+                return
+            self._pending_alert_sources.update(source_handles)
+            if not self._alert_evaluator_lock.acquire(blocking=False):
+                return
+
+        owns_evaluator = True
+        first_error: Exception | None = None
         try:
-            for handle, spec in list(self._alerts.items()):
-                if not spec.has_limits or spec.source_handle not in source_handles:
-                    continue
-                value = self.get_value(spec.source_handle)
-                self._write_alert_presence(handle, present=spec.breached_by(value))
+            while True:
+                with self._lock:
+                    if self._mdib is None:
+                        self._pending_alert_sources.clear()
+                    if not self._pending_alert_sources:
+                        # Release while holding the queue lock. A later caller therefore
+                        # either sees this evaluator or becomes the next one itself.
+                        self._alert_evaluator_lock.release()
+                        owns_evaluator = False
+                        break
+                    pending = set(self._pending_alert_sources)
+                    self._pending_alert_sources.clear()
+                    alerts = [
+                        (handle, spec)
+                        for handle, spec in self._alerts.items()
+                        if spec.has_limits and spec.source_handle in pending
+                    ]
+
+                for handle, spec in alerts:
+                    try:
+                        value = self.get_value(spec.source_handle)
+                        self._write_alert_presence(handle, present=spec.breached_by(value))
+                    except Exception as exc:  # noqa: BLE001 - drain other queued sources first
+                        first_error = first_error or exc
+
+            if first_error is not None:
+                raise first_error
         finally:
-            self._evaluating_alerts = False
+            if owns_evaluator:
+                with self._lock:
+                    self._alert_evaluator_lock.release()
 
     def _write_alert_presence(self, handle: str, *, present: bool) -> None:
         entity = self.mdib.entities.by_handle(handle)

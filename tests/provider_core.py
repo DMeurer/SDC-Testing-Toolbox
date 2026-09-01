@@ -483,8 +483,77 @@ def check_metric_value_validation(report: Report, service: ProviderService) -> N
         service.remove_metric(handle)
 
 
+def check_concurrent_alert_evaluation(report: Report, service: ProviderService) -> None:
+    print("\n6. Concurrent limit-alarm evaluation")
+
+    first_source = service.add_metric(
+        MetricSpec(label="First concurrent source", kind=MetricKind.NUMBER, initial_value=Decimal("0")),
+    )
+    second_source = service.add_metric(
+        MetricSpec(label="Second concurrent source", kind=MetricKind.NUMBER, initial_value=Decimal("0")),
+    )
+    first_alarm = service.add_alert(
+        AlertSpec(label="First concurrent alarm", source_handle=first_source, upper_limit=Decimal("10")),
+    )
+    second_alarm = service.add_alert(
+        AlertSpec(label="Second concurrent alarm", source_handle=second_source, upper_limit=Decimal("10")),
+    )
+
+    first_evaluation_started = threading.Event()
+    release_first_evaluation = threading.Event()
+    worker_errors: list[Exception] = []
+    original_write = service._write_alert_presence  # noqa: SLF001 - deterministic overlap fixture
+
+    def overlapping_write(handle: str, *, present: bool) -> None:  # noqa: FBT001
+        if handle == first_alarm and present and not first_evaluation_started.is_set():
+            first_evaluation_started.set()
+            if not release_first_evaluation.wait(timeout=5.0):
+                raise TimeoutError("concurrent alert test did not release the first evaluation")
+        original_write(handle, present=present)
+
+    def update_source(handle: str) -> None:
+        try:
+            service.set_value(handle, Decimal("20"))
+        except Exception as exc:  # noqa: BLE001 - report worker failures on the main thread
+            worker_errors.append(exc)
+
+    service._write_alert_presence = overlapping_write  # noqa: SLF001 - deterministic overlap fixture
+    first_worker = threading.Thread(target=update_source, args=(first_source,), name="first-alarm-update")
+    second_worker = threading.Thread(target=update_source, args=(second_source,), name="second-alarm-update")
+    try:
+        first_worker.start()
+        first_started = first_evaluation_started.wait(timeout=5.0)
+        if first_started:
+            second_worker.start()
+            second_worker.join(timeout=5.0)
+        second_completed_during_first = first_started and not second_worker.is_alive()
+    finally:
+        release_first_evaluation.set()
+        first_worker.join(timeout=5.0)
+        if second_worker.ident is not None:
+            second_worker.join(timeout=5.0)
+        service._write_alert_presence = original_write  # noqa: SLF001 - restore the service method
+
+    report.check(
+        second_completed_during_first,
+        "the second source updates while the first alarm evaluation is paused",
+    )
+    report.check(
+        not first_worker.is_alive() and not second_worker.is_alive() and not worker_errors,
+        "both concurrent evaluators finish without deadlock",
+        str(worker_errors),
+    )
+    report.check(service.alert_present(first_alarm), "the first source raises its alarm")
+    report.check(service.alert_present(second_alarm), "the overlapping second source raises its alarm")
+
+    service.remove_alert(first_alarm)
+    service.remove_alert(second_alarm)
+    service.remove_metric(first_source)
+    service.remove_metric(second_source)
+
+
 def check_signals(report: Report, service: ProviderService) -> None:
-    print("\n6. Acknowledging and delegating a signal")
+    print("\n7. Acknowledging and delegating a signal")
 
     service.add_metric(
         MetricSpec(label="Pressure", kind=MetricKind.NUMBER, initial_value=Decimal("5")),
@@ -571,7 +640,7 @@ def check_signals(report: Report, service: ProviderService) -> None:
 
 
 def check_latching_signals(report: Report, service: ProviderService) -> None:
-    print("\n6. Configurable signal manifestations and latching")
+    print("\n8. Configurable signal manifestations and latching")
     service.add_metric(MetricSpec(label="Latch source", kind=MetricKind.NUMBER, initial_value=Decimal("0")))
     alarm = service.add_alert(
         AlertSpec(
@@ -606,7 +675,7 @@ def check_latching_signals(report: Report, service: ProviderService) -> None:
 
 
 def check_contexts(report: Report, service: ProviderService) -> None:
-    print("\n7. Patient and location contexts")
+    print("\n9. Patient and location contexts")
 
     default = service.get_location()
     report.check(
@@ -861,7 +930,7 @@ def check_contexts(report: Report, service: ProviderService) -> None:
 
 
 def check_presets(report: Report) -> None:
-    print("\n8. Presets")
+    print("\n10. Presets")
 
     presets = config.list_presets()
     report.check(bool(presets), "the shipped presets are found", f"{len(presets)} found")
@@ -907,6 +976,7 @@ def main() -> int:
         check_alarm_rollback(report, service)
         check_metric_removal_dependencies(report, service)
         check_metric_value_validation(report, service)
+        check_concurrent_alert_evaluation(report, service)
         check_signals(report, service)
         check_latching_signals(report, service)
         check_contexts(report, service)
