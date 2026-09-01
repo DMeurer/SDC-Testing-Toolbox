@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+from pathlib import Path
 import sys
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from sdc11073.loghelper import basic_logging_setup
@@ -33,6 +35,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--name", default=constants.DEFAULT_INSTANCE_NAME, help="instance name, decides the EPR")
     parser.add_argument("--config", help="config file to load on startup")
     parser.add_argument("--verbose", action="store_true", help="show sdc11073 logging")
+    parser.add_argument("--smoke-test", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
@@ -91,14 +94,33 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     service = ProviderService(ip=settings.ip, instance_name=settings.name, device=device)
-    service.start()
     try:
+        service.start()
         window = MainWindow(service)
         if settings.config_path:
             window.load_config(settings.config_path)
         window.show()
+        if args.smoke_test:
+            bundled_files = {path.name for path in constants.PRESET_DIR.glob("*.json")}
+            if bundled_files != constants.SHIPPED_PRESET_FILES:
+                msg = f"packaged presets differ: found {sorted(bundled_files)}"
+                raise RuntimeError(msg)
+            presets = config.list_presets()
+            usable_files = {preset.path.name for preset in presets}
+            if usable_files != constants.SHIPPED_PRESET_FILES:
+                msg = f"packaged presets are invalid: loaded {sorted(usable_files)}"
+                raise RuntimeError(msg)
+            for preset in presets:
+                config.load_file(preset.path)
+            QTimer.singleShot(1000, window.close)
         return app.exec()
     except Exception as exc:  # noqa: BLE001 - a crash here should still say why
+        if args.smoke_test:
+            detail = f"smoke test failed: {exc}"
+            Path("smoke-test-error.txt").write_text(detail, encoding="utf-8")
+            if sys.stderr is not None:
+                print(detail, file=sys.stderr)
+            return 1
         QMessageBox.critical(None, "SDC testing toolbox", str(exc))
         raise
     finally:
