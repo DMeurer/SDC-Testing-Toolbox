@@ -225,6 +225,47 @@ def check_preflight_preserves_device(report: Report, service: ProviderService) -
     service.remove_metric("m.existing")
 
 
+def check_action_effect_types(report: Report) -> None:
+    device = config.parse(
+        {
+            "metrics": [
+                {"handle": "m.number", "label": "Number", "kind": "number", "minimum": "1", "maximum": "9"},
+                {"handle": "m.text", "label": "Text", "kind": "text"},
+                {"handle": "m.choice", "label": "Choice", "kind": "choice", "allowed_values": ["7", "RUN"]},
+            ],
+            "actions": [
+                {
+                    "label": "Mixed",
+                    "target": "mds0",
+                    "effects": {"m.number": "7", "m.text": "007", "m.choice": "7"},
+                },
+            ],
+        },
+    )
+    effects = device.actions[0].effects
+    report.check(
+        effects == {"m.number": Decimal("7"), "m.text": "007", "m.choice": "7"},
+        "action effect syntax is resolved against each target metric kind",
+        repr(effects),
+    )
+
+    try:
+        config.parse(
+            {
+                "metrics": [
+                    {"handle": "m.number", "label": "Number", "kind": "number", "minimum": "1", "maximum": "9"},
+                ],
+                "actions": [
+                    {"label": "Invalid", "target": "mds0", "effects": {"m.number": "10"}},
+                ],
+            },
+        )
+    except config.ConfigError as exc:
+        report.check("maximum" in str(exc), "an out-of-range config effect is rejected", str(exc))
+    else:
+        report.check(False, "an out-of-range config effect is rejected", "it was accepted")  # noqa: FBT003
+
+
 BAD_FILES = [
     ('{"metrics": [{"label": "x"}]}', "a metric with no kind"),
     ('{"metrics": [{"label": "x", "kind": "nope"}]}', "an unknown kind"),
@@ -439,7 +480,10 @@ def main() -> int:
     finally:
         guarded.stop()
 
-    print("\n5. Bad files are refused with a usable message")
+    print("\n5. Action effects follow target metric kinds")
+    check_action_effect_types(report)
+
+    print("\n6. Bad files are refused with a usable message")
     for text, description in BAD_FILES:
         bad = workdir / "bad.json"
         bad.write_text(text, encoding="utf-8")
@@ -450,7 +494,7 @@ def main() -> int:
         else:
             report.check(False, f"refuses {description}", "it was accepted")  # noqa: FBT003
 
-    print("\n6. A missing file says so")
+    print("\n7. A missing file says so")
     try:
         config.load_file(workdir / "does-not-exist.json")
     except config.ConfigError as exc:

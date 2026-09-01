@@ -42,6 +42,7 @@ from .model import (
     PatientInfo,
     PatientMeasurement,
     WaveformShape,
+    coerce_metric_value,
     patient_measurement_wire_value,
     slugify,
 )
@@ -271,7 +272,7 @@ def action_to_dict(handle: str, spec: ActionSpec) -> dict[str, Any]:
     return entry
 
 
-def action_from_dict(entry: dict[str, Any]) -> ActionSpec:
+def action_from_dict(entry: dict[str, Any], metrics: dict[str, MetricSpec]) -> ActionSpec:
     """Rebuild one action. Raises ConfigError on anything unusable."""
     if not isinstance(entry, dict):
         msg = f"actions: expected an object, found {type(entry).__name__}"
@@ -291,12 +292,18 @@ def action_from_dict(entry: dict[str, Any]) -> ActionSpec:
         raise ConfigError(msg)
     effects: dict[str, Any] = {}
     for handle, value in raw_effects.items():
-        text = str(value)
+        effect_handle = str(handle)
+        metric = metrics.get(effect_handle)
+        if metric is None:
+            # Append-mode imports may refer to a metric already in the provider. Preflight
+            # resolves those once it has the complete prospective metric set.
+            effects[effect_handle] = str(value)
+            continue
         try:
-            effects[str(handle)] = Decimal(text)
-        except InvalidOperation:
-            # Not every effect is numeric: a mode is a string.
-            effects[str(handle)] = text
+            effects[effect_handle] = coerce_metric_value(metric, value, effect_handle)
+        except (TypeError, ValueError) as exc:
+            msg = f"actions[{label}].effects[{effect_handle}]: {exc}"
+            raise ConfigError(msg) from exc
 
     type_coding, _ = _coding_from_json(entry.get("type"), f"actions[{label}].type")
     try:
@@ -733,11 +740,12 @@ def parse(data: Any) -> DeviceConfig:
     device, instance_name = _device_from_dict(data.get("device"))
     metrics = [metric_from_dict(entry) for entry in data.get("metrics") or []]
     alerts = [alert_from_dict(entry) for entry in data.get("alerts") or []]
-    actions = [action_from_dict(entry) for entry in data.get("actions") or []]
+    metric_handles = {spec.handle or (METRIC_HANDLE_PREFIX + spec.slug): spec for spec in metrics}
+    actions = [action_from_dict(entry, metric_handles) for entry in data.get("actions") or []]
     location, patient = _contexts_from_dict(data.get("contexts"))
 
     # Catch a dangling reference here rather than half way through building the device.
-    defined = {spec.handle or (METRIC_HANDLE_PREFIX + spec.slug) for spec in metrics}
+    defined = set(metric_handles)
     for alert in alerts:
         if alert.source_handle not in defined:
             known = ", ".join(sorted(defined)) or "none"
@@ -800,7 +808,8 @@ def _preflight_apply(service: ProviderService, device: DeviceConfig, *, replace:
     methods to validate references would create sections and defeat the point of preflight.
     """
     descriptors = {handle for handle, _ in service.mdib.entities.items()}
-    metrics = set(service.list_metrics())
+    metric_specs = service.list_metrics()
+    metrics = set(metric_specs)
     if replace:
         removed = set(service.list_actions()) | set(service.list_alerts()) | set(service.list_metrics())
         for alert_handle in service.list_alerts():
@@ -810,6 +819,7 @@ def _preflight_apply(service: ProviderService, device: DeviceConfig, *, replace:
             if operation_handle is not None:
                 removed.add(operation_handle)
         descriptors.difference_update(removed)
+        metric_specs.clear()
         metrics.clear()
 
     for spec in device.metrics:
@@ -819,6 +829,7 @@ def _preflight_apply(service: ProviderService, device: DeviceConfig, *, replace:
             descriptors.add(CHANNEL_HANDLE_PREFIX + section_slug)
         handle = _claim_handle(descriptors, spec.handle, METRIC_HANDLE_PREFIX + spec.slug, f"metrics[{spec.label}]")
         metrics.add(handle)
+        metric_specs[handle] = spec
         if spec.controllable:
             _claim_handle(
                 descriptors,
@@ -848,6 +859,16 @@ def _preflight_apply(service: ProviderService, device: DeviceConfig, *, replace:
             if effect_handle not in metrics:
                 msg = f"actions[{spec.label}].effects: {effect_handle!r} is not a metric available after import"
                 raise ConfigError(msg)
+        for effect_handle, value in spec.effects.items():
+            try:
+                spec.effects[effect_handle] = coerce_metric_value(
+                    metric_specs[effect_handle],
+                    value,
+                    effect_handle,
+                )
+            except (TypeError, ValueError) as exc:
+                msg = f"actions[{spec.label}].effects[{effect_handle}]: {exc}"
+                raise ConfigError(msg) from exc
         _claim_handle(descriptors, spec.handle, ACTION_HANDLE_PREFIX + spec.slug, f"actions[{spec.label}]")
 
     if device.location is not None and device.location.is_empty():

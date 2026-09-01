@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import enum
 import re
-from urllib.parse import urlsplit
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
+from urllib.parse import urlsplit
 
-from sdc11073.provider.operations import OperationDefinitionBase, SetStringOperation, SetValueOperation
+from sdc11073.provider.operations import (
+    OperationDefinitionBase,
+    SetStringOperation,
+    SetValueOperation,
+)
 from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types import pm_types
 from sdc11073.xml_types.dataconverters import DecimalConverter
@@ -536,23 +540,11 @@ class MetricSpec:
         if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
             msg = f"minimum {self.minimum} is greater than maximum {self.maximum}"
             raise ValueError(msg)
-        if isinstance(self.initial_value, float):
-            msg = "initial_value must be a Decimal or str, never a float"
-            raise TypeError(msg)
         if self.kind in SAMPLE_ARRAY_KINDS and self.initial_value is not None:
             msg = f"initial_value is not meaningful for {self.kind.value} metrics; use samples instead"
             raise ValueError(msg)
-        if self.kind is MetricKind.NUMBER and isinstance(self.initial_value, Decimal):
-            if self.minimum is not None and self.initial_value < self.minimum:
-                msg = f"initial_value {self.initial_value} is below minimum {self.minimum}"
-                raise ValueError(msg)
-            if self.maximum is not None and self.initial_value > self.maximum:
-                msg = f"initial_value {self.initial_value} is above maximum {self.maximum}"
-                raise ValueError(msg)
-        if self.kind is MetricKind.CHOICE and self.initial_value is not None:
-            if self.initial_value not in self.allowed_values:
-                msg = f"initial_value {self.initial_value!r} is not among allowed_values"
-                raise ValueError(msg)
+        if self.initial_value is not None:
+            self.initial_value = coerce_metric_value(self, self.initial_value)
 
     @property
     def slug(self) -> str:
@@ -566,6 +558,7 @@ class MetricSpec:
         metric nobody has given a term to does not have one.
         """
         return self.type_coding or Coding(code=self.slug, system="private", label=self.label)
+
 
     def effective_unit(self) -> Coding:
         """What this metric's values are in, as a code."""
@@ -599,6 +592,46 @@ class MetricSpec:
     def range_text(self) -> str:
         """The limits as something readable, or an empty string when unbounded."""
         return format_range(self.minimum, self.maximum)
+
+
+def coerce_metric_value(spec: MetricSpec, value: object, handle: str | None = None) -> Decimal | str:
+    """Normalize and validate one scalar metric value.
+
+    Numbers accept ``Decimal`` values and decimal strings and are returned as ``Decimal``;
+    text and choice values are returned as strings. Floats are always rejected. Numeric
+    bounds and choice membership come from the target metric specification.
+    """
+    target = handle or spec.handle or spec.label
+    if isinstance(value, float):
+        msg = f"value for {target!r} must be a Decimal or str, never a float"
+        raise TypeError(msg)
+
+    if spec.kind is MetricKind.NUMBER:
+        try:
+            normalized: Decimal | str = value if isinstance(value, Decimal) else Decimal(str(value))
+        except (InvalidOperation, ValueError) as exc:
+            msg = f"{value!r} is not a number for {target!r}"
+            raise ValueError(msg) from exc
+        if spec.minimum is not None and normalized < spec.minimum:
+            msg = f"{normalized} is below the minimum {spec.minimum} of {target!r}"
+            raise ValueError(msg)
+        if spec.maximum is not None and normalized > spec.maximum:
+            msg = f"{normalized} is above the maximum {spec.maximum} of {target!r}"
+            raise ValueError(msg)
+        return normalized
+
+    if spec.kind is MetricKind.TEXT:
+        return str(value)
+
+    if spec.kind is MetricKind.CHOICE:
+        normalized = str(value)
+        if normalized not in spec.allowed_values:
+            msg = f"{normalized!r} is not among the allowed values {list(spec.allowed_values)} of {target!r}"
+            raise ValueError(msg)
+        return normalized
+
+    msg = f"{spec.kind.value} metrics do not hold one scalar value"
+    raise ValueError(msg)
 
 
 def _coerce_enum(enum_cls: Any, value: Any, field_name: str) -> Any:

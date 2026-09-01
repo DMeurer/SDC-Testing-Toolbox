@@ -17,7 +17,6 @@ Usage:  .venv/Scripts/python.exe tests/provider_core.py
 
 from __future__ import annotations
 
-import json
 import logging
 import sys
 import tempfile
@@ -40,9 +39,9 @@ from sdctoolbox import config, constants  # noqa: E402
 from sdctoolbox.consumer_service import RemoteDevice  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
     ActionSpec,
-    AlertSpec,
     AlertManifestation,
     AlertSignalSpec,
+    AlertSpec,
     Coding,
     LocationInfo,
     MetricKind,
@@ -407,8 +406,85 @@ def check_metric_removal_dependencies(report: Report, service: ProviderService) 
     service.remove_metric(survivor)
 
 
+def check_metric_value_validation(report: Report, service: ProviderService) -> None:
+    print("\n5. Metric writes and action effects share validation")
+
+    number = service.add_metric(
+        MetricSpec(
+            label="Validated number",
+            kind=MetricKind.NUMBER,
+            minimum=Decimal("1"),
+            maximum=Decimal("10"),
+            initial_value=Decimal("2"),
+        ),
+    )
+    text = service.add_metric(MetricSpec(label="Validated text", kind=MetricKind.TEXT, initial_value="old"))
+    choice = service.add_metric(
+        MetricSpec(
+            label="Validated choice",
+            kind=MetricKind.CHOICE,
+            allowed_values=("1", "RUN"),
+            initial_value="RUN",
+        ),
+    )
+
+    service.set_value(number, "7")
+    report.check(
+        service.get_value(number) == Decimal("7"),
+        "a local numeric string is stored as a Decimal",
+        repr(service.get_value(number)),
+    )
+    try:
+        service.set_value(choice, "INVALID")
+    except ValueError as exc:
+        report.check("allowed values" in str(exc), "a local invalid choice is rejected", str(exc))
+    else:
+        report.check(False, "a local invalid choice is rejected", "it was accepted")  # noqa: FBT003
+    report.check(service.get_value(choice) == "RUN", "a rejected local choice leaves its value unchanged")
+
+    mixed = service.add_action(
+        ActionSpec(
+            label="Mixed value action",
+            target_handle=constants.MDS_HANDLE,
+            effects={number: "3", text: "001", choice: "1"},
+        ),
+    )
+    service.run_action(mixed)
+    report.check(
+        service.get_value(number) == Decimal("3")
+        and service.get_value(text) == "001"
+        and service.get_value(choice) == "1",
+        "a mixed-kind local action resolves values from each target kind",
+    )
+
+    invalid_effects = [
+        ("Out of range action", {text: "changed", number: "11"}, "out-of-range"),
+        ("Invalid choice action", {text: "changed", choice: "INVALID"}, "invalid-choice"),
+        ("Missing effect action", {text: "changed", "m.missing_effect": "1"}, "missing-target"),
+    ]
+    invalid_actions = []
+    for label, effects, description in invalid_effects:
+        action = service.add_action(ActionSpec(label=label, target_handle=constants.MDS_HANDLE, effects=effects))
+        invalid_actions.append(action)
+        before = (service.get_value(number), service.get_value(text), service.get_value(choice))
+        try:
+            service.run_action(action)
+        except (KeyError, ValueError):
+            pass
+        else:
+            report.check(False, f"a local {description} action fails", "it reported success")  # noqa: FBT003
+            continue
+        after = (service.get_value(number), service.get_value(text), service.get_value(choice))
+        report.check(after == before, f"a local {description} action is all-or-nothing", str(after))
+
+    for action in [mixed, *invalid_actions]:
+        service.remove_action(action)
+    for handle in (number, text, choice):
+        service.remove_metric(handle)
+
+
 def check_signals(report: Report, service: ProviderService) -> None:
-    print("\n5. Acknowledging and delegating a signal")
+    print("\n6. Acknowledging and delegating a signal")
 
     service.add_metric(
         MetricSpec(label="Pressure", kind=MetricKind.NUMBER, initial_value=Decimal("5")),
@@ -830,6 +906,7 @@ def main() -> int:
         check_sample_arrays(report, service)
         check_alarm_rollback(report, service)
         check_metric_removal_dependencies(report, service)
+        check_metric_value_validation(report, service)
         check_signals(report, service)
         check_latching_signals(report, service)
         check_contexts(report, service)

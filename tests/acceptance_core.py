@@ -34,20 +34,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from sdc11073.loghelper import basic_logging_setup  # noqa: E402
-from sdc11073.xml_types import msg_types  # noqa: E402
-
-from sdctoolbox import constants  # noqa: E402
-from sdctoolbox.consumer_service import ConsumerService  # noqa: E402
-from sdctoolbox.model import MetricKind  # noqa: E402
-
 from acceptance_provider import (  # noqa: E402
     DIST,
     HOME_ACTION,
+    INVALID_CHOICE_ACTION,
+    INVALID_EFFECT_ACTION,
     LATE,
     LIMIT_ALARM,
     LOCKED,
     MANUAL_ALARM,
+    MISSING_EFFECT_ACTION,
     MODE,
     NOTE,
     PEER_INSTANCE,
@@ -57,6 +53,12 @@ from acceptance_provider import (  # noqa: E402
     WAVE,
     ZOOM,
 )
+from sdc11073.loghelper import basic_logging_setup  # noqa: E402
+from sdc11073.xml_types import msg_types  # noqa: E402
+
+from sdctoolbox import constants  # noqa: E402
+from sdctoolbox.consumer_service import ConsumerService  # noqa: E402
+from sdctoolbox.model import MetricKind  # noqa: E402
 
 FINISHED = (msg_types.InvocationState.FINISHED, msg_types.InvocationState.FINISHED_MOD)
 
@@ -267,8 +269,8 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
 
             # ------------------------------------------------------- remote control
             print("\n3. Remote control", flush=True)
-            state = remote.set_value(ZOOM, Decimal("7"))
-            report.check(state in FINISHED, "setting a numeric value finishes", str(state))
+            state = remote.set_value(ZOOM, "7")
+            report.check(state in FINISHED, "setting a numeric string finishes", str(state))
             time.sleep(1.5)
             report.check(
                 remote.metrics()[ZOOM].value == Decimal("7"),
@@ -590,6 +592,33 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
                     "including on a metric of a different kind",
                     str(remote.metrics()[MODE].value),
                 )
+                report.check(
+                    remote.metrics()[NOTE].value == "001",
+                    "and numeric-looking text remains text",
+                    repr(remote.metrics()[NOTE].value),
+                )
+
+                for invalid_action, description in (
+                    (INVALID_EFFECT_ACTION, "out-of-range"),
+                    (INVALID_CHOICE_ACTION, "invalid-choice"),
+                    (MISSING_EFFECT_ACTION, "missing-target"),
+                ):
+                    remote.set_value(ZOOM, Decimal("42"))
+                    remote.set_value(MODE, "RUN")
+                    time.sleep(1.0)
+                    state = remote.run_action(invalid_action)
+                    report.check(
+                        state is msg_types.InvocationState.FAILED,
+                        f"a remote {description} action fails",
+                        str(state),
+                    )
+                    time.sleep(1.0)
+                    current = remote.metrics()
+                    report.check(
+                        current[ZOOM].value == Decimal("42") and current[MODE].value == "RUN",
+                        f"a remote {description} action is all-or-nothing",
+                        f"{current[ZOOM].value}, {current[MODE].value}",
+                    )
 
             report.check(
                 remote.run_action("act.no_such_thing") is msg_types.InvocationState.FAILED,

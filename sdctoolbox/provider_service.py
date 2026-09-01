@@ -34,13 +34,14 @@ from .model import (
     AlertSpec,
     Coding,
     DeviceInfo,
+    DistributionShape,
     LocationInfo,
     MetricKind,
     MetricSpec,
     PatientInfo,
-    DistributionShape,
     SignalInfo,
     WaveformShape,
+    coerce_metric_value,
     patient_info_from_biceps,
     patient_measurement_wire_value,
     slugify,
@@ -338,10 +339,15 @@ class ProviderService:
         # value written by a remote consumer raises a limit alarm exactly as a local edit
         # does. It cannot be done from a metrics observable: sdc11073 fires those while
         # holding the transaction lock, and opening the alert transaction there deadlocks.
-        self._handler = make_set_handler(self._mdib, on_applied=self._on_metric_applied)
+        self._handler = make_set_handler(
+            self._mdib,
+            coerce_value=self._coerce_value,
+            on_applied=self._on_metric_applied,
+        )
         self._activate_handler = make_activate_handler(
             self._mdib,
             effects_for=self._effects_for,
+            coerce_value=self._coerce_value,
             on_applied=self._on_metric_applied,
         )
 
@@ -505,24 +511,14 @@ class ProviderService:
 
     def set_value(self, handle: str, value: Decimal | str) -> None:
         """Set the current value of one of our own metrics."""
-        if isinstance(value, float):
-            msg = "use Decimal, never float"
-            raise TypeError(msg)
         with self._lock:
             spec = self._specs.get(handle)
-            if spec is not None and isinstance(value, Decimal):
-                if spec.minimum is not None and value < spec.minimum:
-                    msg = f"{value} is below the minimum {spec.minimum} of {handle!r}"
-                    raise ValueError(msg)
-                if spec.maximum is not None and value > spec.maximum:
-                    msg = f"{value} is above the maximum {spec.maximum} of {handle!r}"
-                    raise ValueError(msg)
-
             entity = self.mdib.entities.by_handle(handle)
-            if entity is None:
+            if spec is None or entity is None:
                 msg = f"no metric with handle {handle!r}"
                 raise KeyError(msg)
-            apply_metric_value(entity.state, value)
+            normalized = coerce_metric_value(spec, value, handle)
+            apply_metric_value(entity.state, normalized)
             with self.mdib.metric_state_transaction() as mgr:
                 mgr.write_entity(entity)
 
@@ -1255,17 +1251,35 @@ class ProviderService:
             if spec is None:
                 msg = f"no action with handle {handle!r}"
                 raise KeyError(msg)
-            touched = list(spec.effects)
+            prepared = []
             for target, value in spec.effects.items():
-                if self.mdib.entities.by_handle(target) is None:
-                    logger.warning("action %s: no metric %r to change", handle, target)
-                    continue
-                self.set_value(target, value)
-            logger.info("action %s ran locally, changing %d metric(s)", handle, len(touched))
+                entity = self.mdib.entities.by_handle(target)
+                if entity is None:
+                    msg = f"effect target {target!r} does not exist"
+                    raise KeyError(msg)
+                prepared.append((entity, self._coerce_value(target, value)))
+
+            for entity, value in prepared:
+                apply_metric_value(entity.state, value)
+            if prepared:
+                with self.mdib.metric_state_transaction() as mgr:
+                    for entity, _ in prepared:
+                        mgr.write_entity(entity)
+
+        touched = {entity.handle for entity, _ in prepared}
+        self._evaluate_alerts(touched)
+        logger.info("action %s ran locally, changing %d metric(s)", handle, len(touched))
 
     def _effects_for(self, operation_handle: str) -> dict[str, object]:
         spec = self._actions.get(operation_handle)
         return dict(spec.effects) if spec is not None else {}
+
+    def _coerce_value(self, handle: str, value: object) -> Decimal | str:
+        spec = self._specs.get(handle)
+        if spec is None:
+            msg = f"no metric with handle {handle!r}"
+            raise KeyError(msg)
+        return coerce_metric_value(spec, value, handle)
 
     # -- internals -----------------------------------------------------------------
 
