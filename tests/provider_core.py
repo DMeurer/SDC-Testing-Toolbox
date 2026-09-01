@@ -32,6 +32,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
+from sdc11073.xml_types import msg_types  # noqa: E402
 from sdc11073.xml_types import pm_qnames as pm  # noqa: E402
 from sdc11073.xml_types import pm_types  # noqa: E402
 
@@ -960,6 +961,171 @@ def check_presets(report: Report) -> None:
     )
 
 
+def check_foreign_consumer_operations(report: Report) -> None:
+    print("\n11. Foreign consumer operation selection")
+
+    finished_info = SimpleNamespace(
+        InvocationState=msg_types.InvocationState.FINISHED,
+        InvocationErrorMessage=None,
+    )
+
+    class SetClient:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def _future(self):
+            result = SimpleNamespace(InvocationInfo=finished_info)
+            return SimpleNamespace(result=lambda timeout: result)
+
+        def set_numeric_value(self, handle, value):
+            self.calls.append(("number", handle, value))
+            return self._future()
+
+        def set_string(self, handle, value):
+            self.calls.append(("string", handle, value))
+            return self._future()
+
+        def activate(self, handle, arguments):
+            self.calls.append(("activate", handle, arguments))
+            return self._future()
+
+    def metric_entity(handle, node_type):
+        descriptor = SimpleNamespace(
+            AllowedValue=[],
+            TechnicalRange=[SimpleNamespace(Lower=Decimal("0"), Upper=Decimal("100"))],
+        )
+        state = SimpleNamespace(MetricValue=SimpleNamespace(Value=None))
+        return SimpleNamespace(node_type=node_type, descriptor=descriptor, state=state, parent_handle=None)
+
+    def operation_entity(
+        target,
+        node_type,
+        lower,
+        upper,
+        mode=pm_types.OperatingMode.ENABLED,
+    ):
+        state = SimpleNamespace(
+            AllowedRange=[SimpleNamespace(Lower=Decimal(lower), Upper=Decimal(upper))],
+        )
+        if mode is not None:
+            state.OperatingMode = mode
+        return SimpleNamespace(
+            node_type=node_type,
+            descriptor=SimpleNamespace(OperationTarget=target),
+            state=state,
+        )
+
+    def remote_for(entities):
+        client = SetClient()
+        remote = RemoteDevice.__new__(RemoteDevice)
+        remote._lock = threading.RLock()
+        remote._mdib = SimpleNamespace(entities=entities)
+        remote._consumer = SimpleNamespace(set_service_client=client)
+        return remote, client
+
+    cases = (
+        (
+            MetricKind.NUMBER,
+            pm.NumericMetricDescriptor,
+            pm.SetValueOperationDescriptor,
+            pm.SetStringOperationDescriptor,
+        ),
+        (
+            MetricKind.TEXT,
+            pm.StringMetricDescriptor,
+            pm.SetStringOperationDescriptor,
+            pm.SetValueOperationDescriptor,
+        ),
+        (
+            MetricKind.CHOICE,
+            pm.EnumStringMetricDescriptor,
+            pm.SetStringOperationDescriptor,
+            pm.SetValueOperationDescriptor,
+        ),
+    )
+    selections = []
+    invocations = []
+    for kind, metric_type, compatible_type, incompatible_type in cases:
+        for enabled_first in (False, True):
+            metric_handle = f"metric.{kind.value}.{'enabled' if enabled_first else 'disabled'}-first"
+            disabled_handle = f"operation.{kind.value}.disabled"
+            enabled_handle = f"operation.{kind.value}.enabled"
+            disabled = operation_entity(
+                metric_handle,
+                compatible_type,
+                "1",
+                "2",
+                pm_types.OperatingMode.DISABLED,
+            )
+            enabled = operation_entity(metric_handle, compatible_type, "10", "20")
+            incompatible = operation_entity(metric_handle, incompatible_type, "90", "99")
+            ordered = (
+                [(enabled_handle, enabled), ("operation.incompatible", incompatible), (disabled_handle, disabled)]
+                if enabled_first
+                else [(disabled_handle, disabled), ("operation.incompatible", incompatible), (enabled_handle, enabled)]
+            )
+            entities = {metric_handle: metric_entity(metric_handle, metric_type), **dict(ordered)}
+            remote, client = remote_for(entities)
+            metric = remote.metrics()[metric_handle]
+            selections.append(
+                metric.kind is kind
+                and metric.operation_handles == tuple(
+                    handle for handle, entity in ordered if entity.node_type == compatible_type
+                )
+                and metric.selected_operation_handle == enabled_handle
+                and metric.controllable_now
+                and (metric.minimum, metric.maximum) == (Decimal("10"), Decimal("20"))
+            )
+            value = Decimal("15") if kind is MetricKind.NUMBER else "value"
+            remote.set_value(metric_handle, value)
+            method = "number" if kind is MetricKind.NUMBER else "string"
+            invocations.append(client.calls == [(method, enabled_handle, value)])
+
+    report.check(
+        all(selections),
+        "enabled kind-compatible operations keep their own ranges in either entity order",
+        str(selections),
+    )
+    report.check(
+        all(invocations),
+        "the operations advertised as usable are the operations invoked",
+        str(invocations),
+    )
+
+    absent_metric = "metric.absent-mode"
+    absent_set = "operation.absent-mode"
+    absent_action = "action.absent-mode"
+    entities = {
+        absent_metric: metric_entity(absent_metric, pm.NumericMetricDescriptor),
+        absent_set: operation_entity(absent_metric, pm.SetValueOperationDescriptor, "30", "40", mode=None),
+        absent_action: SimpleNamespace(
+            node_type=pm.ActivateOperationDescriptor,
+            descriptor=SimpleNamespace(OperationTarget="mds"),
+            state=SimpleNamespace(),
+        ),
+    }
+    remote, client = remote_for(entities)
+    metric = remote.metrics()[absent_metric]
+    action = remote.actions()[absent_action]
+    remote.set_value(absent_metric, Decimal("35"))
+    remote.run_action(absent_action)
+    report.check(
+        metric.controllable_now
+        and metric.selected_operation_handle == absent_set
+        and (metric.minimum, metric.maximum) == (Decimal("30"), Decimal("40"))
+        and action.enabled,
+        "absent OperatingMode defaults to enabled for set and activate operations",
+    )
+    report.check(
+        client.calls == [
+            ("number", absent_set, Decimal("35")),
+            ("activate", absent_action, None),
+        ],
+        "default-enabled set and activate operations can be invoked",
+        str(client.calls),
+    )
+
+
 def main() -> int:
     basic_logging_setup(level=logging.ERROR)
     report = Report()
@@ -981,6 +1147,7 @@ def main() -> int:
         check_latching_signals(report, service)
         check_contexts(report, service)
         check_presets(report)
+        check_foreign_consumer_operations(report)
     finally:
         service.stop()
 

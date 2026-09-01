@@ -57,6 +57,12 @@ SET_OPERATION_NODE_TYPES = frozenset(
     },
 )
 
+SET_OPERATION_BY_METRIC_KIND = {
+    MetricKind.NUMBER: pm.SetValueOperationDescriptor,
+    MetricKind.TEXT: pm.SetStringOperationDescriptor,
+    MetricKind.CHOICE: pm.SetStringOperationDescriptor,
+}
+
 
 def _first_text(coded_value: Any) -> str | None:
     """Best-effort human label from a CodedValue, tolerating every field being absent."""
@@ -102,6 +108,12 @@ def _enum_value(value: Any) -> str | None:
     if value is None:
         return None
     return getattr(value, "value", None) or str(value)
+
+
+def _operation_is_enabled(state: Any) -> bool:
+    """Whether an operation is enabled, including BICEPS' default for an absent mode."""
+    mode = getattr(state, "OperatingMode", None)
+    return mode is None or _enum_value(mode) == _enum_value(pm_types.OperatingMode.ENABLED)
 
 
 def _seconds(duration: Any) -> Decimal | None:
@@ -178,6 +190,16 @@ class DiscoveredDevice:
         return None
 
 
+@dataclass(frozen=True)
+class _SetOperation:
+    """The state relevant to selecting one set operation from a foreign MDIB."""
+
+    handle: str
+    node_type: Any
+    enabled: bool
+    allowed_range: tuple[Any, Any] | None
+
+
 class RemoteDevice:
     """A connected peer. Wraps SdcConsumer plus its ConsumerMdib."""
 
@@ -201,7 +223,7 @@ class RemoteDevice:
         them can walk ``mdib.entities`` themselves.
         """
         with self._lock:
-            operations_by_target, enabled_targets, allowed_ranges = self._operation_index()
+            operations_by_target = self._operation_index()
             result: dict[str, RemoteMetric] = {}
 
             for handle, entity in self._mdib.entities.items():
@@ -217,9 +239,20 @@ class RemoteDevice:
                 metric_value = getattr(state, "MetricValue", None)
 
                 technical_lower, technical_upper = _first_range(getattr(descriptor, "TechnicalRange", None))
-                # What we may ask for comes from the operation when it says so, otherwise we
-                # fall back on what the device says it can produce.
-                lower, upper = allowed_ranges.get(handle, (technical_lower, technical_upper))
+                operation_type = SET_OPERATION_BY_METRIC_KIND.get(kind)
+                operations = [
+                    operation
+                    for operation in operations_by_target.get(handle, ())
+                    if operation.node_type == operation_type
+                ]
+                selected_operation = next((operation for operation in operations if operation.enabled), None)
+                # What we may ask for comes from the selected operation when it says so,
+                # otherwise we fall back on what the device says it can produce.
+                lower, upper = (
+                    selected_operation.allowed_range
+                    if selected_operation is not None and selected_operation.allowed_range is not None
+                    else (technical_lower, technical_upper)
+                )
 
                 result[handle] = RemoteMetric(
                     handle=handle,
@@ -242,8 +275,11 @@ class RemoteDevice:
                     domain_minimum=getattr(getattr(descriptor, "DistributionRange", None), "Lower", None),
                     domain_maximum=getattr(getattr(descriptor, "DistributionRange", None), "Upper", None),
                     parent_handle=getattr(entity, "parent_handle", None),
-                    operation_handles=tuple(operations_by_target.get(handle, ())),
-                    controllable_now=handle in enabled_targets,
+                    operation_handles=tuple(operation.handle for operation in operations),
+                    selected_operation_handle=(
+                        selected_operation.handle if selected_operation is not None else None
+                    ),
+                    controllable_now=selected_operation is not None,
                 )
             return result
 
@@ -275,35 +311,35 @@ class RemoteDevice:
             return next(iter(patients.values()))
         return PatientInfo()
 
-    def _operation_index(self) -> tuple[dict[str, list[str]], set[str], dict[str, tuple[Any, Any]]]:
+    def _operation_index(self) -> dict[str, list[_SetOperation]]:
         """Index the peer's set operations by the metric they target.
 
-        Returns the operation handles per target, the targets whose control is currently
-        enabled, and the AllowedRange per target.
+        State and AllowedRange stay attached to their operation handle so selecting an
+        enabled operation cannot accidentally borrow another operation's range.
         """
-        by_target: dict[str, list[str]] = {}
-        enabled: set[str] = set()
-        allowed_range: dict[str, tuple[Any, Any]] = {}
+        by_target: dict[str, list[_SetOperation]] = {}
 
         for handle, entity in self._mdib.entities.items():
-            if getattr(entity, "node_type", None) not in SET_OPERATION_NODE_TYPES:
+            node_type = getattr(entity, "node_type", None)
+            if node_type not in SET_OPERATION_NODE_TYPES:
                 continue
             target = getattr(getattr(entity, "descriptor", None), "OperationTarget", None)
             if not target:
                 continue
-            by_target.setdefault(target, []).append(handle)
 
             state = getattr(entity, "state", None)
-            mode = getattr(state, "OperatingMode", None)
-            # BICEPS implies En when the attribute is absent.
-            if mode in (None, pm_types.OperatingMode.ENABLED):
-                enabled.add(target)
-
             lower, upper = _first_range(getattr(state, "AllowedRange", None))
-            if lower is not None or upper is not None:
-                allowed_range[target] = (lower, upper)
+            allowed_range = (lower, upper) if lower is not None or upper is not None else None
+            by_target.setdefault(target, []).append(
+                _SetOperation(
+                    handle=handle,
+                    node_type=node_type,
+                    enabled=_operation_is_enabled(state),
+                    allowed_range=allowed_range,
+                ),
+            )
 
-        return by_target, enabled, allowed_range
+        return by_target
 
     def alerts(self) -> dict[str, RemoteAlert]:
         """Build a defensive snapshot of every alarm condition on the peer.
@@ -378,7 +414,10 @@ class RemoteDevice:
             logger.warning("no set operation targets %s", metric_handle)
             return msg_types.InvocationState.FAILED
 
-        operation_handle = metric.operation_handles[0]
+        operation_handle = metric.selected_operation_handle
+        if operation_handle is None:
+            logger.warning("no enabled set operation targets %s", metric_handle)
+            return msg_types.InvocationState.FAILED
         client = self._consumer.set_service_client
 
         if metric.kind is MetricKind.NUMBER:
@@ -411,7 +450,6 @@ class RemoteDevice:
                     continue
                 descriptor = getattr(entity, "descriptor", None)
                 state = getattr(entity, "state", None)
-                mode = _enum_value(getattr(state, "OperatingMode", None))
                 found[handle] = RemoteAction(
                     handle=handle,
                     label=_first_text(getattr(descriptor, "Type", None)),
@@ -419,7 +457,7 @@ class RemoteDevice:
                     target_handle=getattr(descriptor, "OperationTarget", None),
                     # Same rule as a metric editor: offer it only when the device says it
                     # is enabled, and follow operation_by_handle for changes.
-                    enabled=mode == pm_types.OperatingMode.ENABLED,
+                    enabled=_operation_is_enabled(state),
                 )
             return found
 

@@ -1143,8 +1143,10 @@ class RemoteMetric:
     domain_minimum: Decimal | None = None
     domain_maximum: Decimal | None = None
     parent_handle: str | None = None
-    # Handles of set operations whose OperationTarget is this metric.
+    # Handles of kind-compatible set operations whose OperationTarget is this metric.
     operation_handles: tuple[str, ...] = field(default_factory=tuple)
+    # The enabled, kind-compatible operation whose range is shown and which writes invoke.
+    selected_operation_handle: str | None = None
     # True when at least one of those operations currently has OperatingMode == En.
     controllable_now: bool = False
 
