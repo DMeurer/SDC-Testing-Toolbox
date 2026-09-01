@@ -39,6 +39,7 @@ from sdc11073.xml_types import pm_types  # noqa: E402
 from sdctoolbox import config, constants  # noqa: E402
 from sdctoolbox.consumer_service import RemoteDevice  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
+    ActionSpec,
     AlertSpec,
     AlertManifestation,
     AlertSignalSpec,
@@ -348,8 +349,66 @@ def check_alarm_rollback(report: Report, service: ProviderService) -> None:
     service.remove_metric("m.alarm_source")
 
 
+def check_metric_removal_dependencies(report: Report, service: ProviderService) -> None:
+    print("\n4. Removing a metric removes everything that depends on it")
+
+    metric = service.add_metric(
+        MetricSpec(
+            label="Dependency source",
+            kind=MetricKind.NUMBER,
+            controllable=True,
+            initial_value=Decimal("1"),
+        ),
+    )
+    survivor = service.add_metric(MetricSpec(label="Dependency survivor", kind=MetricKind.NUMBER))
+    operation = service.operation_handle_for(metric)
+    alert = service.add_alert(AlertSpec(label="Dependent alarm", source_handle=metric))
+    signals = service.signal_handles_for(alert)
+    target_action = service.add_action(ActionSpec(label="Target dependency", target_handle=metric))
+    effect_action = service.add_action(
+        ActionSpec(
+            label="Effect dependency",
+            target_handle=constants.MDS_HANDLE,
+            effects={metric: Decimal("2")},
+        ),
+    )
+    surviving_action = service.add_action(
+        ActionSpec(label="Unrelated action", target_handle=constants.MDS_HANDLE, effects={survivor: Decimal("3")}),
+    )
+
+    service.remove_metric(metric)
+
+    removed_handles = [metric, operation, alert, *signals, target_action, effect_action]
+    report.check(
+        all(handle is None or service.mdib.entities.by_handle(handle) is None for handle in removed_handles),
+        "the metric, set operation, alarm, signals and dependent actions leave the MDIB",
+        str([handle for handle in removed_handles if handle and service.mdib.entities.by_handle(handle) is not None]),
+    )
+    report.check(
+        metric not in service.list_metrics() and service.operation_handle_for(metric) is None,
+        "metric and operation bookkeeping is cleared",
+    )
+    report.check(
+        alert not in service.list_alerts() and service.signal_handles_for(alert) == [],
+        "alert source bookkeeping is cleared",
+    )
+    report.check(
+        target_action not in service.list_actions() and effect_action not in service.list_actions(),
+        "action target and effect bookkeeping is cleared",
+    )
+    report.check(
+        surviving_action in service.list_actions()
+        and service.mdib.entities.by_handle(surviving_action) is not None
+        and survivor in service.list_metrics(),
+        "unrelated actions and metrics survive",
+    )
+
+    service.remove_action(surviving_action)
+    service.remove_metric(survivor)
+
+
 def check_signals(report: Report, service: ProviderService) -> None:
-    print("\n4. Acknowledging and delegating a signal")
+    print("\n5. Acknowledging and delegating a signal")
 
     service.add_metric(
         MetricSpec(label="Pressure", kind=MetricKind.NUMBER, initial_value=Decimal("5")),
@@ -436,7 +495,7 @@ def check_signals(report: Report, service: ProviderService) -> None:
 
 
 def check_latching_signals(report: Report, service: ProviderService) -> None:
-    print("\n5. Configurable signal manifestations and latching")
+    print("\n6. Configurable signal manifestations and latching")
     service.add_metric(MetricSpec(label="Latch source", kind=MetricKind.NUMBER, initial_value=Decimal("0")))
     alarm = service.add_alert(
         AlertSpec(
@@ -471,7 +530,7 @@ def check_latching_signals(report: Report, service: ProviderService) -> None:
 
 
 def check_contexts(report: Report, service: ProviderService) -> None:
-    print("\n6. Patient and location contexts")
+    print("\n7. Patient and location contexts")
 
     default = service.get_location()
     report.check(
@@ -726,7 +785,7 @@ def check_contexts(report: Report, service: ProviderService) -> None:
 
 
 def check_presets(report: Report) -> None:
-    print("\n7. Presets")
+    print("\n8. Presets")
 
     presets = config.list_presets()
     report.check(bool(presets), "the shipped presets are found", f"{len(presets)} found")
@@ -770,6 +829,7 @@ def main() -> int:
         check_rollback(report, service)
         check_sample_arrays(report, service)
         check_alarm_rollback(report, service)
+        check_metric_removal_dependencies(report, service)
         check_signals(report, service)
         check_latching_signals(report, service)
         check_contexts(report, service)

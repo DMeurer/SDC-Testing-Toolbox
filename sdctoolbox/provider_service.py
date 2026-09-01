@@ -470,8 +470,15 @@ class ProviderService:
             return handle
 
     def remove_metric(self, handle: str) -> None:
-        """Delete a data source and its operation, if any."""
+        """Delete a data source and everything that depends on it."""
         with self._lock:
+            for alert_handle, spec in list(self._alerts.items()):
+                if spec.source_handle == handle:
+                    self.remove_alert(alert_handle)
+            for action_handle, spec in list(self._actions.items()):
+                if spec.target_handle == handle or handle in spec.effects:
+                    self.remove_action(action_handle)
+
             operation_handle = self._operations.pop(handle, None)
             entities = []
             if operation_handle is not None:

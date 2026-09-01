@@ -746,24 +746,28 @@ class ProviderPane(QWidget):
             for alert_handle, alert in self.service.list_alerts().items()
             if alert.source_handle == handle
         ]
+        dependent_actions = [
+            action_handle
+            for action_handle, action in self.service.list_actions().items()
+            if action.target_handle == handle or handle in action.effects
+        ]
 
         question = f"Remove {name}?\n\nConnected consumers will see it disappear."
         if watching:
-            # Removing the metric would leave these pointing at nothing, so say so before
-            # rather than after.
             question += f"\n\nThese alarms watch it and will be removed too:\n  {', '.join(watching)}"
+        if dependent_actions:
+            question += f"\n\nThese actions depend on it and will be removed too:\n  {', '.join(dependent_actions)}"
 
         if QMessageBox.question(self, "Remove data source", question) != QMessageBox.Yes:
             return
 
         try:
-            for alert_handle in watching:
-                self.service.remove_alert(alert_handle)
             self.service.remove_metric(handle)
         except KeyError as exc:
             QMessageBox.warning(self, "Could not remove", str(exc))
         self.refresh()
         self.refresh_alerts()
+        self.refresh_actions()
 
     def _on_apply(self) -> None:
         handle = self.selected_handle()

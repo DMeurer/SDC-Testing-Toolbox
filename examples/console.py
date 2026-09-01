@@ -293,7 +293,7 @@ class ProviderShell(Cmd):
             print(f"rejected: {exc}")
 
     def do_remove(self, line: str) -> None:
-        """remove <handle>  -  delete a data source and its operation."""
+        """remove <handle>  -  delete a data source and its dependencies."""
         handle = line.strip()
         if not handle:
             print("usage: remove <handle>")

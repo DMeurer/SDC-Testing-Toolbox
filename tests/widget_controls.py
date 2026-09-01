@@ -45,6 +45,7 @@ from sdctoolbox.gui.widgets.controls import (
 )
 from sdctoolbox.gui.widgets.factory import CONTROLS, pick_control  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
+    ActionSpec,
     AlertSpec,
     DistributionShape,
     MetricKind,
@@ -425,8 +426,10 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         service.add_alert(
             AlertSpec(label="Doomed too high", source_handle=doomed, upper_limit=Decimal("5")),
         )
+        doomed_action = service.add_action(ActionSpec(label="Reset doomed", target_handle=doomed))
         pane.refresh()
         pane.refresh_alerts()
+        pane.refresh_actions()
         pump(app)
 
         card = pane.board.card(doomed)
@@ -449,8 +452,13 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             str(sorted(service.list_alerts())),
         )
         report.check(
-            bool(asked) and "alarms watch it" in asked[-1][1],
-            "and the user was warned that would happen",
+            doomed_action not in service.list_actions() and doomed_action not in pane.action_buttons,
+            "a dependent action is removed from the service and window too",
+            str(sorted(service.list_actions())),
+        )
+        report.check(
+            bool(asked) and "alarms watch it" in asked[-1][1] and "actions depend on it" in asked[-1][1],
+            "and the user was warned about both dependencies",
             asked[-1][1].replace("\n", " ")[:70] if asked else "nothing asked",
         )
 
