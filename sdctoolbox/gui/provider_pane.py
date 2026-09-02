@@ -15,19 +15,20 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QSplitter,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
     QSizePolicy,
+    QSplitter,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
+from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types import pm_types
 
 from ..model import MetricKind
@@ -63,6 +64,21 @@ ALERT_COLUMNS = ["Handle", "Label", "Watches", "Raise when", "Kind", "Priority",
 EDITOR_TEXT = 0
 EDITOR_CHOICE = 1
 
+METRIC_DESCRIPTOR_TYPES = frozenset(kind.descriptor_qname for kind in MetricKind)
+SET_OPERATION_DESCRIPTOR_TYPES = frozenset(
+    {
+        pm.SetValueOperationDescriptor,
+        pm.SetStringOperationDescriptor,
+    },
+)
+ALERT_DESCRIPTOR_TYPES = frozenset(
+    {
+        pm.AlertConditionDescriptor,
+        pm.LimitAlertConditionDescriptor,
+        pm.AlertSignalDescriptor,
+    },
+)
+
 
 class ProviderPane(QWidget):
     """Everything the user does to the device they are publishing."""
@@ -77,9 +93,13 @@ class ProviderPane(QWidget):
 
         self.bridge = MdibBridge(service.mdib, self)
         self.bridge.metrics_changed.connect(self._on_values_changed)
-        self.bridge.descriptors_added.connect(lambda _: self.refresh())
-        self.bridge.descriptors_deleted.connect(lambda _: self.refresh())
-        self.bridge.operations_changed.connect(lambda _: self.refresh())
+        # Structural observables fire while the provider is leaving its transaction. Queue
+        # the view work so service bookkeeping is complete and no GUI code runs in that
+        # callback stack.
+        self.bridge.descriptors_added.connect(self._on_descriptors_changed, Qt.QueuedConnection)
+        self.bridge.descriptors_updated.connect(self._on_descriptors_changed, Qt.QueuedConnection)
+        self.bridge.descriptors_deleted.connect(self._on_descriptors_changed, Qt.QueuedConnection)
+        self.bridge.operations_changed.connect(self._on_operations_changed, Qt.QueuedConnection)
         self.bridge.alerts_changed.connect(lambda _: self.refresh_alerts())
         self.bridge.contexts_changed.connect(lambda _: self.refresh_contexts())
         # Waveforms travel as a WaveformStream, not an EpisodicMetricReport, so they
@@ -393,6 +413,34 @@ class ProviderPane(QWidget):
         finally:
             self._refreshing = False
 
+    def _on_descriptors_changed(self, descriptors_by_handle: dict) -> None:
+        """Refresh only the views affected by a structural MDIB change."""
+        node_types = {
+            getattr(descriptor, "NODETYPE", None)
+            for descriptor in descriptors_by_handle.values()
+        }
+        if node_types & (METRIC_DESCRIPTOR_TYPES | SET_OPERATION_DESCRIPTOR_TYPES):
+            self.refresh()
+        if node_types & ALERT_DESCRIPTOR_TYPES:
+            self.refresh_alerts()
+        if pm.ActivateOperationDescriptor in node_types:
+            self.refresh_actions()
+
+    def _on_operations_changed(self, states_by_handle: dict) -> None:
+        """Follow operation modes in metric controls and local action availability."""
+        changed_handles = set(states_by_handle)
+        action_handles = set(self.service.list_actions())
+        if changed_handles & action_handles:
+            self.refresh_actions()
+
+        metric_operation_handles = {
+            operation_handle
+            for metric_handle in self.service.list_metrics()
+            if (operation_handle := self.service.operation_handle_for(metric_handle)) is not None
+        }
+        if changed_handles & metric_operation_handles:
+            self.refresh()
+
     # -- alarms --------------------------------------------------------------------
 
     def refresh_alerts(self) -> None:
@@ -623,6 +671,8 @@ class ProviderPane(QWidget):
                 # as actions come and go.
                 self.actions_row.insertWidget(self.actions_row.count() - 1, button)
                 self.action_buttons[handle] = button
+            button.setText(spec.label)
+            button.setEnabled(self._operation_enabled(handle))
             button.setToolTip(f"{spec.note}\n{handle}: {spec.summary()}".strip())
 
         # A device with no actions should not show an empty toolbar saying "Actions".
@@ -821,7 +871,12 @@ class ProviderPane(QWidget):
         operation_handle = self.service.operation_handle_for(handle)
         if operation_handle is None:
             return False
-        entity = self.service.mdib.entities.by_handle(operation_handle)
+        return self._operation_enabled(operation_handle)
+
+    def _operation_enabled(self, handle: str) -> bool:
+        """Whether an operation is currently available, including its BICEPS default."""
+        entity = self.service.mdib.entities.by_handle(handle)
         if entity is None:
             return False
-        return getattr(entity.state, "OperatingMode", None) == pm_types.OperatingMode.ENABLED
+        mode = getattr(entity.state, "OperatingMode", None)
+        return mode is None or mode == pm_types.OperatingMode.ENABLED
