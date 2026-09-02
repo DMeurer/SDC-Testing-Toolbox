@@ -262,6 +262,54 @@ def stale_set_after_reconnect(app: QApplication, provider: ProviderService) -> N
     check(new.close_count == 1 and service.stop_count == 1, "new remote and discovery close once")
 
 
+def peer_restart_requires_manual_reconnect(app: QApplication, provider: ProviderService) -> None:
+    window, pane, service = new_window(provider)
+    remote = FakeRemote("restarting")
+    remote.mdib.entities = {
+        "mds": SimpleNamespace(
+            node_type=SimpleNamespace(localname="MdsDescriptor"),
+            parent_handle=None,
+        ),
+    }
+    remote.metric_values = {
+        "metric": RemoteMetric(
+            handle="metric",
+            node_type_name="NumericMetricDescriptor",
+            kind=MetricKind.NUMBER,
+            label="Peer metric",
+            value=Decimal(7),
+        ),
+    }
+    attach(pane, remote)
+    bridge = pane.bridge
+    generation = pane._generation  # noqa: SLF001
+    check(pane.tree.topLevelItemCount() == 1 and pane.table.rowCount() == 1, "peer state starts populated")
+
+    bridge.peer_restarted.emit()
+    pump(app)
+
+    check(pane._generation == generation + 1, "peer restart retires the current session")  # noqa: SLF001
+    check(pane.remote is None and pane.bridge is None, "peer restart disconnects instead of reloading")
+    check(remote.close_count == 1, "restarted peer connection closes once")
+    check(
+        pane.tree.topLevelItemCount() == 0
+        and pane.table.rowCount() == 0
+        and not pane.board.handles,
+        "peer restart clears cached views",
+    )
+    check(
+        pane.status_label.text() == "The device restarted. Reconnect to see it again.",
+        "peer restart requests a manual reconnect",
+    )
+    check(
+        pane.scan_button.isEnabled()
+        and not pane.disconnect_button.isEnabled(),
+        "peer restart leaves disconnected controls available",
+    )
+    window.close()
+    check(service.stop_count == 1, "restart session closes discovery once")
+
+
 def failed_reconnect_clears_peer_ui(
     app: QApplication,
     provider: ProviderService,
@@ -480,6 +528,7 @@ def main() -> int:
         close_during_invocation(app, provider, action=False)
         close_during_invocation(app, provider, action=True)
         stale_set_after_reconnect(app, provider)
+        peer_restart_requires_manual_reconnect(app, provider)
         failed_reconnect_clears_peer_ui(app, provider)
         waveform_reports_are_scoped(app, provider)
     finally:
