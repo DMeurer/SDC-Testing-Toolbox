@@ -10,12 +10,13 @@ sys.path.insert(0, str(ROOT))
 
 from diagnostics.check_api import CallShape, signature_incompatibility
 from diagnostics.minimal_consumer import MetricUpdateObserver, result_lines
+from script_support import Report
+
+REPORT = Report()
 
 
 def check(condition: bool, message: str) -> None:
-    if not condition:
-        raise AssertionError(message)
-    print(f"  PASS  {message}")
+    REPORT.require(condition, message)
 
 
 def signature_mismatch_is_detected() -> None:
@@ -45,8 +46,7 @@ def main() -> int:
     print("Diagnostic behavior test (offline)")
     signature_mismatch_is_detected()
     callback_results_are_evidence_based()
-    print("RESULT: all diagnostic behavior checks passed")
-    return 0
+    return REPORT.summary()
 
 
 if __name__ == "__main__":

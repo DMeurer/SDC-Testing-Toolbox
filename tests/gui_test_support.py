@@ -11,28 +11,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
+from script_support import Report as Report
 from sdctoolbox.gui.main_window import MainWindow
 from sdctoolbox.provider_service import ProviderService
-
-
-class Report:
-    def __init__(self) -> None:
-        self.checks = 0
-        self.failures = 0
-
-    def check(self, condition: bool, description: str, detail: str = "") -> None:
-        self.checks += 1
-        if not condition:
-            self.failures += 1
-        suffix = f"  [{detail}]" if detail else ""
-        print(f"  {'PASS' if condition else 'FAIL'}  {description}{suffix}", flush=True)
-
-    def summary(self) -> int:
-        if self.failures:
-            print(f"RESULT: {self.failures} of {self.checks} checks FAILED")
-            return 1
-        print(f"RESULT: all {self.checks} checks passed")
-        return 0
 
 
 def application() -> QApplication:

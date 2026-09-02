@@ -6,7 +6,7 @@ import subprocess
 import sys
 import time
 
-from acceptance_core import ProcessOutput, Report, stop_process, wait_for_ready
+from script_support import ProcessOutput, Report, stop_process, wait_for_ready
 
 TIMEOUT = 0.3
 

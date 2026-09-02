@@ -29,6 +29,9 @@ from sdctoolbox.model import (  # noqa: E402
     RemoteMetric,
 )
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
+from script_support import Report  # noqa: E402
+
+REPORT = Report()
 
 
 class FakeBridge(QObject):
@@ -134,9 +137,7 @@ def wait_for(app: QApplication, predicate, timeout: float = 2.0) -> bool:  # noq
 
 
 def check(condition: bool, message: str) -> None:  # noqa: FBT001
-    if not condition:
-        raise AssertionError(message)
-    print(f"  PASS  {message}")
+    REPORT.require(condition, message)
 
 
 def new_window(provider: ProviderService) -> tuple[MainWindow, consumer_module.ConsumerPane, FakeConsumerService]:
@@ -535,8 +536,7 @@ def main() -> int:
         consumer_module.ConsumerService = old_service
         consumer_module.MdibBridge = old_bridge
         provider.stop()
-    print("RESULT: all consumer lifecycle checks passed")
-    return 0
+    return REPORT.summary()
 
 
 if __name__ == "__main__":

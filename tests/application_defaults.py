@@ -11,13 +11,14 @@ sys.path.insert(0, str(ROOT))
 import run_toolbox  # noqa: E402
 from examples import console  # noqa: E402
 from sdctoolbox import constants  # noqa: E402
+from script_support import Report  # noqa: E402
 from tests.acceptance_provider import PEER_INSTANCE  # noqa: E402
+
+REPORT = Report()
 
 
 def check(condition: bool, message: str) -> None:  # noqa: FBT001
-    if not condition:
-        raise AssertionError(message)
-    print(f"  PASS  {message}")
+    REPORT.require(condition, message)
 
 
 def main() -> int:
@@ -38,8 +39,7 @@ def main() -> int:
         PEER_INSTANCE != constants.DEFAULT_INSTANCE_NAME,
         "the acceptance peer remains distinct from applications using defaults",
     )
-    print("RESULT: all application default checks passed")
-    return 0
+    return REPORT.summary()
 
 
 if __name__ == "__main__":

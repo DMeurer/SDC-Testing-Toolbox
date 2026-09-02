@@ -12,6 +12,9 @@ from sdctoolbox import consumer_service as consumer_module
 from sdctoolbox import provider_service as provider_module
 from sdctoolbox.consumer_service import ConsumerService, DiscoveredDevice
 from sdctoolbox.provider_service import ProviderService
+from script_support import Report
+
+REPORT = Report()
 
 
 class Patch:
@@ -68,9 +71,7 @@ class FakeMdib:
 
 
 def check(condition: bool, message: str) -> None:
-    if not condition:
-        raise AssertionError(message)
-    print(f"  PASS  {message}")
+    REPORT.require(condition, message)
 
 
 def raises(message: str, function) -> RuntimeError:
@@ -302,8 +303,7 @@ def main() -> int:
     consumer_connection_failure(stage="start")
     consumer_connection_failure(stage="construct")
     consumer_connection_failure(stage="init")
-    print("RESULT: all service lifecycle checks passed")
-    return 0
+    return REPORT.summary()
 
 
 if __name__ == "__main__":

@@ -22,6 +22,7 @@ from lxml import etree
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from script_support import Report  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 
 from sdctoolbox import config  # noqa: E402
@@ -52,30 +53,6 @@ REFERENCE_DEVICE = DeviceInfo(
     model_number="CFG-18",
     firmware_version="18.4",
 )
-
-
-class Report:
-    """Collects pass/fail results and prints them as they happen."""
-
-    def __init__(self) -> None:
-        self.failures = 0
-        self.checks = 0
-
-    def check(self, ok: bool, description: str, detail: str = "") -> bool:  # noqa: FBT001
-        self.checks += 1
-        if not ok:
-            self.failures += 1
-        suffix = f"  [{detail}]" if detail else ""
-        print(f"  {'PASS' if ok else 'FAIL'}  {description}{suffix}", flush=True)
-        return ok
-
-    def summary(self) -> int:
-        print("-" * 74)
-        if self.failures:
-            print(f"RESULT: {self.failures} of {self.checks} checks FAILED")
-            return 1
-        print(f"RESULT: all {self.checks} checks passed")
-        return 0
 
 
 def coding_snapshot(coding: Coding | None) -> dict | None:

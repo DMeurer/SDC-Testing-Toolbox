@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import queue
 import subprocess
 import sys
 import threading
@@ -54,6 +53,7 @@ from acceptance_provider import (  # noqa: E402
     WAVE,
     ZOOM,
 )
+from script_support import ProcessOutput, Report, stop_process, wait_for_ready  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 from sdc11073.xml_types import msg_types  # noqa: E402
 
@@ -62,99 +62,6 @@ from sdctoolbox.consumer_service import ConsumerService  # noqa: E402
 from sdctoolbox.model import MetricKind  # noqa: E402
 
 FINISHED = (msg_types.InvocationState.FINISHED, msg_types.InvocationState.FINISHED_MOD)
-
-
-class Report:
-    """Collects pass/fail results and prints them as they happen."""
-
-    def __init__(self) -> None:
-        self.failures = 0
-        self.checks = 0
-
-    def check(self, ok: bool, description: str, detail: str = "") -> bool:  # noqa: FBT001
-        self.checks += 1
-        if not ok:
-            self.failures += 1
-        status = "PASS" if ok else "FAIL"
-        suffix = f"  [{detail}]" if detail else ""
-        print(f"  {status}  {description}{suffix}", flush=True)
-        return ok
-
-    def summary(self) -> int:
-        print("-" * 74)
-        if self.failures:
-            print(f"RESULT: {self.failures} of {self.checks} checks FAILED")
-            return 1
-        print(f"RESULT: all {self.checks} checks passed")
-        return 0
-
-
-class ProcessOutput:
-    """Drain, echo and retain a subprocess's combined output."""
-
-    def __init__(self, process: subprocess.Popen[str]) -> None:
-        if process.stdout is None:
-            raise ValueError("process stdout must be piped")
-        self._stream = process.stdout
-        self._pending: queue.Queue[str | None] = queue.Queue()
-        self._lines: list[str] = []
-        self._lock = threading.Lock()
-        self._thread = threading.Thread(target=self._pump, name="provider-output-reader")
-        self._thread.start()
-
-    def _pump(self) -> None:
-        try:
-            for line in self._stream:
-                with self._lock:
-                    self._lines.append(line)
-                print(f"    {line.rstrip()}", flush=True)
-                self._pending.put(line)
-        finally:
-            self._pending.put(None)
-
-    @property
-    def buffered_output(self) -> str:
-        with self._lock:
-            return "".join(self._lines)
-
-    @property
-    def is_alive(self) -> bool:
-        return self._thread.is_alive()
-
-    def next_line(self, timeout: float) -> str | None:
-        return self._pending.get(timeout=timeout)
-
-    def join(self) -> None:
-        self._thread.join()
-
-
-def wait_for_ready(output: ProcessOutput, timeout: float) -> bool:
-    """Wait at most timeout seconds for a READY line from the provider."""
-    deadline = time.monotonic() + timeout
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return False
-        try:
-            line = output.next_line(timeout=remaining)
-        except queue.Empty:
-            return False
-        if line is None:
-            return False
-        if "READY" in line:
-            return True
-
-
-def stop_process(process: subprocess.Popen[str], output: ProcessOutput) -> None:
-    """Stop and reap the subprocess, then wait for its output reader to finish."""
-    if process.poll() is None:
-        process.terminate()
-    try:
-        process.wait(timeout=15)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
-    output.join()
 
 
 def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one piece
