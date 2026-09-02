@@ -169,15 +169,21 @@ class SliderWidget(MetricWidget):
         if span <= 0:
             return None
         resolution = spec.resolution or Decimal("1")
-        if resolution <= 0:
+        if not resolution.is_finite() or resolution <= 0:
             resolution = Decimal("1")
-        steps = int(span / resolution)
+        span_numerator, span_denominator = span.as_integer_ratio()
+        resolution_numerator, resolution_denominator = resolution.as_integer_ratio()
+        numerator = span_numerator * resolution_denominator
+        denominator = span_denominator * resolution_numerator
+        steps = (numerator + denominator - 1) // denominator
         if steps < 1 or steps > MAX_SLIDER_STEPS:
             return None
         return steps
 
     def build(self) -> None:
         self._resolution = self.spec.resolution or Decimal("1")
+        if not self._resolution.is_finite() or self._resolution <= 0:
+            self._resolution = Decimal("1")
         self._steps = self._steps(self.spec) or 1
 
         self.slider = NoWheelSlider(Qt.Horizontal)
@@ -209,10 +215,16 @@ class SliderWidget(MetricWidget):
         layout.addLayout(row)
 
     def _position_to_value(self, position: int) -> Decimal:
+        if position >= self._steps:
+            return self.spec.maximum
         value = self.spec.minimum + Decimal(position) * self._resolution
         return min(value, self.spec.maximum)
 
     def _value_to_position(self, value: Decimal) -> int:
+        if value <= self.spec.minimum:
+            return 0
+        if value >= self.spec.maximum:
+            return self._steps
         offset = (value - self.spec.minimum) / self._resolution
         return max(0, min(self._steps, int(offset)))
 

@@ -264,6 +264,7 @@ class RemoteDevice:
                     unit_label=_first_text(getattr(descriptor, "Unit", None)),
                     type_code=getattr(getattr(descriptor, "Type", None), "Code", None),
                     allowed_values=tuple(str(item.Value) for item in allowed),
+                    resolution=getattr(descriptor, "Resolution", None),
                     minimum=lower,
                     maximum=upper,
                     technical_minimum=technical_lower,

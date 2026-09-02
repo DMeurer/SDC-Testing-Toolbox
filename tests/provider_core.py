@@ -1217,10 +1217,11 @@ def check_foreign_consumer_operations(report: Report) -> None:
             self.calls.append(("activate", handle, arguments))
             return self._future()
 
-    def metric_entity(handle, node_type):
+    def metric_entity(handle, node_type, *, lower="0", upper="100", resolution=None):
         descriptor = SimpleNamespace(
             AllowedValue=[],
-            TechnicalRange=[SimpleNamespace(Lower=Decimal("0"), Upper=Decimal("100"))],
+            TechnicalRange=[SimpleNamespace(Lower=Decimal(lower), Upper=Decimal(upper))],
+            Resolution=resolution,
         )
         state = SimpleNamespace(MetricValue=SimpleNamespace(Value=None))
         return SimpleNamespace(node_type=node_type, descriptor=descriptor, state=state, parent_handle=None)
@@ -1318,6 +1319,31 @@ def check_foreign_consumer_operations(report: Report) -> None:
         all(invocations),
         "the operations advertised as usable are the operations invoked",
         str(invocations),
+    )
+
+    remote_resolutions = []
+    for resolution in (Decimal("0.1"), Decimal("0.3")):
+        metric_handle = f"metric.fractional.{resolution}"
+        entities = {
+            metric_handle: metric_entity(
+                metric_handle,
+                pm.NumericMetricDescriptor,
+                lower="0",
+                upper="1",
+                resolution=resolution,
+            ),
+        }
+        remote, _ = remote_for(entities)
+        metric = remote.metrics()[metric_handle]
+        remote_resolutions.append(
+            metric.resolution == resolution
+            and metric.minimum == Decimal("0")
+            and metric.maximum == Decimal("1")
+        )
+    report.check(
+        all(remote_resolutions),
+        "foreign numeric descriptor resolutions remain exact in metric snapshots",
+        str(remote_resolutions),
     )
 
     absent_metric = "metric.absent-mode"

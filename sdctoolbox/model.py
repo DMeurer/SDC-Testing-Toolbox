@@ -1162,6 +1162,8 @@ class RemoteMetric:
     unit_label: str | None = None
     type_code: str | None = None
     allowed_values: tuple[str, ...] = ()
+    # NumericMetricDescriptor/Resolution, which determines a numeric control's step size.
+    resolution: Decimal | None = None
     # Limits the peer publishes. `minimum`/`maximum` come from the set operation's
     # AllowedRange when there is one, otherwise from the metric's TechnicalRange.
     minimum: Decimal | None = None

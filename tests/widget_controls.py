@@ -23,19 +23,21 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 
 from sdctoolbox.gui.main_window import MainWindow  # noqa: E402
-from sdctoolbox.gui.widgets import WidgetSpec, build_widget  # noqa: E402
+from sdctoolbox.gui.widgets import WidgetSpec, build_widget, from_remote_metric  # noqa: E402
 from sdctoolbox.gui.new_metric_dialog import (  # noqa: E402
     OFFERED_DISTRIBUTIONS,
     OFFERED_SHAPES,
     NewMetricDialog,
 )
-from sdctoolbox.gui.widgets.controls import (
-    SampleArrayWidget,  # noqa: E402
+from sdctoolbox.gui.widgets.controls import (  # noqa: E402
+    SampleArrayWidget,
     MAX_SLIDER_STEPS,
     ChoiceWidget,
     ReadoutWidget,
@@ -50,6 +52,7 @@ from sdctoolbox.model import (  # noqa: E402
     DistributionShape,
     MetricKind,
     MetricSpec,
+    RemoteMetric,
     WaveformShape,
 )
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
@@ -264,6 +267,66 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
     fine = build_widget(number(minimum=Decimal("0"), maximum=Decimal("40"), resolution=Decimal("0.1")))
     fine.show_value(Decimal("12.5"))
     report.check(fine.readout.text() == "12.5", "a fractional value survives the slider", fine.readout.text())
+
+    print("\nRemote fractional sliders")
+    for resolution, expected_values in (
+        (Decimal("0.1"), tuple(Decimal(index) / Decimal("10") for index in range(11))),
+        (
+            Decimal("0.3"),
+            (Decimal("0"), Decimal("0.3"), Decimal("0.6"), Decimal("0.9"), Decimal("1")),
+        ),
+    ):
+        remote = RemoteMetric(
+            handle=f"remote.{resolution}",
+            node_type_name="NumericMetricDescriptor",
+            kind=MetricKind.NUMBER,
+            minimum=Decimal("0"),
+            maximum=Decimal("1"),
+            resolution=resolution,
+            operation_handles=("operation",),
+            selected_operation_handle="operation",
+            controllable_now=True,
+        )
+        spec = from_remote_metric(remote)
+        control = build_widget(spec)
+        values = tuple(  # noqa: SLF001
+            control._position_to_value(position) for position in range(control.slider.maximum() + 1)
+        )
+        report.check(spec.resolution == resolution, f"remote resolution {resolution} reaches the widget exactly")
+        report.check(values == expected_values, f"resolution {resolution} exposes truthful positions", str(values))
+
+        emitted = []
+        control.value_requested.connect(lambda _h, value, values=emitted: values.append(value))
+        for endpoint, position in ((Decimal("0"), 0), (Decimal("1"), control.slider.maximum())):
+            control.show_value(endpoint)
+            report.check(
+                control.slider.value() == position and control.readout.text() == str(endpoint),
+                f"resolution {resolution} displays endpoint {endpoint} at its endpoint position",
+                f"position={control.slider.value()}, readout={control.readout.text()}",
+            )
+            control._on_released()  # noqa: SLF001
+            report.check(emitted[-1] == endpoint, f"releasing endpoint {endpoint} emits it exactly")
+
+        keyboard_values = []
+        control.value_requested.connect(lambda _h, value, values=keyboard_values: values.append(value))
+        control.show()
+        control.slider.setFocus()
+        pump(app, seconds=0.1)
+        control.show_value(expected_values[-2])
+        QTest.keyClick(control.slider, Qt.Key_Right)
+        QTest.keyClick(control.slider, Qt.Key_Left)
+        report.check(
+            keyboard_values == [expected_values[-1], expected_values[-2]],
+            f"resolution {resolution} keyboard steps emit exact final-position values",
+            str(keyboard_values),
+        )
+        report.check(
+            control.slider.value() == control.slider.maximum() - 1
+            and control.readout.text() == str(expected_values[-2]),
+            f"resolution {resolution} keyboard position and readout stay synchronized",
+            f"position={control.slider.value()}, readout={control.readout.text()}",
+        )
+        control.hide()
 
     stepper = build_widget(number(editable=True))
     sent.clear()
