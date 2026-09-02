@@ -452,6 +452,7 @@ The pull-request workflow runs each deterministic area as a separately reported 
 |-------|--------|
 | `diagnostics/check_api.py` | required sdc11073 API surface |
 | `tests/diagnostic_behavior.py` | diagnostic signature and update-result reporting |
+| `tests/application_defaults.py` | shared application defaults and distinct acceptance identity |
 | `tests/provider_core.py` | provider descriptors, values, alarms, contexts and rollback |
 | `tests/presets.py` | every shipped preset built as a working device |
 | `tests/config_roundtrip.py` | versioned export/import, validation and transactional replacement |

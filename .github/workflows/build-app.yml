@@ -24,6 +24,8 @@ jobs:
             script: diagnostics/check_api.py
           - name: Diagnostic behavior
             script: tests/diagnostic_behavior.py
+          - name: Application defaults
+            script: tests/application_defaults.py
           - name: Provider core
             script: tests/provider_core.py
           - name: Presets

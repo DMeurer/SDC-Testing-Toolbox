@@ -61,6 +61,9 @@ def make_set_handler(
     The OperatingMode check is deliberate: ``ScoOperationsRegistry.handle_operation_request``
     does not look at it, so without this check a disabled control would still take effect.
 
+    Numeric targets accept finite ``Decimal`` values and decimal strings. Their BICEPS
+    ``Resolution`` describes measurement granularity; it is not a decimal-place limit.
+
     :param on_applied: called with the target handle after the write has been committed.
         It runs outside the transaction, because sdc11073 holds a non-reentrant lock for the
         whole of it and anything wanting a transaction of its own would deadlock.

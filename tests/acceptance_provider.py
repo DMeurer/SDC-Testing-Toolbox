@@ -55,9 +55,8 @@ MISSING_EFFECT_ACTION = "act.missing_effect"
 LIMIT_ALARM = "al.zoom_out_of_range"
 MANUAL_ALARM = "al.service_due"
 
-# Not "alpha": that is run_toolbox.py's default, and EPRs are derived from the name, so a
-# toolbox window left open would publish the same EPR as this process and a test could
-# connect to whichever answered first.
+# Deliberately different from DEFAULT_INSTANCE_NAME: EPRs are derived from the name, so an
+# application left open with defaults must not publish the same EPR as this test peer.
 PEER_INSTANCE = "acceptance-peer"
 UPDATED_PATIENT = "Grace Hopper"
 
