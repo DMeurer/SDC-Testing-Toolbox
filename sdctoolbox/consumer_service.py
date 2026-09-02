@@ -549,14 +549,22 @@ class ConsumerService:
             msg = "consumer service is already started"
             raise RuntimeError(msg)
         self._discovery = WSDiscovery(self.ip)
-        self._discovery.start()
+        try:
+            self._discovery.start()
+        except Exception:
+            try:
+                self.stop()
+            except Exception:
+                logger.exception("error while rolling back consumer discovery startup")
+            raise
         logger.info("discovery up on %s", self.ip)
 
     def stop(self) -> None:
         """Stop WS-Discovery."""
-        if self._discovery is not None:
-            self._discovery.stop()
-            self._discovery = None
+        discovery = self._discovery
+        self._discovery = None
+        if discovery is not None:
+            discovery.stop()
 
     def __enter__(self) -> ConsumerService:
         self.start()
@@ -606,8 +614,15 @@ class ConsumerService:
     def connect(self, device: DiscoveredDevice) -> RemoteDevice:
         """Connect to a discovered provider and load its MDIB."""
         consumer = SdcConsumer.from_wsd_service(device.service, ssl_context_container=None)
-        consumer.start_all()
-        mdib = ConsumerMdib(consumer, extras_cls=_PeriodicConsumerMdibMethods)
-        mdib.init_mdib()
+        try:
+            consumer.start_all()
+            mdib = ConsumerMdib(consumer, extras_cls=_PeriodicConsumerMdibMethods)
+            mdib.init_mdib()
+        except Exception:
+            try:
+                consumer.stop_all()
+            except Exception:
+                logger.exception("error while rolling back consumer connection to %s", device.epr)
+            raise
         logger.info("connected to %s, %d entities", device.epr, len(mdib.entities))
         return RemoteDevice(consumer, mdib, device.epr)

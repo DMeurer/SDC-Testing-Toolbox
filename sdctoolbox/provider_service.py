@@ -367,93 +367,120 @@ class ProviderService:
 
     def start(self) -> None:
         """Bring the provider up and announce it on the network."""
-        if self._provider is not None:
+        if self._discovery is not None or self._provider is not None or self._mdib is not None:
             msg = "provider is already started"
             raise RuntimeError(msg)
 
-        self._discovery = WSDiscovery(self.ip)
-        self._discovery.start()
+        try:
+            self._discovery = WSDiscovery(self.ip)
+            self._discovery.start()
 
-        self._mdib = ProviderMdib.from_mdib_file(str(constants.BOOTSTRAP_MDIB_PATH))
-        # The handler tells us which metric it touched once its transaction has closed, so a
-        # value written by a remote consumer raises a limit alarm exactly as a local edit
-        # does. It cannot be done from a metrics observable: sdc11073 fires those while
-        # holding the transaction lock, and opening the alert transaction there deadlocks.
-        self._handler = make_set_handler(
-            self._mdib,
-            coerce_value=self._coerce_value,
-            on_applied=self._on_metric_applied,
-        )
-        self._activate_handler = make_activate_handler(
-            self._mdib,
-            effects_for=self._effects_for,
-            coerce_value=self._coerce_value,
-            on_applied=self._on_metric_applied,
-        )
+            self._mdib = ProviderMdib.from_mdib_file(str(constants.BOOTSTRAP_MDIB_PATH))
+            # The handler tells us which metric it touched once its transaction has closed, so a
+            # value written by a remote consumer raises a limit alarm exactly as a local edit
+            # does. It cannot be done from a metrics observable: sdc11073 fires those while
+            # holding the transaction lock, and opening the alert transaction there deadlocks.
+            self._handler = make_set_handler(
+                self._mdib,
+                coerce_value=self._coerce_value,
+                on_applied=self._on_metric_applied,
+            )
+            self._activate_handler = make_activate_handler(
+                self._mdib,
+                effects_for=self._effects_for,
+                coerce_value=self._coerce_value,
+                on_applied=self._on_metric_applied,
+            )
 
-        this_model = ThisModelType(
-            manufacturer=self.device.manufacturer,
-            manufacturer_url=self.device.manufacturer_url,
-            model_name=self.device.model_name,
-            model_number=self.device.model_number,
-            model_url=self.device.manufacturer_url,
-            presentation_url=self.device.manufacturer_url,
-        )
-        this_device = ThisDeviceType(
-            friendly_name=self.friendly_name,
-            firmware_version=self.device.firmware_version,
-            serial_number=self.instance_name,
-        )
+            this_model = ThisModelType(
+                manufacturer=self.device.manufacturer,
+                manufacturer_url=self.device.manufacturer_url,
+                model_name=self.device.model_name,
+                model_number=self.device.model_number,
+                model_url=self.device.manufacturer_url,
+                presentation_url=self.device.manufacturer_url,
+            )
+            this_device = ThisDeviceType(
+                friendly_name=self.friendly_name,
+                firmware_version=self.device.firmware_version,
+                serial_number=self.instance_name,
+            )
 
-        # SdcProvider only builds SCO registries when a role_provider_class is present
-        # (see providerimpl._setup_components). We therefore always supply one, and use the
-        # factory to capture the registry instance instead of reaching into private state.
-        def role_provider_factory(mdib, sco, log_prefix):  # noqa: ANN001, ANN202
-            self._sco = sco
-            return BaseProduct(mdib, sco, log_prefix)
+            # SdcProvider only builds SCO registries when a role_provider_class is present
+            # (see providerimpl._setup_components). We therefore always supply one, and use the
+            # factory to capture the registry instance instead of reaching into private state.
+            def role_provider_factory(mdib, sco, log_prefix):  # noqa: ANN001, ANN202
+                self._sco = sco
+                return BaseProduct(mdib, sco, log_prefix)
 
-        self._provider = SdcProvider(
-            ws_discovery=self._discovery,
-            epr=self.epr,
-            this_model=this_model,
-            this_device=this_device,
-            device_mdib_container=self._mdib,
-            role_provider_components=RoleProviderComponents(role_provider_class=role_provider_factory),
-        )
+            self._provider = SdcProvider(
+                ws_discovery=self._discovery,
+                epr=self.epr,
+                this_model=this_model,
+                this_device=this_device,
+                device_mdib_container=self._mdib,
+                role_provider_components=RoleProviderComponents(role_provider_class=role_provider_factory),
+            )
 
-        # No waveform provider configured, so the real-time sample loop must stay off.
-        self._provider.start_all(start_rtsample_loop=False)
-        self.set_location(LocationInfo(**constants.DEFAULT_LOCATION))
-        self.set_patient(DEFAULT_PATIENT)
+            # No waveform provider configured, so the real-time sample loop must stay off.
+            self._provider.start_all(start_rtsample_loop=False)
+            self.set_location(LocationInfo(**constants.DEFAULT_LOCATION))
+            self.set_patient(DEFAULT_PATIENT)
 
-        if self._sco is None:
-            msg = "no SCO registry was created - the bootstrap MDIB is missing its Sco element"
-            raise RuntimeError(msg)
+            if self._sco is None:
+                msg = "no SCO registry was created - the bootstrap MDIB is missing its Sco element"
+                raise RuntimeError(msg)
+        except Exception:
+            try:
+                self.stop()
+            except Exception:
+                logger.exception("error while rolling back provider startup")
+            raise
 
         logger.info("provider %r up on %s, EPR %s", self.instance_name, self.ip, self.epr.urn)
 
     def stop(self) -> None:
         """Take the provider off the network."""
-        self.stop_generator()
-        if self._provider is not None:
-            self._provider.stop_all()
-            self._provider = None
-        if self._discovery is not None:
-            self._discovery.stop()
-            self._discovery = None
-        self._mdib = None
-        self._sco = None
-        self._operations.clear()
-        self._specs.clear()
-        self._alerts.clear()
-        self._alert_signals.clear()
+        provider = self._provider
+        discovery = self._discovery
+        first_error: Exception | None = None
+        first_traceback = None
+
+        cleanups = [("sample generator", self.stop_generator)]
+        if provider is not None:
+            cleanups.append(("provider", provider.stop_all))
+        if discovery is not None:
+            cleanups.append(("discovery", discovery.stop))
+
+        for name, cleanup in cleanups:
+            try:
+                cleanup()
+            except Exception as exc:
+                if first_error is None:
+                    first_error = exc
+                    first_traceback = exc.__traceback__
+                logger.exception("error while stopping provider %s", name)
+
         with self._lock:
+            self._discovery = None
+            self._provider = None
+            self._mdib = None
+            self._sco = None
+            self._handler = None
+            self._activate_handler = None
+            self._operations.clear()
+            self._specs.clear()
+            self._alerts.clear()
+            self._alert_signals.clear()
             self._pending_alert_sources.clear()
-        self._actions.clear()
-        self._sections.clear()
-        self._waveform_phase.clear()
-        self._pinned_samples.clear()
+            self._actions.clear()
+            self._sections.clear()
+            self._waveform_phase.clear()
+            self._pinned_samples.clear()
+            self._waveform_thread = None
         logger.info("provider %r stopped", self.instance_name)
+        if first_error is not None:
+            raise first_error.with_traceback(first_traceback)
 
     def _snapshot_configuration(self) -> _ConfigurationSnapshot:
         """Clone all mutable provider state needed to undo a profile replacement."""
@@ -1244,12 +1271,18 @@ class ProviderService:
             if self._waveform_thread is not None:
                 return
             self._waveform_stop.clear()
-            self._waveform_thread = threading.Thread(
+            thread = threading.Thread(
                 target=self._run_waveforms,
                 name=f"samples-{self.instance_name}",
                 daemon=True,
             )
-            self._waveform_thread.start()
+            self._waveform_thread = thread
+            try:
+                thread.start()
+            except Exception:
+                self._waveform_thread = None
+                self._waveform_stop.set()
+                raise
             logger.info("sample generator started")
 
     def stop_generator(self) -> None:
@@ -1258,8 +1291,13 @@ class ProviderService:
         if thread is None:
             return
         self._waveform_stop.set()
-        thread.join(timeout=5.0)
-        self._waveform_thread = None
+        try:
+            thread.join(timeout=5.0)
+            if thread.is_alive():
+                msg = "sample generator did not stop within 5 seconds"
+                raise RuntimeError(msg)
+        finally:
+            self._waveform_thread = None
         logger.info("sample generator stopped")
 
     @property
