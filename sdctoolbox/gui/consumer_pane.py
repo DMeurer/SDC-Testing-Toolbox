@@ -23,7 +23,6 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
-    QSizePolicy,
     QSplitter,
     QStackedWidget,
     QTableWidget,
@@ -41,7 +40,12 @@ from .async_call import AsyncCall
 from .decimal_input import DecimalInputError, parse_decimal_input
 from .no_wheel import NoWheelComboBox
 from .qt_bridge import MdibBridge
-from .styling import apply_row_selection_style, mute, muted_colour
+from .styling import (
+    apply_row_selection_style,
+    constrain_dynamic_label,
+    mute,
+    muted_colour,
+)
 from .table_columns import TableColumns
 from .widgets import WidgetBoard, from_remote_metric
 
@@ -116,12 +120,10 @@ class ConsumerPane(QWidget):
         self.disconnect_button.clicked.connect(self._on_disconnect)
 
         self.status_label = QLabel("Not connected")
-        self.status_label.setWordWrap(True)
+        constrain_dynamic_label(self.status_label, max_lines=3)
         self.context_label = QLabel("")
-        self.context_label.setWordWrap(True)
-        self.context_label.setTextFormat(Qt.PlainText)
+        constrain_dynamic_label(self.context_label, max_lines=3)
         self.context_label.setTextInteractionFlags(Qt.NoTextInteraction)
-        self.context_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         mute(self.context_label)
 
         top = QHBoxLayout()
@@ -190,7 +192,7 @@ class ConsumerPane(QWidget):
         self.views.setStretchFactor(2, 2)
 
         self.editor_label = QLabel("Connect to a device to control it")
-        self.editor_label.setWordWrap(True)
+        constrain_dynamic_label(self.editor_label, max_lines=2, max_width=MIN_PANEL_WIDTH)
         self.value_edit = QLineEdit()
         self.value_edit.returnPressed.connect(self._on_apply)
         self.choice_box = NoWheelComboBox()
@@ -200,7 +202,7 @@ class ConsumerPane(QWidget):
         self.apply_button = QPushButton("Set on device")
         self.apply_button.clicked.connect(self._on_apply)
         self.invocation_label = QLabel("")
-        self.invocation_label.setWordWrap(True)
+        constrain_dynamic_label(self.invocation_label, max_lines=3, max_width=MIN_PANEL_WIDTH)
 
         # The editor drives whatever is selected in the table, so it goes away in widget
         # mode where there is no selection. A widget rather than a bare layout, because a

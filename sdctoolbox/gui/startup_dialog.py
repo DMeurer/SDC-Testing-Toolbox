@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 
 from .. import config, constants
 from .no_wheel import NoWheelComboBox
-from .styling import mark_as_error, mute
+from .styling import constrain_dynamic_label, mark_as_error, mute
 
 CONFIG_FILE_FILTER = "SDC toolbox config (*.json);;All files (*)"
 
@@ -132,7 +132,7 @@ class StartupDialog(QDialog):
         mute(self.hint)
 
         self.error_label = QLabel("")
-        self.error_label.setWordWrap(True)
+        constrain_dynamic_label(self.error_label, max_lines=3)
         mark_as_error(self.error_label)
         self.error_label.hide()
 

@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
-    QSizePolicy,
     QSplitter,
     QStackedWidget,
     QTableWidget,
@@ -38,7 +37,12 @@ from .new_alert_dialog import NewAlertDialog
 from .new_metric_dialog import NewMetricDialog
 from .no_wheel import NoWheelComboBox
 from .qt_bridge import MdibBridge
-from .styling import apply_row_selection_style, mute, muted_colour
+from .styling import (
+    apply_row_selection_style,
+    constrain_dynamic_label,
+    mute,
+    muted_colour,
+)
 from .table_columns import TableColumns
 from .widgets import WidgetBoard, from_spec
 
@@ -143,10 +147,8 @@ class ProviderPane(QWidget):
         self.context_button = QPushButton("Patient and location\u2026")
         self.context_button.clicked.connect(self._on_edit_contexts)
         self.context_label = QLabel("")
-        self.context_label.setWordWrap(True)
-        self.context_label.setTextFormat(Qt.PlainText)
+        constrain_dynamic_label(self.context_label, max_lines=3)
         self.context_label.setTextInteractionFlags(Qt.NoTextInteraction)
-        self.context_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         mute(self.context_label)
 
         buttons = QHBoxLayout()
@@ -207,6 +209,7 @@ class ProviderPane(QWidget):
         alert_layout.addWidget(self.alert_table)
 
         self.editor_label = QLabel("Select a data source to change its value")
+        constrain_dynamic_label(self.editor_label, max_lines=2, max_width=240)
         self.value_edit = QLineEdit()
         self.value_edit.returnPressed.connect(self._on_apply)
         self.choice_box = NoWheelComboBox()

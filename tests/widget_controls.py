@@ -25,8 +25,7 @@ sys.path.insert(0, str(ROOT))
 
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
-
+from PySide6.QtWidgets import QApplication, QMessageBox, QSizePolicy  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 
 from sdctoolbox.gui.main_window import MainWindow  # noqa: E402
@@ -273,6 +272,16 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
     fine.show_value(Decimal("12.5"))
     report.check(fine.readout.text() == "12.5", "a fractional value survives the slider", fine.readout.text())
 
+    report.check(
+        slider.readout.textFormat() == Qt.PlainText
+        and slider.readout.sizePolicy().horizontalPolicy() == QSizePolicy.Ignored
+        and all(
+            label.textFormat() == Qt.PlainText and label.maximumWidth() <= 90
+            for label in (slider.low_label, slider.high_label)
+        ),
+        "slider values and range endpoints use bounded plain-text labels",
+    )
+
     print("\nRemote fractional sliders")
     for resolution, expected_values in (
         (Decimal("0.1"), tuple(Decimal(index) / Decimal("10") for index in range(11))),
@@ -376,6 +385,24 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                 f"the numeric widget rejects {invalid} when {action}",
                 message,
             )
+    report.check(
+        bounded_stepper.error_label.textFormat() == Qt.PlainText
+        and bounded_stepper.error_label.sizePolicy().horizontalPolicy()
+        == QSizePolicy.Ignored,
+        "numeric errors use a bounded plain-text label",
+    )
+
+    hostile_value = "<img src=not-found width=10000 height=10000>"
+    fallback = build_widget(WidgetSpec("m.hostile", "Hostile", None))
+    fallback.show_value(hostile_value)
+    report.check(
+        fallback.readout.textFormat() == Qt.PlainText
+        and fallback.readout.text() == hostile_value
+        and fallback.readout.sizePolicy().horizontalPolicy() == QSizePolicy.Ignored
+        and fallback.minimumSizeHint().width() < 260,
+        "fallback values render literally without expanding their control",
+        f"minimum={fallback.minimumSizeHint().width()}",
+    )
 
     choice = build_widget(
         WidgetSpec("m.c", "Mode", MetricKind.CHOICE, allowed_values=("IDLE", "RUN"), editable=True),

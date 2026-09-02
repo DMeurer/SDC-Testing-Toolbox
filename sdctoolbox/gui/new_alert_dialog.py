@@ -31,7 +31,7 @@ from ..model import (
 )
 from .decimal_input import DecimalInputError, parse_decimal_input
 from .no_wheel import NoWheelComboBox
-from .styling import mark_as_error, mute
+from .styling import constrain_dynamic_label, mark_as_error, mute
 
 KIND_CAPTIONS = [
     ("Technical", AlertKind.TECHNICAL),
@@ -127,10 +127,11 @@ class NewAlertDialog(QDialog):
         mute(self.hint)
 
         self.handle_preview = QLabel("-")
+        constrain_dynamic_label(self.handle_preview)
         mute(self.handle_preview)
 
         self.error_label = QLabel("")
-        self.error_label.setWordWrap(True)
+        constrain_dynamic_label(self.error_label, max_lines=3)
         mark_as_error(self.error_label)
         self.error_label.hide()
 

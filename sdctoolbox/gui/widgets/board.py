@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..styling import mute
+from ..styling import constrain_dynamic_label, mute
 from .factory import build_widget
 
 if TYPE_CHECKING:
@@ -53,16 +53,16 @@ class MetricCard(QFrame):
         self.spec = spec
         self.setFrameShape(QFrame.StyledPanel)
 
-        heading = QLabel(spec.caption)
-        font = heading.font()
+        self.heading = QLabel(spec.caption)
+        constrain_dynamic_label(self.heading, max_lines=2)
+        font = self.heading.font()
         font.setBold(True)
-        heading.setFont(font)
-        heading.setWordWrap(True)
+        self.heading.setFont(font)
 
         title_row = QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
         title_row.setSpacing(4)
-        title_row.addWidget(heading, 1)
+        title_row.addWidget(self.heading, 1)
 
         self.delete_button: QToolButton | None = None
         if deletable:
@@ -89,16 +89,16 @@ class MetricCard(QFrame):
             footer_parts.append(f"{spec.sample_period}s/sample")
         if spec.note:
             footer_parts.append(spec.note)
-        footer = QLabel("  \u00b7  ".join(footer_parts))
-        footer.setWordWrap(True)
-        mute(footer)
+        self.footer = QLabel("  \u00b7  ".join(footer_parts))
+        constrain_dynamic_label(self.footer, max_lines=3)
+        mute(self.footer)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(6)
         layout.addLayout(title_row)
         layout.addWidget(self.control)
-        layout.addWidget(footer)
+        layout.addWidget(self.footer)
 
 
 class WidgetBoard(QScrollArea):

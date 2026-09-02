@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 from ...model import SAMPLE_ARRAY_KINDS, MetricKind
 from ..decimal_input import DecimalInputError, parse_decimal_input
 from ..no_wheel import NoWheelComboBox, NoWheelSlider
-from ..styling import mark_as_error, mute
+from ..styling import constrain_dynamic_label, mark_as_error, mute
 from .base import MetricWidget, WidgetSpec
 from .plot import SamplePlot
 
@@ -196,13 +196,17 @@ class SliderWidget(MetricWidget):
         self.slider.sliderReleased.connect(self._on_released)
 
         self.readout = QLabel(NO_VALUE)
+        constrain_dynamic_label(self.readout)
         self.readout.setAlignment(Qt.AlignCenter)
         self.readout.setMinimumWidth(70)
 
         low = QLabel(_trim(self.spec.minimum))
         high = QLabel(_trim(self.spec.maximum))
         for end in (low, high):
+            constrain_dynamic_label(end, max_width=90)
             mute(end)
+        self.low_label = low
+        self.high_label = high
 
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
@@ -282,7 +286,7 @@ class StepperWidget(MetricWidget):
             row.addWidget(self._make_button(delta))
 
         self.error_label = QLabel("")
-        self.error_label.setWordWrap(True)
+        constrain_dynamic_label(self.error_label, max_lines=3)
         mark_as_error(self.error_label)
         self.error_label.hide()
 
@@ -417,6 +421,7 @@ class ReadoutWidget(MetricWidget):
 
     def build(self) -> None:
         self.readout = QLabel(NO_VALUE)
+        constrain_dynamic_label(self.readout, max_lines=3)
         self.readout.setAlignment(Qt.AlignCenter)
         self.readout.setTextInteractionFlags(Qt.TextSelectableByMouse)
 

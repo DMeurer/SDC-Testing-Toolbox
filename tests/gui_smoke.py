@@ -69,6 +69,7 @@ from sdctoolbox.gui.provider_pane import (  # noqa: E402
 )
 from sdctoolbox.gui.startup_dialog import LINK_LOCAL_PREFIX, StartupDialog  # noqa: E402
 from sdctoolbox.gui.styling import mute  # noqa: E402
+from sdctoolbox.gui.widgets import WidgetSpec  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
     ActionSpec,
     AlertKind,
@@ -1505,6 +1506,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         # Peer labels are untrusted text. The Network pane must show markup-looking content
         # literally and must not let it dictate the splitter's minimum width.
         consumer = window.network_pane
+        consumer_minimum_before = consumer.minimumSizeHint().width()
         consumer.remote = SimpleNamespace(
             patient_contexts=lambda: {
                 "PC.foreign": PatientInfo(
@@ -1530,7 +1532,90 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             consumer.context_label.sizePolicy().horizontalPolicy() == QSizePolicy.Ignored,
             "peer demographic text cannot force the network pane wider",
         )
+
+        hostile_dimension = "<img src=not-found width=10000 height=10000>"
+        hostile_handle = f"handle {hostile_dimension}"
+        hostile_label = f"<b>peer label</b> {hostile_dimension}"
+        hostile_unit = f"unit {hostile_dimension}"
+        hostile_domain = f"domain {hostile_dimension}"
+        hostile_note = f"note {hostile_dimension}"
+        hostile_value = f"<i>peer value</i> {hostile_dimension}"
+        consumer.board.set_metrics(
+            [
+                WidgetSpec(
+                    hostile_handle,
+                    hostile_label,
+                    None,
+                    unit=hostile_unit,
+                    domain=hostile_domain,
+                    note=hostile_note,
+                ),
+                WidgetSpec("hostile.error", "Error source", MetricKind.NUMBER),
+            ],
+        )
+        consumer.board.show_values({hostile_handle: hostile_value})
+        hostile_card = consumer.board.card(hostile_handle)
+        error_card = consumer.board.card("hostile.error")
+        error_message = f"failed for {hostile_dimension}"
+        error_card.control._show_error(error_message)  # noqa: SLF001
+        pump(app)
+
+        hostile_labels = (
+            hostile_card.heading,
+            hostile_card.footer,
+            hostile_card.control.readout,
+            error_card.control.error_label,
+        )
+        report.check(
+            all(label.textFormat() == Qt.PlainText for label in hostile_labels)
+            and hostile_card.heading.text() == hostile_label
+            and all(
+                text in hostile_card.footer.text()
+                for text in (hostile_handle, hostile_unit, hostile_domain, hostile_note)
+            )
+            and hostile_card.control.readout.text() == hostile_value
+            and error_card.control.error_label.text() == error_message,
+            "peer metric labels, handles, units, domains, values, notes and errors "
+            "stay literal",
+        )
+        report.check(
+            all(
+                label.sizePolicy().horizontalPolicy() == QSizePolicy.Ignored
+                and label.maximumHeight() <= label.fontMetrics().lineSpacing() * 3 + 2
+                for label in hostile_labels
+            )
+            and hostile_card.minimumSizeHint().width() <= 260,
+            "hostile metric markup and long metadata cannot expand a card",
+            f"card minimum={hostile_card.minimumSizeHint().width()}",
+        )
+
+        consumer._set_status(error_message)  # noqa: SLF001
+        consumer.editor_label.setText(hostile_label)
+        consumer._on_set_failed(error_message)  # noqa: SLF001
+        report.check(
+            all(
+                label.textFormat() == Qt.PlainText
+                for label in (
+                    consumer.status_label,
+                    consumer.editor_label,
+                    consumer.invocation_label,
+                )
+            )
+            and consumer.status_label.sizePolicy().horizontalPolicy()
+            == QSizePolicy.Ignored
+            and consumer.editor_label.maximumWidth() <= 240
+            and consumer.invocation_label.maximumWidth() <= 240
+            and consumer.status_label.text() == error_message
+            and consumer.editor_label.text() == hostile_label
+            and hostile_dimension in consumer.invocation_label.text()
+            and consumer.minimumSizeHint().width() <= consumer_minimum_before,
+            "peer status, editor text and invocation errors are literal without "
+            "expanding the pane",
+            f"pane minimum={consumer.minimumSizeHint().width()}",
+        )
         consumer.remote = None
+        consumer._reset_remote_ui()  # noqa: SLF001 - restore the disconnected state
+        consumer._set_status("Not connected")  # noqa: SLF001
         consumer._refresh_contexts()  # noqa: SLF001 - restore the disconnected state
 
         print("\n9. Column sizing, all four tables")
