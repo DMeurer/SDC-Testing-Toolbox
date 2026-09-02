@@ -3,15 +3,19 @@
 from pathlib import Path
 
 from PyInstaller.compat import is_win
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, copy_metadata
 
 
 root = Path(SPECPATH)
 datas = [
+    (str(root / "LICENSE"), "."),
+    (str(root / "THIRD_PARTY_NOTICES.md"), "."),
     (str(root / "sdctoolbox" / "mdib_bootstrap.xml"), "sdctoolbox"),
     (str(root / "presets"), "presets"),
 ]
 datas += collect_data_files("sdc11073", includes=["xsd/*.xsd"])
+datas += copy_metadata("sdc11073", recursive=True)
+datas += copy_metadata("PySide6", recursive=True)
 
 analysis = Analysis(
     [str(root / "run_toolbox.py")],

@@ -2,7 +2,7 @@
 
 A desktop tool for understanding **IEEE 11073 SDC**: create data sources with a few clicks, publish them on the network, discover other SDC devices, subscribe to their data sources and remote-control them.
 
-Built on [sdc11073](https://github.com/Draegerwerk/sdc11073) (Draeger, MIT) and PySide6.
+Built on [sdc11073](https://github.com/Draegerwerk/sdc11073) and PySide6.
 
 > [!WARNING]
 > Learning tool, not a medical device. By its own notice `sdc11073` is not intended for
@@ -36,7 +36,9 @@ specification:
 .venv\Scripts\python.exe -m PyInstaller --clean --noconfirm SDC-Testing-Toolbox.spec
 ```
 
-The Windows result is `dist\SDC-Testing-Toolbox.exe`.
+The Windows result is `dist\SDC-Testing-Toolbox.exe`. Any distribution must
+keep `LICENSE` and `THIRD_PARTY_NOTICES.md` with the executable; the GitHub
+Actions artifact includes all three files.
 
 ```bash
 sudo apt-get update
@@ -63,6 +65,21 @@ The `Build application` GitHub Actions workflow performs both native builds, smo
 actual packaged applications and uploads the Windows executable and Linux archive. Run it
 manually when an artifact is needed; it also runs for pull requests to `develop` and version
 tags.
+
+## License
+
+SDC Testing Toolbox is free software licensed under the
+[GNU General Public License version 3 only](LICENSE) (`GPL-3.0-only`). This is
+the toolbox's license, not the license of its dependencies.
+
+Dependencies retain their own terms. In particular, `sdc11073` 3.0.0 is MIT
+licensed, while PySide6 and Qt are available under applicable LGPLv3, GPL, or
+commercial terms depending on the components and license option. Packaged
+builds also contain Python and files produced or embedded by PyInstaller. See
+[Third-Party Notices](THIRD_PARTY_NOTICES.md) for attribution, authoritative
+links, and distribution considerations. Users and distributors must review the
+licenses and notices for the actual dependency versions and components they use
+or ship.
 
 ## Milestones
 

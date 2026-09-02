@@ -26,6 +26,8 @@ jobs:
             script: tests/diagnostic_behavior.py
           - name: Application defaults
             script: tests/application_defaults.py
+          - name: Licensing and notices
+            script: tests/licensing.py
           - name: Provider core
             script: tests/provider_core.py
           - name: Presets
@@ -155,6 +157,20 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: ./dist/SDC-Testing-Toolbox/SDC-Testing-Toolbox --name packaged-smoke --ip 127.0.0.1 --smoke-test
 
+      - name: Stage Windows legal notices
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Copy-Item LICENSE, THIRD_PARTY_NOTICES.md dist
+
+      - name: Verify packaged legal notices
+        shell: pwsh
+        run: |
+          $bundle = if ($IsWindows) { "dist" } else { "dist/SDC-Testing-Toolbox" }
+          if (-not (Test-Path "$bundle/LICENSE") -or
+              -not (Test-Path "$bundle/THIRD_PARTY_NOTICES.md")) {
+            throw "Packaged legal notices are missing from $bundle"
+          }
+
       - name: Archive Linux bundle
         if: runner.os == 'Linux'
         run: tar -C dist -czf dist/SDC-Testing-Toolbox-linux-x86_64.tar.gz SDC-Testing-Toolbox
@@ -164,7 +180,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: SDC-Testing-Toolbox-windows-x86_64
-          path: dist/SDC-Testing-Toolbox.exe
+          path: |
+            dist/SDC-Testing-Toolbox.exe
+            dist/LICENSE
+            dist/THIRD_PARTY_NOTICES.md
           if-no-files-found: error
 
       - name: Upload Linux bundle
