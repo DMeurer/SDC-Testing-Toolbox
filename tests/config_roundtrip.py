@@ -14,7 +14,10 @@ import json
 import logging
 import sys
 import tempfile
+import threading
+import time
 from decimal import Decimal
+from itertools import pairwise
 from pathlib import Path
 
 from lxml import etree
@@ -23,9 +26,13 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from script_support import Report  # noqa: E402
+from sdc11073.consumer.consumerimpl import SdcConsumer  # noqa: E402
+from sdc11073.definitions_sdc import SdcV1Definitions  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
+from sdc11073.mdib import ConsumerMdib  # noqa: E402
 
 from sdctoolbox import config  # noqa: E402
+from sdctoolbox.consumer_service import RemoteDevice  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
     ActionSpec,
     AlertKind,
@@ -254,6 +261,43 @@ def complete_snapshot(service: ProviderService) -> dict:
     }
 
 
+def semantic_mdib(mdib) -> bytes:  # noqa: ANN001 - provider and consumer MDIBs share this API
+    """Canonical complete graph without transport-maintained version attributes."""
+    node = mdib.reconstruct_mdib_with_context_states()[0]
+    for element in node.iter():
+        for name in list(element.attrib):
+            if name.endswith("Version"):
+                del element.attrib[name]
+        element.attrib.pop("SafetyClassification", None)
+        if element.get("{http://www.w3.org/2001/XMLSchema-instance}type") == "dom:MdsState":
+            element.attrib.pop("Lang", None)
+            element.attrib.pop("OperatingMode", None)
+    for element in reversed(list(node.iter())):
+        element[:] = sorted(
+            element,
+            key=lambda child: (
+                child.tag,
+                child.get("Handle", ""),
+                child.get("DescriptorHandle", ""),
+                etree.tostring(child, method="c14n"),
+            ),
+        )
+    return etree.tostring(node, method="c14n")
+
+
+def mdib_versions(mdib) -> tuple[int, int, int]:  # noqa: ANN001 - provider and consumer MDIBs share this API
+    return mdib.mdib_version, mdib.mdstate_version, mdib.mddescription_version
+
+
+def wait_until(predicate, timeout: float = 10.0) -> bool:  # noqa: ANN001, ANN201 - test predicate
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.1)
+    return False
+
+
 def build_reference(service: ProviderService) -> None:
     """A device exercising every field emitted by config.to_dict()."""
     service.add_metric(
@@ -426,6 +470,7 @@ def check_operational_failure_rolls_back(report: Report, service: ProviderServic
     service.set_location(LocationInfo(facility="OLD", point_of_care="OR", bed="7"))
     service.set_patient(PatientInfo(given_name="Before", family_name="Import"))
     before = complete_snapshot(service)
+    before_graph = semantic_mdib(service.mdib)
 
     replacement = config.parse(
         {
@@ -465,8 +510,171 @@ def check_operational_failure_rolls_back(report: Report, service: ProviderServic
 
     after = complete_snapshot(service)
     report.check(replacement_created, "fault injection runs after a replacement descriptor succeeds")
-    changed = [name for name in before if before[name] != after[name]]
-    report.check(after == before, "a failed replacement restores the complete provider state", str(changed))
+    versioned = {"mdib", "mdib_versions", "version_lookups", "descriptors", "context_states"}
+    changed = [name for name in before if name not in versioned and before[name] != after[name]]
+    versions_advance = all(new >= old for old, new in zip(before["mdib_versions"], after["mdib_versions"], strict=True))
+    report.check(
+        not changed and semantic_mdib(service.mdib) == before_graph,
+        "a failed replacement restores the complete provider state",
+        str(changed),
+    )
+    report.check(versions_advance, "provider rollback never rewinds MDIB version counters")
+
+
+def check_connected_consumer_rollback(report: Report) -> None:  # noqa: PLR0915 - linear integration check
+    """A subscribed consumer sees replacement and compensating rollback reports."""
+    service = ProviderService(instance_name="config-live-rollback")
+    service.start()
+    remote = None
+    try:
+        metric = service.add_metric(
+            MetricSpec(
+                label="Original metric",
+                kind=MetricKind.NUMBER,
+                section="Original section",
+                controllable=True,
+                initial_value=Decimal("20"),
+            ),
+        )
+        alert = service.add_alert(
+            AlertSpec(label="Original alert", source_handle=metric, upper_limit=Decimal("10"), delegable=True),
+        )
+        service.set_signal_delegated(service.signal_handles_for(alert)[0], delegated=True)
+        service.add_action(ActionSpec(label="Original action", target_handle=metric, effects={metric: Decimal("5")}))
+        service.set_location(LocationInfo(facility="OLD", point_of_care="OR", bed="7"))
+        service.set_patient(PatientInfo(given_name="Before", family_name="Import"))
+
+        consumer = SdcConsumer(
+            provider_address=service._provider.get_xaddrs()[0],  # noqa: SLF001 - deterministic loopback fixture
+            sdc_definitions=SdcV1Definitions,
+            ssl_context_container=None,
+        )
+        consumer.start_all()
+        consumer_mdib = ConsumerMdib(consumer)
+        consumer_mdib.init_mdib()
+        remote = RemoteDevice(consumer, consumer_mdib, service.epr.urn)
+
+        original_graph = semantic_mdib(remote.mdib)
+        original_versions = mdib_versions(remote.mdib)
+        original_descriptor_versions = {
+            handle: entity.descriptor.DescriptorVersion
+            for handle, entity in remote.mdib.entities.items()
+        }
+        original_state_versions = {
+            state.Handle if state.is_context_state else state.DescriptorHandle: state.StateVersion
+            for state in [*remote.mdib.states.objects, *remote.mdib.context_states.objects]
+        }
+        observed_versions = [original_versions]
+        provider_versions = [mdib_versions(service.mdib)]
+        replacement_seen = threading.Event()
+
+        def on_description(_report) -> None:  # noqa: ANN001 - observable payload
+            observed_versions.append(mdib_versions(remote.mdib))
+
+        def on_created(descriptors: dict) -> None:
+            if "m.replacement_metric" in descriptors:
+                replacement_seen.set()
+
+        remote.bind(description_modifications=on_description, new_descriptors_by_handle=on_created)
+        replacement = config.parse(
+            {
+                "metrics": [
+                    {
+                        "label": "Replacement metric",
+                        "kind": "number",
+                        "section": "Replacement section",
+                        "controllable": True,
+                        "initial_value": "3",
+                    },
+                ],
+                "alerts": [{"label": "Replacement alert", "watches": "m.replacement_metric"}],
+                "actions": [
+                    {
+                        "label": "Replacement action",
+                        "target": "m.replacement_metric",
+                        "effects": {"m.replacement_metric": "4"},
+                    },
+                ],
+                "contexts": {
+                    "location": {"facility": "NEW", "bed": "1"},
+                    "patient": {"given_name": "After"},
+                },
+            },
+        )
+        original_set_patient = service.set_patient
+
+        def fail_after_consumer_observes_replacement(info: PatientInfo) -> None:
+            if not replacement_seen.wait(10):
+                raise RuntimeError("consumer did not observe replacement descriptor")
+            provider_versions.append(mdib_versions(service.mdib))
+            original_set_patient(info)
+            raise RuntimeError("injected failure after consumer observation")
+
+        service.set_patient = fail_after_consumer_observes_replacement
+        try:
+            try:
+                config.apply_to(service, replacement)
+            except config.ConfigError as exc:
+                report.check(
+                    "injected failure after consumer observation" in str(exc),
+                    "failure is injected only after the consumer observes the replacement",
+                    str(exc),
+                )
+            else:
+                report.check(False, "live replacement failure reaches the caller", "it was accepted")  # noqa: FBT003
+        finally:
+            service.set_patient = original_set_patient
+
+        provider_versions.append(mdib_versions(service.mdib))
+        complete = wait_until(lambda: semantic_mdib(remote.mdib) == original_graph)
+        report.check(
+            complete,
+            "subscribed consumer completes the original descriptor and state graph",
+            "consumer graph remained different" if not complete else "",
+        )
+        report.check(
+            set(remote.metrics()) == {metric}
+            and set(remote.alerts()) == {alert}
+            and set(remote.actions()) == {"act.original_action"}
+            and remote.patient().given_name == "Before",
+            "consumer restores metrics, alerts, actions, and associated context",
+        )
+        consumer_versions = observed_versions + [mdib_versions(remote.mdib)]
+        report.check(
+            all(
+                all(new_part >= old_part for old_part, new_part in zip(old, new, strict=True))
+                for old, new in pairwise(consumer_versions)
+            ),
+            "consumer-observed MDIB version counters never decrease",
+            str(consumer_versions),
+        )
+        report.check(
+            all(
+                all(new_part >= old_part for old_part, new_part in zip(old, new, strict=True))
+                for old, new in pairwise(provider_versions)
+            ),
+            "provider MDIB version counters never decrease during rollback",
+            str(provider_versions),
+        )
+        report.check(
+            all(
+                remote.mdib.entities.by_handle(handle).descriptor.DescriptorVersion >= version
+                for handle, version in original_descriptor_versions.items()
+            ),
+            "restored descriptor versions do not rewind",
+        )
+        current_state_versions = {
+            state.Handle if state.is_context_state else state.DescriptorHandle: state.StateVersion
+            for state in [*remote.mdib.states.objects, *remote.mdib.context_states.objects]
+        }
+        report.check(
+            all(current_state_versions[handle] >= version for handle, version in original_state_versions.items()),
+            "restored state and context versions do not rewind",
+        )
+    finally:
+        if remote is not None:
+            remote.close()
+        service.stop()
 
 
 def check_replace_section_lifecycle(report: Report, service: ProviderService) -> None:
@@ -981,7 +1189,10 @@ def main() -> int:
     finally:
         transactional.stop()
 
-    print("\n6. Replacement updates section containment")
+    print("\n6. Connected consumers observe compensating rollback")
+    check_connected_consumer_rollback(report)
+
+    print("\n7. Replacement updates section containment")
     sections = ProviderService(instance_name="config-sections")
     sections.start()
     try:
@@ -989,10 +1200,10 @@ def main() -> int:
     finally:
         sections.stop()
 
-    print("\n7. Action effects follow target metric kinds")
+    print("\n8. Action effects follow target metric kinds")
     check_action_effect_types(report)
 
-    print("\n8. Bad files are refused with a usable message")
+    print("\n9. Bad files are refused with a usable message")
     for text, description in BAD_FILES:
         bad = workdir / "bad.json"
         bad.write_text(text, encoding="utf-8")
@@ -1015,7 +1226,7 @@ def main() -> int:
         else:
             report.check(False, f"refuses {description}", "it was accepted")  # noqa: FBT003
 
-    print("\n9. A missing file says so")
+    print("\n10. A missing file says so")
     try:
         config.load_file(workdir / "does-not-exist.json")
     except config.ConfigError as exc:

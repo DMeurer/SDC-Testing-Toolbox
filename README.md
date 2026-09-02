@@ -229,8 +229,7 @@ provider> presets
 *File → Export config* writes device metadata, data-source definitions and scalar current values, alarm and action definitions, and currently associated patient/location contexts to a JSON file.
 It is not a full live-device snapshot: sample blocks, alert/signal state, control mode, generator state and context history are not exported.
 *File → Import config* validates descriptor references before removing tracked metrics, alarms and actions, then rebuilds them.
-It is neither a whole-MDIB replacement nor transactional: existing sections and contexts omitted by the file remain, and an operational error after validation can still leave a device partly rebuilt.
-Export before experimenting with imports.
+It is not a whole-MDIB replacement: contexts omitted by the file remain. Replacement is transactional for the managed live graph; if an operational error occurs after replacement starts, the provider publishes compensating descriptor and state changes so connected consumers return to the prior metrics, alarms, actions, sections and associated contexts. Rollback advances MDIB and object versions rather than rewinding them.
 
 *File → Load preset* lists the ready-made devices in `presets/`, so the ones that ship with the tool need no file dialog.
 The same list appears in the startup window. Preset discovery skips files that raise JSON or configuration errors.
@@ -246,7 +245,7 @@ Any of them can also be loaded at startup:
 
 Load it at startup rather than importing it afterwards if you want the device to announce that model:
 DPWS metadata is fixed when the provider is built, so a preset imported into a running toolbox brings its metrics but keeps the metadata it started with.
-The profile is parsed before startup where possible, but applied after the provider starts; an error found during application can leave that provider partially configured.
+The profile is parsed before startup where possible, then applied after the provider starts using the same transactional replacement path.
 The startup name still decides the EPR and serial number; a saved `device.instance_name` does not override it.
 
 For a profile that imports successfully, recorded handles make its defined metrics, alerts and actions addressable under stable names. They do not reproduce an identical live MDIB or provider identity.

@@ -17,7 +17,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from sdc11073.location import SdcLocation
-from sdc11073.mdib import ProviderMdib
+from sdc11073.mdib import ProviderMdib, mdibbase
 from sdc11073.provider import SdcProvider
 from sdc11073.provider.baseproduct import BaseProduct
 from sdc11073.provider.operations import ActivateOperation
@@ -65,10 +65,6 @@ class _ConfigurationSnapshot:
     descriptors: list
     states: list
     context_states: list
-    descriptor_versions: dict
-    state_versions: dict
-    context_state_versions: dict
-    mdib_versions: tuple[int, int, int]
     operations: dict[str, str]
     specs: dict[str, MetricSpec]
     alerts: dict[str, AlertSpec]
@@ -490,10 +486,6 @@ class ProviderService:
                 descriptors=deepcopy(list(mdib.descriptions.objects)),
                 states=deepcopy(list(mdib.states.objects)),
                 context_states=deepcopy(list(mdib.context_states.objects)),
-                descriptor_versions=dict(mdib.descriptions.handle_version_lookup),
-                state_versions=dict(mdib.states.handle_version_lookup),
-                context_state_versions=dict(mdib.context_states.handle_version_lookup),
-                mdib_versions=(mdib.mdib_version, mdib.mdstate_version, mdib.mddescription_version),
                 operations=dict(self._operations),
                 specs=dict(self._specs),
                 alerts=dict(self._alerts),
@@ -509,27 +501,12 @@ class ProviderService:
             )
 
     def _restore_configuration(self, snapshot: _ConfigurationSnapshot) -> None:
-        """Restore a snapshot without routing the old state through creation APIs."""
+        """Restore a snapshot with compensating reports for connected consumers."""
         if not snapshot.generator_running:
             self.stop_generator()
         with self._lock:
             mdib = self.mdib
             location_changed = self._provider._location != snapshot.provider_location  # noqa: SLF001
-            mdib.descriptions.clear()
-            mdib.states.clear()
-            mdib.context_states.clear()
-            mdib.descriptions.add_objects(snapshot.descriptors)
-
-            descriptors = {descriptor.Handle: descriptor for descriptor in snapshot.descriptors}
-            for state in [*snapshot.states, *snapshot.context_states]:
-                state.descriptor_container = descriptors[state.DescriptorHandle]
-            mdib.states.add_objects(snapshot.states)
-            mdib.context_states.add_objects(snapshot.context_states)
-            mdib.descriptions.handle_version_lookup = snapshot.descriptor_versions
-            mdib.states.handle_version_lookup = snapshot.state_versions
-            mdib.context_states.handle_version_lookup = snapshot.context_state_versions
-            mdib.mdib_version, mdib.mdstate_version, mdib.mddescription_version = snapshot.mdib_versions
-
             self._operations = snapshot.operations
             self._specs = snapshot.specs
             self._alerts = snapshot.alerts
@@ -540,9 +517,69 @@ class ProviderService:
             self._waveform_phase = snapshot.waveform_phase
             self._pinned_samples = snapshot.pinned_samples
             self._sco._registered_operations = snapshot.registered_operations  # noqa: SLF001
+            self._provider._location = snapshot.provider_location  # noqa: SLF001
+
+            saved_descriptors = {descriptor.Handle: descriptor for descriptor in snapshot.descriptors}
+            managed_handles = (
+                set(snapshot.specs)
+                | set(snapshot.operations.values())
+                | set(snapshot.alerts)
+                | set(snapshot.actions)
+                | {signal for signals in snapshot.alert_signals.values() for signal in signals}
+                | set(snapshot.sections.values())
+            )
+            managed_handles.update(
+                saved_descriptors[channel].parent_handle
+                for channel in snapshot.sections.values()
+            )
+            while descendants := {
+                descriptor.Handle
+                for descriptor in snapshot.descriptors
+                if descriptor.parent_handle in managed_handles and descriptor.Handle not in managed_handles
+            }:
+                managed_handles.update(descendants)
+            context_handles = {
+                descriptor.Handle
+                for descriptor in snapshot.descriptors
+                if descriptor.is_context_descriptor
+            }
+            current = {handle: entity for handle, entity in mdib.entities.items()}
+            removal_candidates = (set(current) - set(saved_descriptors)) | managed_handles | context_handles
+            removal_handles = {
+                handle
+                for handle in removal_candidates
+                if handle in current and current[handle].parent_handle not in removal_candidates
+            }
+
+            with mdib.descriptor_transaction() as mgr:
+                for handle in removal_handles:
+                    mgr.remove_entity(current[handle])
+
+            states = {state.DescriptorHandle: state for state in snapshot.states}
+            context_states: dict[str, list] = {}
+            for state in snapshot.context_states:
+                context_states.setdefault(state.DescriptorHandle, []).append(state)
+
+            managed_entities = []
+            context_entities = []
+            for handle in managed_handles | context_handles:
+                saved_descriptor = saved_descriptors[handle]
+                descriptor = deepcopy(saved_descriptor)
+                if descriptor.is_context_descriptor:
+                    saved_states = deepcopy(context_states.get(descriptor.Handle, []))
+                    entity = mdibbase.MultiStateEntity(mdib, descriptor, saved_states)
+                    context_entities.append(entity)
+                else:
+                    entity = mdibbase.Entity(mdib, descriptor, deepcopy(states[descriptor.Handle]))
+                    managed_entities.append(entity)
+
+            with mdib.descriptor_transaction() as mgr:
+                mgr.write_entities(managed_entities)
+            with mdib.descriptor_transaction() as mgr:
+                mgr.write_entities(context_entities)
+
             for operation in snapshot.registered_operations.values():
                 operation._operation_entity = mdib.entities.by_handle(operation.handle)  # noqa: SLF001
-            self._provider._location = snapshot.provider_location  # noqa: SLF001
 
         if location_changed:
             self._provider.publish()
