@@ -6,6 +6,7 @@ import os
 import sys
 import threading
 import time
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,7 +15,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from PySide6.QtCore import QObject, Signal  # noqa: E402
+from PySide6.QtCore import QObject, QTimer, Signal  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from sdc11073.xml_types import msg_types  # noqa: E402
@@ -22,6 +23,7 @@ from sdc11073.xml_types import msg_types  # noqa: E402
 from sdctoolbox.consumer_service import DiscoveredDevice  # noqa: E402
 from sdctoolbox.gui import consumer_pane as consumer_module  # noqa: E402
 from sdctoolbox.gui.main_window import MainWindow  # noqa: E402
+from sdctoolbox.model import MetricKind, RemoteMetric  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 
@@ -59,6 +61,8 @@ class FakeRemote:
         self.close_count = 0
         self.set_call = BlockingCall(msg_types.InvocationState.FINISHED)
         self.action_call = BlockingCall(msg_types.InvocationState.FINISHED)
+        self.metric_values: dict[str, RemoteMetric] = {}
+        self.metrics_count = 0
 
     def close(self) -> None:
         self.close_count += 1
@@ -69,9 +73,9 @@ class FakeRemote:
     def run_action(self, *_args) -> object:
         return self.action_call()
 
-    @staticmethod
-    def metrics() -> dict:
-        return {}
+    def metrics(self) -> dict[str, RemoteMetric]:
+        self.metrics_count += 1
+        return dict(self.metric_values)
 
     @staticmethod
     def actions() -> dict:
@@ -243,6 +247,67 @@ def stale_set_after_reconnect(app: QApplication, provider: ProviderService) -> N
     check(new.close_count == 1 and service.stop_count == 1, "new remote and discovery close once")
 
 
+def waveform_reports_are_scoped(app: QApplication, provider: ProviderService) -> None:
+    window, pane, service = new_window(provider)
+    remote = FakeRemote("samples")
+    distribution = [Decimal("10"), Decimal("30"), Decimal("20")]
+    remote.metric_values = {
+        "distribution": RemoteMetric(
+            handle="distribution",
+            node_type_name="DistributionSampleArrayMetricDescriptor",
+            kind=MetricKind.DISTRIBUTION,
+            samples=tuple(distribution),
+        ),
+        "waveform": RemoteMetric(
+            handle="waveform",
+            node_type_name="RealTimeSampleArrayMetricDescriptor",
+            kind=MetricKind.WAVEFORM,
+        ),
+    }
+    attach(pane, remote)
+    pane.set_use_widgets(True)
+    distribution_plot = pane.board.card("distribution").control.plot
+    waveform_plot = pane.board.card("waveform").control.plot
+    snapshots_before = remote.metrics_count
+    emitted: list[Decimal] = []
+
+    timer = QTimer(window)
+    timer.setInterval(15)
+
+    def emit_waveform() -> None:
+        start = len(emitted)
+        block = [Decimal(start), Decimal(start + 1), Decimal(start + 2)]
+        emitted.extend(block)
+        pane.bridge.waveforms_changed.emit({"waveform": block})
+
+    timer.timeout.connect(emit_waveform)
+    timer.start()
+    settled = wait_for(
+        app,
+        lambda: len(emitted) >= 30
+        and distribution_plot.samples == [float(value) for value in distribution]
+        and not distribution_plot._timer.isActive(),  # noqa: SLF001
+        timeout=0.8,
+    )
+    timer.stop()
+    app.processEvents()
+
+    check(settled, "waveform reports do not keep an unchanged distribution moving")
+    check(remote.metrics_count == snapshots_before, "waveform reports do not reread the MDIB")
+    check(waveform_plot.samples == [float(value) for value in emitted], "waveform blocks remain continuous")
+    waveform_row = next(
+        row
+        for row in range(pane.table.rowCount())
+        if pane.table.item(row, consumer_module.COL_HANDLE).text() == "waveform"
+    )
+    check(
+        pane.table.item(waveform_row, consumer_module.COL_VALUE).text() == "3 sample(s)",
+        "the waveform table summary follows the copied report block",
+    )
+    window.close()
+    check(remote.close_count == 1 and service.stop_count == 1, "sample session resources close once")
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     provider = ProviderService(instance_name="consumer-lifecycle")
@@ -259,6 +324,7 @@ def main() -> int:
         close_during_invocation(app, provider, action=False)
         close_during_invocation(app, provider, action=True)
         stale_set_after_reconnect(app, provider)
+        waveform_reports_are_scoped(app, provider)
     finally:
         consumer_module.ConsumerService = old_service
         consumer_module.MdibBridge = old_bridge

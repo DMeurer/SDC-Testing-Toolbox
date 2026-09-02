@@ -489,7 +489,14 @@ class ConsumerPane(QWidget):
         if self.remote is None:
             return
         self.board.append_samples(blocks_by_handle)
-        self.refresh_values()
+        for row in range(self.table.rowCount()):
+            handle_item = self.table.item(row, COL_HANDLE)
+            if handle_item is None or handle_item.text() not in blocks_by_handle:
+                continue
+            item = self.table.item(row, COL_VALUE)
+            if item is not None:
+                samples = blocks_by_handle[handle_item.text()]
+                item.setText(f"{len(samples)} sample(s)" if samples else NO_VALUE)
 
     # -- widgets or table ----------------------------------------------------------
 
