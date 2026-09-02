@@ -935,6 +935,7 @@ def _preflight_apply(service: ProviderService, device: DeviceConfig, *, replace:
             operation_handle = service.operation_handle_for(metric_handle)
             if operation_handle is not None:
                 removed.add(operation_handle)
+        removed.update(service._section_descriptor_handles())  # noqa: SLF001 - simulate replacement cleanup
         descriptors.difference_update(removed)
         metric_specs.clear()
         metrics.clear()
@@ -1039,6 +1040,7 @@ def apply_to(
             for handle in list(service.list_metrics()):
                 field = f"profile.replace.metrics[{handle}]"
                 service.remove_metric(handle)
+            service._remove_empty_sections()  # noqa: SLF001 - replacement owns containment cleanup
 
         for spec in device.metrics:
             field = f"metrics[{spec.label}]"

@@ -616,11 +616,21 @@ class ProviderService:
     def remove_metric(self, handle: str) -> None:
         """Delete a data source and everything that depends on it."""
         with self._lock:
+            metric_entity = self.mdib.entities.by_handle(handle)
+            section_entities = []
+            section_handles: set[str] = set()
+            if metric_entity is not None and metric_entity.parent_handle in self._section_channels():
+                channel_handle = metric_entity.parent_handle
+                section_entities, section_handles = self._empty_section_entities(
+                    channel_handle,
+                    excluding_metric=handle,
+                )
+
             for alert_handle, spec in list(self._alerts.items()):
                 if spec.source_handle == handle:
                     self.remove_alert(alert_handle)
             for action_handle, spec in list(self._actions.items()):
-                if spec.target_handle == handle or handle in spec.effects:
+                if spec.target_handle == handle or spec.target_handle in section_handles or handle in spec.effects:
                     self.remove_action(action_handle)
 
             operation_handle = self._operations.pop(handle, None)
@@ -630,9 +640,10 @@ class ProviderService:
                 operation_entity = self.mdib.entities.by_handle(operation_handle)
                 if operation_entity is not None:
                     entities.append(operation_entity)
-            metric_entity = self.mdib.entities.by_handle(handle)
             if metric_entity is not None:
                 entities.append(metric_entity)
+
+            entities.extend(section_entities)
 
             # Drop the bookkeeping before committing. Leaving the transaction fires
             # deleted_descriptors_by_handle synchronously, and any observer that reacts by
@@ -640,12 +651,32 @@ class ProviderService:
             self._specs.pop(handle, None)
             self._waveform_phase.pop(handle, None)
             self._pinned_samples.discard(handle)
+            if section_entities:
+                self._forget_section(section_entities[0].handle)
 
             with self.mdib.descriptor_transaction() as mgr:
                 for entity in entities:
                     mgr.remove_entity(entity)
 
             logger.info("removed metric %s", handle)
+
+    def _remove_empty_sections(self) -> None:
+        """Delete section containment left without any owned metrics."""
+        with self._lock:
+            for channel_handle in self._section_channels():
+                if self.mdib.entities.by_handle(channel_handle) is None:
+                    self._forget_section(channel_handle)
+                    continue
+                entities, handles = self._empty_section_entities(channel_handle)
+                if not entities:
+                    continue
+                for action_handle, spec in list(self._actions.items()):
+                    if spec.target_handle in handles:
+                        self.remove_action(action_handle)
+                self._forget_section(channel_handle)
+                with self.mdib.descriptor_transaction() as mgr:
+                    for entity in entities:
+                        mgr.remove_entity(entity)
 
     def set_value(self, handle: str, value: Decimal | str) -> None:
         """Set the current value of one of our own metrics."""
@@ -1548,6 +1579,7 @@ class ProviderService:
         vmd_handle = f"{constants.VMD_HANDLE_PREFIX}{slug}"
         channel_handle = f"{constants.CHANNEL_HANDLE_PREFIX}{slug}"
         if self.mdib.entities.by_handle(channel_handle) is not None:
+            self._sections[section] = channel_handle
             return channel_handle
 
         coding = Coding(code=slug, system="private", label=section)
@@ -1569,6 +1601,78 @@ class ProviderService:
     def sections(self) -> dict[str, str]:
         """Section name -> the Channel handle its metrics live in."""
         return dict(self._sections)
+
+    def _section_channels(self) -> set[str]:
+        """Derive managed section Channels from bookkeeping and live metric parents."""
+        channels = set(self._sections.values())
+        for metric_handle, spec in self._specs.items():
+            if not spec.section:
+                continue
+            entity = self.mdib.entities.by_handle(metric_handle)
+            if entity is not None:
+                channels.add(entity.parent_handle)
+        return channels
+
+    def _section_descriptor_handles(self) -> set[str]:
+        """Section descriptors that removing every managed metric will empty."""
+        channels = self._section_channels()
+        metrics = set(self._specs)
+        removable_channels = {
+            channel_handle
+            for channel_handle in channels
+            if all(
+                entity.handle in metrics or entity.parent_handle != channel_handle
+                for _, entity in self.mdib.entities.items()
+            )
+        }
+        handles = set(removable_channels)
+        for channel_handle in removable_channels:
+            channel = self.mdib.entities.by_handle(channel_handle)
+            if channel is None:
+                continue
+            vmd_handle = channel.parent_handle
+            if all(
+                entity.handle in removable_channels or entity.parent_handle != vmd_handle
+                for _, entity in self.mdib.entities.items()
+            ):
+                handles.add(vmd_handle)
+        return handles
+
+    def _forget_section(self, channel_handle: str) -> None:
+        self._sections = {
+            section: existing_handle
+            for section, existing_handle in self._sections.items()
+            if existing_handle != channel_handle
+        }
+
+    def _empty_section_entities(
+        self,
+        channel_handle: str,
+        *,
+        excluding_metric: str | None = None,
+    ) -> tuple[list, set[str]]:
+        """Return an unowned Channel then its VMD, plus their handles."""
+        channel = self.mdib.entities.by_handle(channel_handle)
+        if channel is None or channel.node_type != pm.ChannelDescriptor:
+            return [], set()
+        if any(
+            entity.handle != excluding_metric and entity.parent_handle == channel_handle
+            for _, entity in self.mdib.entities.items()
+        ):
+            return [], set()
+        entities = [channel]
+        handles = {channel_handle}
+        vmd_handle = channel.parent_handle
+        vmd = self.mdib.entities.by_handle(vmd_handle)
+        if vmd is not None and vmd.node_type == pm.VmdDescriptor:
+            other_children = any(
+                entity.handle != channel_handle and entity.parent_handle == vmd_handle
+                for _, entity in self.mdib.entities.items()
+            )
+            if not other_children:
+                entities.append(vmd)
+                handles.add(vmd_handle)
+        return entities, handles
 
     def _unique_handle(self, candidate: str) -> str:
         if self.mdib.entities.by_handle(candidate) is None:

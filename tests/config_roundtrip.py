@@ -366,6 +366,65 @@ def check_operational_failure_rolls_back(report: Report, service: ProviderServic
     report.check(after == before, "a failed replacement restores the complete provider state", str(changed))
 
 
+def check_replace_section_lifecycle(report: Report, service: ProviderService) -> None:
+    old = config.parse(
+        {
+            "metrics": [
+                {"label": "Old first", "kind": "number", "section": "Old section"},
+                {"label": "Old second", "kind": "number", "section": "Old section"},
+            ],
+            "actions": [{"label": "Old action", "target": "vmd.old_section"}],
+        },
+    )
+    config.apply_to(service, old)
+    replacement = config.parse(
+        {"metrics": [{"label": "New metric", "kind": "number", "section": "New section"}]},
+    )
+    config.apply_to(service, replacement)
+
+    old_handles = ("m.old_first", "m.old_second", "ch.old_section", "vmd.old_section", "act.old_action")
+    report.check(
+        all(service.mdib.entities.by_handle(handle) is None for handle in old_handles),
+        "replacement removes every descriptor from an unrelated old section",
+        str([handle for handle in old_handles if service.mdib.entities.by_handle(handle) is not None]),
+    )
+    report.check(
+        service.sections() == {"New section": "ch.new_section"}
+        and set(service.list_metrics()) == {"m.new_metric"}
+        and not service.list_actions(),
+        "replacement leaves only new section bookkeeping",
+    )
+    mdib_xml = etree.tostring(service.mdib.reconstruct_mdib_with_context_states()[0])
+    report.check(
+        all(handle.encode() not in mdib_xml for handle in old_handles),
+        "old section descriptors are absent from the replacement MDIB",
+    )
+
+    before = complete_snapshot(service)
+    stale_target = config.parse(
+        {
+            "metrics": [{"label": "Later metric", "kind": "number", "section": "Later section"}],
+            "actions": [{"label": "Stale target", "target": "vmd.new_section"}],
+        },
+    )
+    try:
+        config.apply_to(service, stale_target)
+    except config.ConfigError as exc:
+        report.check(
+            "target" in str(exc) and "not available after import" in str(exc),
+            "an action cannot target a section removed by its replacement",
+            str(exc),
+        )
+    else:
+        report.check(False, "an action cannot target a section removed by its replacement", "it was accepted")  # noqa: FBT003
+    after = complete_snapshot(service)
+    report.check(
+        after == before,
+        "stale section target rejection preserves MDIB and bookkeeping",
+        str([name for name in before if before[name] != after[name]]),
+    )
+
+
 def check_action_effect_types(report: Report) -> None:
     device = config.parse(
         {
@@ -740,10 +799,18 @@ def main() -> int:
     finally:
         transactional.stop()
 
-    print("\n6. Action effects follow target metric kinds")
+    print("\n6. Replacement updates section containment")
+    sections = ProviderService(instance_name="config-sections")
+    sections.start()
+    try:
+        check_replace_section_lifecycle(report, sections)
+    finally:
+        sections.stop()
+
+    print("\n7. Action effects follow target metric kinds")
     check_action_effect_types(report)
 
-    print("\n7. Bad files are refused with a usable message")
+    print("\n8. Bad files are refused with a usable message")
     for text, description in BAD_FILES:
         bad = workdir / "bad.json"
         bad.write_text(text, encoding="utf-8")
@@ -766,7 +833,7 @@ def main() -> int:
         else:
             report.check(False, f"refuses {description}", "it was accepted")  # noqa: FBT003
 
-    print("\n8. A missing file says so")
+    print("\n9. A missing file says so")
     try:
         config.load_file(workdir / "does-not-exist.json")
     except config.ConfigError as exc:

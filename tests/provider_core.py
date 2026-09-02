@@ -406,8 +406,56 @@ def check_metric_removal_dependencies(report: Report, service: ProviderService) 
     service.remove_metric(survivor)
 
 
+def check_section_removal(report: Report, service: ProviderService) -> None:
+    print("\n5. Sections follow their metric ownership")
+
+    first = service.add_metric(
+        MetricSpec(label="Shared section first", kind=MetricKind.NUMBER, section="Shared section"),
+    )
+    second = service.add_metric(
+        MetricSpec(label="Shared section second", kind=MetricKind.NUMBER, section="Shared section"),
+    )
+    channel_handle = "ch.shared_section"
+    vmd_handle = "vmd.shared_section"
+    channel_action = service.add_action(ActionSpec(label="Channel action", target_handle=channel_handle))
+    vmd_action = service.add_action(ActionSpec(label="VMD action", target_handle=vmd_handle))
+
+    service.remove_metric(first)
+    report.check(
+        service.mdib.entities.by_handle(channel_handle) is not None
+        and service.mdib.entities.by_handle(vmd_handle) is not None
+        and service.mdib.entities.by_handle(second) is not None,
+        "removing one of multiple metrics retains its Channel and VMD",
+    )
+    report.check(
+        service.sections() == {"Shared section": channel_handle}
+        and channel_action in service.list_actions()
+        and vmd_action in service.list_actions(),
+        "shared section and action bookkeeping remain while an owner exists",
+    )
+
+    service.remove_metric(second)
+    removed = [second, channel_handle, vmd_handle, channel_action, vmd_action]
+    report.check(
+        all(service.mdib.entities.by_handle(handle) is None for handle in removed),
+        "removing the final metric removes its Channel, VMD, and targeted action from the MDIB",
+        str([handle for handle in removed if service.mdib.entities.by_handle(handle) is not None]),
+    )
+    report.check(
+        "Shared section" not in service.sections()
+        and channel_action not in service.list_actions()
+        and vmd_action not in service.list_actions(),
+        "final section and action bookkeeping are cleared",
+    )
+    mdib_xml = etree.tostring(service.mdib.reconstruct_mdib_with_context_states()[0])
+    report.check(
+        all(handle.encode() not in mdib_xml for handle in removed),
+        "removed section descriptors are absent from the reconstructed MDIB",
+    )
+
+
 def check_metric_value_validation(report: Report, service: ProviderService) -> None:
-    print("\n5. Metric writes and action effects share validation")
+    print("\n6. Metric writes and action effects share validation")
 
     number = service.add_metric(
         MetricSpec(
@@ -484,7 +532,7 @@ def check_metric_value_validation(report: Report, service: ProviderService) -> N
 
 
 def check_decimal_boundaries(report: Report, service: ProviderService) -> None:
-    print("\n6. Decimal wire boundaries")
+    print("\n7. Decimal wire boundaries")
 
     non_finite = (Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity"))
     rejected_resolutions = []
@@ -664,7 +712,7 @@ def check_decimal_boundaries(report: Report, service: ProviderService) -> None:
 
 
 def check_concurrent_alert_evaluation(report: Report, service: ProviderService) -> None:
-    print("\n7. Concurrent limit-alarm evaluation")
+    print("\n8. Concurrent limit-alarm evaluation")
 
     first_source = service.add_metric(
         MetricSpec(label="First concurrent source", kind=MetricKind.NUMBER, initial_value=Decimal("0")),
@@ -733,7 +781,7 @@ def check_concurrent_alert_evaluation(report: Report, service: ProviderService) 
 
 
 def check_signals(report: Report, service: ProviderService) -> None:
-    print("\n8. Acknowledging and delegating a signal")
+    print("\n9. Acknowledging and delegating a signal")
 
     service.add_metric(
         MetricSpec(label="Pressure", kind=MetricKind.NUMBER, initial_value=Decimal("5")),
@@ -820,7 +868,7 @@ def check_signals(report: Report, service: ProviderService) -> None:
 
 
 def check_latching_signals(report: Report, service: ProviderService) -> None:
-    print("\n9. Configurable signal manifestations and latching")
+    print("\n10. Configurable signal manifestations and latching")
     service.add_metric(MetricSpec(label="Latch source", kind=MetricKind.NUMBER, initial_value=Decimal("0")))
     alarm = service.add_alert(
         AlertSpec(
@@ -855,7 +903,7 @@ def check_latching_signals(report: Report, service: ProviderService) -> None:
 
 
 def check_contexts(report: Report, service: ProviderService) -> None:
-    print("\n10. Patient and location contexts")
+    print("\n11. Patient and location contexts")
 
     default = service.get_location()
     report.check(
@@ -1110,7 +1158,7 @@ def check_contexts(report: Report, service: ProviderService) -> None:
 
 
 def check_presets(report: Report) -> None:
-    print("\n11. Presets")
+    print("\n12. Presets")
 
     presets = config.list_presets()
     report.check(bool(presets), "the shipped presets are found", f"{len(presets)} found")
@@ -1142,7 +1190,7 @@ def check_presets(report: Report) -> None:
 
 
 def check_foreign_consumer_operations(report: Report) -> None:
-    print("\n12. Foreign consumer operation selection")
+    print("\n13. Foreign consumer operation selection")
 
     finished_info = SimpleNamespace(
         InvocationState=msg_types.InvocationState.FINISHED,
@@ -1333,6 +1381,7 @@ def main() -> int:
         check_sample_arrays(report, service)
         check_alarm_rollback(report, service)
         check_metric_removal_dependencies(report, service)
+        check_section_removal(report, service)
         check_metric_value_validation(report, service)
         check_decimal_boundaries(report, service)
         check_concurrent_alert_evaluation(report, service)
