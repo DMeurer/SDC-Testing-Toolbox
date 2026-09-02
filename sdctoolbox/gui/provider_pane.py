@@ -9,7 +9,7 @@ over the network. Both arrive through the MdibBridge, so the table looks the sam
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
@@ -33,6 +33,7 @@ from sdc11073.xml_types import pm_types
 
 from ..model import MetricKind
 from .context_dialog import ContextDialog
+from .decimal_input import DecimalInputError, parse_decimal_input
 from .new_alert_dialog import NewAlertDialog
 from .new_metric_dialog import NewMetricDialog
 from .no_wheel import NoWheelComboBox
@@ -832,9 +833,9 @@ class ProviderPane(QWidget):
         elif spec.kind is MetricKind.NUMBER:
             raw = self.value_edit.text().strip()
             try:
-                value = Decimal(raw)
-            except InvalidOperation:
-                QMessageBox.warning(self, "Not a number", f"{raw!r} is not a valid number.")
+                value = parse_decimal_input(raw, "value", minimum=spec.minimum, maximum=spec.maximum)
+            except DecimalInputError as exc:
+                QMessageBox.warning(self, "Invalid value", str(exc))
                 return
         else:
             value = self.value_edit.text()

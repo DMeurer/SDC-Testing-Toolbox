@@ -30,17 +30,22 @@ from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 
 from sdctoolbox.gui.main_window import MainWindow  # noqa: E402
-from sdctoolbox.gui.widgets import WidgetSpec, build_widget, from_remote_metric  # noqa: E402
 from sdctoolbox.gui.new_metric_dialog import (  # noqa: E402
     OFFERED_DISTRIBUTIONS,
     OFFERED_SHAPES,
     NewMetricDialog,
 )
+from sdctoolbox.gui.widgets import (  # noqa: E402
+    WidgetSpec,
+    build_widget,
+    from_remote_metric,
+)
 from sdctoolbox.gui.widgets.controls import (  # noqa: E402
-    SampleArrayWidget,
     MAX_SLIDER_STEPS,
+    STEP_SMALL,
     ChoiceWidget,
     ReadoutWidget,
+    SampleArrayWidget,
     SliderWidget,
     StepperWidget,
     TextWidget,
@@ -355,6 +360,22 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         "the stepper respects a one-sided limit",
         str(sent),
     )
+
+    print("\nFinite numeric entry")
+    for invalid in ("NaN", "sNaN", "Infinity", "-Infinity"):
+        for action, invoke in (
+            ("typed", bounded_stepper._on_typed),  # noqa: SLF001
+            ("stepped", lambda: bounded_stepper._step(STEP_SMALL)),  # noqa: SLF001
+        ):
+            sent.clear()
+            bounded_stepper.edit.setText(invalid)
+            invoke()
+            message = bounded_stepper.error_label.text()
+            report.check(
+                not sent and "value" in message and "finite number" in message,
+                f"the numeric widget rejects {invalid} when {action}",
+                message,
+            )
 
     choice = build_widget(
         WidgetSpec("m.c", "Mode", MetricKind.CHOICE, allowed_values=("IDLE", "RUN"), editable=True),

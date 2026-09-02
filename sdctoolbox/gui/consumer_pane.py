@@ -11,7 +11,7 @@ AsyncCall rather than on the GUI thread.
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Qt
@@ -38,6 +38,7 @@ from sdc11073.xml_types import msg_types
 from ..consumer_service import ConsumerService
 from ..model import MetricKind
 from .async_call import AsyncCall
+from .decimal_input import DecimalInputError, parse_decimal_input
 from .no_wheel import NoWheelComboBox
 from .qt_bridge import MdibBridge
 from .styling import apply_row_selection_style, mute, muted_colour
@@ -709,9 +710,14 @@ class ConsumerPane(QWidget):
         elif metric.kind is MetricKind.NUMBER:
             raw = self.value_edit.text().strip()
             try:
-                value = Decimal(raw)
-            except InvalidOperation:
-                self.invocation_label.setText(f"{raw!r} is not a number")
+                value = parse_decimal_input(
+                    raw,
+                    "value",
+                    minimum=metric.minimum,
+                    maximum=metric.maximum,
+                )
+            except DecimalInputError as exc:
+                self.invocation_label.setText(str(exc))
                 return
         else:
             value = self.value_edit.text()

@@ -6,7 +6,7 @@ specific control gets the chance to claim a metric before a more general one.
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any
 
 from PySide6.QtCore import Qt
@@ -19,8 +19,9 @@ from PySide6.QtWidgets import (
 )
 
 from ...model import SAMPLE_ARRAY_KINDS, MetricKind
+from ..decimal_input import DecimalInputError, parse_decimal_input
 from ..no_wheel import NoWheelComboBox, NoWheelSlider
-from ..styling import mute
+from ..styling import mark_as_error, mute
 from .base import MetricWidget, WidgetSpec
 from .plot import SamplePlot
 
@@ -280,9 +281,15 @@ class StepperWidget(MetricWidget):
         for delta in (STEP_SMALL, STEP_LARGE):
             row.addWidget(self._make_button(delta))
 
+        self.error_label = QLabel("")
+        self.error_label.setWordWrap(True)
+        mark_as_error(self.error_label)
+        self.error_label.hide()
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(row)
+        layout.addWidget(self.error_label)
 
     def _make_button(self, delta: Decimal) -> QPushButton:
         caption = f"+{_trim(delta)}" if delta > 0 else _trim(delta)
@@ -292,34 +299,61 @@ class StepperWidget(MetricWidget):
         self.buttons.append(button)
         return button
 
-    def _current(self) -> Decimal | None:
-        try:
-            return Decimal(self.edit.text().strip())
-        except (InvalidOperation, ValueError):
-            return None
+    def _current(self, *, bounded: bool = False) -> Decimal:
+        minimum = self.spec.minimum if bounded else None
+        maximum = self.spec.maximum if bounded else None
+        return parse_decimal_input(
+            self.edit.text(),
+            "value",
+            minimum=minimum,
+            maximum=maximum,
+        )
+
+    def _show_error(self, message: str) -> None:
+        self.error_label.setText(message)
+        self.error_label.show()
+
+    def _clear_error(self) -> None:
+        self.error_label.hide()
+        self.error_label.setText("")
 
     def _step(self, delta: Decimal) -> None:
-        base = self._current()
-        if base is None:
-            # Nothing there yet: stepping up from nothing starts at the delta itself, which
-            # is more useful than refusing.
-            base = Decimal("0")
-        target = base + delta
-        if self.spec.minimum is not None:
-            target = max(target, self.spec.minimum)
-        if self.spec.maximum is not None:
-            target = min(target, self.spec.maximum)
+        text = self.edit.text().strip()
+        try:
+            base = self._current() if text else Decimal("0")
+        except DecimalInputError as exc:
+            self._show_error(str(exc))
+            return
+        try:
+            target = base + delta
+            if self.spec.minimum is not None:
+                target = max(target, self.spec.minimum)
+            if self.spec.maximum is not None:
+                target = min(target, self.spec.maximum)
+            target = parse_decimal_input(str(target), "value")
+        except DecimalInputError as exc:
+            self._show_error(str(exc))
+            return
+        except (ArithmeticError, TypeError, ValueError):
+            self._show_error("The value could not be adjusted as a finite number.")
+            return
+        self._clear_error()
         self.edit.setText(_trim(target))
         self.request(target)
 
     def _on_typed(self) -> None:
-        value = self._current()
-        if value is not None:
-            self.request(value)
+        try:
+            value = self._current(bounded=True)
+        except DecimalInputError as exc:
+            self._show_error(str(exc))
+            return
+        self._clear_error()
+        self.request(value)
 
     def show_value(self, value: Any) -> None:
         if value is None or self.busy_editing():
             return
+        self._clear_error()
         self.edit.setText(_trim(value) if isinstance(value, Decimal) else str(value))
 
     def set_editable(self, editable: bool) -> None:  # noqa: FBT001

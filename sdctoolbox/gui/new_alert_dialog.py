@@ -6,8 +6,6 @@ blank and it only moves when you raise or clear it by hand.
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
-
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -21,7 +19,17 @@ from PySide6.QtWidgets import (
 )
 
 from ..constants import ALERT_HANDLE_PREFIX
-from ..model import AlertKind, AlertManifestation, AlertPriority, AlertSignalSpec, AlertSpec, MetricKind, MetricSpec, slugify
+from ..model import (
+    AlertKind,
+    AlertManifestation,
+    AlertPriority,
+    AlertSignalSpec,
+    AlertSpec,
+    MetricKind,
+    MetricSpec,
+    slugify,
+)
+from .decimal_input import DecimalInputError, parse_decimal_input
 from .no_wheel import NoWheelComboBox
 from .styling import mark_as_error, mute
 
@@ -223,9 +231,9 @@ class NewAlertDialog(QDialog):
                 if not text:
                     continue
                 try:
-                    parsed = Decimal(text)
-                except InvalidOperation:
-                    self._fail(f"{text!r} is not a valid {caption}.")
+                    parsed = parse_decimal_input(text, caption)
+                except DecimalInputError as exc:
+                    self._fail(str(exc))
                     return
                 if caption.startswith("lower"):
                     lower = parsed

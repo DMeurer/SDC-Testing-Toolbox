@@ -470,6 +470,29 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             f"{spec.minimum} to {spec.maximum}" if spec else "-",
         )
 
+        non_finite_text = ("NaN", "sNaN", "Infinity", "-Infinity")
+        metric_decimal_fields = (
+            (MetricKind.NUMBER, "resolution_edit", "resolution"),
+            (MetricKind.NUMBER, "minimum_edit", "minimum"),
+            (MetricKind.NUMBER, "maximum_edit", "maximum"),
+            (MetricKind.WAVEFORM, "sample_period_edit", "sample period"),
+            (MetricKind.DISTRIBUTION, "domain_min_edit", "domain minimum"),
+            (MetricKind.DISTRIBUTION, "domain_max_edit", "domain maximum"),
+        )
+        for kind, edit_name, field in metric_decimal_fields:
+            for invalid in non_finite_text:
+                invalid_dialog = NewMetricDialog()
+                fill_dialog(invalid_dialog, kind=kind, label="Invalid numeric input")
+                getattr(invalid_dialog, edit_name).setText(invalid)
+                invalid_dialog._on_accept()  # noqa: SLF001
+                message = invalid_dialog.error_label.text()
+                report.check(
+                    invalid_dialog.spec() is None and field in message and "finite number" in message,
+                    f"{field} rejects {invalid} with a field-level message",
+                    message,
+                )
+                invalid_dialog.deleteLater()
+
         print("\n2b. Inapplicable inputs are hidden, not greyed out")
         for index in range(dialog.kind_box.count()):
             if dialog.kind_box.itemText(index) == "Choice":
@@ -560,6 +583,19 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             "and a limit typed before switching is not smuggled through",
             str(alert_dialog2.spec().upper_limit) if alert_dialog2.spec() else "-",
         )
+        for edit_name, field in (("lower_edit", "lower limit"), ("upper_edit", "upper limit")):
+            for invalid in non_finite_text:
+                invalid_alert = NewAlertDialog(alert_metrics)
+                invalid_alert.label_edit.setText("Invalid limit")
+                getattr(invalid_alert, edit_name).setText(invalid)
+                invalid_alert._on_accept()  # noqa: SLF001
+                message = invalid_alert.error_label.text()
+                report.check(
+                    invalid_alert.spec() is None and field in message and "finite number" in message,
+                    f"{field} rejects {invalid} with a field-level message",
+                    message,
+                )
+                invalid_alert.deleteLater()
         alert_dialog.deleteLater()
         alert_dialog2.deleteLater()
 
@@ -1311,6 +1347,20 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             "the boundary value itself is accepted",
             str(service.get_value(zoom)),
         )
+        shown_warnings.clear()
+        current = service.get_value(zoom)
+        for invalid in non_finite_text:
+            pane.value_edit.setText(invalid)
+            pane._on_apply()  # noqa: SLF001
+            title, message = shown_warnings[-1] if shown_warnings else ("", "")
+            report.check(
+                service.get_value(zoom) == current
+                and title == "Invalid value"
+                and "value" in message
+                and "finite number" in message,
+                f"the local numeric editor rejects {invalid} without writing",
+                f"{title}: {message}",
+            )
 
         print("\n8c. Alarm signals and contexts in the pane")
         acked = service.add_alert(
@@ -1761,14 +1811,23 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                     str(remote_cell("m.zoom_level", COL_R_VALUE)),
                 )
 
+                for invalid in non_finite_text:
+                    consumer.value_edit.setText(invalid)
+                    consumer._on_apply()  # noqa: SLF001
+                    message = consumer.invocation_label.text()
+                    report.check(
+                        "value" in message and "finite number" in message,
+                        f"the remote numeric editor rejects {invalid} before invocation",
+                        message,
+                    )
+
                 consumer.value_edit.setText("500")
                 consumer._on_apply()  # noqa: SLF001
-                refused = wait_for(
-                    app,
-                    lambda: "refused" in consumer.invocation_label.text(),
-                    timeout=30,
+                report.check(
+                    "at most 100" in consumer.invocation_label.text(),
+                    "an out-of-range remote write gets immediate field feedback",
+                    consumer.invocation_label.text(),
                 )
-                report.check(refused, "an out-of-range write is refused", consumer.invocation_label.text())
 
                 consumer._on_disconnect()  # noqa: SLF001
                 pump(app)
