@@ -33,6 +33,8 @@ from sdctoolbox.model import (  # noqa: E402
     AlertSignalSpec,
     AlertSpec,
     Coding,
+    DeviceInfo,
+    DistributionShape,
     LocationInfo,
     MetricKind,
     MetricSpec,
@@ -41,6 +43,15 @@ from sdctoolbox.model import (  # noqa: E402
     WaveformShape,
 )
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
+
+REFERENCE_DEVICE = DeviceInfo(
+    friendly_name="Round-trip instrument",
+    manufacturer="Example Devices",
+    manufacturer_url="https://example.com/devices",
+    model_name="Config Exerciser",
+    model_number="CFG-18",
+    firmware_version="18.4",
+)
 
 
 class Report:
@@ -67,42 +78,118 @@ class Report:
         return 0
 
 
+def coding_snapshot(coding: Coding | None) -> dict | None:
+    if coding is None:
+        return None
+    return {"code": coding.code, "system": coding.system, "label": coding.label}
+
+
 def snapshot(service: ProviderService) -> dict:
-    """Everything about a device that a config file is supposed to preserve."""
+    """Every running-provider field emitted by config.to_dict()."""
     return {
         "metrics": {
-            handle: (
-                spec.label,
-                spec.kind.value,
-                spec.unit_label,
-                spec.allowed_values,
-                spec.resolution,
-                spec.minimum,
-                spec.maximum,
-                spec.controllable,
-                service.get_value(handle),
-                spec.sample_period,
-                spec.shape,
-                spec.domain_unit_label,
-                spec.domain_minimum,
-                spec.domain_maximum,
-            )
+            handle: {
+                "handle": handle,
+                "label": spec.label,
+                "kind": spec.kind.value,
+                "section": spec.section,
+                "unit_label": spec.unit_label,
+                "unit_coding": coding_snapshot(spec.unit_coding),
+                "type_coding": coding_snapshot(spec.type_coding),
+                "allowed_values": spec.allowed_values,
+                "resolution": spec.resolution,
+                "minimum": spec.minimum,
+                "maximum": spec.maximum,
+                "controllable": spec.controllable,
+                "initial_value": None if spec.is_sample_array else service.get_value(handle),
+                "sample_period": spec.sample_period,
+                "shape": spec.shape.value,
+                "cycle_samples": spec.cycle_samples,
+                "domain_unit_label": spec.domain_unit_label,
+                "domain_unit_coding": coding_snapshot(spec.domain_unit_coding),
+                "domain_minimum": spec.domain_minimum,
+                "domain_maximum": spec.domain_maximum,
+                "distribution_shape": spec.distribution_shape.value,
+            }
             for handle, spec in service.list_metrics().items()
         },
         "alerts": {
-            handle: (
-                spec.label,
-                spec.source_handle,
-                spec.kind.value,
-                spec.priority.value,
-                spec.lower_limit,
-                spec.upper_limit,
-                tuple((signal.manifestation.value, signal.latching) for signal in spec.signals),
-            )
+            handle: {
+                "handle": handle,
+                "label": spec.label,
+                "source_handle": spec.source_handle,
+                "kind": spec.kind.value,
+                "priority": spec.priority.value,
+                "signals": [
+                    {"manifestation": signal.manifestation.value, "latching": signal.latching}
+                    for signal in spec.signals
+                ],
+                "lower_limit": spec.lower_limit,
+                "upper_limit": spec.upper_limit,
+                "delegable": spec.delegable,
+            }
             for handle, spec in service.list_alerts().items()
         },
-        "location": service.get_location(),
-        "patient": service.get_patient(),
+        "actions": {
+            handle: {
+                "handle": handle,
+                "label": spec.label,
+                "target_handle": spec.target_handle,
+                "type_coding": coding_snapshot(spec.type_coding),
+                "note": spec.note,
+                "effects": dict(spec.effects),
+            }
+            for handle, spec in service.list_actions().items()
+        },
+        "sections": service.sections(),
+        "contexts": {
+            "location": {
+                "facility": service.get_location().facility,
+                "building": service.get_location().building,
+                "floor": service.get_location().floor,
+                "point_of_care": service.get_location().point_of_care,
+                "room": service.get_location().room,
+                "bed": service.get_location().bed,
+            },
+            "patient": {
+                "given_name": service.get_patient().given_name,
+                "family_name": service.get_patient().family_name,
+                "sex": service.get_patient().sex,
+                "patient_type": service.get_patient().patient_type,
+                "date_of_birth": service.get_patient().date_of_birth,
+                "height": (
+                    {
+                        "value": service.get_patient().height.value,
+                        "unit": coding_snapshot(service.get_patient().height.unit),
+                    }
+                    if service.get_patient().height is not None
+                    else None
+                ),
+                "weight": (
+                    {
+                        "value": service.get_patient().weight.value,
+                        "unit": coding_snapshot(service.get_patient().weight.unit),
+                    }
+                    if service.get_patient().weight is not None
+                    else None
+                ),
+                "race": coding_snapshot(service.get_patient().race),
+            },
+        },
+    }
+
+
+def device_snapshot(instance_name: str, device: DeviceInfo | None) -> dict | None:
+    if device is None:
+        return None
+    return {
+        "instance_name": instance_name,
+        "friendly_name": device.friendly_name,
+        "manufacturer": device.manufacturer,
+        "manufacturer_url": device.manufacturer_url,
+        "model_name": device.model_name,
+        "model_number": device.model_number,
+        "firmware_version": device.firmware_version,
     }
 
 
@@ -178,12 +265,15 @@ def complete_snapshot(service: ProviderService) -> dict:
 
 
 def build_reference(service: ProviderService) -> None:
-    """A device using every feature the config format has to carry."""
+    """A device exercising every field emitted by config.to_dict()."""
     service.add_metric(
         MetricSpec(
             label="Zoom level",
             kind=MetricKind.NUMBER,
             unit_label="steps",
+            unit_coding=Coding(code="zoom-steps", system="private", label="steps"),
+            type_coding=Coding(code="zoom-level", system="urn:example:metrics", label="Zoom level"),
+            section="Optics",
             resolution=Decimal("1"),
             minimum=Decimal("1"),
             maximum=Decimal("100"),
@@ -210,6 +300,7 @@ def build_reference(service: ProviderService) -> None:
             maximum=Decimal("100"),
             sample_period=Decimal("0.05"),
             shape=WaveformShape.SQUARE,
+            cycle_samples=37,
         ),
     )
     service.add_metric(
@@ -218,8 +309,10 @@ def build_reference(service: ProviderService) -> None:
             kind=MetricKind.DISTRIBUTION,
             unit_label="dB",
             domain_unit_label="Hz",
+            domain_unit_coding=Coding(code="frequency", system="urn:example:units", label="Hz"),
             domain_minimum=Decimal("0"),
             domain_maximum=Decimal("500"),
+            distribution_shape=DistributionShape.SPECTRUM,
         ),
     )
     service.add_alert(
@@ -228,7 +321,9 @@ def build_reference(service: ProviderService) -> None:
             source_handle="m.zoom_level",
             kind=AlertKind.PHYSIOLOGICAL,
             priority=AlertPriority.HIGH,
+            lower_limit=Decimal("2"),
             upper_limit=Decimal("90"),
+            delegable=True,
             signals=(
                 AlertSignalSpec(AlertManifestation.VIS, latching=True),
                 AlertSignalSpec(AlertManifestation.TAN),
@@ -236,7 +331,25 @@ def build_reference(service: ProviderService) -> None:
         ),
     )
     service.add_alert(AlertSpec(label="Service due", source_handle="m.zoom_level"))
-    service.set_location(LocationInfo(facility="HOSP", point_of_care="OR1", bed="A"))
+    service.add_action(
+        ActionSpec(
+            label="Set inspection mode",
+            target_handle="vmd.optics",
+            effects={"m.zoom_level": Decimal("12"), "m.mode": "PAUSE"},
+            type_coding=Coding(code="inspection-mode", system="urn:example:actions", label="Inspection mode"),
+            note="Prepare optics for inspection",
+        ),
+    )
+    service.set_location(
+        LocationInfo(
+            facility="HOSP",
+            building="North",
+            floor="3",
+            point_of_care="OR1",
+            room="Hybrid",
+            bed="A",
+        ),
+    )
     service.set_patient(
         PatientInfo(
             given_name="Ada",
@@ -651,7 +764,7 @@ def main() -> int:
     print("=" * 74)
 
     print("\n1. Export")
-    source = ProviderService(instance_name="config-source")
+    source = ProviderService(instance_name="config-source", device=REFERENCE_DEVICE)
     source.start()
     try:
         build_reference(source)
@@ -659,7 +772,15 @@ def main() -> int:
         config.save(source, path)
         report.check(path.exists(), "the file is written", f"{path.stat().st_size} bytes")
         data = json.loads(path.read_text(encoding="utf-8"))
-        report.check(data.get("version") == 3, "new profiles use version 3")  # noqa: PLR2004
+        report.check(
+            data.get("version") == config.CONFIG_VERSION,
+            f"new profiles use current version {config.CONFIG_VERSION}",
+        )
+        report.check(
+            data.get("device") == device_snapshot(source.instance_name, REFERENCE_DEVICE),
+            "construction-time device metadata is exported",
+            str(data.get("device")),
+        )
         report.check(len(data.get("metrics", [])) == 5, "all data sources are in it")  # noqa: PLR2004
         report.check(len(data.get("alerts", [])) == 2, "and both alarms")  # noqa: PLR2004
         report.check(
@@ -738,11 +859,18 @@ def main() -> int:
         after = snapshot(target)
         report.check(after == before, "everything matches the original")
         if after != before:
-            for key in ("metrics", "alerts"):
-                for handle in sorted(set(before[key]) | set(after[key])):
-                    if before[key].get(handle) != after[key].get(handle):
-                        print(f"      {handle}\n        before {before[key].get(handle)}")
-                        print(f"        after  {after[key].get(handle)}")
+            for field in before:
+                if before[field] != after[field]:
+                    print(f"      {field}\n        before {before[field]}")
+                    print(f"        after  {after[field]}")
+
+        imported = config.load_file(path)
+        report.check(
+            device_snapshot(imported.instance_name, imported.device)
+            == device_snapshot(source.instance_name, REFERENCE_DEVICE),
+            "device metadata is parsed separately from running-provider import",
+            repr(imported.device),
+        )
 
         report.check(
             len(target.signal_handles_for("al.zoom_high")) == 2,  # noqa: PLR2004
@@ -755,18 +883,26 @@ def main() -> int:
             "an alarm with limits comes back as a LimitAlertCondition",
         )
 
-        legacy = config.parse(
-            {
-                "version": 1,
-                "contexts": {"patient": {"given_name": "Legacy"}},
-                "metrics": [{"label": "Legacy metric", "kind": "number"}],
-            },
-        )
+        prior_versions = [
+            config.parse(
+                {
+                    "version": version,
+                    "contexts": {"patient": {"given_name": "Legacy"}},
+                    "metrics": [{"label": "Legacy metric", "kind": "number"}],
+                },
+            )
+            for version in range(1, config.CONFIG_VERSION)
+        ]
         report.check(
-            legacy.patient is not None
-            and legacy.patient.given_name == "Legacy"
-            and len(legacy.metrics) == 1,
-            "version 1 profiles remain readable",
+            len(prior_versions) == config.CONFIG_VERSION - 1
+            and all(
+                device.patient is not None
+                and device.patient.given_name == "Legacy"
+                and len(device.metrics) == 1
+                for device in prior_versions
+            ),
+            "every previous config version remains readable",
+            str(list(range(1, config.CONFIG_VERSION))),
         )
 
         print("\n3. Import replaces rather than appends")
