@@ -1,7 +1,7 @@
 {
   "version": 1,
   "name": "Insufflator",
-  "description": "Laparoscopic insufflator: gas flow, pressure control and the alarms around it. The smallest of the presets, and the first one this project had.",
+  "description": "Laparoscopic insufflator: nine metrics for gas flow, pressure control, and related alarms. One metric larger than the infusion pump, and the first preset this project had.",
   "device": {
     "instance_name": "insufflator",
     "friendly_name": "Insufflator",

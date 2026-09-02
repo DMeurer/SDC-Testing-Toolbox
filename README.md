@@ -16,7 +16,11 @@ py -3.12 -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Python 3.12 is deliberate: `python` on a typical Windows box may point at a newer release, and an explicit `py -3.12` keeps the environment reproducible. Both dependencies also work on 3.13 and 3.14 if you prefer.
+Python 3.12 is the project's tested interpreter and is selected explicitly on Windows and in
+CI. The pinned runtime dependencies declare support for Python 3.10 through 3.14, so Ubuntu
+22.04's default Python 3.10 is also suitable. `requirements.txt` and
+`requirements-build.txt` pin direct dependencies only; pip still resolves transitive
+dependencies at install time, so they are not a complete reproducible lock.
 
 ## Application builds
 
@@ -37,12 +41,13 @@ The Windows result is `dist\SDC-Testing-Toolbox.exe`.
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  binutils libbrotli1 libdbus-1-3 libegl1 libfontconfig1 libfreetype6 libgl1 \
+  python3 python3-venv binutils libbrotli1 libdbus-1-3 libegl1 \
+  libfontconfig1 libfreetype6 libgl1 \
   libglib2.0-0 libgtk-3-0 libx11-xcb1 libxcb-cursor0 libxcb-icccm4 \
   libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
   libxcb-render0 libxcb-shape0 libxcb-shm0 libxcb-sync1 libxcb-xfixes0 \
   libxcb-xkb1 libxkbcommon-x11-0 libxkbcommon0
-python3.12 -m venv .venv
+python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt -r requirements-build.txt
 .venv/bin/python -m PyInstaller --clean --noconfirm SDC-Testing-Toolbox.spec
 tar -C dist -czf dist/SDC-Testing-Toolbox-linux-x86_64.tar.gz SDC-Testing-Toolbox
@@ -61,16 +66,15 @@ tags.
 
 ## Milestones
 
-- [x] **0 — Groundwork.** Pinned environment, sdc11073 API verified, networking settled.
+- [x] **0 — Groundwork.** Direct dependencies pinned, sdc11073 API verified, networking settled.
 - [x] **1 — Core.** Create data sources at runtime, publish them, remote-control them. Headless, with a console front end and an acceptance test.
 - [x] **2 — Provider UI.** Metric list with live values, "New data source" dialog.
 - [x] **3 — Consumer UI.** Discovery, MDIB browser, editors for controllable metrics. Accepts foreign MDIBs defensively; detailed metric and operation views cover the supported subset.
 - [x] **4a — Alarms and presets.** Alert conditions with their signals, and configs you can export, import and load at startup.
 - [x] **4b — Contexts and signal handling.** Editable patient and location, acknowledgement and delegation, a preset picker.
 - [x] **4c — Waveforms and distributions.** Both sample-array kinds, a generator for both, and a plot to watch them on.
-- [x] **4d — Realistic presets.** Coded values, device identity, subsystem structure, and actions. Seven virtual device profiles, each built by tests.
+- [x] **4d — Device presets.** Seven realistic virtual device profiles with coded values, device identity, subsystem structure, and actions, each built by tests.
 - [ ] **4e — TLS.**
-- [x] **5 - Device presets.** Provide virtual device profiles, so a consumer can be tested without physical hardware being present.
 
 ## Try it
 
@@ -199,8 +203,8 @@ provider> where HOSP/Surgery/2/OR1/1/Table
 provider> patient Ada Lovelace F Ad 1815-12-10
   Ada Lovelace (F, Ad, 1815-12-10)
 provider> presets
-  Insufflator        6 data source(s), 3 alarm(s)
-      Six data sources and three alarms, roughly what a laparoscopic insufflator publishes.
+  Insufflator        9 data source(s), 3 alarm(s)
+      Laparoscopic insufflator: nine metrics for gas flow, pressure control, and related alarms. One metric larger than the infusion pump, and the first preset this project had.
 ```
 
 ## Presets
@@ -239,7 +243,7 @@ For a profile that imports successfully, recorded handles make its defined metri
 | `hf-generator`        | Electrosurgery                        | A bimodal impedance spectrum, and a *Stop output* action                                                            |
 | `surgical-microscope` | Robotic scope, after an Aesculap Aeos | Six axes, fixpoint and free modes, ICG fluorescence, and *Home axes* — none of which is a value you write           |
 | `endoscopic-camera`   | Camera and light source               | Image profiles, and a *White balance now* action with nothing to type                                               |
-| `insufflator`         | Laparoscopic insufflator              | The first preset this project had                                                                                   |
+| `insufflator`         | Laparoscopic insufflator              | Nine metrics, one more than the infusion pump; the first preset this project had                                    |
 
 ### What the presets are actually demonstrating
 
@@ -255,6 +259,7 @@ Which is which is the interesting part, and `tests/presets.py` counts it:
 patient-monitor         24 mdc,   2 private  (92% standard)
 ventilator              21 mdc,   3 private  (88% standard)
 infusion-pump           11 mdc,   5 private  (69% standard)
+insufflator              9 mdc,   9 private  (50% standard)
 hf-generator            10 mdc,  10 private  (50% standard)
 surgical-microscope     15 mdc,  19 private  (44% standard)
 endoscopic-camera        9 mdc,  13 private  (41% standard)
@@ -446,6 +451,7 @@ The pull-request workflow runs each deterministic area as a separately reported 
 | Suite | Covers |
 |-------|--------|
 | `diagnostics/check_api.py` | required sdc11073 API surface |
+| `tests/diagnostic_behavior.py` | diagnostic signature and update-result reporting |
 | `tests/provider_core.py` | provider descriptors, values, alarms, contexts and rollback |
 | `tests/presets.py` | every shipped preset built as a working device |
 | `tests/config_roundtrip.py` | versioned export/import, validation and transactional replacement |
