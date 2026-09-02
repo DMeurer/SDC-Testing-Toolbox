@@ -33,7 +33,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
 from sdc11073.xml_types import msg_types
 
 from ..consumer_service import ConsumerService
@@ -305,6 +304,7 @@ class ConsumerPane(QWidget):
             return
         self._advance_generation()
         self._teardown_remote()
+        self._reset_remote_ui()
         self._set_status(f"Connecting to {device.epr}\u2026")
         key = self._work_key("connect")
         self._worker.start_managed(
@@ -355,8 +355,8 @@ class ConsumerPane(QWidget):
     def _on_disconnect(self) -> None:
         self._advance_generation()
         self._teardown_remote()
+        self._reset_remote_ui()
         self._set_status("Not connected")
-        self.refresh()
         self._update_buttons()
 
     def _teardown_remote(self) -> None:
@@ -368,12 +368,38 @@ class ConsumerPane(QWidget):
             self.remote = None
             self._worker.retire(remote, remote.close)
 
+    def _reset_remote_ui(self) -> None:
+        """Clear every view and control derived from the current peer."""
+        self.tree.clear()
+        self.table.clearSelection()
+        self.table.setRowCount(0)
+        self._columns.refit()
+        self.alert_table.setRowCount(0)
+        self._alert_columns.refit()
+        self.board.clear()
+        self.context_label.clear()
+        self.refresh_actions()
+
+        self.value_edit.clear()
+        self.value_edit.setPlaceholderText("")
+        self.choice_box.clear()
+        self.editor_stack.setCurrentIndex(EDITOR_TEXT)
+        self.editor_label.setText("Connect to a device to control it")
+        self.invocation_label.clear()
+        self._set_editor_enabled(enabled=False)
+
+    def _on_connect_failed(self, message: str) -> None:
+        """Leave the pane disconnected when the attempted peer cannot be opened."""
+        self._teardown_remote()
+        self._reset_remote_ui()
+        self._set_status(f"Could not connect: {message}")
+
     def _on_peer_restarted(self) -> None:
         """The far end restarted, so everything we cached about it is worthless."""
         self._set_status("The device restarted. Reconnect to see it again.")
         self._advance_generation()
         self._teardown_remote()
-        self.refresh()
+        self._reset_remote_ui()
         self._update_buttons()
 
     # -- views ---------------------------------------------------------------------
@@ -728,7 +754,7 @@ class ConsumerPane(QWidget):
         if operation == "scan":
             self._set_status(f"Scan failed: {message}")
         elif operation == "connect":
-            self._set_status(f"Could not connect: {message}")
+            self._on_connect_failed(message)
         elif operation == "invoke":
             self._on_set_failed(message)
         self._update_buttons()

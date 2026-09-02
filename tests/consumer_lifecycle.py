@@ -17,13 +17,17 @@ sys.path.insert(0, str(ROOT))
 
 from PySide6.QtCore import QObject, QTimer, Signal  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
-
 from sdc11073.xml_types import msg_types  # noqa: E402
 
 from sdctoolbox.consumer_service import DiscoveredDevice  # noqa: E402
 from sdctoolbox.gui import consumer_pane as consumer_module  # noqa: E402
 from sdctoolbox.gui.main_window import MainWindow  # noqa: E402
-from sdctoolbox.model import MetricKind, RemoteMetric  # noqa: E402
+from sdctoolbox.model import (  # noqa: E402
+    MetricKind,
+    RemoteAction,
+    RemoteAlert,
+    RemoteMetric,
+)
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 
@@ -47,10 +51,13 @@ class BlockingCall:
         self.entered = threading.Event()
         self.release = threading.Event()
         self.result = result
+        self.error: Exception | None = None
 
     def __call__(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN204
         self.entered.set()
         self.release.wait(5.0)
+        if self.error is not None:
+            raise self.error
         return self.result
 
 
@@ -62,6 +69,9 @@ class FakeRemote:
         self.set_call = BlockingCall(msg_types.InvocationState.FINISHED)
         self.action_call = BlockingCall(msg_types.InvocationState.FINISHED)
         self.metric_values: dict[str, RemoteMetric] = {}
+        self.action_values: dict[str, RemoteAction] = {}
+        self.alert_values: dict[str, RemoteAlert] = {}
+        self.context_values: dict[str, object] = {}
         self.metrics_count = 0
 
     def close(self) -> None:
@@ -77,17 +87,14 @@ class FakeRemote:
         self.metrics_count += 1
         return dict(self.metric_values)
 
-    @staticmethod
-    def actions() -> dict:
-        return {}
+    def actions(self) -> dict[str, RemoteAction]:
+        return dict(self.action_values)
 
-    @staticmethod
-    def alerts() -> dict:
-        return {}
+    def alerts(self) -> dict[str, RemoteAlert]:
+        return dict(self.alert_values)
 
-    @staticmethod
-    def patient_contexts() -> dict:
-        return {}
+    def patient_contexts(self) -> dict[str, object]:
+        return dict(self.context_values)
 
 
 class FakeConsumerService:
@@ -247,6 +254,146 @@ def stale_set_after_reconnect(app: QApplication, provider: ProviderService) -> N
     check(new.close_count == 1 and service.stop_count == 1, "new remote and discovery close once")
 
 
+def failed_reconnect_clears_peer_ui(
+    app: QApplication,
+    provider: ProviderService,
+) -> None:
+    window, pane, service = new_window(provider)
+    old = FakeRemote("populated")
+    old.mdib.entities = {
+        "mds": SimpleNamespace(
+            node_type=SimpleNamespace(localname="MdsDescriptor"),
+            parent_handle=None,
+        ),
+    }
+    old.metric_values = {
+        "metric": RemoteMetric(
+            handle="metric",
+            node_type_name="NumericMetricDescriptor",
+            kind=MetricKind.NUMBER,
+            label="Peer metric",
+            value=Decimal(7),
+            operation_handles=("set.metric",),
+            controllable_now=True,
+        ),
+    }
+    old.alert_values = {
+        "alert": RemoteAlert(
+            handle="alert",
+            node_type_name="LimitAlertConditionDescriptor",
+            label="Peer alert",
+            present=True,
+        ),
+    }
+    old.action_values = {
+        "action": RemoteAction(
+            handle="action",
+            label="Peer action",
+            target_handle="mds",
+            enabled=True,
+        ),
+    }
+    old.context_values = {
+        "patient": SimpleNamespace(summary=lambda: "Populated Patient"),
+    }
+    attach(pane, old)
+    pane.select_handle("metric")
+    pane.invocation_label.setText("accepted")
+    pump(app)
+
+    check(pane.tree.topLevelItemCount() == 1, "old peer tree starts populated")
+    check(
+        pane.table.rowCount() == 1 and pane.board.handles == ["metric"],
+        "old peer metrics start populated",
+    )
+    check(pane.alert_table.rowCount() == 1, "old peer alerts start populated")
+    check(
+        "Populated Patient" in pane.context_label.text(),
+        "old peer context starts populated",
+    )
+    check(
+        bool(pane.action_buttons) and pane.actions_widget.isVisible(),
+        "old peer actions start populated",
+    )
+    check(pane.apply_button.isEnabled(), "old peer editor starts enabled")
+
+    pane.devices = [DiscoveredDevice("failing", (), (), service=object())]
+    pane.device_list.addItem("failing")
+    pane.device_list.setCurrentRow(0)
+    service.connect_call.error = RuntimeError("forced failure")
+    generation = pane._generation  # noqa: SLF001
+    pane._on_connect()  # noqa: SLF001
+    check(
+        service.connect_call.entered.wait(1.0),
+        "replacement connection starts in the worker",
+    )
+
+    def remote_ui_is_empty() -> bool:
+        return (
+            pane.remote is None
+            and pane.bridge is None
+            and pane.tree.topLevelItemCount() == 0
+            and pane.table.rowCount() == 0
+            and pane.alert_table.rowCount() == 0
+            and not pane.board.handles
+            and not pane.context_label.text()
+            and not pane.action_buttons
+            and not pane.actions_widget.isVisible()
+            and pane.selected_handle() is None
+            and not pane.editor_stack.isEnabled()
+            and not pane.apply_button.isEnabled()
+            and not pane.value_edit.text()
+            and not pane.value_edit.placeholderText()
+            and pane.choice_box.count() == 0
+            and not pane.invocation_label.text()
+        )
+
+    check(
+        pane._generation == generation + 1,  # noqa: SLF001
+        "replacement connection advances the session generation",
+    )
+    check(old.close_count == 1, "old peer is closed before replacement work continues")
+    check(
+        remote_ui_is_empty(),
+        "old peer data is cleared while replacement connection is pending",
+    )
+    check(
+        pane.status_label.text() == "Connecting to failing\u2026",
+        "pending status names the replacement peer",
+    )
+    check(
+        not pane.scan_button.isEnabled()
+        and not pane.connect_button.isEnabled()
+        and not pane.disconnect_button.isEnabled(),
+        "connection controls agree while replacement connection is pending",
+    )
+
+    service.connect_call.release.set()
+    check(
+        wait_for(
+            app,
+            lambda: pane.status_label.text() == "Could not connect: forced failure",
+        ),
+        "replacement connection failure reaches the GUI",
+    )
+    check(
+        remote_ui_is_empty(),
+        "old peer data remains cleared after replacement connection fails",
+    )
+    check(
+        pane.scan_button.isEnabled()
+        and pane.connect_button.isEnabled()
+        and not pane.disconnect_button.isEnabled(),
+        "connection controls agree after replacement connection fails",
+    )
+    check(
+        pane.editor_label.text() == "Connect to a device to control it",
+        "editor caption agrees with the disconnected state",
+    )
+    window.close()
+    check(service.stop_count == 1, "failed replacement session closes discovery once")
+
+
 def waveform_reports_are_scoped(app: QApplication, provider: ProviderService) -> None:
     window, pane, service = new_window(provider)
     remote = FakeRemote("samples")
@@ -324,6 +471,7 @@ def main() -> int:
         close_during_invocation(app, provider, action=False)
         close_during_invocation(app, provider, action=True)
         stale_set_after_reconnect(app, provider)
+        failed_reconnect_clears_peer_ui(app, provider)
         waveform_reports_are_scoped(app, provider)
     finally:
         consumer_module.ConsumerService = old_service
