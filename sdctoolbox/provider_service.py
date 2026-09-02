@@ -1615,14 +1615,27 @@ class ProviderService:
         slug = slugify(section)
         vmd_handle = f"{constants.VMD_HANDLE_PREFIX}{slug}"
         channel_handle = f"{constants.CHANNEL_HANDLE_PREFIX}{slug}"
-        if self.mdib.entities.by_handle(channel_handle) is not None:
+        vmd = self.mdib.entities.by_handle(vmd_handle)
+        channel = self.mdib.entities.by_handle(channel_handle)
+        if vmd is not None and (vmd.node_type != pm.VmdDescriptor or vmd.parent_handle != constants.MDS_HANDLE):
+            msg = f"section {section!r} requires {vmd_handle!r} to be a VmdDescriptor under {constants.MDS_HANDLE!r}"
+            raise ValueError(msg)
+        if channel is not None and (
+            channel.node_type != pm.ChannelDescriptor or channel.parent_handle != vmd_handle
+        ):
+            msg = f"section {section!r} requires {channel_handle!r} to be a ChannelDescriptor under {vmd_handle!r}"
+            raise ValueError(msg)
+        if channel is not None:
+            if vmd is None:
+                msg = f"section {section!r} requires parent {vmd_handle!r} for {channel_handle!r}"
+                raise ValueError(msg)
             self._sections[section] = channel_handle
             return channel_handle
 
         coding = Coding(code=slug, system="private", label=section)
         # The Vmd has to be committed before the Channel can name it: new_entity looks the
         # parent up in mdib.descriptions, so an uncommitted one is not there yet.
-        if self.mdib.entities.by_handle(vmd_handle) is None:
+        if vmd is None:
             vmd = self.mdib.entities.new_entity(pm.VmdDescriptor, vmd_handle, constants.MDS_HANDLE)
             vmd.descriptor.Type = _coded_value(coding, section)
             self._create_entities([vmd])

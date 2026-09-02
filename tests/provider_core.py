@@ -431,6 +431,46 @@ def check_section_removal(report: Report, service: ProviderService) -> None:
     )
 
 
+def check_section_handle_types(report: Report, service: ProviderService) -> None:
+    """Generated section handles never reuse descriptors of another type."""
+    section = "Occupied section"
+    vmd_handle = "vmd.occupied_section"
+    channel_handle = "ch.occupied_section"
+    cases = (
+        (vmd_handle, pm.ChannelDescriptor, constants.VMD_HANDLE, channel_handle),
+        (channel_handle, pm.VmdDescriptor, constants.MDS_HANDLE, vmd_handle),
+    )
+    for occupied_handle, node_type, parent_handle, absent_handle in cases:
+        witness = service.mdib.entities.new_entity(node_type, occupied_handle, parent_handle)
+        service._create_entities([witness])
+        before_handles = {handle for handle, _ in service.mdib.entities.items()}
+        before_metrics = service.list_metrics()
+        before_sections = service.sections()
+        try:
+            try:
+                service.add_metric(MetricSpec(label="Blocked metric", kind=MetricKind.NUMBER, section=section))
+            except ValueError as exc:
+                report.check(
+                    occupied_handle in str(exc),
+                    f"a wrong descriptor type at {occupied_handle} is rejected",
+                    str(exc),
+                )
+            else:
+                report.check(False, f"a wrong descriptor type at {occupied_handle} is rejected", "it was reused")
+            report.check(
+                {handle for handle, _ in service.mdib.entities.items()} == before_handles
+                and service.list_metrics() == before_metrics
+                and service.sections() == before_sections
+                and service.mdib.entities.by_handle(absent_handle) is None,
+                f"rejecting {occupied_handle} leaves sections and metrics unchanged",
+            )
+        finally:
+            existing = service.mdib.entities.by_handle(occupied_handle)
+            if existing is not None:
+                with service.mdib.descriptor_transaction() as mgr:
+                    mgr.remove_entity(existing)
+
+
 def check_metric_value_validation(report: Report, service: ProviderService) -> None:
     print("\n6. Metric writes and action effects share validation")
 
@@ -1385,6 +1425,7 @@ def main() -> int:
         check_alarm_rollback(report, service)
         check_metric_removal_dependencies(report, service)
         check_section_removal(report, service)
+        check_section_handle_types(report, service)
         check_metric_value_validation(report, service)
         check_decimal_boundaries(report, service)
         check_concurrent_alert_evaluation(report, service)

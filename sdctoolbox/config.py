@@ -945,6 +945,8 @@ def _preflight_apply(service: ProviderService, device: DeviceConfig, *, replace:
             section_slug = slugify(spec.section)
             descriptors.add(VMD_HANDLE_PREFIX + section_slug)
             descriptors.add(CHANNEL_HANDLE_PREFIX + section_slug)
+
+    for spec in device.metrics:
         handle = _claim_handle(descriptors, spec.handle, METRIC_HANDLE_PREFIX + spec.slug, f"metrics[{spec.label}]")
         metrics.add(handle)
         metric_specs[handle] = spec

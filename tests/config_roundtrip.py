@@ -446,6 +446,35 @@ def check_preflight_preserves_device(report: Report, service: ProviderService) -
     service.remove_metric("m.existing")
 
 
+def check_section_handle_collisions(report: Report, service: ProviderService) -> None:
+    """Section handles are reserved before any explicit profile descriptor is claimed."""
+    service.add_metric(
+        MetricSpec(label="Existing", kind=MetricKind.NUMBER, section="Existing section", initial_value=Decimal("7")),
+    )
+    for generated_handle in ("vmd.generated_section", "ch.generated_section"):
+        for collision_first in (True, False):
+            colliding = {"label": "Collision", "kind": "number", "handle": generated_handle}
+            sectioned = {"label": "Sectioned", "kind": "number", "section": "Generated section"}
+            profile = config.parse({"metrics": [colliding, sectioned] if collision_first else [sectioned, colliding]})
+            before = complete_snapshot(service)
+            try:
+                config.apply_to(service, profile)
+            except config.ConfigError as exc:
+                report.check(
+                    generated_handle in str(exc),
+                    f"{generated_handle} collision is rejected with the metric "
+                    f"{'before' if collision_first else 'after'} the section",
+                    str(exc),
+                )
+            else:
+                report.check(False, f"{generated_handle} collision is rejected", "it was accepted")
+            report.check(
+                complete_snapshot(service) == before,
+                f"rejected {generated_handle} collision does not mutate the MDIB or service",
+            )
+    service.remove_metric("m.existing")
+
+
 def check_operational_failure_rolls_back(report: Report, service: ProviderService) -> None:
     """A failure after one successful creation restores the complete live provider."""
     metric = service.add_metric(
@@ -1178,6 +1207,7 @@ def main() -> int:
     guarded.start()
     try:
         check_preflight_preserves_device(report, guarded)
+        check_section_handle_collisions(report, guarded)
     finally:
         guarded.stop()
 
