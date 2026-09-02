@@ -193,6 +193,19 @@ def device_snapshot(instance_name: str, device: DeviceInfo | None) -> dict | Non
     }
 
 
+def device_config_snapshot(device: config.DeviceConfig) -> dict:
+    """Order-independent semantics persisted by one profile."""
+    return {
+        "metrics": {spec.handle: spec for spec in device.metrics},
+        "alerts": {spec.handle: spec for spec in device.alerts},
+        "actions": {spec.handle: spec for spec in device.actions},
+        "location": device.location,
+        "patient": device.patient,
+        "device": device.device,
+        "instance_name": device.instance_name,
+    }
+
+
 def complete_snapshot(service: ProviderService) -> dict:
     """Provider configuration, descriptors, and live bookkeeping changed by import."""
     descriptors = {}
@@ -796,6 +809,15 @@ def main() -> int:
             "signal manifestation and latching settings are exported",
             str(zoom_alert["signals"]),
         )
+        service_due = next(alert for alert in data["alerts"] if alert["handle"] == "al.service_due")
+        report.check(
+            service_due["signals"] == [
+                {"manifestation": "Vis", "latching": False},
+                {"manifestation": "Aud", "latching": False},
+            ],
+            "default version-3 signals are exported explicitly",
+            str(service_due["signals"]),
+        )
         patient_data = data.get("contexts", {}).get("patient", {})
         report.check(
             patient_data.get("height", {}).get("value") == "170.5"
@@ -903,6 +925,53 @@ def main() -> int:
             ),
             "every previous config version remains readable",
             str(list(range(1, config.CONFIG_VERSION))),
+        )
+
+        preset_round_trips = []
+        for preset_path in sorted((ROOT / "presets").glob("*.json")):
+            preset_data = json.loads(preset_path.read_text(encoding="utf-8"))
+            preset = config.parse(preset_data)
+            preset_service = ProviderService(instance_name=preset.instance_name, device=preset.device)
+            preset_service.start()
+            try:
+                config.apply_to(preset_service, preset)
+                serialized = config.to_dict(preset_service)
+                source_contexts = preset_data.get("contexts", {})
+                current_contexts = serialized.get("contexts", {})
+                retained_contexts = {
+                    name: current_contexts[name]
+                    for name in ("location", "patient")
+                    if name in source_contexts
+                }
+                if retained_contexts:
+                    serialized["contexts"] = retained_contexts
+                else:
+                    serialized.pop("contexts", None)
+                round_tripped = config.parse(serialized)
+                signals_preserved = all(
+                    serialized_alert["signals"]
+                    == [
+                        {"manifestation": signal.manifestation.value, "latching": signal.latching}
+                        for signal in alert.signals
+                    ]
+                    for alert, serialized_alert in zip(
+                        sorted(preset.alerts, key=lambda item: item.handle or ""),
+                        serialized["alerts"],
+                        strict=True,
+                    )
+                )
+                preset_round_trips.append(
+                    preset_data.get("version") == config.CONFIG_VERSION
+                    and serialized.get("version") == config.CONFIG_VERSION
+                    and signals_preserved
+                    and device_config_snapshot(round_tripped) == device_config_snapshot(preset)
+                )
+            finally:
+                preset_service.stop()
+        report.check(
+            len(preset_round_trips) == 7 and all(preset_round_trips),
+            "canonical presets round-trip at the current version with version-3 signals intact",
+            f"{sum(preset_round_trips)} of {len(preset_round_trips)}",
         )
 
         print("\n3. Import replaces rather than appends")

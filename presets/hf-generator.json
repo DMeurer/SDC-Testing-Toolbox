@@ -1,96 +1,155 @@
 {
-  "version": 1,
+  "version": 3,
   "name": "HF generator",
   "description": "Electrosurgical unit: cut and coagulation modes, power setpoints, live tissue impedance and its spectrum. Almost nothing here has a standard term, so almost nothing here is MDC.",
   "device": {
     "instance_name": "hf-generator",
     "friendly_name": "HF Generator",
     "manufacturer": "SDC Testing Toolbox",
+    "manufacturer_url": "https://d-meurer.com",
     "model_name": "Electron 300",
     "model_number": "300",
     "firmware_version": "2.0.7"
   },
   "metrics": [
     {
+      "handle": "m.activation",
+      "label": "Activation",
+      "kind": "choice",
+      "controllable": false,
+      "section": "Generator",
+      "type": {
+        "code": "hf_activation_source",
+        "system": "private"
+      },
+      "allowed_values": [
+        "IDLE",
+        "FOOTSWITCH",
+        "HANDSWITCH"
+      ],
+      "initial_value": "IDLE"
+    },
+    {
       "handle": "m.active_mode",
       "label": "Active mode",
       "kind": "choice",
-      "section": "Generator",
       "controllable": true,
-      "allowed_values": ["STANDBY", "CUT", "COAG", "BLEND", "BIPOLAR"],
-      "initial_value": "STANDBY",
-      "type": {"code": "hf_active_mode", "system": "private"}
-    },
-    {
-      "handle": "m.cut_power_set",
-      "label": "Cut power setpoint",
-      "kind": "number",
       "section": "Generator",
-      "controllable": true,
-      "unit": {"label": "W", "code": "MDC_DIM_WATT", "system": "mdc"},
-      "type": {"code": "hf_cut_power_setpoint", "system": "private"},
-      "resolution": "1",
-      "minimum": "0",
-      "maximum": "300",
-      "initial_value": "80"
+      "type": {
+        "code": "hf_active_mode",
+        "system": "private"
+      },
+      "allowed_values": [
+        "STANDBY",
+        "CUT",
+        "COAG",
+        "BLEND",
+        "BIPOLAR"
+      ],
+      "initial_value": "STANDBY"
     },
     {
       "handle": "m.coag_power_set",
       "label": "Coagulation power setpoint",
       "kind": "number",
-      "section": "Generator",
       "controllable": true,
-      "unit": {"label": "W", "code": "MDC_DIM_WATT", "system": "mdc"},
-      "type": {"code": "hf_coag_power_setpoint", "system": "private"},
+      "section": "Generator",
+      "unit": {
+        "code": "MDC_DIM_WATT",
+        "system": "mdc",
+        "label": "W"
+      },
+      "type": {
+        "code": "hf_coag_power_setpoint",
+        "system": "private"
+      },
       "resolution": "1",
       "minimum": "0",
       "maximum": "200",
       "initial_value": "50"
     },
     {
+      "handle": "m.cut_power_set",
+      "label": "Cut power setpoint",
+      "kind": "number",
+      "controllable": true,
+      "section": "Generator",
+      "unit": {
+        "code": "MDC_DIM_WATT",
+        "system": "mdc",
+        "label": "W"
+      },
+      "type": {
+        "code": "hf_cut_power_setpoint",
+        "system": "private"
+      },
+      "resolution": "1",
+      "minimum": "0",
+      "maximum": "300",
+      "initial_value": "80"
+    },
+    {
       "handle": "m.delivered_power",
       "label": "Delivered power",
       "kind": "number",
-      "section": "Generator",
       "controllable": false,
-      "unit": {"label": "W", "code": "MDC_DIM_WATT", "system": "mdc"},
-      "type": {"code": "hf_delivered_power", "system": "private"},
+      "section": "Generator",
+      "unit": {
+        "code": "MDC_DIM_WATT",
+        "system": "mdc",
+        "label": "W"
+      },
+      "type": {
+        "code": "hf_delivered_power",
+        "system": "private"
+      },
       "resolution": "1",
       "minimum": "0",
       "maximum": "300",
       "initial_value": "0"
     },
     {
-      "handle": "m.activation",
-      "label": "Activation",
-      "kind": "choice",
-      "section": "Generator",
+      "handle": "m.impedance_spectrum",
+      "label": "Impedance spectrum",
+      "kind": "distribution",
       "controllable": false,
-      "allowed_values": ["IDLE", "FOOTSWITCH", "HANDSWITCH"],
-      "initial_value": "IDLE",
-      "type": {"code": "hf_activation_source", "system": "private"}
-    },
-    {
-      "handle": "m.tissue_impedance",
-      "label": "Tissue impedance",
-      "kind": "number",
       "section": "Tissue",
-      "controllable": false,
-      "unit": {"label": "\u03a9", "code": "MDC_DIM_OHM", "system": "mdc"},
-      "type": {"code": "hf_tissue_impedance", "system": "private"},
-      "resolution": "1",
+      "unit": {
+        "code": "MDC_DIM_DECIBEL",
+        "system": "mdc",
+        "label": "dB"
+      },
+      "type": {
+        "code": "hf_impedance_spectrum",
+        "system": "private"
+      },
+      "resolution": "0.1",
       "minimum": "0",
-      "maximum": "2000",
-      "initial_value": "180"
+      "maximum": "60",
+      "domain_unit": {
+        "code": "MDC_DIM_KILO_HZ",
+        "system": "mdc",
+        "label": "kHz"
+      },
+      "domain_minimum": "300",
+      "domain_maximum": "1000",
+      "distribution_shape": "bimodal"
     },
     {
       "handle": "m.impedance_trace",
       "label": "Impedance trace",
       "kind": "waveform",
-      "section": "Tissue",
       "controllable": false,
-      "unit": {"label": "\u03a9", "code": "MDC_DIM_OHM", "system": "mdc"},
-      "type": {"code": "hf_impedance_trace", "system": "private"},
+      "section": "Tissue",
+      "unit": {
+        "code": "MDC_DIM_OHM",
+        "system": "mdc",
+        "label": "\u03a9"
+      },
+      "type": {
+        "code": "hf_impedance_trace",
+        "system": "private"
+      },
       "resolution": "1",
       "minimum": "50",
       "maximum": "600",
@@ -99,61 +158,95 @@
       "cycle_samples": 60
     },
     {
-      "handle": "m.impedance_spectrum",
-      "label": "Impedance spectrum",
-      "kind": "distribution",
-      "section": "Tissue",
-      "controllable": false,
-      "unit": {"label": "dB", "code": "MDC_DIM_DECIBEL", "system": "mdc"},
-      "type": {"code": "hf_impedance_spectrum", "system": "private"},
-      "resolution": "0.1",
-      "minimum": "0",
-      "maximum": "60",
-      "domain_unit": {"label": "kHz", "code": "MDC_DIM_KILO_HZ", "system": "mdc"},
-      "domain_minimum": "300",
-      "domain_maximum": "1000",
-      "distribution_shape": "bimodal"
+      "handle": "m.instrument",
+      "label": "Connected instrument",
+      "kind": "text",
+      "controllable": true,
+      "section": "Safety",
+      "type": {
+        "code": "hf_connected_instrument",
+        "system": "private"
+      },
+      "initial_value": "Monopolar pencil"
     },
     {
       "handle": "m.neutral_electrode",
       "label": "Neutral electrode contact",
       "kind": "number",
-      "section": "Safety",
       "controllable": false,
-      "unit": {"label": "%", "code": "MDC_DIM_PERCENT", "system": "mdc"},
-      "type": {"code": "hf_neutral_electrode_quality", "system": "private"},
+      "section": "Safety",
+      "unit": {
+        "code": "MDC_DIM_PERCENT",
+        "system": "mdc",
+        "label": "%"
+      },
+      "type": {
+        "code": "hf_neutral_electrode_quality",
+        "system": "private"
+      },
       "resolution": "1",
       "minimum": "0",
       "maximum": "100",
       "initial_value": "96"
     },
     {
-      "handle": "m.instrument",
-      "label": "Connected instrument",
-      "kind": "text",
-      "section": "Safety",
-      "controllable": true,
-      "type": {"code": "hf_connected_instrument", "system": "private"},
-      "initial_value": "Monopolar pencil"
+      "handle": "m.tissue_impedance",
+      "label": "Tissue impedance",
+      "kind": "number",
+      "controllable": false,
+      "section": "Tissue",
+      "unit": {
+        "code": "MDC_DIM_OHM",
+        "system": "mdc",
+        "label": "\u03a9"
+      },
+      "type": {
+        "code": "hf_tissue_impedance",
+        "system": "private"
+      },
+      "resolution": "1",
+      "minimum": "0",
+      "maximum": "2000",
+      "initial_value": "180"
     }
   ],
   "alerts": [
-    {
-      "handle": "al.neutral_electrode",
-      "label": "Neutral electrode contact poor",
-      "watches": "m.neutral_electrode",
-      "kind": "Tec",
-      "priority": "Hi",
-      "lower_limit": "70",
-      "delegable": true
-    },
     {
       "handle": "al.impedance_high",
       "label": "Tissue impedance high",
       "watches": "m.tissue_impedance",
       "kind": "Tec",
       "priority": "Me",
+      "signals": [
+        {
+          "manifestation": "Vis",
+          "latching": false
+        },
+        {
+          "manifestation": "Aud",
+          "latching": false
+        }
+      ],
       "upper_limit": "1200"
+    },
+    {
+      "handle": "al.neutral_electrode",
+      "label": "Neutral electrode contact poor",
+      "watches": "m.neutral_electrode",
+      "kind": "Tec",
+      "priority": "Hi",
+      "signals": [
+        {
+          "manifestation": "Vis",
+          "latching": false
+        },
+        {
+          "manifestation": "Aud",
+          "latching": false
+        }
+      ],
+      "lower_limit": "70",
+      "delegable": true
     },
     {
       "handle": "al.power_limit",
@@ -161,30 +254,49 @@
       "watches": "m.delivered_power",
       "kind": "Tec",
       "priority": "Me",
+      "signals": [
+        {
+          "manifestation": "Vis",
+          "latching": false
+        },
+        {
+          "manifestation": "Aud",
+          "latching": false
+        }
+      ],
       "upper_limit": "280"
     }
   ],
   "actions": [
     {
-      "handle": "act.stop_output",
-      "label": "Stop output",
+      "handle": "act.recall_preset",
+      "label": "Recall stored preset",
       "target": "vmd.generator",
-      "note": "Immediate stop. An action rather than a setting, because there is nothing to read back",
-      "effects": {"m.active_mode": "STANDBY", "m.delivered_power": "0", "m.activation": "IDLE"}
+      "note": "The surgeon's stored power settings for this procedure",
+      "effects": {
+        "m.coag_power_set": "60",
+        "m.cut_power_set": "120"
+      }
     },
     {
       "handle": "act.self_test",
       "label": "Run self test",
       "target": "mds0",
       "note": "Checks the neutral electrode circuit and reports the contact quality",
-      "effects": {"m.neutral_electrode": "99"}
+      "effects": {
+        "m.neutral_electrode": "99"
+      }
     },
     {
-      "handle": "act.recall_preset",
-      "label": "Recall stored preset",
+      "handle": "act.stop_output",
+      "label": "Stop output",
       "target": "vmd.generator",
-      "note": "The surgeon's stored power settings for this procedure",
-      "effects": {"m.cut_power_set": "120", "m.coag_power_set": "60"}
+      "note": "Immediate stop. An action rather than a setting, because there is nothing to read back",
+      "effects": {
+        "m.activation": "IDLE",
+        "m.active_mode": "STANDBY",
+        "m.delivered_power": "0"
+      }
     }
   ]
 }

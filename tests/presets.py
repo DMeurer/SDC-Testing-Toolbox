@@ -56,11 +56,27 @@ def check_preset(report: Report, path: Path) -> None:
     print(f"\n{path.name}")
 
     try:
+        data = json.loads(path.read_text(encoding="utf-8"))
         device = config.load_file(path)
-    except config.ConfigError as exc:
+    except (OSError, UnicodeError, ValueError, config.ConfigError) as exc:
         report.check(False, f"{path.name} parses", str(exc)[:70])  # noqa: FBT003
         return
     report.check(True, "parses")  # noqa: FBT003
+    report.check(
+        data.get("version") == config.CONFIG_VERSION,
+        f"uses current profile version {config.CONFIG_VERSION}",
+        str(data.get("version")),
+    )
+    alerts_with_implicit_signals = [
+        alert.get("handle", alert.get("label", "?"))
+        for alert in data.get("alerts", [])
+        if not alert.get("signals")
+    ]
+    report.check(
+        not alerts_with_implicit_signals,
+        "records every alarm's version-3 signal definitions explicitly",
+        str(alerts_with_implicit_signals),
+    )
 
     report.check(
         device.device is not None and bool(device.device.friendly_name),
@@ -207,7 +223,7 @@ def main() -> int:
     print("=" * 74)
 
     paths = sorted((ROOT / "presets").glob("*.json"))
-    report.check(len(paths) >= 6, "presets are shipped", f"{len(paths)} files")  # noqa: PLR2004
+    report.check(len(paths) == 7, "the seven canonical presets are shipped", f"{len(paths)} files")  # noqa: PLR2004
 
     for path in paths:
         check_preset(report, path)

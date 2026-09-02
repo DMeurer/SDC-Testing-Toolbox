@@ -218,6 +218,7 @@ Export before experimenting with imports.
 *File → Load preset* lists the ready-made devices in `presets/`, so the ones that ship with the tool need no file dialog.
 The same list appears in the startup window. Preset discovery skips files that raise JSON or configuration errors.
 Its validation is not exhaustive: a malformed field type can still interrupt preset-list construction; use *Import config* to inspect ordinary validation errors.
+The seven shipped presets are canonical current-schema profiles, not legacy compatibility fixtures. They are kept at profile format version 3 with explicit alert signal definitions. Tests for older readable formats use synthetic profile data instead of holding a shipped preset back on an earlier schema.
 
 Any of them can also be loaded at startup:
 
