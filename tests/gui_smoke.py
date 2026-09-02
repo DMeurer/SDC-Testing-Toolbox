@@ -35,6 +35,7 @@ from PySide6.QtCore import QPoint, QPointF, Qt  # noqa: E402
 from PySide6.QtGui import QColor, QPalette, QWheelEvent  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
+    QDialog,
     QFileDialog,
     QHeaderView,
     QLabel,
@@ -2013,6 +2014,56 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             "the adapter name is not smuggled into the address",
             startup.chosen_ip(),
         )
+
+        listed_startup = StartupDialog(name="listed")
+        listed_startup.ip_box.setCurrentIndex(0)
+        listed_ip = listed_startup.ip_box.itemData(0)
+        listed_startup._on_accept()
+        report.check(
+            listed_startup.settings() is not None and listed_startup.settings().ip == listed_ip,
+            "a listed IPv4 address is accepted",
+            listed_ip,
+        )
+        listed_startup.deleteLater()
+
+        manual_ip = "192.0.2.123"
+        report.check(manual_ip not in addresses, "the manual test address is not listed")
+        manual_startup = StartupDialog(name="manual")
+        manual_startup.ip_box.setCurrentText(f"  {manual_ip}  ")
+        manual_startup._on_accept()
+        report.check(
+            manual_startup.settings() is not None and manual_startup.settings().ip == manual_ip,
+            "an unlisted manual IPv4 address is normalized and accepted",
+            manual_startup.settings().ip if manual_startup.settings() else "not accepted",
+        )
+        manual_startup.deleteLater()
+
+        invalid_addresses = {
+            "whitespace-only": "   ",
+            "hostname": "localhost",
+            "IPv6": "::1",
+            "malformed": "999.1.2.3",
+            "address with a suffix": "192.0.2.1  \u2014  adapter",
+        }
+        for description, invalid_ip in invalid_addresses.items():
+            invalid_startup = StartupDialog(name="invalid")
+            invalid_startup.ip_box.setCurrentText(invalid_ip)
+            invalid_startup.show()
+            pump(app)
+            invalid_startup._on_accept()
+            report.check(
+                invalid_startup.isVisible()
+                and invalid_startup.result() != QDialog.Accepted
+                and invalid_startup.settings() is None,
+                f"a {description} bind address keeps the startup dialog open",
+            )
+            report.check(
+                not invalid_startup.error_label.isHidden()
+                and "IPv4 address" in invalid_startup.error_label.text(),
+                f"a {description} bind address gets a field-specific error",
+                invalid_startup.error_label.text(),
+            )
+            invalid_startup.deleteLater()
 
         startup.name_edit.setText("   ")
         startup._on_accept()  # noqa: SLF001
