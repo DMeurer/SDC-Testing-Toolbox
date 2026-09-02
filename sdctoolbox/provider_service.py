@@ -25,6 +25,7 @@ from sdc11073.provider.providerimpl import RoleProviderComponents
 from sdc11073.wsdiscovery import WSDiscovery
 from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types import pm_types
+from sdc11073.xml_types.dataconverters import DecimalConverter
 from sdc11073.xml_types.dpws_types import ThisDeviceType, ThisModelType
 
 from . import constants
@@ -44,9 +45,11 @@ from .model import (
     SignalInfo,
     WaveformShape,
     coerce_metric_value,
+    fixed_point_decimal,
     patient_info_from_biceps,
     patient_measurement_wire_value,
     slugify,
+    validate_decimal,
 )
 
 if TYPE_CHECKING:
@@ -124,9 +127,9 @@ def _coded_value(coding: Coding, label: str = "") -> pm_types.CodedValue:
 def _domain_step(spec: MetricSpec) -> Decimal:
     """The gap between two samples along a distribution's domain.
 
-    Quantised, because a domain that does not divide evenly by the bin count produces a
-    repeating decimal and that would go on the wire in full. Six places keeps the descriptor
-    honest to well under a thousandth of a bin.
+    Quantised to six significant digits, because a domain that does not divide evenly by the
+    bin count produces a repeating decimal and that would go on the wire in full. Precision
+    follows the domain span so small valid domains do not collapse to a zero step.
     """
     # `or` would be wrong here: Decimal("0") is falsy, so a domain ending at zero - which
     # -60..0 dB is - would silently become 1 and the step would be computed over 61.
@@ -137,7 +140,16 @@ def _domain_step(spec: MetricSpec) -> Decimal:
         msg = f"distribution domain must increase, not {lower} to {upper}"
         raise ValueError(msg)
     step = span / Decimal(DISTRIBUTION_BINS - 1)
-    return step.quantize(Decimal("0.000001")).normalize()
+    quantum = Decimal(1).scaleb(step.adjusted() - 5)
+    step = step.quantize(quantum)
+    if step.is_zero():
+        msg = f"distribution domain {lower} to {upper} produces a zero StepWidth"
+        raise ValueError(msg)
+    wire_step = fixed_point_decimal(step.normalize(), "distribution StepWidth")
+    if Decimal(DecimalConverter.to_xml(wire_step)).is_zero():
+        msg = f"distribution domain {lower} to {upper} produces a zero StepWidth on the wire"
+        raise ValueError(msg)
+    return wire_step
 
 
 def _distribution_samples(spec: MetricSpec, phase: float) -> list[Decimal]:
@@ -539,6 +551,8 @@ class ProviderService:
                 if lower >= upper:
                     msg = f"distribution domain must increase, not {lower} to {upper}"
                     raise ValueError(msg)
+                # Compute this before lazily creating a section or any metric entity.
+                _domain_step(spec)
             if spec.is_sample_array and spec.initial_value is not None:
                 msg = f"initial_value is not meaningful for {spec.kind.value} metrics; use samples instead"
                 raise ValueError(msg)
@@ -729,12 +743,34 @@ class ProviderService:
             descriptor.Kind = spec.kind
             descriptor.Priority = spec.priority
             if spec.has_limits:
-                descriptor.MaxLimits = pm_types.Range(lower=spec.lower_limit, upper=spec.upper_limit)
+                descriptor.MaxLimits = pm_types.Range(
+                    lower=(
+                        fixed_point_decimal(spec.lower_limit, "lower_limit")
+                        if spec.lower_limit is not None
+                        else None
+                    ),
+                    upper=(
+                        fixed_point_decimal(spec.upper_limit, "upper_limit")
+                        if spec.upper_limit is not None
+                        else None
+                    ),
+                )
 
             entity.state.ActivationState = pm_types.AlertActivation.ON
             entity.state.Presence = False
             if spec.has_limits:
-                entity.state.Limits = pm_types.Range(lower=spec.lower_limit, upper=spec.upper_limit)
+                entity.state.Limits = pm_types.Range(
+                    lower=(
+                        fixed_point_decimal(spec.lower_limit, "lower_limit")
+                        if spec.lower_limit is not None
+                        else None
+                    ),
+                    upper=(
+                        fixed_point_decimal(spec.upper_limit, "upper_limit")
+                        if spec.upper_limit is not None
+                        else None
+                    ),
+                )
 
             signal_entities = []
             for signal_spec in spec.signals:
@@ -1170,10 +1206,7 @@ class ProviderService:
 
     def _apply_samples(self, handle: str, samples: Sequence[Decimal]):  # noqa: ANN202 - an Entity
         """Put a block on a state without committing it. Caller opens the transaction."""
-        for sample in samples:
-            if isinstance(sample, float):
-                msg = "samples must be Decimal, never float"
-                raise TypeError(msg)
+        prepared = [fixed_point_decimal(validate_decimal(sample, "sample"), "sample") for sample in samples]
         entity = self.mdib.entities.by_handle(handle)
         if entity is None:
             msg = f"no metric with handle {handle!r}"
@@ -1181,7 +1214,7 @@ class ProviderService:
         # mk_metric_value raises if there already is one, so only ever call it once.
         if entity.state.MetricValue is None:
             entity.state.mk_metric_value()
-        entity.state.MetricValue.Samples = list(samples)
+        entity.state.MetricValue.Samples = prepared
         entity.state.MetricValue.DeterminationTime = time.time()
         return entity
 
@@ -1518,15 +1551,15 @@ class ProviderService:
         descriptor.MetricAvailability = pm_types.MetricAvailability.INTERMITTENT
 
         if spec.kind is MetricKind.NUMBER:
-            descriptor.Resolution = spec.resolution
+            descriptor.Resolution = fixed_point_decimal(spec.resolution, "resolution")
             if spec.has_range:
                 # What the metric itself can produce. Distinct from the AllowedRange we put
                 # on the set operation, which is what a remote caller may ask for.
                 descriptor.TechnicalRange = [
                     pm_types.Range(
-                        lower=spec.minimum,
-                        upper=spec.maximum,
-                        step_width=spec.resolution,
+                        lower=(fixed_point_decimal(spec.minimum, "minimum") if spec.minimum is not None else None),
+                        upper=(fixed_point_decimal(spec.maximum, "maximum") if spec.maximum is not None else None),
+                        step_width=fixed_point_decimal(spec.resolution, "resolution"),
                     ),
                 ]
         if spec.kind is MetricKind.CHOICE:
@@ -1535,10 +1568,14 @@ class ProviderService:
         if spec.is_sample_array:
             # Resolution is mandatory on both sample-array descriptors as well, and it is
             # the one serialisation complains about first when it is missing.
-            descriptor.Resolution = spec.resolution
+            descriptor.Resolution = fixed_point_decimal(spec.resolution, "resolution")
             if spec.has_range:
                 descriptor.TechnicalRange = [
-                    pm_types.Range(lower=spec.minimum, upper=spec.maximum, step_width=spec.resolution),
+                    pm_types.Range(
+                        lower=(fixed_point_decimal(spec.minimum, "minimum") if spec.minimum is not None else None),
+                        upper=(fixed_point_decimal(spec.maximum, "maximum") if spec.maximum is not None else None),
+                        step_width=fixed_point_decimal(spec.resolution, "resolution"),
+                    ),
                 ]
 
         if spec.kind is MetricKind.WAVEFORM:
@@ -1550,8 +1587,8 @@ class ProviderService:
             # sample measures. Mandatory, and the field this kind fails on first.
             descriptor.DomainUnit = _coded_value(spec.effective_domain_unit(), spec.domain_unit_label)
             descriptor.DistributionRange = pm_types.Range(
-                lower=spec.domain_minimum,
-                upper=spec.domain_maximum,
+                lower=fixed_point_decimal(spec.domain_minimum, "domain_minimum"),
+                upper=fixed_point_decimal(spec.domain_maximum, "domain_maximum"),
                 # Not Resolution. Resolution is how finely a *sample value* is measured;
                 # StepWidth is how far apart two samples sit along the domain, so it is
                 # fixed by how many we send. Passing Resolution here made the descriptor
@@ -1590,7 +1627,11 @@ class ProviderService:
         if entity is None:
             return
         entity.state.AllowedRange = [
-            pm_types.Range(lower=spec.minimum, upper=spec.maximum, step_width=spec.resolution),
+            pm_types.Range(
+                lower=(fixed_point_decimal(spec.minimum, "minimum") if spec.minimum is not None else None),
+                upper=(fixed_point_decimal(spec.maximum, "maximum") if spec.maximum is not None else None),
+                step_width=(fixed_point_decimal(spec.resolution, "resolution") if spec.resolution is not None else None),
+            ),
         ]
         with self.mdib.operational_state_transaction() as mgr:
             mgr.write_entity(entity)

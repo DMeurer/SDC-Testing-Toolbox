@@ -31,7 +31,9 @@ from .model import (
     RemoteAction,
     RemoteAlert,
     RemoteMetric,
+    fixed_point_decimal,
     patient_info_from_biceps,
+    validate_decimal,
 )
 
 if TYPE_CHECKING:
@@ -421,7 +423,18 @@ class RemoteDevice:
         client = self._consumer.set_service_client
 
         if metric.kind is MetricKind.NUMBER:
-            future = client.set_numeric_value(operation_handle, value)
+            try:
+                numeric_value = value if isinstance(value, Decimal) else Decimal(str(value))
+            except (InvalidOperation, ValueError) as exc:
+                msg = f"{value!r} is not a number for {metric_handle!r}"
+                raise ValueError(msg) from exc
+            future = client.set_numeric_value(
+                operation_handle,
+                fixed_point_decimal(
+                    validate_decimal(numeric_value, f"value for {metric_handle!r}"),
+                    f"value for {metric_handle!r}",
+                ),
+            )
         else:
             future = client.set_string(operation_handle, str(value))
 

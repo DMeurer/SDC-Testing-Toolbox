@@ -32,9 +32,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
-from sdc11073.xml_types import msg_types  # noqa: E402
+from sdc11073.xml_types import msg_types, pm_types  # noqa: E402
 from sdc11073.xml_types import pm_qnames as pm  # noqa: E402
-from sdc11073.xml_types import pm_types  # noqa: E402
 
 from sdctoolbox import config, constants  # noqa: E402
 from sdctoolbox.consumer_service import RemoteDevice  # noqa: E402
@@ -484,8 +483,188 @@ def check_metric_value_validation(report: Report, service: ProviderService) -> N
         service.remove_metric(handle)
 
 
+def check_decimal_boundaries(report: Report, service: ProviderService) -> None:
+    print("\n6. Decimal wire boundaries")
+
+    non_finite = (Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity"))
+    rejected_resolutions = []
+    for value in (*non_finite, Decimal("0"), Decimal("-0.1")):
+        try:
+            MetricSpec(label="Resolution boundary", kind=MetricKind.NUMBER, resolution=value)
+        except ValueError:
+            rejected_resolutions.append(value)
+    report.check(
+        rejected_resolutions == [*non_finite, Decimal("0"), Decimal("-0.1")],
+        "resolution rejects non-finite, zero, and negative values",
+        repr(rejected_resolutions),
+    )
+
+    invalid_limits = [
+        lambda value: MetricSpec(label="Minimum boundary", kind=MetricKind.NUMBER, minimum=value),
+        lambda value: MetricSpec(label="Maximum boundary", kind=MetricKind.NUMBER, maximum=value),
+        lambda value: MetricSpec(
+            label="Domain boundary",
+            kind=MetricKind.DISTRIBUTION,
+            domain_minimum=Decimal("0"),
+            domain_maximum=value,
+        ),
+        lambda value: AlertSpec(label="Alert boundary", source_handle="m.none", upper_limit=value),
+    ]
+    limit_rejections = 0
+    for build in invalid_limits:
+        for value in non_finite:
+            try:
+                build(value)
+            except ValueError:
+                limit_rejections += 1
+    report.check(
+        limit_rejections == len(invalid_limits) * len(non_finite),
+        "metric, domain, and alert limits reject NaN and both infinities",
+        f"{limit_rejections} rejections",
+    )
+
+    for period in (Decimal("0"), Decimal("-1"), Decimal("1e-324"), *non_finite):
+        try:
+            MetricSpec(label="Period boundary", kind=MetricKind.WAVEFORM, sample_period=period)
+        except ValueError:
+            continue
+        report.check(False, f"sample period {period} is rejected", "it was accepted")  # noqa: FBT003
+        break
+    else:
+        report.check(True, "sample periods reject non-positive, non-finite, and float-underflow values")  # noqa: FBT003
+    tiny_period = MetricSpec(
+        label="Tiny period",
+        kind=MetricKind.WAVEFORM,
+        sample_period=Decimal("5e-324"),
+    )
+    report.check(
+        float(tiny_period.sample_period) > 0,
+        "the smallest positive float-representable sample period remains valid",
+        str(tiny_period.sample_period),
+    )
+
+    before_handles = set(service.list_metrics())
+    for upper in (Decimal("0"), Decimal("-1")):
+        try:
+            service.add_metric(
+                MetricSpec(
+                    label=f"Zero step {upper}",
+                    kind=MetricKind.DISTRIBUTION,
+                    domain_minimum=Decimal("0"),
+                    domain_maximum=upper,
+                ),
+            )
+        except ValueError:
+            continue
+        report.check(False, "a non-increasing distribution step is rejected", str(upper))  # noqa: FBT003
+        break
+    else:
+        report.check(
+            set(service.list_metrics()) == before_handles,
+            "zero and negative distribution steps are rejected before MDIB mutation",
+        )
+    try:
+        service.add_metric(
+            MetricSpec(
+                label="Wire zero step",
+                kind=MetricKind.DISTRIBUTION,
+                section="Uncreated decimal section",
+                domain_minimum=Decimal("0"),
+                domain_maximum=Decimal("1e-20"),
+            ),
+        )
+    except ValueError as exc:
+        wire_zero_rejected = "zero StepWidth on the wire" in str(exc)
+    else:
+        wire_zero_rejected = False
+    report.check(
+        wire_zero_rejected
+        and service.mdib.entities.by_handle("m.wire_zero_step") is None
+        and service.mdib.entities.by_handle("ch.uncreated_decimal_section") is None,
+        "a step truncated to zero on the wire is rejected before section or metric mutation",
+    )
+
+    tiny_domain = service.add_metric(
+        MetricSpec(
+            label="Tiny domain",
+            kind=MetricKind.DISTRIBUTION,
+            domain_minimum=Decimal("0"),
+            domain_maximum=Decimal("1e-10"),
+        ),
+    )
+    tiny_range = service.mdib.entities.by_handle(tiny_domain).descriptor.DistributionRange
+    mdib_xml = etree.tostring(service.mdib.reconstruct_mdib_with_context_states()[0], encoding="unicode")
+    report.check(
+        tiny_range.StepWidth != 0
+        and tiny_range.Lower == Decimal("0")
+        and tiny_range.Upper == Decimal("1e-10")
+        and 'StepWidth="0.00000000000322581"' in mdib_xml,
+        "a tiny valid domain keeps a non-zero relative-precision step on the wire",
+        str(tiny_range.StepWidth),
+    )
+
+    number = service.add_metric(
+        MetricSpec(label="Finite write", kind=MetricKind.NUMBER, initial_value=Decimal("7")),
+    )
+    for value in (*non_finite, "NaN", "+Infinity", "-Infinity"):
+        try:
+            service.set_value(number, value)
+        except ValueError:
+            continue
+        report.check(False, f"direct write {value} is rejected", "it was accepted")  # noqa: FBT003
+        break
+    else:
+        report.check(
+            service.get_value(number) == Decimal("7"),
+            "direct Decimal and parsed non-finite writes are rejected before metric mutation",
+        )
+
+    valid_samples = [Decimal(index) for index in range(DISTRIBUTION_BINS)]
+    service.set_samples(tiny_domain, valid_samples)
+    sample_rejections = 0
+    for value in non_finite:
+        invalid_samples = list(valid_samples)
+        invalid_samples[0] = value
+        try:
+            service.set_samples(tiny_domain, invalid_samples)
+        except ValueError:
+            sample_rejections += 1
+    report.check(
+        sample_rejections == len(non_finite) and service.get_samples(tiny_domain) == valid_samples,
+        "non-finite samples are rejected before sample state mutation",
+        f"{sample_rejections} rejections",
+    )
+
+    effect_rejections = 0
+    for value in non_finite:
+        try:
+            ActionSpec(label="Non-finite effect", target_handle=constants.MDS_HANDLE, effects={number: value})
+        except ValueError:
+            effect_rejections += 1
+    action = service.add_action(
+        ActionSpec(label="Parsed non-finite effect", target_handle=constants.MDS_HANDLE, effects={number: "NaN"}),
+    )
+    try:
+        service.run_action(action)
+    except ValueError:
+        parsed_effect_rejected = True
+    else:
+        parsed_effect_rejected = False
+    report.check(
+        effect_rejections == len(non_finite)
+        and parsed_effect_rejected
+        and service.get_value(number) == Decimal("7"),
+        "direct and parsed non-finite action effects are rejected before metric mutation",
+        f"{effect_rejections} direct rejections",
+    )
+
+    service.remove_action(action)
+    service.remove_metric(number)
+    service.remove_metric(tiny_domain)
+
+
 def check_concurrent_alert_evaluation(report: Report, service: ProviderService) -> None:
-    print("\n6. Concurrent limit-alarm evaluation")
+    print("\n7. Concurrent limit-alarm evaluation")
 
     first_source = service.add_metric(
         MetricSpec(label="First concurrent source", kind=MetricKind.NUMBER, initial_value=Decimal("0")),
@@ -554,7 +733,7 @@ def check_concurrent_alert_evaluation(report: Report, service: ProviderService) 
 
 
 def check_signals(report: Report, service: ProviderService) -> None:
-    print("\n7. Acknowledging and delegating a signal")
+    print("\n8. Acknowledging and delegating a signal")
 
     service.add_metric(
         MetricSpec(label="Pressure", kind=MetricKind.NUMBER, initial_value=Decimal("5")),
@@ -641,7 +820,7 @@ def check_signals(report: Report, service: ProviderService) -> None:
 
 
 def check_latching_signals(report: Report, service: ProviderService) -> None:
-    print("\n8. Configurable signal manifestations and latching")
+    print("\n9. Configurable signal manifestations and latching")
     service.add_metric(MetricSpec(label="Latch source", kind=MetricKind.NUMBER, initial_value=Decimal("0")))
     alarm = service.add_alert(
         AlertSpec(
@@ -676,7 +855,7 @@ def check_latching_signals(report: Report, service: ProviderService) -> None:
 
 
 def check_contexts(report: Report, service: ProviderService) -> None:
-    print("\n9. Patient and location contexts")
+    print("\n10. Patient and location contexts")
 
     default = service.get_location()
     report.check(
@@ -931,7 +1110,7 @@ def check_contexts(report: Report, service: ProviderService) -> None:
 
 
 def check_presets(report: Report) -> None:
-    print("\n10. Presets")
+    print("\n11. Presets")
 
     presets = config.list_presets()
     report.check(bool(presets), "the shipped presets are found", f"{len(presets)} found")
@@ -963,7 +1142,7 @@ def check_presets(report: Report) -> None:
 
 
 def check_foreign_consumer_operations(report: Report) -> None:
-    print("\n11. Foreign consumer operation selection")
+    print("\n12. Foreign consumer operation selection")
 
     finished_info = SimpleNamespace(
         InvocationState=msg_types.InvocationState.FINISHED,
@@ -1126,6 +1305,18 @@ def check_foreign_consumer_operations(report: Report) -> None:
         str(client.calls),
     )
 
+    calls_before = list(client.calls)
+    remote_write_rejections = 0
+    for value in (Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")):
+        try:
+            remote.set_value(absent_metric, value)
+        except ValueError:
+            remote_write_rejections += 1
+    report.check(
+        remote_write_rejections == 3 and client.calls == calls_before,  # noqa: PLR2004
+        "non-finite outbound numeric writes are rejected before transport",
+    )
+
 
 def main() -> int:
     basic_logging_setup(level=logging.ERROR)
@@ -1143,6 +1334,7 @@ def main() -> int:
         check_alarm_rollback(report, service)
         check_metric_removal_dependencies(report, service)
         check_metric_value_validation(report, service)
+        check_decimal_boundaries(report, service)
         check_concurrent_alert_evaluation(report, service)
         check_signals(report, service)
         check_latching_signals(report, service)

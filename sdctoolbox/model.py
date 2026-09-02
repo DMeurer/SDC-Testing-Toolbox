@@ -8,6 +8,7 @@ takes a sample array as its argument.
 from __future__ import annotations
 
 import enum
+import math
 import re
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -318,7 +319,7 @@ class Coding:
 
 # Bound expansion before fixed-point formatting: Decimal('1E+999999') is legal in Python but
 # is not practical to materialize or send as an xsd:decimal attribute.
-MAX_PATIENT_MEASUREMENT_WIRE_CHARS = 1024
+MAX_DECIMAL_WIRE_CHARS = 1024
 
 
 class _FixedPointDecimal(Decimal):
@@ -348,14 +349,9 @@ def patient_measurement_wire_value(value: Decimal) -> Decimal:
     formatting, reject unbounded expansions, and verify the library will not truncate the
     value before it is allowed into a context state.
     """
-    if not isinstance(value, Decimal):
-        msg = "patient measurement value must be a Decimal, never a float"
-        raise TypeError(msg)
-    if not value.is_finite():
-        msg = "patient measurement value must be finite"
-        raise ValueError(msg)
-    if _fixed_point_length(value) > MAX_PATIENT_MEASUREMENT_WIRE_CHARS:
-        msg = f"patient measurement value exceeds {MAX_PATIENT_MEASUREMENT_WIRE_CHARS} wire characters"
+    validate_decimal(value, "patient measurement value")
+    if _fixed_point_length(value) > MAX_DECIMAL_WIRE_CHARS:
+        msg = f"patient measurement value exceeds {MAX_DECIMAL_WIRE_CHARS} wire characters"
         raise ValueError(msg)
     wire_value = _FixedPointDecimal("0") if value.is_zero() else _FixedPointDecimal(value)
     serialized = DecimalConverter.to_xml(wire_value)
@@ -367,6 +363,44 @@ def patient_measurement_wire_value(value: Decimal) -> Decimal:
         msg = "patient measurement value cannot be serialized without losing precision"
         raise ValueError(msg)
     return wire_value
+
+
+def validate_decimal(
+    value: object,
+    field: str,
+    *,
+    positive: bool = False,
+    float_representable: bool = False,
+) -> Decimal:
+    """Validate a Decimal before it is serialized or used in numeric logic."""
+    if not isinstance(value, Decimal):
+        msg = f"{field} must be a Decimal, never a float"
+        raise TypeError(msg)
+    if not value.is_finite():
+        msg = f"{field} must be finite"
+        raise ValueError(msg)
+    if positive and value <= 0:
+        msg = f"{field} must be positive, not {value}"
+        raise ValueError(msg)
+    if float_representable:
+        try:
+            float_value = float(value)
+        except (OverflowError, ValueError) as exc:
+            msg = f"{field} must be representable as a finite positive float"
+            raise ValueError(msg) from exc
+        if not math.isfinite(float_value) or float_value <= 0:
+            msg = f"{field} must be representable as a finite positive float, not {value}"
+            raise ValueError(msg)
+    return value
+
+
+def fixed_point_decimal(value: Decimal, field: str) -> Decimal:
+    """Return a bounded Decimal whose string form is safe for xsd:decimal."""
+    validate_decimal(value, field)
+    if _fixed_point_length(value) > MAX_DECIMAL_WIRE_CHARS:
+        msg = f"{field} exceeds {MAX_DECIMAL_WIRE_CHARS} wire characters"
+        raise ValueError(msg)
+    return _FixedPointDecimal("0") if value.is_zero() else _FixedPointDecimal(value)
 
 
 # MDC_DIM_DIMLESS, for a metric that measures a bare number.
@@ -476,16 +510,19 @@ class MetricSpec:
         if self.resolution is not None and not isinstance(self.resolution, Decimal):
             msg = "resolution must be a Decimal, never a float"
             raise TypeError(msg)
+        if self.resolution is not None:
+            validate_decimal(self.resolution, "resolution", positive=True)
+            fixed_point_decimal(self.resolution, "resolution")
 
         if self.kind is MetricKind.WAVEFORM:
             if self.sample_period is None:
                 self.sample_period = DEFAULT_SAMPLE_PERIOD
-            if not isinstance(self.sample_period, Decimal):
-                msg = "sample_period must be a Decimal, never a float"
-                raise TypeError(msg)
-            if self.sample_period <= 0:
-                msg = f"sample_period must be positive, not {self.sample_period}"
-                raise ValueError(msg)
+            validate_decimal(
+                self.sample_period,
+                "sample_period",
+                positive=True,
+                float_representable=True,
+            )
             self.shape = _coerce_enum(WaveformShape, self.shape, "shape")
             if not isinstance(self.cycle_samples, int) or self.cycle_samples < 2:  # noqa: PLR2004
                 msg = f"cycle_samples must be an integer of at least 2, not {self.cycle_samples!r}"
@@ -511,6 +548,7 @@ class MetricSpec:
             if not isinstance(limit, Decimal):
                 msg = f"{name} must be a Decimal, never a float"
                 raise TypeError(msg)
+            fixed_point_decimal(limit, name)
             if self.kind is not MetricKind.DISTRIBUTION:
                 msg = f"{name} is only meaningful for {MetricKind.DISTRIBUTION.value} metrics"
                 raise ValueError(msg)
@@ -532,6 +570,7 @@ class MetricSpec:
             if not isinstance(limit, Decimal):
                 msg = f"{name} must be a Decimal, never a float"
                 raise TypeError(msg)
+            fixed_point_decimal(limit, name)
             # A sample array's TechnicalRange describes its samples, so limits mean the
             # same thing there as on a number. Only text and choice have no use for them.
             if self.kind is MetricKind.TEXT or self.kind is MetricKind.CHOICE:
@@ -612,13 +651,14 @@ def coerce_metric_value(spec: MetricSpec, value: object, handle: str | None = No
         except (InvalidOperation, ValueError) as exc:
             msg = f"{value!r} is not a number for {target!r}"
             raise ValueError(msg) from exc
+        validate_decimal(normalized, f"value for {target!r}")
         if spec.minimum is not None and normalized < spec.minimum:
             msg = f"{normalized} is below the minimum {spec.minimum} of {target!r}"
             raise ValueError(msg)
         if spec.maximum is not None and normalized > spec.maximum:
             msg = f"{normalized} is above the maximum {spec.maximum} of {target!r}"
             raise ValueError(msg)
-        return normalized
+        return fixed_point_decimal(normalized, f"value for {target!r}")
 
     if spec.kind is MetricKind.TEXT:
         return str(value)
@@ -719,6 +759,8 @@ class AlertSpec:
             if limit is not None and not isinstance(limit, Decimal):
                 msg = f"{name} must be a Decimal, never a float"
                 raise TypeError(msg)
+            if limit is not None:
+                fixed_point_decimal(limit, name)
         if (
             self.lower_limit is not None
             and self.upper_limit is not None
@@ -841,12 +883,7 @@ class PatientMeasurement:
     unit: Coding
 
     def __post_init__(self) -> None:
-        if not isinstance(self.value, Decimal):
-            msg = "patient measurement value must be a Decimal, never a float"
-            raise TypeError(msg)
-        if not self.value.is_finite():
-            msg = "patient measurement value must be finite"
-            raise ValueError(msg)
+        validate_decimal(self.value, "patient measurement value")
         if not isinstance(self.unit, Coding):
             msg = "patient measurement unit must be a Coding"
             raise TypeError(msg)
@@ -1033,6 +1070,8 @@ class ActionSpec:
             if isinstance(value, float):
                 msg = f"action {self.label!r}: effect on {handle} must be a Decimal or str, never a float"
                 raise TypeError(msg)
+            if isinstance(value, Decimal):
+                fixed_point_decimal(value, f"action {self.label!r}: effect on {handle}")
 
     @property
     def slug(self) -> str:

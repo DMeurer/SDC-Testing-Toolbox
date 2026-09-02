@@ -412,6 +412,14 @@ BAD_FILES = [
     ('{"metrics": [{"label": "x", "kind": "nope"}]}', "an unknown kind"),
     ('{"metrics": [{"kind": "number"}]}', "a metric with no label"),
     ('{"metrics": [{"label": "x", "kind": "number", "minimum": "abc"}]}', "a non-numeric limit"),
+    ('{"metrics": [{"label": "x", "kind": "number", "minimum": "NaN"}]}', "a NaN metric limit"),
+    ('{"metrics": [{"label": "x", "kind": "number", "maximum": "Infinity"}]}', "an infinite metric limit"),
+    ('{"metrics": [{"label": "x", "kind": "number", "resolution": "0"}]}', "a zero resolution"),
+    ('{"metrics": [{"label": "x", "kind": "number", "resolution": "-1"}]}', "a negative resolution"),
+    (
+        '{"metrics": [{"label": "wave", "kind": "waveform", "sample_period": "1e-324"}]}',
+        "a float-underflowing sample period",
+    ),
     (
         '{"metrics": [{"label": "x", "kind": "number", "minimum": "10", "maximum": "1"}]}',
         "a minimum above its maximum",
@@ -420,12 +428,24 @@ BAD_FILES = [
         '{"metrics": [{"label": "x", "kind": "distribution", "domain_minimum": "0", "domain_maximum": "0"}]}',
         "a zero-width distribution domain",
     ),
+    (
+        '{"metrics": [{"label": "x", "kind": "distribution", "domain_minimum": "-Infinity"}]}',
+        "an infinite distribution domain",
+    ),
     ('{"metrics": [{"label": "x", "kind": "choice"}]}', "a choice with no values"),
     ('{"alerts": [{"label": "a", "watches": "m.nothing"}]}', "an alarm watching nothing"),
     ('{"alerts": [{"label": "a"}]}', "an alarm with no source"),
     (
         '{"metrics": [{"handle": "m.x", "label": "x", "kind": "number"}], "alerts": [{"label": "a", "watches": "m.x", "signals": []}]}',
         "an alarm with no signals",
+    ),
+    (
+        '{"metrics": [{"handle": "m.x", "label": "x", "kind": "number"}], "alerts": [{"label": "a", "watches": "m.x", "upper_limit": "NaN"}]}',
+        "a NaN alert limit",
+    ),
+    (
+        '{"metrics": [{"handle": "m.x", "label": "x", "kind": "number"}], "actions": [{"label": "a", "target": "mds0", "effects": {"m.x": "-Infinity"}}]}',
+        "an infinite numeric action effect",
     ),
     (
         '{"metrics": [{"handle": "m.x", "label": "x", "kind": "number"}], "alerts": [{"label": "a", "watches": "m.x", "signals": [{"manifestation": "Vis", "latching": "false"}]}]}',

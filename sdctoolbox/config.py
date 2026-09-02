@@ -45,6 +45,7 @@ from .model import (
     coerce_metric_value,
     patient_measurement_wire_value,
     slugify,
+    validate_decimal,
 )
 
 if TYPE_CHECKING:
@@ -213,9 +214,10 @@ def _decimal_or_none(value: Any, field: str) -> Decimal | None:
     except (InvalidOperation, ValueError) as exc:
         msg = f"{field}: {value!r} is not a number"
         raise ConfigError(msg) from exc
-    if not result.is_finite():
-        msg = f"{field}: {value!r} is not a finite number"
-        raise ConfigError(msg)
+    try:
+        validate_decimal(result, field)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(str(exc)) from exc
     return result
 
 
