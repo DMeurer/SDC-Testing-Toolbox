@@ -944,6 +944,7 @@ def check_presets(report: Report) -> None:
         folder = Path(raw)
         (folder / "broken.json").write_text("{ not json", encoding="utf-8")
         (folder / "invalid.json").write_text('{"metrics": [{"label": "x"}]}', encoding="utf-8")
+        (folder / "malformed-shape.json").write_text('{"metrics": 1}', encoding="utf-8")
         (folder / "good.json").write_text(
             '{"name": "Good one", "metrics": [{"label": "v", "kind": "number"}]}',
             encoding="utf-8",
@@ -951,7 +952,7 @@ def check_presets(report: Report) -> None:
         found = config.list_presets(folder)
         report.check(
             [preset.name for preset in found] == ["Good one"],
-            "an unreadable preset is skipped rather than breaking the list",
+            "unreadable and malformed presets are skipped rather than breaking the list",
             str([preset.name for preset in found]),
         )
 

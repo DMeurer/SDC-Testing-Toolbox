@@ -469,6 +469,97 @@ BAD_FILES = [
     ("[]", "a top level list"),
 ]
 
+SCHEMA_BAD_FILES = [
+    ({"metric": []}, "top level", "a misspelled top-level key"),
+    (
+        {"metrics": [{"label": "x", "kind": "number", "controlable": True}]},
+        "metrics[x]",
+        "a misspelled controllable key",
+    ),
+    (
+        {"metrics": [{"label": "x", "kind": "number", "minumum": "0"}]},
+        "metrics[x]",
+        "a misspelled minimum key",
+    ),
+    (
+        {
+            "metrics": [{"handle": "m.x", "label": "x", "kind": "number"}],
+            "alerts": [{"label": "a", "watches": "m.x", "prioritty": "Hi"}],
+        },
+        "alerts[a]",
+        "an unknown alert key",
+    ),
+    (
+        {"actions": [{"label": "a", "target": "mds0", "effect": {}}]},
+        "actions[a]",
+        "an unknown action key",
+    ),
+    ({"metrics": {}}, "top level.metrics", "an object metrics collection"),
+    ({"alerts": "none"}, "top level.alerts", "a string alerts collection"),
+    ({"actions": 1}, "top level.actions", "a numeric actions collection"),
+    (
+        {"metrics": [{"label": "x", "kind": "choice", "allowed_values": "A"}]},
+        "metrics[x].allowed_values",
+        "a scalar allowed-values collection",
+    ),
+    (
+        {
+            "metrics": [{"handle": "m.x", "label": "x", "kind": "number"}],
+            "alerts": [{"label": "a", "watches": "m.x", "signals": {}}],
+        },
+        "alerts[a].signals",
+        "an object signal collection",
+    ),
+    (
+        {"actions": [{"label": "a", "target": "mds0", "effects": []}]},
+        "actions[a].effects",
+        "an array action-effects object",
+    ),
+    (
+        {"metrics": [{"label": "x", "kind": "number", "controllable": "false"}]},
+        "metrics[x].controllable",
+        "a string metric boolean",
+    ),
+    (
+        {
+            "metrics": [{"handle": "m.x", "label": "x", "kind": "number"}],
+            "alerts": [{"label": "a", "watches": "m.x", "delegable": "false"}],
+        },
+        "alerts[a].delegable",
+        "a string alert boolean",
+    ),
+    (
+        {"metrics": [{"label": "wave", "kind": "waveform", "cycle_samples": 2.5}]},
+        "metrics[wave].cycle_samples",
+        "a fractional waveform cycle count",
+    ),
+    (
+        {"metrics": [{"label": 7, "kind": "number"}]},
+        "metrics.label",
+        "a non-string metric label",
+    ),
+    (
+        {"metrics": [{"label": "x", "kind": "number", "unit": {"label": "u", "cod": "x"}}]},
+        "metrics[x].unit",
+        "an unknown coding key",
+    ),
+    (
+        {"contexts": {"patient": {"given_name": 7}}},
+        "contexts.patient.given_name",
+        "a non-string patient field",
+    ),
+    (
+        {"contexts": {"patient": {"given_name": "x", "surname": "y"}}},
+        "contexts.patient",
+        "an unknown patient key",
+    ),
+    (
+        {"contexts": {"location": "ward"}},
+        "contexts.location",
+        "a scalar location object",
+    ),
+]
+
 
 def main() -> int:
     basic_logging_setup(level=logging.WARNING)
@@ -640,6 +731,18 @@ def main() -> int:
             config.load_file(bad)
         except config.ConfigError as exc:
             report.check(bool(str(exc)), f"refuses {description}", str(exc)[:70])
+        else:
+            report.check(False, f"refuses {description}", "it was accepted")  # noqa: FBT003
+
+    for payload, field, description in SCHEMA_BAD_FILES:
+        bad = workdir / "bad-shape.json"
+        bad.write_text(json.dumps(payload), encoding="utf-8")
+        try:
+            config.load_file(bad)
+        except config.ConfigError as exc:
+            report.check(field in str(exc), f"refuses {description} with field context", str(exc)[:90])
+        except Exception as exc:  # noqa: BLE001 - malformed files must only expose ConfigError
+            report.check(False, f"refuses {description} with ConfigError", type(exc).__name__)  # noqa: FBT003
         else:
             report.check(False, f"refuses {description}", "it was accepted")  # noqa: FBT003
 

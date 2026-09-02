@@ -56,9 +56,76 @@ CONFIG_VERSION = 3
 
 FILE_SUFFIX = ".sdcprofile.json"
 
+_TOP_LEVEL_KEYS = {"version", "name", "description", "device", "metrics", "alerts", "actions", "contexts"}
+_METRIC_KEYS = {
+    "handle",
+    "label",
+    "kind",
+    "section",
+    "unit",
+    "type",
+    "allowed_values",
+    "resolution",
+    "minimum",
+    "maximum",
+    "controllable",
+    "initial_value",
+    "sample_period",
+    "shape",
+    "cycle_samples",
+    "domain_unit",
+    "domain_minimum",
+    "domain_maximum",
+    "distribution_shape",
+}
+_ALERT_KEYS = {
+    "handle",
+    "label",
+    "watches",
+    "kind",
+    "priority",
+    "signals",
+    "lower_limit",
+    "upper_limit",
+    "delegable",
+}
+_ACTION_KEYS = {"handle", "label", "target", "type", "note", "effects"}
+
 
 class ConfigError(Exception):
     """A config file could not be read, or does not describe a usable device."""
+
+
+_JSON_TYPE_NAMES = {
+    dict: "object",
+    list: "array",
+    str: "string",
+    bool: "boolean",
+    int: "integer",
+}
+
+
+def _expect_type(value: Any, expected: type, field: str) -> Any:
+    """Require an exact JSON type, without treating booleans as integers."""
+    if type(value) is not expected:
+        msg = f"{field}: expected a JSON {_JSON_TYPE_NAMES[expected]}, found {type(value).__name__}"
+        raise ConfigError(msg)
+    return value
+
+
+def _check_keys(data: dict[str, Any], allowed: set[str], field: str) -> None:
+    """Reject unsupported keys in one persisted object."""
+    unknown = sorted(set(data) - allowed)
+    if unknown:
+        msg = f"{field}: does not understand {', '.join(unknown)}. It takes: {', '.join(sorted(allowed))}"
+        raise ConfigError(msg)
+
+
+def _check_types(data: dict[str, Any], schema: dict[str, type], field: str) -> None:
+    """Validate exact types for fields present in one persisted object."""
+    for name, expected in schema.items():
+        if name in data:
+            _expect_type(data[name], expected, f"{field}.{name}")
 
 
 @dataclass(frozen=True)
@@ -117,7 +184,7 @@ def list_presets(directory: str | Path | None = None) -> list[Preset]:
         try:
             data = json.loads(path.read_text(encoding="utf-8"), parse_float=Decimal)
             device = parse(data)
-        except (OSError, json.JSONDecodeError, ConfigError):
+        except (OSError, UnicodeError, ValueError, RecursionError, ConfigError):
             continue
         found.append(
             Preset(
@@ -135,19 +202,30 @@ def list_presets(directory: str | Path | None = None) -> list[Preset]:
 def _decimal_or_none(value: Any, field: str) -> Decimal | None:
     if value is None:
         return None
+    if isinstance(value, float):
+        msg = f"{field}: use a decimal string or Decimal, never float"
+        raise ConfigError(msg)
+    if type(value) not in (str, int, Decimal):
+        msg = f"{field}: expected a JSON number or decimal string, found {type(value).__name__}"
+        raise ConfigError(msg)
     try:
-        return Decimal(str(value))
+        result = Decimal(str(value))
     except (InvalidOperation, ValueError) as exc:
         msg = f"{field}: {value!r} is not a number"
         raise ConfigError(msg) from exc
+    if not result.is_finite():
+        msg = f"{field}: {value!r} is not a finite number"
+        raise ConfigError(msg)
+    return result
 
 
 def _enum_or_default(enum_cls: Any, value: Any, default: Any, field: str) -> Any:
     if value is None:
         return default
+    _expect_type(value, str, field)
     try:
         return enum_cls(value)
-    except ValueError as exc:
+    except (ValueError, RecursionError) as exc:
         allowed = ", ".join(member.value for member in enum_cls)
         msg = f"{field}: {value!r} is not one of {allowed}"
         raise ConfigError(msg) from exc
@@ -181,16 +259,18 @@ def _coding_from_json(raw: Any, field: str) -> tuple[Coding | None, str]:
     if not isinstance(raw, dict):
         msg = f"{field}: expected a string or an object, found {type(raw).__name__}"
         raise ConfigError(msg)
-    label = str(raw.get("label") or "")
+    _check_keys(raw, {"code", "system", "label"}, field)
+    _check_types(raw, {"code": str, "system": str, "label": str}, field)
+    label = raw.get("label") or ""
     if "code" not in raw:
         return None, label
     try:
         return Coding(
-            code=str(raw["code"]),
-            system=str(raw.get("system") or "private"),
+            code=raw["code"],
+            system=raw.get("system") or "private",
             label=label,
         ), label
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         msg = f"{field}: {exc}"
         raise ConfigError(msg) from exc
 
@@ -278,6 +358,13 @@ def action_from_dict(entry: dict[str, Any], metrics: dict[str, MetricSpec]) -> A
         msg = f"actions: expected an object, found {type(entry).__name__}"
         raise ConfigError(msg)
     label = entry.get("label")
+    field = f"actions[{label}]" if type(label) is str and label else "actions"
+    _check_keys(entry, _ACTION_KEYS, field)
+    _check_types(
+        entry,
+        {"handle": str, "label": str, "target": str, "note": str, "effects": dict},
+        field,
+    )
     if not label:
         msg = "actions: an entry has no label"
         raise ConfigError(msg)
@@ -286,18 +373,16 @@ def action_from_dict(entry: dict[str, Any], metrics: dict[str, MetricSpec]) -> A
         msg = f"actions[{label}]: no target to act on"
         raise ConfigError(msg)
 
-    raw_effects = entry.get("effects") or {}
-    if not isinstance(raw_effects, dict):
-        msg = f"actions[{label}].effects: expected an object of handle to value"
-        raise ConfigError(msg)
+    raw_effects = entry.get("effects", {})
     effects: dict[str, Any] = {}
     for handle, value in raw_effects.items():
-        effect_handle = str(handle)
+        effect_handle = _expect_type(handle, str, f"actions[{label}].effects key")
+        _expect_type(value, str, f"actions[{label}].effects[{effect_handle}]")
         metric = metrics.get(effect_handle)
         if metric is None:
             # Append-mode imports may refer to a metric already in the provider. Preflight
             # resolves those once it has the complete prospective metric set.
-            effects[effect_handle] = str(value)
+            effects[effect_handle] = value
             continue
         try:
             effects[effect_handle] = coerce_metric_value(metric, value, effect_handle)
@@ -308,12 +393,12 @@ def action_from_dict(entry: dict[str, Any], metrics: dict[str, MetricSpec]) -> A
     type_coding, _ = _coding_from_json(entry.get("type"), f"actions[{label}].type")
     try:
         return ActionSpec(
-            label=str(label),
-            target_handle=str(target),
+            label=label,
+            target_handle=target,
             effects=effects,
             handle=entry.get("handle") or None,
             type_coding=type_coding,
-            note=str(entry.get("note") or ""),
+            note=entry.get("note") or "",
         )
     except (ValueError, TypeError) as exc:
         msg = f"actions[{label}]: {exc}"
@@ -430,6 +515,23 @@ def metric_from_dict(entry: dict[str, Any]) -> MetricSpec:
         raise ConfigError(msg)
 
     label = entry.get("label")
+    field = f"metrics[{label}]" if type(label) is str and label else "metrics"
+    _check_keys(entry, _METRIC_KEYS, field)
+    _check_types(
+        entry,
+        {
+            "handle": str,
+            "label": str,
+            "kind": str,
+            "section": str,
+            "allowed_values": list,
+            "controllable": bool,
+            "shape": str,
+            "cycle_samples": int,
+            "distribution_shape": str,
+        },
+        field,
+    )
     if not label:
         msg = "metrics: an entry has no label"
         raise ConfigError(msg)
@@ -452,7 +554,11 @@ def metric_from_dict(entry: dict[str, Any]) -> MetricSpec:
     if initial is not None and kind is MetricKind.NUMBER:
         initial = _decimal_or_none(initial, f"metrics[{label}].initial_value")
     elif initial is not None:
-        initial = str(initial)
+        initial = _expect_type(initial, str, f"metrics[{label}].initial_value")
+
+    allowed_values = entry.get("allowed_values", [])
+    for index, value in enumerate(allowed_values):
+        _expect_type(value, str, f"metrics[{label}].allowed_values[{index}]")
 
     unit_coding, unit_label = _coding_from_json(entry.get("unit"), f"metrics[{label}].unit")
     type_coding, _ = _coding_from_json(entry.get("type"), f"metrics[{label}].type")
@@ -463,17 +569,17 @@ def metric_from_dict(entry: dict[str, Any]) -> MetricSpec:
 
     try:
         return MetricSpec(
-            label=str(label),
+            label=label,
             kind=kind,
             unit_label=unit_label,
             unit_coding=unit_coding,
             type_coding=type_coding,
-            section=str(entry.get("section") or ""),
-            allowed_values=tuple(str(v) for v in entry.get("allowed_values") or ()),
+            section=entry.get("section") or "",
+            allowed_values=tuple(allowed_values),
             resolution=_decimal_or_none(entry.get("resolution"), f"metrics[{label}].resolution"),
             minimum=_decimal_or_none(entry.get("minimum"), f"metrics[{label}].minimum"),
             maximum=_decimal_or_none(entry.get("maximum"), f"metrics[{label}].maximum"),
-            controllable=bool(entry.get("controllable", False)),
+            controllable=entry.get("controllable", False),
             handle=entry.get("handle") or None,
             initial_value=initial,
             sample_period=_decimal_or_none(entry.get("sample_period"), f"metrics[{label}].sample_period"),
@@ -483,7 +589,7 @@ def metric_from_dict(entry: dict[str, Any]) -> MetricSpec:
                 WaveformShape.SINE,
                 f"metrics[{label}].shape",
             ),
-            cycle_samples=int(entry.get("cycle_samples") or 40),
+            cycle_samples=entry.get("cycle_samples", 40),
             distribution_shape=_enum_or_default(
                 DistributionShape,
                 entry.get("distribution_shape"),
@@ -504,17 +610,12 @@ def _alert_signal_from_dict(raw: Any, field: str) -> AlertSignalSpec:
     if not isinstance(raw, dict):
         msg = f"{field}: expected an object"
         raise ConfigError(msg)
-    unknown = sorted(set(raw) - {"manifestation", "latching"})
-    if unknown:
-        msg = f"{field}: does not understand {', '.join(unknown)}. It takes: latching, manifestation"
-        raise ConfigError(msg)
+    _check_keys(raw, {"manifestation", "latching"}, field)
+    _check_types(raw, {"manifestation": str, "latching": bool}, field)
     if "manifestation" not in raw:
         msg = f"{field}: needs a manifestation"
         raise ConfigError(msg)
     latching = raw.get("latching", False)
-    if not isinstance(latching, bool):
-        msg = f"{field}.latching: expected a boolean"
-        raise ConfigError(msg)
     try:
         return AlertSignalSpec(
             manifestation=_enum_or_default(AlertManifestation, raw["manifestation"], None, f"{field}.manifestation"),
@@ -532,6 +633,21 @@ def alert_from_dict(entry: dict[str, Any]) -> AlertSpec:
         raise ConfigError(msg)
 
     label = entry.get("label")
+    field = f"alerts[{label}]" if type(label) is str and label else "alerts"
+    _check_keys(entry, _ALERT_KEYS, field)
+    _check_types(
+        entry,
+        {
+            "handle": str,
+            "label": str,
+            "watches": str,
+            "kind": str,
+            "priority": str,
+            "signals": list,
+            "delegable": bool,
+        },
+        field,
+    )
     if not label:
         msg = "alerts: an entry has no label"
         raise ConfigError(msg)
@@ -542,9 +658,6 @@ def alert_from_dict(entry: dict[str, Any]) -> AlertSpec:
     signals = None
     if "signals" in entry:
         raw_signals = entry["signals"]
-        if not isinstance(raw_signals, list):
-            msg = f"alerts[{label}].signals: expected a list"
-            raise ConfigError(msg)
         signals = tuple(
             _alert_signal_from_dict(raw, f"alerts[{label}].signals[{index}]")
             for index, raw in enumerate(raw_signals)
@@ -552,8 +665,8 @@ def alert_from_dict(entry: dict[str, Any]) -> AlertSpec:
 
     try:
         return AlertSpec(
-            label=str(label),
-            source_handle=str(source),
+            label=label,
+            source_handle=source,
             kind=_enum_or_default(AlertKind, entry.get("kind"), AlertKind.TECHNICAL, f"alerts[{label}].kind"),
             priority=_enum_or_default(
                 AlertPriority,
@@ -564,7 +677,7 @@ def alert_from_dict(entry: dict[str, Any]) -> AlertSpec:
             lower_limit=_decimal_or_none(entry.get("lower_limit"), f"alerts[{label}].lower_limit"),
             upper_limit=_decimal_or_none(entry.get("upper_limit"), f"alerts[{label}].upper_limit"),
             handle=entry.get("handle") or None,
-            delegable=bool(entry.get("delegable", False)),
+            delegable=entry.get("delegable", False),
             **({"signals": signals} if signals is not None else {}),
         )
     except (ValueError, TypeError) as exc:
@@ -580,12 +693,10 @@ def _device_from_dict(data: Any) -> tuple[DeviceInfo | None, str]:
         msg = f"device: expected an object, found {type(data).__name__}"
         raise ConfigError(msg)
     known = {f.name for f in fields(DeviceInfo)} | {"instance_name"}
-    unknown = sorted(set(data) - known)
-    if unknown:
-        msg = f"device: does not understand {', '.join(unknown)}. It takes: {', '.join(sorted(known))}"
-        raise ConfigError(msg)
-    values = {key: str(value) for key, value in data.items() if key != "instance_name"}
-    return DeviceInfo(**values), str(data.get("instance_name") or "")
+    _check_keys(data, known, "device")
+    _check_types(data, {name: str for name in known}, "device")
+    values = {key: value for key, value in data.items() if key != "instance_name"}
+    return DeviceInfo(**values), data.get("instance_name") or ""
 
 
 def _required_coding_from_json(raw: Any, field: str) -> Coding:
@@ -593,29 +704,27 @@ def _required_coding_from_json(raw: Any, field: str) -> Coding:
     if not isinstance(raw, dict):
         msg = f"{field}: expected an object with code and system"
         raise ConfigError(msg)
-    unknown = sorted(set(raw) - {"code", "system", "label"})
-    if unknown:
-        msg = f"{field}: does not understand {', '.join(unknown)}. It takes: code, label, system"
-        raise ConfigError(msg)
+    _check_keys(raw, {"code", "system", "label"}, field)
+    _check_types(raw, {"code": str, "system": str, "label": str}, field)
     if "code" not in raw:
         msg = f"{field}: needs a code"
         raise ConfigError(msg)
     if "system" not in raw:
         msg = f"{field}: needs a coding system"
         raise ConfigError(msg)
-    if raw["code"] is None or not str(raw["code"]).strip():
+    if not raw["code"].strip():
         msg = f"{field}: needs a code"
         raise ConfigError(msg)
-    if raw["system"] is None or not str(raw["system"]).strip():
+    if not raw["system"].strip():
         msg = f"{field}: needs a coding system"
         raise ConfigError(msg)
     try:
         return Coding(
-            code=str(raw["code"]),
-            system=str(raw["system"]),
-            label=str(raw.get("label") or ""),
+            code=raw["code"],
+            system=raw["system"],
+            label=raw.get("label") or "",
         )
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         msg = f"{field}: {exc}"
         raise ConfigError(msg) from exc
 
@@ -625,10 +734,7 @@ def _patient_measurement_from_dict(raw: Any, field: str) -> PatientMeasurement:
     if not isinstance(raw, dict):
         msg = f"{field}: expected an object with value and unit"
         raise ConfigError(msg)
-    unknown = sorted(set(raw) - {"value", "unit"})
-    if unknown:
-        msg = f"{field}: does not understand {', '.join(unknown)}. It takes: unit, value"
-        raise ConfigError(msg)
+    _check_keys(raw, {"value", "unit"}, field)
     if "value" not in raw:
         msg = f"{field}: needs a value"
         raise ConfigError(msg)
@@ -636,9 +742,6 @@ def _patient_measurement_from_dict(raw: Any, field: str) -> PatientMeasurement:
         msg = f"{field}: needs a unit"
         raise ConfigError(msg)
     raw_value = raw["value"]
-    if isinstance(raw_value, float):
-        msg = f"{field}.value: use a decimal string or Decimal, never float"
-        raise ConfigError(msg)
     value = _decimal_or_none(raw_value, f"{field}.value")
     if value is None:
         msg = f"{field}: needs a value"
@@ -663,13 +766,11 @@ def _patient_from_dict(raw: Any) -> PatientInfo | None:
         raise ConfigError(msg)
     simple = {"given_name", "family_name", "sex", "patient_type", "date_of_birth"}
     allowed = simple | {"height", "weight", "race"}
-    unknown = sorted(set(raw) - allowed)
-    if unknown:
-        msg = f"contexts.patient: does not understand {', '.join(unknown)}. It takes: {', '.join(sorted(allowed))}"
-        raise ConfigError(msg)
+    _check_keys(raw, allowed, "contexts.patient")
+    _check_types(raw, {name: str for name in simple}, "contexts.patient")
     try:
         return PatientInfo(
-            **{name: str(raw[name]) for name in simple if name in raw},
+            **{name: raw[name] for name in simple if name in raw},
             height=(
                 _patient_measurement_from_dict(raw["height"], "contexts.patient.height")
                 if "height" in raw
@@ -702,6 +803,8 @@ def _contexts_from_dict(data: Any) -> tuple[LocationInfo | None, PatientInfo | N
     if not isinstance(data, dict):
         msg = f"contexts: expected an object, found {type(data).__name__}"
         raise ConfigError(msg)
+    _check_keys(data, {"location", "patient"}, "contexts")
+    _check_types(data, {"location": dict, "patient": dict}, "contexts")
 
     def block(name: str, cls: Any) -> Any:
         raw = data.get(name)
@@ -711,14 +814,14 @@ def _contexts_from_dict(data: Any) -> tuple[LocationInfo | None, PatientInfo | N
             msg = f"contexts.{name}: expected an object, found {type(raw).__name__}"
             raise ConfigError(msg)
         allowed = {f.name for f in fields(cls)}
-        unknown = sorted(set(raw) - allowed)
-        if unknown:
-            msg = (
-                f"contexts.{name}: does not understand {', '.join(unknown)}. "
-                f"It takes: {', '.join(sorted(allowed))}"
-            )
-            raise ConfigError(msg)
-        return cls(**{key: str(value) for key, value in raw.items()})
+        field = f"contexts.{name}"
+        _check_keys(raw, allowed, field)
+        _check_types(raw, {key: str for key in allowed}, field)
+        try:
+            return cls(**raw)
+        except (TypeError, ValueError) as exc:
+            msg = f"{field}: {exc}"
+            raise ConfigError(msg) from exc
 
     return block("location", LocationInfo), _patient_from_dict(data.get("patient"))
 
@@ -728,20 +831,32 @@ def parse(data: Any) -> DeviceConfig:
     if not isinstance(data, dict):
         msg = f"expected an object at the top level, found {type(data).__name__}"
         raise ConfigError(msg)
+    _check_keys(data, _TOP_LEVEL_KEYS, "top level")
+    _check_types(
+        data,
+        {
+            "version": int,
+            "name": str,
+            "description": str,
+            "device": dict,
+            "metrics": list,
+            "alerts": list,
+            "actions": list,
+            "contexts": dict,
+        },
+        "top level",
+    )
 
     version = data.get("version")
-    if version is not None and (not isinstance(version, int) or isinstance(version, bool)):
-        msg = f"version: expected an integer, found {type(version).__name__}"
-        raise ConfigError(msg)
     if version is not None and version > CONFIG_VERSION:
         msg = f"this file is version {version}, but this build only understands up to {CONFIG_VERSION}"
         raise ConfigError(msg)
 
     device, instance_name = _device_from_dict(data.get("device"))
-    metrics = [metric_from_dict(entry) for entry in data.get("metrics") or []]
-    alerts = [alert_from_dict(entry) for entry in data.get("alerts") or []]
+    metrics = [metric_from_dict(entry) for entry in data.get("metrics", [])]
+    alerts = [alert_from_dict(entry) for entry in data.get("alerts", [])]
     metric_handles = {spec.handle or (METRIC_HANDLE_PREFIX + spec.slug): spec for spec in metrics}
-    actions = [action_from_dict(entry, metric_handles) for entry in data.get("actions") or []]
+    actions = [action_from_dict(entry, metric_handles) for entry in data.get("actions", [])]
     location, patient = _contexts_from_dict(data.get("contexts"))
 
     # Catch a dangling reference here rather than half way through building the device.
@@ -771,12 +886,12 @@ def load_file(path: str | Path) -> DeviceConfig:
     source = Path(path)
     try:
         text = source.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         msg = f"cannot read {source}: {exc}"
         raise ConfigError(msg) from exc
     try:
         data = json.loads(text, parse_float=Decimal)
-    except json.JSONDecodeError as exc:
+    except ValueError as exc:
         msg = f"{source} is not valid JSON: {exc}"
         raise ConfigError(msg) from exc
     return parse(data)
