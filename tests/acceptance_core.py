@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import queue
 import subprocess
 import sys
 import threading
@@ -88,30 +89,72 @@ class Report:
         return 0
 
 
-def wait_for_ready(process: subprocess.Popen, timeout: float) -> bool:
-    """Block until the provider prints READY, echoing its output meanwhile."""
+class ProcessOutput:
+    """Drain, echo and retain a subprocess's combined output."""
+
+    def __init__(self, process: subprocess.Popen[str]) -> None:
+        if process.stdout is None:
+            raise ValueError("process stdout must be piped")
+        self._stream = process.stdout
+        self._pending: queue.Queue[str | None] = queue.Queue()
+        self._lines: list[str] = []
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._pump, name="provider-output-reader")
+        self._thread.start()
+
+    def _pump(self) -> None:
+        try:
+            for line in self._stream:
+                with self._lock:
+                    self._lines.append(line)
+                print(f"    {line.rstrip()}", flush=True)
+                self._pending.put(line)
+        finally:
+            self._pending.put(None)
+
+    @property
+    def buffered_output(self) -> str:
+        with self._lock:
+            return "".join(self._lines)
+
+    @property
+    def is_alive(self) -> bool:
+        return self._thread.is_alive()
+
+    def next_line(self, timeout: float) -> str | None:
+        return self._pending.get(timeout=timeout)
+
+    def join(self) -> None:
+        self._thread.join()
+
+
+def wait_for_ready(output: ProcessOutput, timeout: float) -> bool:
+    """Wait at most timeout seconds for a READY line from the provider."""
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        line = process.stdout.readline()
-        if not line:
-            if process.poll() is not None:
-                return False
-            continue
-        print(f"    {line.rstrip()}", flush=True)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        try:
+            line = output.next_line(timeout=remaining)
+        except queue.Empty:
+            return False
+        if line is None:
+            return False
         if "READY" in line:
             return True
-    return False
 
 
-def drain(process: subprocess.Popen) -> None:
-    """Keep echoing provider output in the background so it never blocks on a full pipe."""
-
-    def pump() -> None:
-        for line in process.stdout:
-            print(f"    {line.rstrip()}", flush=True)
-
-    thread = threading.Thread(target=pump, daemon=True)
-    thread.start()
+def stop_process(process: subprocess.Popen[str], output: ProcessOutput) -> None:
+    """Stop and reap the subprocess, then wait for its output reader to finish."""
+    if process.poll() is None:
+        process.terminate()
+    try:
+        process.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+    output.join()
 
 
 def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one piece
@@ -135,12 +178,12 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
         text=True,
         bufsize=1,
     )
+    output = ProcessOutput(process)
 
     try:
-        if not wait_for_ready(process, timeout=45):
+        if not wait_for_ready(output, timeout=45):
             print("FAIL: provider never reported READY")
             return 1
-        drain(process)
 
         # ---------------------------------------------------------------- discovery
         print("\n1. Discovery and connection", flush=True)
@@ -628,11 +671,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
             remote.close()
 
     finally:
-        process.terminate()
-        try:
-            process.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            process.kill()
+        stop_process(process, output)
 
     print()
     return report.summary()

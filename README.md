@@ -455,6 +455,7 @@ The pull-request workflow runs each deterministic area as a separately reported 
 | `tests/gui_layout.py` | split/tab modes and responsive card reflow |
 | `tests/service_lifecycle.py` | provider and consumer startup fault cleanup |
 | `tests/consumer_lifecycle.py` | window-close races, stale work and natural real-window shutdown |
+| `tests/acceptance_readiness.py` | bounded provider readiness waits and subprocess cleanup |
 
 Run any deterministic suite with the project interpreter, for example:
 

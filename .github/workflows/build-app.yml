@@ -40,6 +40,8 @@ jobs:
             script: tests/service_lifecycle.py
           - name: Consumer window lifecycle
             script: tests/consumer_lifecycle.py
+          - name: Acceptance readiness timeout
+            script: tests/acceptance_readiness.py
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     env:
