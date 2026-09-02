@@ -441,27 +441,36 @@ This is a focused SDC learning fixture, not an IEEE 11073 conformance claim. IEE
 
 ## Tests
 
-Six suites, all runnable from a terminal, all printing PASS/FAIL per check.
+The pull-request workflow runs each deterministic area as a separately reported job with `QT_QPA_PLATFORM=offscreen`:
 
-| Suite                       | Checks | Covers                                                                                |
-|-----------------------------|--------|---------------------------------------------------------------------------------------|
-| `tests/acceptance_core.py`  | 80     | two processes: discovery, context updates, control, rejections, runtime descriptors, alarms, waveforms |
-| `tests/gui_smoke.py`        | 278    | the real window offscreen, including live peer patient demographics                  |
-| `tests/widget_controls.py`  | 67     | which control for which metric, then controls driven for real                         |
-| `tests/provider_core.py`    | 99     | descriptor rollback, sample arrays, signal handling, demographics, contexts, presets  |
-| `tests/presets.py`          | 74     | every shipped preset builds into a working device                                     |
-| `tests/config_roundtrip.py` | 38     | versioned export/reimport, demographics, broken files refused                         |
+| Suite | Covers |
+|-------|--------|
+| `diagnostics/check_api.py` | required sdc11073 API surface |
+| `tests/provider_core.py` | provider descriptors, values, alarms, contexts and rollback |
+| `tests/presets.py` | every shipped preset built as a working device |
+| `tests/config_roundtrip.py` | versioned export/import, validation and transactional replacement |
+| `tests/widget_controls.py` | widget selection and real control interactions |
+| `tests/gui_dialogs.py` | metric, alarm, context and startup validation |
+| `tests/gui_cards_plots.py` | card construction and waveform/distribution rendering |
+| `tests/gui_layout.py` | split/tab modes and responsive card reflow |
+| `tests/service_lifecycle.py` | provider and consumer startup fault cleanup |
+| `tests/consumer_lifecycle.py` | window-close races, stale work and natural real-window shutdown |
+
+Run any deterministic suite with the project interpreter, for example:
 
 ```powershell
-.venv\Scripts\python.exe tests\acceptance_core.py
-.venv\Scripts\python.exe tests\gui_smoke.py
-.venv\Scripts\python.exe tests\widget_controls.py
-.venv\Scripts\python.exe tests\provider_core.py
-.venv\Scripts\python.exe tests\presets.py
-.venv\Scripts\python.exe tests\config_roundtrip.py
+$env:QT_QPA_PLATFORM = "offscreen"
+.venv\Scripts\python.exe tests\gui_dialogs.py
+.venv\Scripts\python.exe tests\gui_cards_plots.py
+.venv\Scripts\python.exe tests\gui_layout.py
+.venv\Scripts\python.exe tests\consumer_lifecycle.py
 ```
 
-The acceptance test runs a provider in one process and checks it from a consumer in another. The GUI suite builds the real window on Qt's offscreen backend and drives the actual widgets, including a live connection to a provider in another process — no display needed. All end-to-end suites use providers bundled with this repository; they test this implementation across processes, not interoperability with an independent SDC stack or product.
+`tests/acceptance_core.py` is the network acceptance suite. CI runs it in an isolated eight-minute job on every pull request, version tag, manual workflow dispatch and weekly schedule. It starts the repository's provider in a subprocess, exercises it through a consumer, and uploads their combined output if the job fails. This checks this implementation across processes; it is not interoperability testing against an independent SDC stack or product.
+
+`tests/gui_smoke.py` remains a manual broad regression script because it is intentionally long and duplicates the focused GUI suites while also starting a live peer. Run it when changing interactions that cross several GUI areas; it uses the offscreen backend and needs no display.
+
+The packaging jobs separately launch each built Windows and Linux application with `--smoke-test`. `tests/acceptance_provider.py` is a subprocess fixture used by acceptance scripts, not a standalone suite.
 
 `provider_core.py` is the odd one out: it is about what the MDIB must never be left in. Its first section deliberately writes a descriptor BICEPS cannot serialise *without* the rollback, watches the orphan appear, and only then checks that the guarded path leaves nothing behind — so a passing run means the check is still capable of failing.
 

@@ -150,6 +150,14 @@ def attach(pane: consumer_module.ConsumerPane, remote: FakeRemote) -> None:
     pane._on_connected(remote, pane._generation)  # noqa: SLF001
 
 
+def close_idle_window(app: QApplication, provider: ProviderService) -> None:
+    window, pane, service = new_window(provider)
+    window.close()
+    pump(app)
+    check(not window.isVisible(), "a real idle window closes through its normal close event")
+    check(pane.remote is None and service.stop_count == 1, "natural window close releases discovery once")
+
+
 def close_during_scan(app: QApplication, provider: ProviderService) -> None:
     window, pane, service = new_window(provider)
     pane._on_scan()  # noqa: SLF001
@@ -465,6 +473,7 @@ def main() -> int:
     consumer_module.MdibBridge = FakeBridge
     try:
         print("Consumer lifecycle test (offscreen)")
+        close_idle_window(app, provider)
         close_during_scan(app, provider)
         close_during_connect(app, provider)
         close_with_queued_connection(app, provider)
