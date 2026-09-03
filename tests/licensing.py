@@ -154,6 +154,15 @@ def check_sources(report: Report) -> None:
         "legal/licenses/qt/LGPL-3.0-only.txt",
         "legal/licenses/qt/Qt-GPL-exception-1.0.txt",
         "legal/licenses/openssl/Apache-2.0.txt",
+        "legal/licenses/common/Zlib.txt",
+        "legal/licenses/iconv/LGPL-2.1-only.txt",
+        "legal/licenses/microsoft/Visual-Cpp-Runtime-2015-2022.txt",
+        "legal/licenses/microsoft/Visual-Cpp-Runtime-2015-2022.docx",
+        "legal/licenses/qt-third-party/libjpeg-turbo/LICENSE.txt",
+        "legal/licenses/qt-third-party/libjpeg-turbo/ijg-license.txt",
+        "legal/licenses/qt-third-party/libjpeg-turbo/COPYRIGHT.txt",
+        "legal/licenses/qt-third-party/libtiff/COPYRIGHT",
+        "legal/licenses/qt-third-party/libwebp/COPYING",
     ):
         report.check((ROOT / relative).is_file(), f"source legal payload includes {relative}")
 
@@ -209,24 +218,56 @@ def check_archive(report: Report, archive_path: Path) -> None:
             removable,
         )
 
-    openssl = next(
-        (
-            component
-            for component in inventory.get("components", [])
-            if component.get("name") == "OpenSSL"
-        ),
-        None,
-    )
-    if openssl:
+    native_components = inventory.get("native_components", [])
+    report.check(bool(native_components), "artifact inventory identifies native components")
+    for native in native_components:
+        report.check(
+            bool(native.get("evidence", {}).get("owner")),
+            f"{native.get('name')} records native owner/source evidence",
+        )
         wrong_notice = json.loads(json.dumps(inventory))
-        next(
-            component for component in wrong_notice["components"] if component.get("name") == "OpenSSL"
-        )["notice_paths"] = ["legal/licenses/python/LICENSE.txt"]
+        mutated = next(
+            component
+            for component in wrong_notice["native_components"]
+            if component.get("name") == native.get("name")
+            and component.get("version") == native.get("version")
+        )
+        mutated["notice_paths"] = ["legal/licenses/python/LICENSE.txt"]
+        mutated["notice_sha256"] = {
+            "legal/licenses/python/LICENSE.txt": __import__("hashlib").sha256(
+                files[next(name for name in files if name.replace("\\", "/").endswith("/legal/licenses/python/LICENSE.txt"))]
+            ).hexdigest()
+        }
         changed = dict(files)
         changed[inventory_path] = json.dumps(wrong_notice).encode("utf-8")
         report.check(
-            any("OpenSSL: missing component-specific legal notice" in error for error in validate_payload(changed)),
-            "artifact validation rejects an unrelated OpenSSL notice",
+            any(
+                f"{native.get('name')}: missing or misassigned component-specific legal notice"
+                in error
+                for error in validate_payload(changed)
+            ),
+            f"artifact validation rejects an unrelated {native.get('name')} notice",
+        )
+
+    removable_notice = next(
+        (
+            notice
+            for component in native_components
+            for notice in component.get("notice_paths", [])
+            if notice != "legal/licenses/lxml/LICENSES.txt"
+        ),
+        None,
+    )
+    if removable_notice:
+        missing = {
+            name: value
+            for name, value in files.items()
+            if not name.replace("\\", "/").endswith(f"/{removable_notice}")
+        }
+        report.check(
+            any("missing bundled notice" in error for error in validate_payload(missing)),
+            "artifact validation rejects a missing native notice",
+            removable_notice,
         )
 
 

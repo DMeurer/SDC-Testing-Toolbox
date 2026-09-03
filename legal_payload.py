@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform as runtime_platform
@@ -27,7 +28,57 @@ REQUIRED_DOCUMENTS = (
     f"{LEGAL_ROOT}/licenses/qt/GPL-3.0-only.txt",
     f"{LEGAL_ROOT}/licenses/qt/Qt-GPL-exception-1.0.txt",
     f"{LEGAL_ROOT}/licenses/openssl/Apache-2.0.txt",
+    f"{LEGAL_ROOT}/licenses/common/Zlib.txt",
+    f"{LEGAL_ROOT}/licenses/iconv/LGPL-2.1-only.txt",
+    f"{LEGAL_ROOT}/licenses/microsoft/Visual-Cpp-Runtime-2015-2022.txt",
+    f"{LEGAL_ROOT}/licenses/microsoft/Visual-Cpp-Runtime-2015-2022.docx",
+    f"{LEGAL_ROOT}/licenses/qt-third-party/libjpeg-turbo/LICENSE.txt",
+    f"{LEGAL_ROOT}/licenses/qt-third-party/libjpeg-turbo/ijg-license.txt",
+    f"{LEGAL_ROOT}/licenses/qt-third-party/libjpeg-turbo/COPYRIGHT.txt",
+    f"{LEGAL_ROOT}/licenses/qt-third-party/libtiff/COPYRIGHT",
+    f"{LEGAL_ROOT}/licenses/qt-third-party/libwebp/COPYING",
 )
+
+_NATIVE_NOTICE_RULES = {
+    "lxml wheel: zlib": (
+        (f"{LEGAL_ROOT}/licenses/lxml/LICENSES.txt", ("officiall distributed binary wheels", "**zlib**")),
+        (f"{LEGAL_ROOT}/licenses/common/Zlib.txt", ("Jean-loup Gailly", "Mark Adler")),
+    ),
+    "lxml wheel: iconv": (
+        (f"{LEGAL_ROOT}/licenses/lxml/LICENSES.txt", ("**iconv**: LGPL 2.1",)),
+        (f"{LEGAL_ROOT}/licenses/iconv/LGPL-2.1-only.txt", ("GNU LESSER GENERAL PUBLIC LICENSE", "Version 2.1, February 1999")),
+    ),
+    "lxml wheel: libxml2": (
+        (f"{LEGAL_ROOT}/licenses/lxml/LICENSES.txt", ("**libxml2**: MIT", "The Libxml2 Contributors")),
+    ),
+    "lxml wheel: libxslt": (
+        (f"{LEGAL_ROOT}/licenses/lxml/LICENSES.txt", ("**libxslt**: MIT", "DANIEL VEILLARD")),
+    ),
+    "lxml wheel: libexslt": (
+        (f"{LEGAL_ROOT}/licenses/lxml/LICENSES.txt", ("**libexslt**: MIT", "Thomas Broyer")),
+    ),
+    "Qt image plugin: libjpeg-turbo": (
+        (f"{LEGAL_ROOT}/licenses/qt-third-party/libjpeg-turbo/LICENSE.txt", ("libjpeg-turbo Licenses", "Modified (3-clause) BSD License")),
+        (f"{LEGAL_ROOT}/licenses/qt-third-party/libjpeg-turbo/ijg-license.txt", ("Independent JPEG Group", "executable code is distributed")),
+        (f"{LEGAL_ROOT}/licenses/qt-third-party/libjpeg-turbo/COPYRIGHT.txt", ("D. R. Commander", "Thomas G. Lane")),
+    ),
+    "Qt image plugin: libtiff": (
+        (f"{LEGAL_ROOT}/licenses/qt-third-party/libtiff/COPYRIGHT", ("Sam Leffler", "Silicon Graphics")),
+    ),
+    "Qt image plugin: libwebp": (
+        (f"{LEGAL_ROOT}/licenses/qt-third-party/libwebp/COPYING", ("Copyright (c) 2010, Google Inc.", "Redistribution and use")),
+    ),
+    "Qt: zlib": (
+        (f"{LEGAL_ROOT}/licenses/common/Zlib.txt", ("Jean-loup Gailly", "Mark Adler")),
+    ),
+    "Microsoft Visual C++ Runtime": (
+        (f"{LEGAL_ROOT}/licenses/microsoft/Visual-Cpp-Runtime-2015-2022.txt", ("MICROSOFT VISUAL C++ 2015 - 2022 RUNTIME", "EULA ID: Cpp_2015-2022_ENU.1033")),
+        (f"{LEGAL_ROOT}/licenses/microsoft/Visual-Cpp-Runtime-2015-2022.docx", ()),
+    ),
+    "OpenSSL": (
+        (f"{LEGAL_ROOT}/licenses/openssl/Apache-2.0.txt", ("Apache License", "Version 2.0, January 2004")),
+    ),
+}
 
 _LICENSE_OVERRIDES = {
     "aiosignal": "Apache-2.0",
@@ -232,6 +283,15 @@ def _copy_static_documents(project_root: Path, output: Path) -> list[str]:
         f"{LEGAL_ROOT}/licenses/qt/GPL-3.0-only.txt": project_root / "LICENSE",
         f"{LEGAL_ROOT}/licenses/qt/Qt-GPL-exception-1.0.txt": project_root / LEGAL_ROOT / "licenses" / "qt" / "Qt-GPL-exception-1.0.txt",
         f"{LEGAL_ROOT}/licenses/openssl/Apache-2.0.txt": project_root / LEGAL_ROOT / "licenses" / "openssl" / "Apache-2.0.txt",
+        f"{LEGAL_ROOT}/licenses/common/Zlib.txt": project_root / LEGAL_ROOT / "licenses" / "common" / "Zlib.txt",
+        f"{LEGAL_ROOT}/licenses/iconv/LGPL-2.1-only.txt": project_root / LEGAL_ROOT / "licenses" / "iconv" / "LGPL-2.1-only.txt",
+        f"{LEGAL_ROOT}/licenses/microsoft/Visual-Cpp-Runtime-2015-2022.txt": project_root / LEGAL_ROOT / "licenses" / "microsoft" / "Visual-Cpp-Runtime-2015-2022.txt",
+        f"{LEGAL_ROOT}/licenses/microsoft/Visual-Cpp-Runtime-2015-2022.docx": project_root / LEGAL_ROOT / "licenses" / "microsoft" / "Visual-Cpp-Runtime-2015-2022.docx",
+        f"{LEGAL_ROOT}/licenses/qt-third-party/libjpeg-turbo/LICENSE.txt": project_root / LEGAL_ROOT / "licenses" / "qt-third-party" / "libjpeg-turbo" / "LICENSE.txt",
+        f"{LEGAL_ROOT}/licenses/qt-third-party/libjpeg-turbo/ijg-license.txt": project_root / LEGAL_ROOT / "licenses" / "qt-third-party" / "libjpeg-turbo" / "ijg-license.txt",
+        f"{LEGAL_ROOT}/licenses/qt-third-party/libjpeg-turbo/COPYRIGHT.txt": project_root / LEGAL_ROOT / "licenses" / "qt-third-party" / "libjpeg-turbo" / "COPYRIGHT.txt",
+        f"{LEGAL_ROOT}/licenses/qt-third-party/libtiff/COPYRIGHT": project_root / LEGAL_ROOT / "licenses" / "qt-third-party" / "libtiff" / "COPYRIGHT",
+        f"{LEGAL_ROOT}/licenses/qt-third-party/libwebp/COPYING": project_root / LEGAL_ROOT / "licenses" / "qt-third-party" / "libwebp" / "COPYING",
     }
     for destination, source in documents.items():
         if not source.is_file():
@@ -240,6 +300,43 @@ def _copy_static_documents(project_root: Path, output: Path) -> list[str]:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
     return sorted(documents)
+
+
+def _notice_hashes(output: Path, notice_paths: Iterable[str]) -> dict[str, str]:
+    return {
+        path: hashlib.sha256((output / Path(path)).read_bytes()).hexdigest()
+        for path in notice_paths
+    }
+
+
+def _native_component(
+    output: Path,
+    *,
+    name: str,
+    version: str,
+    license_expression: str,
+    project_url: str,
+    notice_paths: list[str],
+    artifact_paths: Iterable[str],
+    artifact_patterns: list[str],
+    owner_evidence: dict[str, str],
+    source_archive_urls: list[str] | None = None,
+) -> dict[str, object]:
+    return {
+        "name": name,
+        "version": version,
+        "scope": "runtime-embedded-native-library",
+        "license_expression": license_expression,
+        "project_url": project_url,
+        "source_archive_urls": source_archive_urls or [],
+        "notice_paths": notice_paths,
+        "notice_sha256": _notice_hashes(output, notice_paths),
+        "evidence": {
+            "artifact_paths": sorted(artifact_paths),
+            "artifact_patterns": artifact_patterns,
+            "owner": owner_evidence,
+        },
+    }
 
 
 def _windows_file_version(path: Path) -> str:
@@ -256,6 +353,274 @@ def _windows_file_version(path: Path) -> str:
                     if key.decode(errors="replace") == "FileVersion":
                         return value.decode(errors="replace")
     raise RuntimeError(f"cannot read native library version from {path}")
+
+
+def _linked_library_names(path: Path) -> set[str]:
+    if runtime_platform.system() == "Windows":
+        import pefile
+
+        image = pefile.PE(str(path), fast_load=True)
+        image.parse_data_directories(
+            directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"]]
+        )
+        return {
+            entry.dll.decode(errors="replace").lower()
+            for entry in getattr(image, "DIRECTORY_ENTRY_IMPORT", ())
+        }
+    if runtime_platform.system() == "Linux":
+        result = subprocess.run(
+            ["ldd", str(path)], check=True, capture_output=True, text=True
+        )
+        return {
+            Path(line.split("=>", 1)[0].strip()).name.lower()
+            for line in result.stdout.splitlines()
+            if ".so" in line
+        }
+    return set()
+
+
+def _lxml_native_components(
+    distribution: metadata.Distribution,
+    artifact_sources: dict[str, Path],
+    output: Path,
+) -> list[dict[str, object]]:
+    carriers = {
+        destination: source
+        for destination, source in artifact_sources.items()
+        if Path(destination).name.lower().startswith("etree.")
+        and Path(destination).suffix.lower() in {".pyd", ".so"}
+    }
+    if not carriers:
+        return []
+    linked = set().union(*(_linked_library_names(source) for source in carriers.values()))
+    if any(
+        name.startswith(("libxml2", "libxslt", "libexslt", "libiconv", "zlib"))
+        for name in linked
+    ):
+        return []
+
+    from lxml import etree
+
+    includes = Path(distribution.locate_file("lxml/includes"))
+
+    def define(relative: str, name: str) -> str:
+        text = (includes / relative).read_text(encoding="utf-8", errors="replace")
+        match = re.search(rf'^#define\s+{name}\s+"([^"]+)"', text, re.MULTILINE)
+        if not match:
+            raise RuntimeError(f"lxml bundled header does not declare {name}")
+        return match.group(1)
+
+    versions = {
+        "zlib": define("extlibs/zlib.h", "ZLIB_VERSION"),
+        "iconv": ".".join(map(str, etree.ICONV_COMPILED_VERSION)),
+        "libxml2": ".".join(map(str, etree.LIBXML_COMPILED_VERSION)),
+        "libxslt": define("libxslt/xsltconfig.h", "LIBXSLT_DOTTED_VERSION"),
+        "libexslt": define("libexslt/exsltconfig.h", "LIBEXSLT_DOTTED_VERSION"),
+    }
+    specs = {
+        "zlib": (
+            "Zlib",
+            "https://zlib.net/",
+            [
+                f"{LEGAL_ROOT}/licenses/lxml/LICENSES.txt",
+                f"{LEGAL_ROOT}/licenses/common/Zlib.txt",
+            ],
+        ),
+        "iconv": (
+            "LGPL-2.1-only",
+            "https://www.gnu.org/software/libiconv/",
+            [
+                f"{LEGAL_ROOT}/licenses/lxml/LICENSES.txt",
+                f"{LEGAL_ROOT}/licenses/iconv/LGPL-2.1-only.txt",
+            ],
+        ),
+        "libxml2": (
+            "MIT",
+            "https://gitlab.gnome.org/GNOME/libxml2",
+            [f"{LEGAL_ROOT}/licenses/lxml/LICENSES.txt"],
+        ),
+        "libxslt": (
+            "MIT",
+            "https://gitlab.gnome.org/GNOME/libxslt",
+            [f"{LEGAL_ROOT}/licenses/lxml/LICENSES.txt"],
+        ),
+        "libexslt": (
+            "MIT",
+            "https://gitlab.gnome.org/GNOME/libxslt",
+            [f"{LEGAL_ROOT}/licenses/lxml/LICENSES.txt"],
+        ),
+    }
+    paths = sorted(carriers)
+    owner = {
+        "carrier_distribution": f"lxml {distribution.version}",
+        "component_attribution": "lxml wheel licenses/LICENSES.txt, Binary wheels section",
+        "linkage": "compiled lxml constants/headers; carrier has no external libxml/iconv/zlib import",
+    }
+    return [
+        _native_component(
+            output,
+            name=f"lxml wheel: {name}",
+            version=versions[name],
+            license_expression=license_expression,
+            project_url=project_url,
+            notice_paths=notices,
+            artifact_paths=paths,
+            artifact_patterns=["lxml/etree*.pyd", "lxml/etree*.so"],
+            owner_evidence=owner,
+            source_archive_urls=(
+                [f"https://ftp.gnu.org/pub/gnu/libiconv/libiconv-{versions[name]}.tar.gz"]
+                if name == "iconv"
+                else []
+            ),
+        )
+        for name, (license_expression, project_url, notices) in specs.items()
+    ]
+
+
+def _qt_native_components(
+    qt_version: str,
+    artifact_sources: dict[str, Path],
+    output: Path,
+) -> list[dict[str, object]]:
+    # Component versions and licenses come from Qt's matching tagged source
+    # qt_attribution.json files, not from guesses based on plugin names.
+    if qt_version != "6.11.2":
+        if any(
+            "/plugins/imageformats/" in f"/{path.lower()}"
+            for path in artifact_sources
+        ):
+            raise RuntimeError(
+                f"Qt native third-party metadata is not maintained for {qt_version}"
+            )
+        return []
+    specs = {
+        "qjpeg": (
+            "Qt image plugin: libjpeg-turbo",
+            "3.2.0",
+            "IJG AND BSD-3-Clause",
+            "https://github.com/libjpeg-turbo/libjpeg-turbo",
+            [
+                f"{LEGAL_ROOT}/licenses/qt-third-party/libjpeg-turbo/LICENSE.txt",
+                f"{LEGAL_ROOT}/licenses/qt-third-party/libjpeg-turbo/ijg-license.txt",
+                f"{LEGAL_ROOT}/licenses/qt-third-party/libjpeg-turbo/COPYRIGHT.txt",
+            ],
+        ),
+        "qtiff": (
+            "Qt image plugin: libtiff",
+            "4.7.2",
+            "libtiff",
+            "https://gitlab.com/libtiff/libtiff",
+            [f"{LEGAL_ROOT}/licenses/qt-third-party/libtiff/COPYRIGHT"],
+        ),
+        "qwebp": (
+            "Qt image plugin: libwebp",
+            "1.6.0",
+            "BSD-3-Clause",
+            "https://chromium.googlesource.com/webm/libwebp/",
+            [f"{LEGAL_ROOT}/licenses/qt-third-party/libwebp/COPYING"],
+        ),
+    }
+    components = []
+    for stem, (name, version, license_expression, project_url, notices) in specs.items():
+        carriers = {
+            destination: source
+            for destination, source in artifact_sources.items()
+            if "/plugins/imageformats/" in f"/{destination.lower()}"
+            and Path(destination).stem.lower() in {stem, f"lib{stem}"}
+        }
+        if not carriers:
+            continue
+        imports = set().union(*(_linked_library_names(source) for source in carriers.values()))
+        library_prefix = {
+            "qjpeg": "libjpeg",
+            "qtiff": "libtiff",
+            "qwebp": "libwebp",
+        }[stem]
+        external = {library for library in imports if library.startswith(library_prefix)}
+        if external:
+            # Linux wheels can link plugins to distribution libraries. Those
+            # are inventoried from dpkg ownership instead of Qt source metadata.
+            packaged_libraries = {
+                destination: source
+                for destination, source in artifact_sources.items()
+                if Path(destination).name.lower() in external
+            }
+            if not packaged_libraries or not all(
+                "/pyside6/" in f"/{str(source).replace('\\', '/').lower()}"
+                for source in packaged_libraries.values()
+            ):
+                continue
+            carriers.update(packaged_libraries)
+        components.append(
+            _native_component(
+                output,
+                name=name,
+                version=version,
+                license_expression=license_expression,
+                project_url=project_url,
+                notice_paths=notices,
+                artifact_paths=carriers,
+                artifact_patterns=[
+                    f"PySide6/**/plugins/imageformats/{stem}.*",
+                    f"PySide6/**/plugins/imageformats/lib{stem}.so*",
+                ],
+                owner_evidence={
+                    "carrier_distribution": f"PySide6_Essentials {qt_version}",
+                    "component_attribution": f"Qt {qt_version} source qt_attribution.json",
+                    "linkage": "codec is embedded in plugin or its imported codec library is packaged",
+                },
+            )
+        )
+
+    core = {
+        destination: source
+        for destination, source in artifact_sources.items()
+        if Path(destination).name.lower()
+        in {"qt6core.dll", "libqt6core.so", "libqt6core.so.6"}
+    }
+    possible_zlib_carriers = dict(core)
+    possible_zlib_carriers.update(
+        {
+            destination: source
+            for destination, source in artifact_sources.items()
+            if "/plugins/imageformats/" in f"/{destination.lower()}"
+            and Path(destination).stem.lower() in {"qtiff", "libqtiff"}
+        }
+    )
+    embedded_zlib = {}
+    for destination, source in possible_zlib_carriers.items():
+        binary = source.read_bytes()
+        linked = _linked_library_names(source)
+        if (
+            b"1.3.2" in binary
+            and b"zlib" in binary.lower()
+            and not any(name.startswith("libz.so") for name in linked)
+        ):
+            embedded_zlib[destination] = source
+    if embedded_zlib:
+        components.append(
+            _native_component(
+                output,
+                name="Qt: zlib",
+                version="1.3.2",
+                license_expression="Zlib",
+                project_url="https://zlib.net/",
+                notice_paths=[f"{LEGAL_ROOT}/licenses/common/Zlib.txt"],
+                artifact_paths=embedded_zlib,
+                artifact_patterns=[
+                    "PySide6/Qt6Core.dll",
+                    "PySide6/**/libQt6Core.so*",
+                    "PySide6/**/plugins/imageformats/qtiff.*",
+                    "PySide6/**/plugins/imageformats/libqtiff.so*",
+                ],
+                owner_evidence={
+                    "carrier_distribution": f"PySide6_Essentials {qt_version}",
+                    "component_attribution": f"Qt {qt_version} qtbase zlib/qt_attribution.json",
+                    "linkage": "carriers contain zlib and 1.3.2 strings and have no external libz import",
+                },
+            )
+        )
+    return components
 
 
 def _debian_native_components(
@@ -312,16 +677,25 @@ def _debian_native_components(
                 notice_paths.append(destination)
         source_name = source_package or package.split(":", 1)[0]
         components.append(
-            {
-                "name": f"Debian package {package}",
-                "version": version,
-                "scope": "runtime-native-library",
-                "license_expression": " AND ".join(licenses),
-                "project_url": homepage or f"https://packages.ubuntu.com/search?keywords={source_name}",
-                "source_archive_urls": [f"https://packages.ubuntu.com/source/jammy/{source_name}"],
-                "notice_paths": notice_paths,
-                "evidence": {"modules": [], "artifact_paths": sorted(owners[package])},
-            }
+            _native_component(
+                output,
+                name=f"Debian package {package}",
+                version=version,
+                license_expression=" AND ".join(licenses),
+                project_url=homepage
+                or f"https://packages.ubuntu.com/search?keywords={source_name}",
+                source_archive_urls=[
+                    f"https://packages.ubuntu.com/source/jammy/{source_name}"
+                ],
+                notice_paths=notice_paths,
+                artifact_paths=owners[package],
+                artifact_patterns=[f"**/{Path(path).name}" for path in owners[package]],
+                owner_evidence={
+                    "debian_binary_package": package,
+                    "debian_source_package": source_name,
+                    "method": "dpkg-query -S and package copyright file",
+                },
+            )
         )
     return components
 
@@ -346,6 +720,7 @@ def generate_payload(
 
     modules: dict[str, set[str]] = defaultdict(set)
     artifact_paths: dict[str, set[str]] = defaultdict(set)
+    artifact_sources: dict[str, Path] = {}
     unmatched_site_packages: list[str] = []
     native_paths: dict[Path, set[str]] = defaultdict(set)
     installed_base = _resolved(sysconfig.get_config_var("installed_base"))
@@ -369,6 +744,8 @@ def generate_payload(
         for entry in collection:
             destination, source_text = _entry_parts(entry)
             source = _resolved(source_text)
+            if is_binary:
+                artifact_sources[destination.replace("\\", "/")] = source
             matched = owners.get(source, set())
             if not matched and "site-packages" in {part.lower() for part in source.parts}:
                 unmatched_site_packages.append(str(source))
@@ -389,6 +766,7 @@ def generate_payload(
     # cannot be attributed from an Analysis TOC like ordinary distributions.
     packaged.add("pyinstaller")
     components: list[dict[str, object]] = []
+    native_components: list[dict[str, object]] = []
     for name in sorted(packaged):
         distribution = distributions[name]
         expression = _license_expression(distribution, name)
@@ -493,38 +871,54 @@ def generate_payload(
                         destination.replace("\\", "/")
                     )
         for version, paths in sorted(microsoft_paths.items()):
-            components.append(
-                {
-                    "name": "Microsoft Visual C++ Runtime",
-                    "version": version,
-                    "scope": "runtime-native-library",
-                    "license_expression": "LicenseRef-Microsoft-Visual-Cpp-Runtime-2015-2022",
-                    "project_url": "https://visualstudio.microsoft.com/license-terms/vs2022-cruntime/",
-                    "source_archive_urls": [],
-                    "notice_paths": [python_notice],
-                    "evidence": {"modules": [], "artifact_paths": sorted(paths)},
-                }
+            native_components.append(
+                _native_component(
+                    output,
+                    name="Microsoft Visual C++ Runtime",
+                    version=version,
+                    license_expression="LicenseRef-Microsoft-Visual-Cpp-Runtime-2015-2022",
+                    project_url="https://visualstudio.microsoft.com/license-terms/vs2022-cruntime/",
+                    notice_paths=[
+                        f"{LEGAL_ROOT}/licenses/microsoft/Visual-Cpp-Runtime-2015-2022.txt",
+                        f"{LEGAL_ROOT}/licenses/microsoft/Visual-Cpp-Runtime-2015-2022.docx",
+                    ],
+                    artifact_paths=paths,
+                    artifact_patterns=["**/MSVCP*.dll", "**/VCRUNTIME*.dll"],
+                    owner_evidence={
+                        "file_version_resource": version,
+                        "source": "Python installation or PySide6/Shiboken6 wheel recorded by Analysis TOC",
+                    },
+                )
             )
         for version, paths in sorted(openssl_paths.items()):
-            components.append(
-                {
-                    "name": "OpenSSL",
-                    "version": version,
-                    "scope": "runtime-native-library",
-                    "license_expression": "Apache-2.0",
-                    "project_url": "https://github.com/openssl/openssl",
-                    "source_archive_urls": [
+            native_components.append(
+                _native_component(
+                    output,
+                    name="OpenSSL",
+                    version=version,
+                    license_expression="Apache-2.0",
+                    project_url="https://github.com/openssl/openssl",
+                    source_archive_urls=[
                         (
                             f"https://github.com/openssl/openssl/releases/download/"
                             f"openssl-{version}/openssl-{version}.tar.gz"
                         )
                     ],
-                    "notice_paths": [f"{LEGAL_ROOT}/licenses/openssl/Apache-2.0.txt"],
-                    "evidence": {"modules": [], "artifact_paths": sorted(paths)},
-                }
+                    notice_paths=[f"{LEGAL_ROOT}/licenses/openssl/Apache-2.0.txt"],
+                    artifact_paths=paths,
+                    artifact_patterns=["**/libcrypto-*.dll", "**/libssl-*.dll"],
+                    owner_evidence={
+                        "file_version_resource": version,
+                        "source": "CPython installation recorded by Analysis TOC",
+                    },
+                )
             )
 
-    components.extend(_debian_native_components(native_paths, output))
+    native_components.extend(_debian_native_components(native_paths, output))
+    if "lxml" in packaged:
+        native_components.extend(
+            _lxml_native_components(distributions["lxml"], artifact_sources, output)
+        )
 
     qt_owners = {"pyside6-essentials", "pyside6-addons", "pyside6", "shiboken6"}
     if packaged & qt_owners:
@@ -567,6 +961,9 @@ def generate_payload(
                 },
             }
         )
+        native_components.extend(
+            _qt_native_components(qt_version, artifact_sources, output)
+        )
 
     build_only = []
     for name in sorted(build_closure - packaged):
@@ -598,6 +995,9 @@ def generate_payload(
             "machine": runtime_platform.machine(),
         },
         "components": sorted(components, key=lambda item: str(item["name"]).lower()),
+        "native_components": sorted(
+            native_components, key=lambda item: (str(item["name"]).lower(), str(item["version"]))
+        ),
         "build_only": build_only,
         "resolved_runtime_not_packaged": resolved_not_packaged,
         "resolved_runtime": [
@@ -689,13 +1089,6 @@ def validate_payload(files: dict[str, bytes]) -> list[str]:
             source_urls = component.get("source_archive_urls")
             if not source_urls or not all(str(url).startswith("https://") for url in source_urls):
                 errors.append(f"{label}: no versioned corresponding-source archive URL")
-    names = {component.get("name") for component in components if isinstance(component, dict)}
-    expected_components = ["Python", "Qt", "PySide6_Essentials", "sdc11073"]
-    if inventory.get("platform", {}).get("system") == "Windows":
-        expected_components.extend(("Microsoft Visual C++ Runtime", "OpenSSL"))
-    for expected in expected_components:
-        if expected not in names:
-            errors.append(f"inventory is missing expected runtime component {expected}")
     build_only = inventory.get("build_only")
     if not isinstance(build_only, list):
         errors.append("inventory has no build-only classification")
@@ -734,13 +1127,87 @@ def validate_payload(files: dict[str, bytes]) -> list[str]:
                 "resolved runtime dependencies are unclassified: "
                 + ", ".join(sorted(missing_runtime))
             )
-    native_notices = {
-        "OpenSSL": f"{LEGAL_ROOT}/licenses/openssl/Apache-2.0.txt",
+    native_components = inventory.get("native_components")
+    if not isinstance(native_components, list):
+        errors.append("inventory has no native-component classification")
+        native_components = []
+    native_required_fields = required_fields + ("notice_sha256",)
+    for component in native_components:
+        label = component.get("name", "<unnamed>") if isinstance(component, dict) else "<invalid>"
+        if not isinstance(component, dict):
+            errors.append("inventory native component is not an object")
+            continue
+        for field in native_required_fields:
+            if not component.get(field):
+                errors.append(f"{label}: missing {field}")
+        evidence = component.get("evidence", {})
+        if not evidence.get("artifact_paths"):
+            errors.append(f"{label}: no native carrier artifact evidence")
+        if not evidence.get("artifact_patterns"):
+            errors.append(f"{label}: no native carrier artifact pattern")
+        if not evidence.get("owner"):
+            errors.append(f"{label}: no native owner/source evidence")
+        for artifact_path in evidence.get("artifact_paths", []):
+            candidates = (prefix + artifact_path, prefix + "_internal/" + artifact_path)
+            if not any(candidate in normalized for candidate in candidates):
+                errors.append(f"{label}: inventoried artifact path is absent: {artifact_path}")
+        rules = _NATIVE_NOTICE_RULES.get(str(label))
+        owner = evidence.get("owner", {})
+        if not rules and owner.get("debian_binary_package"):
+            package = owner["debian_binary_package"].replace(":", "_")
+            copyright_path = f"{LEGAL_ROOT}/licenses/debian/{package}/copyright"
+            rules = ((copyright_path, ("Format:", "License:")),)
+        if rules:
+            expected_paths = [path for path, _phrases in rules]
+            if component.get("notice_paths") != expected_paths:
+                errors.append(f"{label}: missing or misassigned component-specific legal notice")
+            for path, phrases in rules:
+                key = prefix + path
+                if key not in normalized:
+                    continue
+                text = normalized[key].decode("utf-8", errors="replace")
+                if phrases and not all(phrase in text for phrase in phrases):
+                    errors.append(f"{label}: component-specific legal notice has unexpected content: {path}")
+        for notice in component.get("notice_paths", []):
+            key = prefix + notice
+            if key not in normalized:
+                errors.append(f"{label}: missing bundled notice {notice}")
+                continue
+            expected_hash = component.get("notice_sha256", {}).get(notice)
+            actual_hash = hashlib.sha256(normalized[key]).hexdigest()
+            if expected_hash != actual_hash:
+                errors.append(f"{label}: bundled notice SHA-256 mismatch: {notice}")
+        if any(token in str(component.get("license_expression")) for token in ("GPL", "LGPL")):
+            source_urls = component.get("source_archive_urls")
+            if not source_urls or not all(str(url).startswith("https://") for url in source_urls):
+                errors.append(f"{label}: no versioned corresponding-source archive URL")
+
+    all_components = components + native_components
+    names = {component.get("name") for component in all_components if isinstance(component, dict)}
+    expected_components = ["Python", "Qt", "PySide6_Essentials", "sdc11073"]
+    lxml_paths = [name.lower() for name in normalized if "/lxml/etree" in f"/{name.lower()}"]
+    if lxml_paths and inventory.get("platform", {}).get("system") == "Windows":
+        expected_components.extend(
+            f"lxml wheel: {name}"
+            for name in ("zlib", "iconv", "libxml2", "libxslt", "libexslt")
+        )
+    if inventory.get("platform", {}).get("system") == "Windows":
+        expected_components.extend(("Microsoft Visual C++ Runtime", "OpenSSL"))
+    qt_plugin_components = {
+        "qjpeg": "Qt image plugin: libjpeg-turbo",
+        "qtiff": "Qt image plugin: libtiff",
+        "qwebp": "Qt image plugin: libwebp",
     }
-    for component in components:
-        expected_notice = native_notices.get(component.get("name"))
-        if expected_notice and expected_notice not in component.get("notice_paths", []):
-            errors.append(f"{component['name']}: missing component-specific legal notice")
+    if inventory.get("platform", {}).get("system") == "Windows":
+        for plugin, component_name in qt_plugin_components.items():
+            if any(
+                re.search(rf"/(?:lib)?{plugin}\.(?:dll|so(?:\.\d+)*)$", name.lower())
+                for name in normalized
+            ):
+                expected_components.append(component_name)
+    for expected in expected_components:
+        if expected not in names:
+            errors.append(f"inventory is missing expected runtime component {expected}")
     qt = next((component for component in components if component.get("name") == "Qt"), None)
     if qt and not any(
         str(path).lower().endswith((".dll", ".so", ".so.6"))

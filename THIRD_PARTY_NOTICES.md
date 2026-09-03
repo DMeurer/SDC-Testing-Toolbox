@@ -7,9 +7,10 @@ legal compliance or constitute legal advice.
 `DEPENDENCY_INVENTORY.json` is generated separately for every native build from
 installed distribution metadata and PyInstaller's analyzed modules, binaries,
 and data files. It is the authoritative artifact-level list of packaged runtime
-components and records each component's exact version, declared license or
-license expression, project/source URL, bundled text paths, and graph/artifact
-evidence. This maintained document explains the release policy and major
+components and embedded native components, and records each component's exact
+or evidence-qualified version, declared license or license expression,
+project/source URL, bundled text paths and hashes, and graph/artifact evidence.
+This maintained document explains the release policy and major
 licensing choices; it is not a substitute for that inventory or the complete
 bundled texts.
 
@@ -32,9 +33,10 @@ source from one developer machine.
 On Windows, binaries copied from arbitrary `PATH` locations outside the Python
 installation and build environment are excluded, and Windows system libraries
 remain host dependencies. Native OpenSSL and Microsoft C/C++ runtime files are
-identified by embedded file version; OpenSSL references its own bundled
-license rather than the unrelated Python license. On Linux, copied native
-libraries are
+identified by embedded file version. OpenSSL references its own Apache-2.0
+text, while Microsoft runtime DLLs reference the Microsoft Visual C++
+2015-2022 Runtime terms; neither uses the unrelated Python license. On Linux,
+copied native libraries are
 assigned to installed Debian packages with `dpkg-query`; package versions and
 copyright files enter the inventory and payload, while PyInstaller's standard
 system-library exclusions remain host dependencies.
@@ -97,6 +99,25 @@ change. Every included package, including `aiohttp`, `lxml`, and their packaged
 dependencies, appears in `DEPENDENCY_INVENTORY.json` with its installed license
 and notice files copied under `legal/licenses/<normalized-name>/`. No static
 list here overrides the artifact inventory.
+
+The official lxml Windows wheel statically embeds zlib, GNU libiconv, libxml2,
+libxslt, and libexslt in its extension modules. The generated native inventory
+records versions obtained from lxml's compiled constants and bundled headers,
+the carrier extension, and lxml's wheel-supplied `LICENSES.txt` attribution.
+GNU libiconv is `LGPL-2.1-only`; the full LGPL 2.1 text is bundled separately.
+The other embedded lxml libraries retain their Zlib or MIT terms stated in
+`LICENSES.txt`. Source for the LGPL-covered libiconv version is identified by
+the generated inventory and must accompany a distributable release under the
+same corresponding-source policy described above.
+
+Qt image plugins are inventoried only when their plugin binaries occur in the
+artifact. The Windows Qt 6.11.2 bundle currently carries the qjpeg, qtiff, and
+qwebp plugins with embedded libjpeg-turbo 3.2.0, libtiff 4.7.2, and libwebp
+1.6.0, respectively. It also carries zlib 1.3.2 embedded in QtCore. Their exact
+license and attribution files are bundled from the matching Qt 6.11.2 source
+tags. In particular, this software is based in part on the work of the
+Independent JPEG Group. Plugins and codecs absent from an artifact are not
+listed in that artifact's native inventory.
 
 ## Build Tooling
 
