@@ -235,10 +235,11 @@ provider> presets
 *File → Export config* writes device metadata, data-source definitions and scalar current values, alarm and action definitions, and currently associated patient/location contexts to a JSON file.
 It is not a full live-device snapshot: sample blocks, alert/signal state, control mode, generator state and context history are not exported.
 *File → Import config* validates descriptor references before removing tracked metrics, alarms and actions, then rebuilds them.
-It is not a whole-MDIB replacement: contexts omitted by the file remain. Replacement is transactional for the managed live graph; if an operational error occurs after replacement starts, the provider publishes compensating descriptor and state changes so connected consumers return to the prior metrics, alarms, actions, sections and associated contexts. Rollback advances MDIB and object versions rather than rewinding them.
+It is not a whole-MDIB replacement. In either replacement or append mode, an omitted `contexts.patient` or `contexts.location` leaves that currently associated context unchanged. An explicit patient block is associated, including an empty block to detach the current patient; an explicit empty location is rejected because a published location needs at least one detail.
+If replacement fails operationally after it starts, the provider restores its prior managed metrics, alarms, actions, sections and associated contexts, publishing compensating transactions so connected consumers can recover the same graph. This is recovery, not external atomicity: a subscribed consumer can observe the temporary replacement before the compensation, and a rollback failure is reported together with the import failure rather than hidden. Successful compensation keeps provider and consumer MDIB, descriptor, state and context-state versions monotonic; it advances versions instead of rewinding them.
 
 *File → Load preset* lists the ready-made devices in `presets/`, so the ones that ship with the tool need no file dialog.
-The same list appears in the startup window. Preset discovery skips files that raise JSON or configuration errors.
+The same list appears in the startup window. Loading a profile with malformed field types or other schema errors raises `ConfigError`; `list_presets` catches those strict validation failures, invalid JSON and unreadable files and skips those entries, so one malformed preset does not interrupt discovery.
 Explicit profile versions must be JSON integers from 1 through the current format version, 3; preset discovery skips files outside that range. Profiles without a version predate versioning and are intentionally read with legacy version 1 semantics.
 The seven shipped presets are canonical current-schema profiles, not legacy compatibility fixtures. They are kept at profile format version 3 with explicit alert signal definitions. Tests for older readable formats use synthetic profile data instead of holding a shipped preset back on an earlier schema.
 
@@ -249,9 +250,8 @@ Any of them can also be loaded at startup:
 .venv\Scripts\python.exe examples\console.py provider --config presets\ventilator.json
 ```
 
-Load it at startup rather than importing it afterwards if you want the device to announce that model:
-DPWS metadata is fixed when the provider is built, so a preset imported into a running toolbox brings its metrics but keeps the metadata it started with.
-The profile is parsed before startup where possible, then applied after the provider starts using the same transactional replacement path.
+Load it at startup rather than importing it afterwards if you want the device to announce that model.
+DPWS `ThisModel` and `ThisDevice` metadata is fixed when the provider is constructed. Startup loading reads the profile's `device` block before construction and then applies its live graph after startup; importing into an already running provider applies the graph but cannot change that provider's manufacturer, model, firmware, friendly name or other construction-time device metadata.
 The startup name still decides the EPR and serial number; a saved `device.instance_name` does not override it.
 
 For a profile that imports successfully, recorded handles make its defined metrics, alerts and actions addressable under stable names. They do not reproduce an identical live MDIB or provider identity.
@@ -477,6 +477,7 @@ The pull-request workflow runs each deterministic area as a separately reported 
 | `diagnostics/check_api.py` | required sdc11073 API surface |
 | `tests/diagnostic_behavior.py` | diagnostic signature and update-result reporting |
 | `tests/application_defaults.py` | shared application defaults and distinct acceptance identity |
+| `tests/licensing.py` | project licensing, notices and build legal-payload sources |
 | `tests/provider_core.py` | provider descriptors, values, alarms, contexts and rollback |
 | `tests/presets.py` | every shipped preset built as a working device |
 | `tests/config_roundtrip.py` | versioned export/import, validation and transactional replacement |
