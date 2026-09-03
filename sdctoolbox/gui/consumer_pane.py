@@ -15,6 +15,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -23,6 +24,8 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSplitter,
     QStackedWidget,
     QTableWidget,
@@ -72,6 +75,8 @@ ALERT_COLUMNS = ["Handle", "Label", "Watches", "Limits", "Kind", "Priority", "Si
 
 MIN_CHILD_WIDTH = 200
 MIN_PANEL_WIDTH = 240
+ACTION_BUTTON_WIDTH = 180
+ACTION_BUTTON_TEXT_WIDTH = ACTION_BUTTON_WIDTH - 24
 
 NO_VALUE = "\u2014"
 
@@ -89,6 +94,25 @@ def _value_text(metric) -> str:  # noqa: ANN001 - a RemoteMetric
     if metric.is_sample_array:
         return f"{len(metric.samples)} sample(s)" if metric.samples else NO_VALUE
     return NO_VALUE if metric.value is None else str(metric.value)
+
+
+def _set_action_button_caption(button: QPushButton, caption: str) -> None:
+    """Expose complete peer text without letting it dictate the layout width."""
+    policy = button.sizePolicy()
+    policy.setHorizontalPolicy(QSizePolicy.Fixed)
+    button.setSizePolicy(policy)
+    button.setFixedWidth(ACTION_BUTTON_WIDTH)
+    button.setText(
+        QFontMetrics(button.font()).elidedText(
+            caption,
+            Qt.ElideRight,
+            ACTION_BUTTON_TEXT_WIDTH,
+        ),
+    )
+    button.setToolTip(caption)
+    button.setAccessibleName(caption)
+    button.setAccessibleDescription(caption)
+
 
 FINISHED_STATES = (msg_types.InvocationState.FINISHED, msg_types.InvocationState.FINISHED_MOD)
 
@@ -140,8 +164,14 @@ class ConsumerPane(QWidget):
         self.actions_row.addWidget(QLabel("Actions"))
         self.actions_row.addStretch(1)
         self.action_buttons: dict[str, QPushButton] = {}
-        self.actions_widget = QWidget()
-        self.actions_widget.setLayout(self.actions_row)
+        self.actions_content = QWidget()
+        self.actions_content.setLayout(self.actions_row)
+        self.actions_widget = QScrollArea()
+        self.actions_widget.setWidget(self.actions_content)
+        self.actions_widget.setWidgetResizable(False)
+        self.actions_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.actions_widget.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.actions_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.actions_widget.setVisible(False)
 
         self.device_list = QListWidget()
@@ -584,18 +614,19 @@ class ConsumerPane(QWidget):
         for handle, action in sorted(actions.items()):
             button = self.action_buttons.get(handle)
             if button is None:
-                button = QPushButton(action.caption)
+                button = QPushButton()
                 button.clicked.connect(lambda _=False, h=handle: self._on_run_action(h))
                 self.actions_row.insertWidget(self.actions_row.count() - 1, button)
                 self.action_buttons[handle] = button
-            button.setText(action.caption)
+            _set_action_button_caption(button, action.caption)
             # Same rule as a metric editor: offered only while the device says it is
             # enabled, and OperatingMode can change under us.
             button.setEnabled(action.enabled and not self._invocation_busy())
-            button.setToolTip(
-                f"{handle}\nacts on {action.target_handle}"
-                + ("" if action.enabled else "\ndisabled by the device"),
-            )
+        self.actions_content.adjustSize()
+        self.actions_widget.setFixedHeight(
+            self.actions_content.sizeHint().height()
+            + self.actions_widget.horizontalScrollBar().sizeHint().height(),
+        )
         self.actions_widget.setVisible(bool(actions))
 
     def _on_run_action(self, handle: str) -> None:
