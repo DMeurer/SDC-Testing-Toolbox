@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from legal_payload import INVENTORY_NAME, validate_payload
+from legal_payload import INVENTORY_NAME, filter_binaries, validate_payload
 from tests.script_support import Report
 
 
@@ -34,7 +34,97 @@ def _archive_files(path: Path) -> dict[str, bytes]:
     raise ValueError(f"unsupported or invalid archive: {path}")
 
 
+def check_binary_filter(report: Report) -> None:
+    windows_excluded = [
+        (r"PySide6\Qt6Pdf.dll", r"C:\build\site-packages\PySide6\Qt6Pdf.dll", "BINARY"),
+        (r"PySide6\Qt6PdfWidgets.dll", r"C:\build\site-packages\PySide6\Qt6PdfWidgets.dll", "BINARY"),
+        (
+            r"PySide6\Qt6VirtualKeyboardQml.dll",
+            r"C:\build\site-packages\PySide6\Qt6VirtualKeyboardQml.dll",
+            "BINARY",
+        ),
+        (
+            r"PySide6\plugins\imageformats\qpdf.dll",
+            r"C:\build\site-packages\PySide6\plugins\imageformats\qpdf.dll",
+            "BINARY",
+        ),
+        (
+            r"PySide6\plugins\platforminputcontexts\qtvirtualkeyboardplugin.dll",
+            r"C:\build\site-packages\PySide6\plugins\platforminputcontexts\qtvirtualkeyboardplugin.dll",
+            "BINARY",
+        ),
+        (r"PySide6\QtPdf.pyd", r"C:\build\site-packages\PySide6\QtPdf.pyd", "EXTENSION"),
+    ]
+    linux_excluded = [
+        (
+            "PySide6/Qt/lib/libQt6Pdf.so.6",
+            "/build/site-packages/PySide6/Qt/lib/libQt6Pdf.so.6",
+            "BINARY",
+        ),
+        (
+            "libQt6VirtualKeyboardQml.so.6",
+            "/build/site-packages/PySide6/Qt/lib/libQt6VirtualKeyboardQml.so.6",
+            "BINARY",
+        ),
+        (
+            "PySide6/Qt/plugins/imageformats/libqpdf.so",
+            "/build/site-packages/PySide6/Qt/plugins/imageformats/libqpdf.so",
+            "BINARY",
+        ),
+        (
+            "PySide6/Qt/plugins/platforminputcontexts/libqtvirtualkeyboardplugin.so",
+            "/build/site-packages/PySide6/Qt/plugins/platforminputcontexts/libqtvirtualkeyboardplugin.so",
+            "BINARY",
+        ),
+        (
+            "PySide6/QtPdf.abi3.so",
+            "/build/site-packages/PySide6/QtPdf.abi3.so",
+            "EXTENSION",
+        ),
+    ]
+    installed = Path(sys.prefix)
+    allowed = [
+        ("PySide6/Qt6Core.dll", str(installed / "PySide6" / "Qt6Core.dll"), "BINARY"),
+        ("PySide6/Qt6Gui.dll", str(installed / "PySide6" / "Qt6Gui.dll"), "BINARY"),
+        (
+            "PySide6/Qt6Widgets.dll",
+            str(installed / "PySide6" / "Qt6Widgets.dll"),
+            "BINARY",
+        ),
+        (
+            "PySide6/Qt/lib/libQt6Network.so.6",
+            str(installed / "PySide6" / "Qt" / "lib" / "libQt6Network.so.6"),
+            "BINARY",
+        ),
+        ("vendor/qpdf.dll", str(installed / "vendor" / "qpdf.dll"), "BINARY"),
+        ("vendor/libqpdf.so", str(installed / "vendor" / "libqpdf.so"), "BINARY"),
+        (
+            "PySide6/Qt/plugins/imageformats/libqpdf.so.debug",
+            str(installed / "PySide6" / "Qt" / "plugins" / "imageformats" / "libqpdf.so.debug"),
+            "BINARY",
+        ),
+    ]
+
+    for platform_name, excluded in (("Windows", windows_excluded), ("Linux", linux_excluded)):
+        filtered = filter_binaries(excluded + allowed, platform=platform_name)
+        report.check(
+            filtered == allowed,
+            f"{platform_name} TOCs exclude only unused Qt PDF and Virtual Keyboard binaries",
+        )
+
+    machine_local = ("local.dll", str(ROOT / "vendor" / "local.dll"), "BINARY")
+    report.check(
+        filter_binaries([machine_local], platform="Windows") == [],
+        "Windows filtering rejects a machine-local PATH binary",
+    )
+    report.check(
+        filter_binaries([machine_local], platform="Linux") == [machine_local],
+        "non-Windows filtering retains a non-Qt binary",
+    )
+
+
 def check_sources(report: Report) -> None:
+    check_binary_filter(report)
     license_text = (ROOT / "LICENSE").read_text(encoding="utf-8")
     report.check(
         "GNU GENERAL PUBLIC LICENSE\n                       Version 3, 29 June 2007" in license_text,

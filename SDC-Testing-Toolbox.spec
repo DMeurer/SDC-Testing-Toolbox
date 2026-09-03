@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import platform
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files
@@ -27,7 +28,7 @@ analysis = Analysis(
     noarchive=False,
     optimize=0,
 )
-analysis.binaries = filter_binaries(analysis.binaries)
+analysis.binaries = filter_binaries(analysis.binaries, platform=platform.system())
 analysis.datas += generate_payload(
     root,
     root / "build" / "legal-payload",

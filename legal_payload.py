@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-import platform
+import platform as runtime_platform
 import re
 import shutil
 import subprocess
@@ -57,32 +57,53 @@ def _resolved(path: str | Path) -> Path:
     return Path(path).resolve()
 
 
-def filter_binaries(binaries: Iterable[object]) -> list[object]:
-    """Drop Windows host libraries and machine-local PATH contamination."""
-    if platform.system() != "Windows":
-        return list(binaries)
+def _is_unused_qt_binary(path: str) -> bool:
+    normalized = path.replace("\\", "/").lower()
+    basename = normalized.rsplit("/", 1)[-1]
+    if re.fullmatch(
+        r"(?:qt6(?:pdf|virtualkeyboard)[^/]*\.dll|libqt6(?:pdf|virtualkeyboard)[^/]*\.so(?:\.\d+)*)",
+        basename,
+    ):
+        return True
+    if "/pyside6/" in f"/{normalized}" and re.fullmatch(
+        r"qtpdf[^/]*\.(?:pyd|so(?:\.\d+)*)", basename
+    ):
+        return True
+    plugin_path = f"/{normalized}"
+    return bool(
+        (
+            "/plugins/imageformats/" in plugin_path
+            and re.fullmatch(r"(?:qpdf\.dll|libqpdf\.so(?:\.\d+)*)", basename)
+        )
+        or (
+            "/plugins/platforminputcontexts/" in plugin_path
+            and re.fullmatch(
+                r"(?:qtvirtualkeyboardplugin\.dll|libqtvirtualkeyboardplugin\.so(?:\.\d+)*)",
+                basename,
+            )
+        )
+    )
+
+
+def filter_binaries(
+    binaries: Iterable[object], platform: str | None = None
+) -> list[object]:
+    """Drop unused Qt payloads, plus Windows host/PATH contamination."""
+    platform = platform or runtime_platform.system()
+    windows_root_text = os.environ.get("WINDIR")
+    windows_root = _resolved(windows_root_text) if windows_root_text else None
     installed_base = _resolved(sysconfig.get_config_var("installed_base"))
     environment_root = _resolved(sys.prefix)
-    windows_root = _resolved(os.environ["WINDIR"])
     result = []
     for entry in binaries:
         destination, source_text = _entry_parts(entry)
-        normalized_destination = destination.replace("\\", "/").lower()
-        if normalized_destination.endswith(
-            (
-                "pyside6/qt6pdf.dll",
-                "pyside6/qt6pdf.so",
-                "pyside6/qt6virtualkeyboard.dll",
-                "pyside6/qt6virtualkeyboard.so",
-                "pyside6/plugins/imageformats/qpdf.dll",
-                "pyside6/plugins/imageformats/libqpdf.so",
-                "pyside6/plugins/platforminputcontexts/qtvirtualkeyboardplugin.dll",
-                "pyside6/plugins/platforminputcontexts/libqtvirtualkeyboardplugin.so",
-            )
-        ):
+        if _is_unused_qt_binary(destination) or _is_unused_qt_binary(source_text):
+            continue
+        if platform != "Windows":
+            result.append(entry)
             continue
         source = _resolved(source_text)
-        if source.is_relative_to(windows_root):
+        if windows_root is not None and source.is_relative_to(windows_root):
             continue
         if source.is_relative_to(installed_base) or source.is_relative_to(environment_root):
             result.append(entry)
@@ -355,7 +376,7 @@ def generate_payload(
                 artifact_paths[name].add(destination.replace("\\", "/"))
             if not matched and source.is_relative_to(installed_base):
                 artifact_paths["python"].add(destination.replace("\\", "/"))
-            elif not matched and is_binary and platform.system() == "Linux":
+            elif not matched and is_binary and runtime_platform.system() == "Linux":
                 native_paths[source].add(destination.replace("\\", "/"))
 
     if unmatched_site_packages:
@@ -439,14 +460,14 @@ def generate_payload(
     components.append(
         {
             "name": "Python",
-            "version": platform.python_version(),
+            "version": runtime_platform.python_version(),
             "scope": "runtime",
             "license_expression": "PSF-2.0",
             "project_url": f"https://www.python.org/downloads/release/python-{sys.version_info.major}{sys.version_info.minor}{sys.version_info.micro}/",
             "source_archive_urls": [
                 (
-                    f"https://www.python.org/ftp/python/{platform.python_version()}/"
-                    f"Python-{platform.python_version()}.tar.xz"
+                    f"https://www.python.org/ftp/python/{runtime_platform.python_version()}/"
+                    f"Python-{runtime_platform.python_version()}.tar.xz"
                 )
             ],
             "notice_paths": [python_notice],
@@ -457,7 +478,7 @@ def generate_payload(
         }
     )
 
-    if platform.system() == "Windows":
+    if runtime_platform.system() == "Windows":
         microsoft_paths: dict[str, set[str]] = defaultdict(set)
         openssl_paths: dict[str, set[str]] = defaultdict(set)
         for collection in (binaries, datas):
@@ -572,7 +593,10 @@ def generate_payload(
     inventory = {
         "schema_version": 2,
         "artifact_layout": "PyInstaller one-directory bundle with replaceable shared libraries",
-        "platform": {"system": platform.system(), "machine": platform.machine()},
+        "platform": {
+            "system": runtime_platform.system(),
+            "machine": runtime_platform.machine(),
+        },
         "components": sorted(components, key=lambda item: str(item["name"]).lower()),
         "build_only": build_only,
         "resolved_runtime_not_packaged": resolved_not_packaged,
