@@ -19,11 +19,19 @@ from sdc11073.xml_types.xml_structure import DateOfBirthProperty
 from .constants import (
     ACTION_HANDLE_PREFIX,
     ALERT_HANDLE_PREFIX,
+    ALERT_SYSTEM_HANDLE,
+    CHANNEL_HANDLE,
     CHANNEL_HANDLE_PREFIX,
+    LOCATION_CONTEXT_HANDLE,
+    MDS_HANDLE,
     METRIC_HANDLE_PREFIX,
     OPERATION_HANDLE_PREFIX,
+    PATIENT_CONTEXT_HANDLE,
     PRESET_DIR,
+    SCO_HANDLE,
     SIGNAL_HANDLE_PREFIX,
+    SYSTEM_CONTEXT_HANDLE,
+    VMD_HANDLE,
     VMD_HANDLE_PREFIX,
 )
 from .model import (
@@ -91,6 +99,16 @@ _ALERT_KEYS = {
     "delegable",
 }
 _ACTION_KEYS = {"handle", "label", "target", "type", "note", "effects"}
+_FIXED_DESCRIPTOR_HANDLES = {
+    MDS_HANDLE,
+    SCO_HANDLE,
+    ALERT_SYSTEM_HANDLE,
+    VMD_HANDLE,
+    CHANNEL_HANDLE,
+    SYSTEM_CONTEXT_HANDLE,
+    PATIENT_CONTEXT_HANDLE,
+    LOCATION_CONTEXT_HANDLE,
+}
 
 
 class ConfigError(Exception):
@@ -857,7 +875,8 @@ def parse(data: Any) -> DeviceConfig:
     device, instance_name = _device_from_dict(data.get("device"))
     metrics = [metric_from_dict(entry) for entry in data.get("metrics", [])]
     alerts = [alert_from_dict(entry) for entry in data.get("alerts", [])]
-    metric_handles = {spec.handle or (METRIC_HANDLE_PREFIX + spec.slug): spec for spec in metrics}
+    descriptors = _FIXED_DESCRIPTOR_HANDLES | _section_handles(metrics)
+    metric_handles = _resolve_metric_handles(metrics, descriptors)
     actions = [action_from_dict(entry, metric_handles) for entry in data.get("actions", [])]
     location, patient = _contexts_from_dict(data.get("contexts"))
 
@@ -918,6 +937,51 @@ def _claim_handle(handles: set[str], explicit: str | None, generated: str, field
     return handle
 
 
+def _section_handles(metrics: list[MetricSpec]) -> set[str]:
+    handles = set()
+    for spec in metrics:
+        if spec.section:
+            section_slug = slugify(spec.section)
+            handles.add(VMD_HANDLE_PREFIX + section_slug)
+            handles.add(CHANNEL_HANDLE_PREFIX + section_slug)
+    return handles
+
+
+def _resolve_metric_handles(
+    metrics: list[MetricSpec],
+    descriptors: set[str],
+) -> dict[str, MetricSpec]:
+    """Claim profile metric handles in declaration order without suffixing collisions."""
+    resolved: list[tuple[MetricSpec, str]] = []
+    metrics_by_handle: dict[str, MetricSpec] = {}
+    for spec in metrics:
+        implicit = spec.handle is None
+        handle = spec.handle or (METRIC_HANDLE_PREFIX + spec.slug)
+        if handle in descriptors:
+            if implicit and handle in metrics_by_handle:
+                msg = (
+                    f"metrics[{spec.label}]: implicit handle {handle!r} duplicates another metric; "
+                    "give metrics with duplicate labels explicit unique handles"
+                )
+            else:
+                msg = f"metrics[{spec.label}]: handle {handle!r} already exists"
+            raise ConfigError(msg)
+        descriptors.add(handle)
+        metrics_by_handle[handle] = spec
+        resolved.append((spec, handle))
+        if spec.controllable:
+            _claim_handle(
+                descriptors,
+                None,
+                OPERATION_HANDLE_PREFIX + handle.removeprefix(METRIC_HANDLE_PREFIX),
+                f"metrics[{spec.label}] control",
+            )
+
+    for spec, handle in resolved:
+        spec.handle = handle
+    return metrics_by_handle
+
+
 def _preflight_apply(service: ProviderService, device: DeviceConfig, *, replace: bool) -> None:
     """Validate the final descriptor graph before replacing any live descriptors.
 
@@ -940,14 +1004,12 @@ def _preflight_apply(service: ProviderService, device: DeviceConfig, *, replace:
         metric_specs.clear()
         metrics.clear()
 
+    descriptors.update(_section_handles(device.metrics))
     for spec in device.metrics:
-        if spec.section:
-            section_slug = slugify(spec.section)
-            descriptors.add(VMD_HANDLE_PREFIX + section_slug)
-            descriptors.add(CHANNEL_HANDLE_PREFIX + section_slug)
-
-    for spec in device.metrics:
-        handle = _claim_handle(descriptors, spec.handle, METRIC_HANDLE_PREFIX + spec.slug, f"metrics[{spec.label}]")
+        if spec.handle is None:
+            msg = f"metrics[{spec.label}]: metric handle was not resolved during parsing"
+            raise ConfigError(msg)
+        handle = _claim_handle(descriptors, spec.handle, "", f"metrics[{spec.label}]")
         metrics.add(handle)
         metric_specs[handle] = spec
         if spec.controllable:
@@ -971,6 +1033,7 @@ def _preflight_apply(service: ProviderService, device: DeviceConfig, *, replace:
                 f"alerts[{spec.label}] signal",
             )
 
+    normalized_effects: list[tuple[ActionSpec, dict[str, Decimal | str]]] = []
     for spec in device.actions:
         if spec.target_handle not in descriptors:
             msg = f"actions[{spec.label}]: target {spec.target_handle!r} is not available after import"
@@ -979,9 +1042,10 @@ def _preflight_apply(service: ProviderService, device: DeviceConfig, *, replace:
             if effect_handle not in metrics:
                 msg = f"actions[{spec.label}].effects: {effect_handle!r} is not a metric available after import"
                 raise ConfigError(msg)
+        effects: dict[str, Decimal | str] = {}
         for effect_handle, value in spec.effects.items():
             try:
-                spec.effects[effect_handle] = coerce_metric_value(
+                effects[effect_handle] = coerce_metric_value(
                     metric_specs[effect_handle],
                     value,
                     effect_handle,
@@ -989,6 +1053,7 @@ def _preflight_apply(service: ProviderService, device: DeviceConfig, *, replace:
             except (TypeError, ValueError) as exc:
                 msg = f"actions[{spec.label}].effects[{effect_handle}]: {exc}"
                 raise ConfigError(msg) from exc
+        normalized_effects.append((spec, effects))
         _claim_handle(descriptors, spec.handle, ACTION_HANDLE_PREFIX + spec.slug, f"actions[{spec.label}]")
 
     if device.location is not None and device.location.is_empty():
@@ -1005,6 +1070,9 @@ def _preflight_apply(service: ProviderService, device: DeviceConfig, *, replace:
         except (TypeError, ValueError) as exc:
             msg = f"contexts.patient: {exc}"
             raise ConfigError(msg) from exc
+
+    for spec, effects in normalized_effects:
+        spec.effects = effects
 
 
 def apply_to(

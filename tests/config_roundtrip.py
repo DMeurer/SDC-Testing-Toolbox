@@ -17,7 +17,7 @@ import tempfile
 import threading
 import time
 from decimal import Decimal
-from itertools import pairwise
+from itertools import pairwise, permutations
 from pathlib import Path
 
 from lxml import etree
@@ -455,9 +455,11 @@ def check_section_handle_collisions(report: Report, service: ProviderService) ->
         for collision_first in (True, False):
             colliding = {"label": "Collision", "kind": "number", "handle": generated_handle}
             sectioned = {"label": "Sectioned", "kind": "number", "section": "Generated section"}
-            profile = config.parse({"metrics": [colliding, sectioned] if collision_first else [sectioned, colliding]})
             before = complete_snapshot(service)
             try:
+                profile = config.parse(
+                    {"metrics": [colliding, sectioned] if collision_first else [sectioned, colliding]},
+                )
                 config.apply_to(service, profile)
             except config.ConfigError as exc:
                 report.check(
@@ -472,6 +474,22 @@ def check_section_handle_collisions(report: Report, service: ProviderService) ->
                 complete_snapshot(service) == before,
                 f"rejected {generated_handle} collision does not mutate the MDIB or service",
             )
+
+    before = complete_snapshot(service)
+    try:
+        config.parse({"metrics": [{"label": "Fixed collision", "kind": "text", "handle": "mds0"}]})
+    except config.ConfigError as exc:
+        report.check(
+            "mds0" in str(exc) and "already exists" in str(exc),
+            "an explicit metric handle cannot claim a fixed descriptor",
+            str(exc),
+        )
+    else:
+        report.check(False, "an explicit metric handle cannot claim a fixed descriptor", "it was accepted")
+    report.check(
+        complete_snapshot(service) == before,
+        "a fixed descriptor collision does not mutate the MDIB or service",
+    )
     service.remove_metric("m.existing")
 
 
@@ -804,6 +822,122 @@ def check_action_effect_types(report: Report) -> None:
         report.check("maximum" in str(exc), "an out-of-range config effect is rejected", str(exc))
     else:
         report.check(False, "an out-of-range config effect is rejected", "it was accepted")  # noqa: FBT003
+
+
+def check_metric_handle_resolution(report: Report, service: ProviderService) -> None:
+    existing = service.add_metric(
+        MetricSpec(label="Existing", kind=MetricKind.NUMBER, initial_value=Decimal("7")),
+    )
+    metric_entries = {
+        MetricKind.NUMBER: {"label": "Duplicate", "kind": "number"},
+        MetricKind.TEXT: {"label": "Duplicate", "kind": "text"},
+        MetricKind.CHOICE: {
+            "label": "Duplicate",
+            "kind": "choice",
+            "allowed_values": ["001", "RUN"],
+        },
+    }
+    for first, second in permutations(metric_entries, 2):
+        before = complete_snapshot(service)
+        try:
+            profile = config.parse(
+                {
+                    "metrics": [metric_entries[first], metric_entries[second]],
+                    "alerts": [{"label": "Duplicate source", "watches": "m.duplicate"}],
+                    "actions": [
+                        {
+                            "label": "Duplicate effect",
+                            "target": "m.duplicate",
+                            "effects": {"m.duplicate": "001"},
+                        },
+                    ],
+                },
+            )
+            config.apply_to(service, profile)
+        except config.ConfigError as exc:
+            report.check(
+                "implicit handle 'm.duplicate'" in str(exc) and "explicit unique handles" in str(exc),
+                f"duplicate implicit {first.value}/{second.value} handles require explicit unique handles",
+                str(exc),
+            )
+        else:
+            report.check(
+                False,
+                f"duplicate implicit {first.value}/{second.value} handles are rejected",
+                "they were accepted",
+            )
+        report.check(
+            complete_snapshot(service) == before,
+            f"rejected implicit {first.value}/{second.value} references do not mutate the provider",
+        )
+
+    explicit = config.parse(
+        {
+            "metrics": [
+                {"handle": "m.duplicate.number", "label": "Duplicate", "kind": "number"},
+                {"handle": "m.duplicate.text", "label": "Duplicate", "kind": "text"},
+                {
+                    "handle": "m.duplicate.choice",
+                    "label": "Duplicate",
+                    "kind": "choice",
+                    "allowed_values": ["001", "RUN"],
+                },
+            ],
+            "alerts": [
+                {"label": "Number source", "watches": "m.duplicate.number"},
+                {"label": "Text source", "watches": "m.duplicate.text"},
+                {"label": "Choice source", "watches": "m.duplicate.choice"},
+            ],
+            "actions": [
+                {
+                    "label": "Set duplicate number",
+                    "target": "m.duplicate.number",
+                    "effects": {"m.duplicate.number": "001"},
+                },
+                {
+                    "label": "Set duplicate text",
+                    "target": "m.duplicate.text",
+                    "effects": {"m.duplicate.text": "001"},
+                },
+                {
+                    "label": "Set duplicate choice",
+                    "target": "m.duplicate.choice",
+                    "effects": {"m.duplicate.choice": "001"},
+                },
+            ],
+        },
+    )
+    expected_handles = ["m.duplicate.number", "m.duplicate.text", "m.duplicate.choice"]
+    expected_effects = [
+        {"m.duplicate.number": Decimal("1")},
+        {"m.duplicate.text": "001"},
+        {"m.duplicate.choice": "001"},
+    ]
+    report.check(
+        [spec.handle for spec in explicit.metrics] == expected_handles,
+        "explicit metric handles preserve declaration order for duplicate labels",
+    )
+    report.check(
+        [action.effects for action in explicit.actions] == expected_effects,
+        "duplicate-label action effects use the exact referenced metric kind",
+        repr([action.effects for action in explicit.actions]),
+    )
+    config.apply_to(service, explicit)
+    report.check(
+        list(service.list_metrics()) == expected_handles
+        and [alert.source_handle for alert in service.list_alerts().values()] == expected_handles
+        and [action.target_handle for action in service.list_actions().values()] == expected_handles
+        and [action.effects for action in service.list_actions().values()] == expected_effects,
+        "preflight and creation use the parsed metric handles for every reference",
+    )
+    round_tripped = config.parse(config.to_dict(service))
+    report.check(
+        set(spec.handle for spec in round_tripped.metrics) == set(expected_handles)
+        and {action.label: action.effects for action in round_tripped.actions}
+        == {action.label: action.effects for action in explicit.actions},
+        "explicit duplicate-label handles and typed effects round-trip",
+    )
+    report.check(existing not in service.list_metrics(), "successful replacement removes the prior metric")
 
 
 BAD_FILES = [
@@ -1241,7 +1375,15 @@ def main() -> int:
     print("\n8. Action effects follow target metric kinds")
     check_action_effect_types(report)
 
-    print("\n9. Bad files are refused with a usable message")
+    print("\n9. Metric handles are stable across parsing, preflight, and creation")
+    handles = ProviderService(instance_name="config-metric-handles")
+    handles.start()
+    try:
+        check_metric_handle_resolution(report, handles)
+    finally:
+        handles.stop()
+
+    print("\n10. Bad files are refused with a usable message")
     for text, description in BAD_FILES:
         bad = workdir / "bad.json"
         bad.write_text(text, encoding="utf-8")
@@ -1264,7 +1406,7 @@ def main() -> int:
         else:
             report.check(False, f"refuses {description}", "it was accepted")  # noqa: FBT003
 
-    print("\n10. A missing file says so")
+    print("\n11. A missing file says so")
     try:
         config.load_file(workdir / "does-not-exist.json")
     except config.ConfigError as exc:
