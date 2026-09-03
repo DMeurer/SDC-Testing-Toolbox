@@ -18,7 +18,6 @@ import logging
 import os
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from decimal import Decimal
@@ -88,7 +87,7 @@ from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 # This file lives in tests/, so its own directory is on the path.
 from acceptance_provider import PEER_INSTANCE  # noqa: E402
-from script_support import Report  # noqa: E402
+from script_support import Report, owned_temp_directory  # noqa: E402
 
 
 def pump(app: QApplication, seconds: float = 0.4) -> None:
@@ -1837,54 +1836,55 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                 peer.kill()
 
         print("\n10c. Export and import from the File menu")
-        workdir = Path(tempfile.mkdtemp(prefix="sdctoolbox-gui-"))
-        preset = workdir / "preset.json"
+        with owned_temp_directory(prefix="sdctoolbox-gui-") as workdir:
+            preset = workdir / "preset.json"
 
-        # The file dialogs would block with nobody to answer them.
-        QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (str(preset), ""))  # noqa: ARG005
-        QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (str(preset), ""))  # noqa: ARG005
+            # The file dialogs would block with nobody to answer them.
+            QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (str(preset), ""))  # noqa: ARG005
+            QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (str(preset), ""))  # noqa: ARG005
 
-        before_metrics = sorted(service.list_metrics())
-        before_alerts = sorted(service.list_alerts())
-        report.check(bool(before_metrics), "there is something to export", str(before_metrics))
+            before_metrics = sorted(service.list_metrics())
+            before_alerts = sorted(service.list_alerts())
+            report.check(bool(before_metrics), "there is something to export", str(before_metrics))
 
-        written = window.export_config()
-        report.check(written is not None and written.exists(), "export writes the file")
+            written = window.export_config()
+            report.check(written is not None and written.exists(), "export writes the file")
 
-        service.remove_metric(before_metrics[0])
-        pane.refresh()
-        pump(app)
-        report.check(
-            sorted(service.list_metrics()) != before_metrics,
-            "the device is changed after exporting",
-        )
+            service.remove_metric(before_metrics[0])
+            pane.refresh()
+            pump(app)
+            report.check(
+                sorted(service.list_metrics()) != before_metrics,
+                "the device is changed after exporting",
+            )
 
-        report.check(window.import_config(), "import reports success")
-        pump(app)
-        report.check(
-            sorted(service.list_metrics()) == before_metrics,
-            "the data sources are back",
-            str(sorted(service.list_metrics())),
-        )
-        report.check(
-            sorted(service.list_alerts()) == before_alerts,
-            "and so are the alarms",
-            str(sorted(service.list_alerts())),
-        )
-        report.check(
-            pane.table.rowCount() == len(before_metrics),
-            "the table was refreshed by the import",
-            str(pane.table.rowCount()),
-        )
+            report.check(window.import_config(), "import reports success")
+            pump(app)
+            report.check(
+                sorted(service.list_metrics()) == before_metrics,
+                "the data sources are back",
+                str(sorted(service.list_metrics())),
+            )
+            report.check(
+                sorted(service.list_alerts()) == before_alerts,
+                "and so are the alarms",
+                str(sorted(service.list_alerts())),
+            )
+            report.check(
+                pane.table.rowCount() == len(before_metrics),
+                "the table was refreshed by the import",
+                str(pane.table.rowCount()),
+            )
 
-        preset.write_text('{"metrics": [{"label": "broken"}]}', encoding="utf-8")
-        shown_warnings.clear()
-        report.check(not window.import_config(), "a broken file is refused")
-        report.check(
-            len(shown_warnings) == 1,
-            "and the user is told why",
-            shown_warnings[0][1][:60] if shown_warnings else "no message",
-        )
+            preset.write_text('{"metrics": [{"label": "broken"}]}', encoding="utf-8")
+            shown_warnings.clear()
+            report.check(not window.import_config(), "a broken file is refused")
+            report.check(
+                len(shown_warnings) == 1,
+                "and the user is told why",
+                shown_warnings[0][1][:60] if shown_warnings else "no message",
+            )
+        report.check(not workdir.exists(), "the GUI import/export directory is removed after use")
 
         print("\n10d. The startup window")
         startup = StartupDialog()

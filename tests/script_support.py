@@ -4,10 +4,21 @@ from __future__ import annotations
 
 import queue
 import subprocess
+import tempfile
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
 
 ACCEPTANCE_PROVIDER_READY = "[provider] READY"
+
+
+@contextmanager
+def owned_temp_directory(*, prefix: str, directory: Path | None = None) -> Iterator[Path]:
+    """Yield an owned temporary directory and remove it on every exit path."""
+    with tempfile.TemporaryDirectory(prefix=prefix, dir=directory) as raw:
+        yield Path(raw)
 
 
 class Report:

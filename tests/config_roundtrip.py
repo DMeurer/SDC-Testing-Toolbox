@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import logging
 import sys
-import tempfile
 import threading
 import time
 from decimal import Decimal
@@ -25,7 +24,7 @@ from lxml import etree
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from script_support import Report  # noqa: E402
+from script_support import Report, owned_temp_directory  # noqa: E402
 from sdc11073.consumer.consumerimpl import SdcConsumer  # noqa: E402
 from sdc11073.definitions_sdc import SdcV1Definitions  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
@@ -1192,10 +1191,7 @@ SCHEMA_BAD_FILES = [
 ]
 
 
-def main() -> int:
-    basic_logging_setup(level=logging.WARNING)
-    report = Report()
-    workdir = Path(tempfile.mkdtemp(prefix="sdctoolbox-config-"))
+def run_checks(report: Report, workdir: Path) -> None:
     path = workdir / f"reference{config.FILE_SUFFIX}"
 
     print("=" * 74)
@@ -1464,6 +1460,29 @@ def main() -> int:
     else:
         report.check(False, "missing file reported clearly", "it was accepted")  # noqa: FBT003
 
+
+def check_owned_temp_cleanup(report: Report) -> None:
+    with owned_temp_directory(prefix="sdctoolbox-cleanup-root-") as root:
+        with owned_temp_directory(prefix="success-", directory=root) as successful:
+            (successful / "marker").write_text("closed", encoding="utf-8")
+        report.check(not successful.exists(), "owned temporary directories are removed after success")
+
+        try:
+            with owned_temp_directory(prefix="failure-", directory=root) as failed:
+                (failed / "marker").write_text("closed", encoding="utf-8")
+                raise AssertionError("forced temporary-directory failure")
+        except AssertionError:
+            pass
+        report.check(not failed.exists(), "owned temporary directories are removed after exceptions")
+
+
+def main() -> int:
+    basic_logging_setup(level=logging.WARNING)
+    report = Report()
+    check_owned_temp_cleanup(report)
+    with owned_temp_directory(prefix="sdctoolbox-config-") as workdir:
+        run_checks(report, workdir)
+    report.check(not workdir.exists(), "the config test directory is removed after all services stop")
     print()
     return report.summary()
 
