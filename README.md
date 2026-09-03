@@ -469,8 +469,8 @@ This is a focused SDC learning fixture, not an IEEE 11073 conformance claim. IEE
 
 ## Tests
 
-The pull-request workflow runs each deterministic area as a separately reported Linux job with
-`QT_QPA_PLATFORM=offscreen`:
+The pull-request workflow runs all 15 deterministic suites as separately reported Linux jobs
+with `QT_QPA_PLATFORM=offscreen`:
 
 | Suite | Covers |
 |-------|--------|
@@ -485,6 +485,7 @@ The pull-request workflow runs each deterministic area as a separately reported 
 | `tests/gui_dialogs.py` | metric, alarm, context and startup validation |
 | `tests/gui_cards_plots.py` | card construction and waveform/distribution rendering |
 | `tests/gui_layout.py` | split/tab modes and responsive card reflow |
+| `tests/gui_provider_structure.py` | provider action, alarm and operation structural refreshes |
 | `tests/service_lifecycle.py` | provider and consumer startup fault cleanup |
 | `tests/consumer_lifecycle.py` | window-close races, stale work and natural real-window shutdown |
 | `tests/acceptance_readiness.py` | bounded provider readiness waits and subprocess cleanup |
@@ -503,6 +504,7 @@ $env:QT_QPA_PLATFORM = "offscreen"
 .venv\Scripts\python.exe tests\gui_dialogs.py
 .venv\Scripts\python.exe tests\gui_cards_plots.py
 .venv\Scripts\python.exe tests\gui_layout.py
+.venv\Scripts\python.exe tests\gui_provider_structure.py
 .venv\Scripts\python.exe tests\consumer_lifecycle.py
 ```
 

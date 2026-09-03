@@ -42,6 +42,8 @@ jobs:
             script: tests/gui_cards_plots.py
           - name: GUI layout
             script: tests/gui_layout.py
+          - name: GUI provider structure
+            script: tests/gui_provider_structure.py
           - name: Service lifecycle
             script: tests/service_lifecycle.py
           - name: Consumer window lifecycle

@@ -72,7 +72,6 @@ from sdctoolbox.gui.startup_dialog import LINK_LOCAL_PREFIX, StartupDialog  # no
 from sdctoolbox.gui.styling import mute  # noqa: E402
 from sdctoolbox.gui.widgets import WidgetSpec  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
-    ActionSpec,
     AlertKind,
     AlertManifestation,
     AlertPriority,
@@ -1178,72 +1177,6 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         service.remove_metric(late)
         pump(app, seconds=1.0)
         report.check(row_for(pane, late) is None, "and disappears when removed")
-
-        late_action = service.add_action(
-            ActionSpec(label="Late action", target_handle=constants.MDS_HANDLE),
-        )
-        pump(app)
-        report.check(
-            late_action in pane.action_buttons and pane.action_buttons[late_action].isEnabled(),
-            "an action added at runtime appears enabled without a manual refresh",
-        )
-
-        service._set_operating_mode(late_action, pm_types.OperatingMode.DISABLED)  # noqa: SLF001
-        pump(app)
-        report.check(
-            not pane.action_buttons[late_action].isEnabled(),
-            "an action button follows a disabled operation state",
-        )
-        service._set_operating_mode(late_action, pm_types.OperatingMode.ENABLED)  # noqa: SLF001
-        pump(app)
-        report.check(
-            pane.action_buttons[late_action].isEnabled(),
-            "and becomes available when the operation is enabled again",
-        )
-
-        service.remove_action(late_action)
-        pump(app)
-        report.check(
-            late_action not in pane.action_buttons,
-            "an action removed at runtime disappears without a manual refresh",
-        )
-
-        late_alert = service.add_alert(AlertSpec(label="Late alarm", source_handle=zoom))
-        pump(app)
-        report.check(
-            cell_of(pane.alert_table, late_alert, ACOL_HANDLE) == late_alert,
-            "an alarm added at runtime appears without a manual refresh",
-        )
-        service.remove_alert(late_alert)
-        pump(app)
-        report.check(
-            cell_of(pane.alert_table, late_alert, ACOL_HANDLE) is None,
-            "an alarm removed at runtime disappears without a manual refresh",
-        )
-
-        late_operation_metric = service.add_metric(
-            MetricSpec(label="Late control", kind=MetricKind.NUMBER),
-        )
-        pump(app)
-        control_item = pane.table.item(row_for(pane, late_operation_metric), COL_CONTROL)
-        report.check(control_item.checkState() == Qt.Unchecked, "a metric starts without an operation")
-
-        service.enable_control(late_operation_metric)
-        pump(app)
-        control_item = pane.table.item(row_for(pane, late_operation_metric), COL_CONTROL)
-        report.check(
-            control_item.checkState() == Qt.Checked,
-            "adding its operation updates the control state without a manual refresh",
-        )
-        service.disable_control(late_operation_metric)
-        pump(app)
-        control_item = pane.table.item(row_for(pane, late_operation_metric), COL_CONTROL)
-        report.check(
-            control_item.checkState() == Qt.Unchecked,
-            "a metric control follows an operation state change",
-        )
-        service.remove_metric(late_operation_metric)
-        pump(app)
 
         print("\n8. Units")
         report.check(
