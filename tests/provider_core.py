@@ -18,6 +18,7 @@ Usage:  .venv/Scripts/python.exe tests/provider_core.py
 from __future__ import annotations
 
 import logging
+import math
 import sys
 import tempfile
 import threading
@@ -52,7 +53,11 @@ from sdctoolbox.model import (  # noqa: E402
     PatientMeasurement,
     WaveformShape,
 )
-from sdctoolbox.provider_service import DISTRIBUTION_BINS, ProviderService  # noqa: E402
+from sdctoolbox.provider_service import (  # noqa: E402
+    DISTRIBUTION_BINS,
+    ProviderService,
+    _distribution_samples,
+)
 
 
 def wait_until(predicate, timeout: float = 10.0) -> bool:
@@ -766,6 +771,96 @@ def check_decimal_boundaries(report: Report, service: ProviderService) -> None:
         and service.mdib.entities.by_handle("ch.uncreated_decimal_section") is None,
         "a step truncated to zero on the wire is rejected before section or metric mutation",
     )
+
+    generated_limit_rejections = 0
+    for kind in (MetricKind.WAVEFORM, MetricKind.DISTRIBUTION):
+        for name, value in (("maximum", Decimal("1e400")), ("minimum", Decimal("-1e400"))):
+            try:
+                MetricSpec(label="Generated limit", kind=kind, **{name: value})
+            except ValueError:
+                generated_limit_rejections += 1
+    report.check(
+        generated_limit_rejections == 4,
+        "waveform and distribution limits reject positive and negative float overflow",
+        f"{generated_limit_rejections} rejections",
+    )
+
+    before_handles = {handle for handle, _ in service.mdib.entities.items()}
+    before_metrics = service.list_metrics()
+    before_sections = service.sections()
+    add_rejections = 0
+    for kind in (MetricKind.WAVEFORM, MetricKind.DISTRIBUTION):
+        spec = MetricSpec(
+            label=f"Mutated {kind.value}",
+            kind=kind,
+            handle=f"m.mutated_{kind.value}",
+            section=f"Mutated {kind.value} section",
+        )
+        spec.maximum = Decimal("1e400")
+        try:
+            service.add_metric(spec)
+        except ValueError:
+            add_rejections += 1
+    report.check(
+        add_rejections == 2
+        and {handle for handle, _ in service.mdib.entities.items()} == before_handles
+        and service.list_metrics() == before_metrics
+        and service.sections() == before_sections
+        and not service._waveform_phase
+        and not service._pinned_samples
+        and not service.generator_running,
+        "invalid generated ranges leave no section, MDIB, bookkeeping, or generator mutation",
+        f"{add_rejections} rejections",
+    )
+
+    float_max = Decimal(str(sys.float_info.max))
+    float_half = float_max / 2
+    finite_blocks = []
+    for kind in (MetricKind.WAVEFORM, MetricKind.DISTRIBUTION):
+        for low, high in ((float_half, float_max), (-float_max, -float_half)):
+            spec = MetricSpec(label="Float edge", kind=kind, minimum=low, maximum=high)
+            if kind is MetricKind.WAVEFORM:
+                block, _ = service._next_block("m.float_edge", spec)
+            else:
+                block = _distribution_samples(spec, 0.0)
+            finite_blocks.append(bool(block) and all(sample.is_finite() and math.isfinite(float(sample)) for sample in block))
+    report.check(
+        all(finite_blocks),
+        "accepted positive and negative finite-float edge ranges generate only finite samples",
+        repr(finite_blocks),
+    )
+
+    recurring = [
+        service.add_metric(
+            MetricSpec(label=f"Recurring {kind.value} error", kind=kind),
+        )
+        for kind in (MetricKind.WAVEFORM, MetricKind.DISTRIBUTION)
+    ]
+    service.stop_generator()
+    for handle in recurring:
+        service.list_metrics()[handle].maximum = Decimal("1e400")
+    generation_errors = []
+
+    class GenerationErrorCounter(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            if record.getMessage().startswith("sample generation failed for"):
+                generation_errors.append(record)
+
+    counter = GenerationErrorCounter()
+    provider_logger = logging.getLogger("sdctoolbox.provider")
+    provider_logger.addHandler(counter)
+    try:
+        service._publish_one_block()
+        service._publish_one_block()
+    finally:
+        provider_logger.removeHandler(counter)
+    report.check(
+        all(handle in service._pinned_samples for handle in recurring) and len(generation_errors) == 2,
+        "recurring waveform and distribution errors are each logged once and quarantined",
+        f"{len(generation_errors)} errors",
+    )
+    for handle in recurring:
+        service.remove_metric(handle)
 
     tiny_domain = service.add_metric(
         MetricSpec(

@@ -155,10 +155,7 @@ def _distribution_samples(spec: MetricSpec, phase: float) -> list[Decimal]:
     one is whatever makes the device recognisable. It still moves, because a card that never
     changes tells you nothing about whether reports are arriving.
     """
-    low = float(spec.minimum if spec.minimum is not None else 0)
-    high = float(spec.maximum if spec.maximum is not None else 100)
-    if high <= low:
-        high = low + 1.0
+    low, high = spec.generated_float_range()
     shape = spec.distribution_shape
 
     samples = []
@@ -609,6 +606,10 @@ class ProviderService:
                     f"{missing}, which BICEPS makes mandatory"
                 )
                 raise ValueError(msg)
+            if spec.is_sample_array:
+                # MetricSpec is mutable, so repeat this preflight immediately before any
+                # lazy section, descriptor, bookkeeping, or generator mutation.
+                spec.generated_float_range()
             if spec.kind is MetricKind.DISTRIBUTION:
                 lower = spec.domain_minimum if spec.domain_minimum is not None else Decimal("0")
                 upper = spec.domain_maximum if spec.domain_maximum is not None else Decimal("1")
@@ -1416,12 +1417,16 @@ class ProviderService:
         WaveformStream carrying all of them rather than one report each. sdc11073 builds
         that report from TransactionResult.rt_updates, which is already a list.
         """
+        failure_logged = False
         while not self._waveform_stop.is_set():
             started = time.monotonic()
             try:
                 self._publish_one_block()
+                failure_logged = False
             except Exception:
-                logger.exception("waveform generation failed")
+                if not failure_logged:
+                    logger.exception("sample generator failed; retrying")
+                    failure_logged = True
             # Sleep the remainder of the block, so generation keeps real time rather than
             # drifting by however long the writes took.
             self._waveform_stop.wait(max(0.0, WAVEFORM_BLOCK_SECONDS - (time.monotonic() - started)))
@@ -1450,8 +1455,12 @@ class ProviderService:
             advanced: dict[str, float] = {}
             wave_entities = []
             for handle, spec in waveforms:
-                block, next_phase = self._next_block(handle, spec)
-                entity = self._try_apply(handle, block)
+                try:
+                    block, next_phase = self._next_block(handle, spec)
+                    entity = self._try_apply(handle, block)
+                except Exception:  # noqa: BLE001 - quarantine a permanently broken metric
+                    self._quarantine_generation(handle)
+                    continue
                 if entity is not None:
                     wave_entities.append(entity)
                     advanced[handle] = next_phase
@@ -1459,7 +1468,11 @@ class ProviderService:
             dist_entities = []
             for handle, spec in distributions:
                 phase = self._waveform_phase.get(handle, 0.0)
-                entity = self._try_apply(handle, _distribution_samples(spec, phase))
+                try:
+                    entity = self._try_apply(handle, _distribution_samples(spec, phase))
+                except Exception:  # noqa: BLE001 - quarantine a permanently broken metric
+                    self._quarantine_generation(handle)
+                    continue
                 if entity is not None:
                     dist_entities.append(entity)
                     advanced[handle] = (phase + DISTRIBUTION_DRIFT) % 1.0
@@ -1481,9 +1494,14 @@ class ProviderService:
         """Stage a block, or None if the metric went away between listing and writing."""
         try:
             return self._apply_samples(handle, block)
-        except (KeyError, TypeError):
+        except KeyError:
             logger.debug("skipped a block for %s", handle, exc_info=True)
             return None
+
+    def _quarantine_generation(self, handle: str) -> None:
+        """Disable one broken metric after logging its generation failure once."""
+        self._pinned_samples.add(handle)
+        logger.exception("sample generation failed for %s; generation disabled", handle)
 
     def _next_block(self, handle: str, spec: MetricSpec) -> tuple[list[Decimal], float]:
         """The next block for one waveform, and the phase it leaves off at.
@@ -1492,10 +1510,7 @@ class ProviderService:
         """
         period = float(spec.sample_period or DEFAULT_SAMPLE_PERIOD)
         count = max(1, int(round(WAVEFORM_BLOCK_SECONDS / period)))
-        low = float(spec.minimum if spec.minimum is not None else 0)
-        high = float(spec.maximum if spec.maximum is not None else 100)
-        if high <= low:
-            high = low + 1.0
+        low, high = spec.generated_float_range()
 
         cycle = spec.cycle_samples or WAVEFORM_CYCLE_SAMPLES
         phase = self._waveform_phase.get(handle, 0.0)

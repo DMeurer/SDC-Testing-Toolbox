@@ -386,10 +386,12 @@ def validate_decimal(
         try:
             float_value = float(value)
         except (OverflowError, ValueError) as exc:
-            msg = f"{field} must be representable as a finite positive float"
+            qualifier = "finite positive" if positive else "finite"
+            msg = f"{field} must be representable as a {qualifier} float"
             raise ValueError(msg) from exc
-        if not math.isfinite(float_value) or float_value <= 0:
-            msg = f"{field} must be representable as a finite positive float, not {value}"
+        if not math.isfinite(float_value) or positive and float_value <= 0:
+            qualifier = "finite positive" if positive else "finite"
+            msg = f"{field} must be representable as a {qualifier} float, not {value}"
             raise ValueError(msg)
     return value
 
@@ -579,6 +581,8 @@ class MetricSpec:
         if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
             msg = f"minimum {self.minimum} is greater than maximum {self.maximum}"
             raise ValueError(msg)
+        if self.kind in SAMPLE_ARRAY_KINDS:
+            self.generated_float_range()
         if self.kind in SAMPLE_ARRAY_KINDS and self.initial_value is not None:
             msg = f"initial_value is not meaningful for {self.kind.value} metrics; use samples instead"
             raise ValueError(msg)
@@ -620,6 +624,24 @@ class MetricSpec:
     def is_sample_array(self) -> bool:
         """Whether one state of this metric carries many values rather than one."""
         return self.kind in SAMPLE_ARRAY_KINDS
+
+    def generated_float_range(self) -> tuple[float, float]:
+        """Return the finite float range used by sample generation."""
+        if not self.is_sample_array:
+            msg = f"{self.kind.value} metrics do not have a generated sample range"
+            raise ValueError(msg)
+        low_value = self.minimum if self.minimum is not None else Decimal(0)
+        high_value = self.maximum if self.maximum is not None else Decimal(100)
+        validate_decimal(low_value, "minimum used for sample generation", float_representable=True)
+        validate_decimal(high_value, "maximum used for sample generation", float_representable=True)
+        low = float(low_value)
+        high = float(high_value)
+        if high <= low:
+            high = low + 1.0
+        if not math.isfinite(high) or not math.isfinite(high - low):
+            msg = f"generated sample range {low_value} to {high_value} must have a finite float span"
+            raise ValueError(msg)
+        return low, high
 
     def domain_text(self) -> str:
         """The distribution's domain as something readable, e.g. '0 to 100 Hz'."""

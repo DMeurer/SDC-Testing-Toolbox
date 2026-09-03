@@ -820,6 +820,14 @@ BAD_FILES = [
         "a float-underflowing sample period",
     ),
     (
+        '{"metrics": [{"label": "wave", "kind": "waveform", "maximum": "1e400"}]}',
+        "a float-overflowing waveform range",
+    ),
+    (
+        '{"metrics": [{"label": "distribution", "kind": "distribution", "minimum": "-1e400"}]}',
+        "a negative float-overflowing distribution range",
+    ),
+    (
         '{"metrics": [{"label": "x", "kind": "number", "minimum": "10", "maximum": "1"}]}',
         "a minimum above its maximum",
     ),
