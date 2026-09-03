@@ -76,6 +76,7 @@ def remote_action_checks(report: Report, fixture: WindowFixture) -> None:
 
     label_handle = "action-label"
     type_handle = "action-type"
+    disabled_handle = "action-disabled"
     handle_fallback = "H" * 10_000
     actions = {
         label_handle: RemoteAction(
@@ -88,6 +89,11 @@ def remote_action_checks(report: Report, fixture: WindowFixture) -> None:
             handle=type_handle,
             type_code="T" * 10_000,
             enabled=True,
+        ),
+        disabled_handle: RemoteAction(
+            handle=disabled_handle,
+            label="D" * 10_000,
+            enabled=False,
         ),
         handle_fallback: RemoteAction(handle=handle_fallback, enabled=True),
     }
@@ -156,6 +162,10 @@ def remote_action_checks(report: Report, fixture: WindowFixture) -> None:
         pane.actions_widget.horizontalScrollBar().maximum() > 0,
         "an overflowing action row can scroll to every button",
     )
+    report.check(
+        not pane.action_buttons[disabled_handle].isEnabled(),
+        "a disabled remote action remains unavailable in the GUI",
+    )
 
     invoked_button = pane.action_buttons[type_handle]
     pane.actions_widget.ensureWidgetVisible(invoked_button)
@@ -176,8 +186,14 @@ def remote_action_checks(report: Report, fixture: WindowFixture) -> None:
         repr(remote.invoked),
     )
     report.check(
-        wait_for(fixture.app, lambda: all(button.isEnabled() for button in buttons)),
-        "action buttons are usable again after invocation",
+        wait_for(
+            fixture.app,
+            lambda: all(
+                button.isEnabled() is actions[handle].enabled
+                for handle, button in pane.action_buttons.items()
+            ),
+        ),
+        "action buttons restore their advertised availability after invocation",
     )
 
 

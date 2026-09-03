@@ -483,12 +483,15 @@ class RemoteDevice:
     def run_action(self, action_handle: str, timeout: float = 10.0) -> msg_types.InvocationState:
         """Tell the peer to do something, and wait for the final InvocationState.
 
-        Returns FAILED rather than raising when the action is unknown, so a caller has one
-        failure mode to handle instead of two.
+        Returns FAILED rather than raising when the action is unknown or disabled, so a caller
+        has one failure mode to handle instead of two.
         """
         action = self.actions().get(action_handle)
         if action is None:
             logger.warning("no action %s on this device", action_handle)
+            return msg_types.InvocationState.FAILED
+        if not action.enabled:
+            logger.warning("action %s is disabled", action_handle)
             return msg_types.InvocationState.FAILED
 
         future = self._consumer.set_service_client.activate(action_handle, arguments=None)

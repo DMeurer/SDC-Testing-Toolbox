@@ -1422,17 +1422,14 @@ def check_presets(report: Report) -> None:
 def check_foreign_consumer_operations(report: Report) -> None:
     print("\n13. Foreign consumer operation selection")
 
-    finished_info = SimpleNamespace(
-        InvocationState=msg_types.InvocationState.FINISHED,
-        InvocationErrorMessage=None,
-    )
-
     class SetClient:
         def __init__(self) -> None:
             self.calls = []
+            self.activate_results = {}
 
-        def _future(self):
-            result = SimpleNamespace(InvocationInfo=finished_info)
+        def _future(self, state=msg_types.InvocationState.FINISHED):
+            info = SimpleNamespace(InvocationState=state, InvocationErrorMessage=None)
+            result = SimpleNamespace(InvocationInfo=info)
             return SimpleNamespace(result=lambda timeout: result)
 
         def set_numeric_value(self, handle, value):
@@ -1445,7 +1442,7 @@ def check_foreign_consumer_operations(report: Report) -> None:
 
         def activate(self, handle, arguments):
             self.calls.append(("activate", handle, arguments))
-            return self._future()
+            return self._future(self.activate_results.get(handle, msg_types.InvocationState.FINISHED))
 
     def metric_entity(handle, node_type, *, lower="0", upper="100", resolution=None):
         descriptor = SimpleNamespace(
@@ -1578,35 +1575,62 @@ def check_foreign_consumer_operations(report: Report) -> None:
 
     absent_metric = "metric.absent-mode"
     absent_set = "operation.absent-mode"
+    disabled_action = "action.disabled"
+    enabled_action = "action.enabled"
     absent_action = "action.absent-mode"
+
+    def action_entity(mode):
+        state = SimpleNamespace()
+        if mode is not None:
+            state.OperatingMode = mode
+        return SimpleNamespace(
+            node_type=pm.ActivateOperationDescriptor,
+            descriptor=SimpleNamespace(OperationTarget="mds"),
+            state=state,
+        )
+
     entities = {
         absent_metric: metric_entity(absent_metric, pm.NumericMetricDescriptor),
         absent_set: operation_entity(absent_metric, pm.SetValueOperationDescriptor, "30", "40", mode=None),
-        absent_action: SimpleNamespace(
-            node_type=pm.ActivateOperationDescriptor,
-            descriptor=SimpleNamespace(OperationTarget="mds"),
-            state=SimpleNamespace(),
-        ),
+        disabled_action: action_entity(pm_types.OperatingMode.DISABLED),
+        enabled_action: action_entity(pm_types.OperatingMode.ENABLED),
+        absent_action: action_entity(None),
     }
     remote, client = remote_for(entities)
     metric = remote.metrics()[absent_metric]
-    action = remote.actions()[absent_action]
+    actions = remote.actions()
+    client.activate_results = {
+        enabled_action: msg_types.InvocationState.FINISHED_MOD,
+        absent_action: msg_types.InvocationState.CANCELLED,
+    }
     remote.set_value(absent_metric, Decimal("35"))
-    remote.run_action(absent_action)
+    disabled_result = remote.run_action(disabled_action)
+    enabled_result = remote.run_action(enabled_action)
+    absent_result = remote.run_action(absent_action)
     report.check(
         metric.controllable_now
         and metric.selected_operation_handle == absent_set
         and (metric.minimum, metric.maximum) == (Decimal("30"), Decimal("40"))
-        and action.enabled,
+        and not actions[disabled_action].enabled
+        and actions[enabled_action].enabled
+        and actions[absent_action].enabled,
         "absent OperatingMode defaults to enabled for set and activate operations",
     )
     report.check(
         client.calls == [
             ("number", absent_set, Decimal("35")),
+            ("activate", enabled_action, None),
             ("activate", absent_action, None),
         ],
-        "default-enabled set and activate operations can be invoked",
+        "disabled actions do not reach transport while enabled and default-enabled actions do",
         str(client.calls),
+    )
+    report.check(
+        disabled_result is msg_types.InvocationState.FAILED
+        and enabled_result is msg_types.InvocationState.FINISHED_MOD
+        and absent_result is msg_types.InvocationState.CANCELLED,
+        "action invocation returns local rejection or the enabled transport result",
+        f"{disabled_result}, {enabled_result}, {absent_result}",
     )
 
     calls_before = list(client.calls)
