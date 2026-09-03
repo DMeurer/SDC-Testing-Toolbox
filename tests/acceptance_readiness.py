@@ -6,7 +6,13 @@ import subprocess
 import sys
 import time
 
-from script_support import ProcessOutput, Report, stop_process, wait_for_ready
+from script_support import (
+    ACCEPTANCE_PROVIDER_READY,
+    ProcessOutput,
+    Report,
+    stop_process,
+    wait_for_ready,
+)
 
 TIMEOUT = 0.3
 
@@ -52,6 +58,21 @@ def check_deadline(
     return output.buffered_output, process.poll() is not None, output.is_alive
 
 
+def check_ready(
+    report: Report,
+    description: str,
+    output_code: str,
+) -> tuple[str, bool, bool]:
+    process, output = start_child(output_code)
+    try:
+        ready = wait_for_ready(output, timeout=TIMEOUT)
+        report.check(ready, f"{description} reports readiness")
+    finally:
+        stop_process(process, output)
+
+    return output.buffered_output, process.poll() is not None, output.is_alive
+
+
 def main() -> int:
     report = Report()
     print("Acceptance provider readiness timeout")
@@ -78,6 +99,57 @@ def main() -> int:
     )
     report.check(buffered == expected, "all child output is retained", repr(buffered))
     report.check(stopped and not reader_alive, "the output child and reader are cleaned up")
+
+    misleading_lines = [
+        "NOT READY",
+        f"{ACCEPTANCE_PROVIDER_READY} check failed",
+        f"prefix {ACCEPTANCE_PROVIDER_READY}",
+        f"{ACCEPTANCE_PROVIDER_READY} suffix",
+        ACCEPTANCE_PROVIDER_READY.lower(),
+        ACCEPTANCE_PROVIDER_READY.upper(),
+    ]
+    misleading_output = "".join(f"{line}\n" for line in misleading_lines)
+    buffered, stopped, reader_alive = check_deadline(
+        report,
+        "a misleading-output-then-silent child",
+        (
+            "import sys, time; "
+            f"sys.stdout.write({misleading_output!r}); "
+            "sys.stdout.flush(); "
+            "time.sleep(30)"
+        ),
+        expect_output=True,
+    )
+    report.check(
+        buffered == misleading_output,
+        "all rejected readiness-like output is retained",
+        repr(buffered),
+    )
+    report.check(
+        stopped and not reader_alive,
+        "the misleading child and reader are cleaned up",
+    )
+
+    ready_output = f"NOT READY\n\t {ACCEPTANCE_PROVIDER_READY} \t\n"
+    buffered, stopped, reader_alive = check_ready(
+        report,
+        "a misleading-then-exact child",
+        (
+            "import sys, time; "
+            f"sys.stdout.write({ready_output!r}); "
+            "sys.stdout.flush(); "
+            "time.sleep(30)"
+        ),
+    )
+    report.check(
+        buffered == ready_output,
+        "misleading and normalized readiness output is retained",
+        repr(buffered),
+    )
+    report.check(
+        stopped and not reader_alive,
+        "the ready child and reader are cleaned up",
+    )
 
     return report.summary()
 

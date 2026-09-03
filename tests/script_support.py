@@ -7,6 +7,8 @@ import subprocess
 import threading
 import time
 
+ACCEPTANCE_PROVIDER_READY = "[provider] READY"
+
 
 class Report:
     """Collect pass/fail results and print them as they happen."""
@@ -77,7 +79,7 @@ class ProcessOutput:
 
 
 def wait_for_ready(output: ProcessOutput, timeout: float) -> bool:
-    """Wait at most timeout seconds for a READY line from a process."""
+    """Wait at most timeout seconds for the acceptance provider's readiness marker."""
     deadline = time.monotonic() + timeout
     while True:
         remaining = deadline - time.monotonic()
@@ -89,7 +91,7 @@ def wait_for_ready(output: ProcessOutput, timeout: float) -> bool:
             return False
         if line is None:
             return False
-        if "READY" in line:
+        if line.strip() == ACCEPTANCE_PROVIDER_READY:
             return True
 
 

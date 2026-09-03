@@ -19,6 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from script_support import ACCEPTANCE_PROVIDER_READY  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 
 from sdctoolbox import constants  # noqa: E402
@@ -250,7 +251,7 @@ def main() -> int:
 
     print(f"[provider] initial metrics: {sorted(service.list_metrics())}", flush=True)
     print(f"[provider] alarms: {sorted(service.list_alerts())}", flush=True)
-    print("[provider] READY", flush=True)
+    print(ACCEPTANCE_PROVIDER_READY, flush=True)
 
     started = time.monotonic()
     late_added = False
