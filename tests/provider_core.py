@@ -32,6 +32,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from script_support import Report  # noqa: E402
+from sdc11073 import observableproperties  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 from sdc11073.xml_types import msg_types, pm_types  # noqa: E402
 from sdc11073.xml_types import pm_qnames as pm  # noqa: E402
@@ -332,6 +333,7 @@ def check_metric_removal_dependencies(report: Report, service: ProviderService) 
         MetricSpec(
             label="Dependency source",
             kind=MetricKind.NUMBER,
+            section="Dependency section",
             controllable=True,
             initial_value=Decimal("1"),
         ),
@@ -340,7 +342,19 @@ def check_metric_removal_dependencies(report: Report, service: ProviderService) 
     operation = service.operation_handle_for(metric)
     alert = service.add_alert(AlertSpec(label="Dependent alarm", source_handle=metric))
     signals = service.signal_handles_for(alert)
-    target_action = service.add_action(ActionSpec(label="Target dependency", target_handle=metric))
+    channel = "ch.dependency_section"
+    vmd = "vmd.dependency_section"
+    target_actions = [
+        service.add_action(ActionSpec(label="Metric target dependency", target_handle=metric)),
+        service.add_action(ActionSpec(label="Operation target dependency", target_handle=operation)),
+        service.add_action(ActionSpec(label="Condition target dependency", target_handle=alert)),
+        *(
+            service.add_action(ActionSpec(label=f"Signal {index} target dependency", target_handle=signal))
+            for index, signal in enumerate(signals)
+        ),
+        service.add_action(ActionSpec(label="Channel target dependency", target_handle=channel)),
+        service.add_action(ActionSpec(label="VMD target dependency", target_handle=vmd)),
+    ]
     effect_action = service.add_action(
         ActionSpec(
             label="Effect dependency",
@@ -348,16 +362,60 @@ def check_metric_removal_dependencies(report: Report, service: ProviderService) 
             effects={metric: Decimal("2")},
         ),
     )
+    cascading_action = service.add_action(
+        ActionSpec(label="Cascading action dependency", target_handle=target_actions[0]),
+    )
     surviving_action = service.add_action(
         ActionSpec(label="Unrelated action", target_handle=constants.MDS_HANDLE, effects={survivor: Decimal("3")}),
     )
 
-    service.remove_metric(metric)
+    observer_failures = []
 
-    removed_handles = [metric, operation, alert, *signals, target_action, effect_action]
+    def check_observer_state(_deleted: dict) -> None:
+        live_handles = {entity.handle for _, entity in service.mdib.entities.items()}
+        operation_targets = {
+            entity.handle: entity.descriptor.OperationTarget
+            for _, entity in service.mdib.entities.items()
+            if getattr(entity.descriptor, "OperationTarget", None) is not None
+        }
+        dangling_actions = {
+            action_handle: spec.target_handle
+            for action_handle, spec in service.list_actions().items()
+            if spec.target_handle not in live_handles
+        }
+        dangling_operations = {
+            operation_handle: target
+            for operation_handle, target in operation_targets.items()
+            if target not in live_handles
+        }
+        dangling_registered = {
+            operation_handle: operation.operation_target_handle
+            for operation_handle, operation in service._sco._registered_operations.items()  # noqa: SLF001
+            if operation.operation_target_handle not in live_handles
+        }
+        if dangling_actions or dangling_operations or dangling_registered:
+            observer_failures.append((dangling_actions, dangling_operations, dangling_registered))
+
+    observableproperties.bind(service.mdib, deleted_descriptors_by_handle=check_observer_state)
+    try:
+        service.remove_metric(metric)
+    finally:
+        observableproperties.unbind(service.mdib, deleted_descriptors_by_handle=check_observer_state)
+
+    removed_handles = [
+        metric,
+        operation,
+        alert,
+        *signals,
+        channel,
+        vmd,
+        *target_actions,
+        effect_action,
+        cascading_action,
+    ]
     report.check(
         all(handle is None or service.mdib.entities.by_handle(handle) is None for handle in removed_handles),
-        "the metric, set operation, alarm, signals and dependent actions leave the MDIB",
+        "the complete metric descriptor dependency closure leaves the MDIB",
         str([handle for handle in removed_handles if handle and service.mdib.entities.by_handle(handle) is not None]),
     )
     report.check(
@@ -369,14 +427,74 @@ def check_metric_removal_dependencies(report: Report, service: ProviderService) 
         "alert source bookkeeping is cleared",
     )
     report.check(
-        target_action not in service.list_actions() and effect_action not in service.list_actions(),
-        "action target and effect bookkeeping is cleared",
+        all(action not in service.list_actions() for action in [*target_actions, effect_action, cascading_action]),
+        "target, effect, and cascading action bookkeeping is cleared",
     )
     report.check(
         surviving_action in service.list_actions()
         and service.mdib.entities.by_handle(surviving_action) is not None
         and survivor in service.list_metrics(),
         "unrelated actions and metrics survive",
+    )
+    report.check(not observer_failures, "deletion observers never see a dangling operation target", str(observer_failures))
+    report.check("Dependency section" not in service.sections(), "the emptied section bookkeeping is cleared")
+
+    mdib_node, _ = service.mdib.reconstruct_mdib_with_context_states()
+    reconstructed_handles = set(mdib_node.xpath("//*[@Handle]/@Handle"))
+    reconstructed_targets = set(mdib_node.xpath("//*[@OperationTarget]/@OperationTarget"))
+    report.check(
+        reconstructed_targets <= reconstructed_handles
+        and all(spec.target_handle in reconstructed_handles for spec in service.list_actions().values()),
+        "the reconstructed MDIB and service actions have no dangling targets",
+        str(sorted(reconstructed_targets - reconstructed_handles)),
+    )
+
+    direct_alert = service.add_alert(AlertSpec(label="Direct removal alarm", source_handle=survivor))
+    direct_signals = service.signal_handles_for(direct_alert)
+    direct_actions = [
+        service.add_action(ActionSpec(label="Direct condition target", target_handle=direct_alert)),
+        *(
+            service.add_action(ActionSpec(label=f"Direct signal {index} target", target_handle=signal))
+            for index, signal in enumerate(direct_signals)
+        ),
+    ]
+    direct_cascade = service.add_action(
+        ActionSpec(label="Direct cascading target", target_handle=direct_actions[0]),
+    )
+
+    direct_observer_failures = []
+    observer_failures = direct_observer_failures
+    observableproperties.bind(service.mdib, deleted_descriptors_by_handle=check_observer_state)
+    try:
+        service.remove_alert(direct_alert)
+    finally:
+        observableproperties.unbind(service.mdib, deleted_descriptors_by_handle=check_observer_state)
+
+    directly_removed = [direct_alert, *direct_signals, *direct_actions, direct_cascade]
+    report.check(
+        all(service.mdib.entities.by_handle(handle) is None for handle in directly_removed)
+        and all(handle not in service.list_actions() for handle in [*direct_actions, direct_cascade]),
+        "direct alert removal deletes actions targeting its condition and every signal",
+        str([handle for handle in directly_removed if service.mdib.entities.by_handle(handle) is not None]),
+    )
+    report.check(
+        survivor in service.list_metrics() and service.mdib.entities.by_handle(survivor) is not None,
+        "direct alert removal leaves its source metric in place",
+    )
+    report.check(
+        not direct_observer_failures,
+        "direct alert deletion observers never see a dangling operation target",
+        str(direct_observer_failures),
+    )
+
+    mdib_node, _ = service.mdib.reconstruct_mdib_with_context_states()
+    reconstructed_handles = set(mdib_node.xpath("//*[@Handle]/@Handle"))
+    reconstructed_targets = set(mdib_node.xpath("//*[@OperationTarget]/@OperationTarget"))
+    report.check(
+        reconstructed_targets <= reconstructed_handles
+        and all(spec.target_handle in reconstructed_handles for spec in service.list_actions().values()),
+        "direct alert removal leaves no dangling target in the reconstructed MDIB or service",
+        str(sorted(reconstructed_targets - reconstructed_handles)),
     )
 
     service.remove_action(surviving_action)

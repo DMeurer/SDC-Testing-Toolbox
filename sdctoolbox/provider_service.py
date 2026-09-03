@@ -655,45 +655,71 @@ class ProviderService:
         with self._lock:
             metric_entity = self.mdib.entities.by_handle(handle)
             section_entities = []
-            section_handles: set[str] = set()
+            dependent_handles = {handle}
             if metric_entity is not None and metric_entity.parent_handle in self._section_channels():
                 channel_handle = metric_entity.parent_handle
                 section_entities, section_handles = self._empty_section_entities(
                     channel_handle,
                     excluding_metric=handle,
                 )
+                dependent_handles.update(section_handles)
 
-            for alert_handle, spec in list(self._alerts.items()):
-                if spec.source_handle == handle:
-                    self.remove_alert(alert_handle)
-            for action_handle, spec in list(self._actions.items()):
-                if spec.target_handle == handle or spec.target_handle in section_handles or handle in spec.effects:
-                    self.remove_action(action_handle)
+            alert_handles = sorted(
+                alert_handle
+                for alert_handle, spec in self._alerts.items()
+                if spec.source_handle == handle
+            )
+            signal_handles = sorted(
+                signal_handle
+                for alert_handle in alert_handles
+                for signal_handle in self._alert_signals.get(alert_handle, [])
+            )
+            dependent_handles.update(alert_handles)
+            dependent_handles.update(signal_handles)
 
-            operation_handle = self._operations.pop(handle, None)
-            entities = []
+            operation_handle = self._operations.get(handle)
+            if operation_handle is not None:
+                dependent_handles.add(operation_handle)
+
+            action_handles = self._dependent_action_handles(
+                dependent_handles,
+                effect_metric=handle,
+            )
+            for action_handle in action_handles:
+                self._sco.unregister_operation_by_handle(action_handle)
             if operation_handle is not None:
                 self._sco.unregister_operation_by_handle(operation_handle)
-                operation_entity = self.mdib.entities.by_handle(operation_handle)
-                if operation_entity is not None:
-                    entities.append(operation_entity)
-            if metric_entity is not None:
-                entities.append(metric_entity)
-
-            entities.extend(section_entities)
 
             # Drop the bookkeeping before committing. Leaving the transaction fires
             # deleted_descriptors_by_handle synchronously, and any observer that reacts by
             # listing our metrics would otherwise see a handle whose entity is already gone.
+            for action_handle in action_handles:
+                self._actions.pop(action_handle, None)
+            self._operations.pop(handle, None)
+            for alert_handle in alert_handles:
+                self._alerts.pop(alert_handle, None)
+                self._alert_signals.pop(alert_handle, None)
             self._specs.pop(handle, None)
+            self._pending_alert_sources.discard(handle)
             self._waveform_phase.pop(handle, None)
             self._pinned_samples.discard(handle)
-            if section_entities:
-                self._forget_section(section_entities[0].handle)
+            for entity in section_entities:
+                if entity.node_type == pm.ChannelDescriptor:
+                    self._forget_section(entity.handle)
 
+            removal_handles = [
+                *action_handles,
+                *([operation_handle] if operation_handle is not None else []),
+                *signal_handles,
+                *alert_handles,
+                handle,
+                *(entity.handle for entity in section_entities),
+            ]
             with self.mdib.descriptor_transaction() as mgr:
-                for entity in entities:
-                    mgr.remove_entity(entity)
+                for removal_handle in removal_handles:
+                    entity = self.mdib.entities.by_handle(removal_handle)
+                    if entity is not None:
+                        mgr.remove_entity(entity)
 
             logger.info("removed metric %s", handle)
 
@@ -905,11 +931,21 @@ class ProviderService:
     def remove_alert(self, handle: str) -> None:
         """Delete an alarm condition together with its signals."""
         with self._lock:
-            signal_handles = self._alert_signals.pop(handle, [])
+            signal_handles = sorted(self._alert_signals.get(handle, []))
+            dependent_handles = {handle, *signal_handles}
+            action_handles = self._dependent_action_handles(dependent_handles)
+            for action_handle in action_handles:
+                self._sco.unregister_operation_by_handle(action_handle)
+                self._actions.pop(action_handle, None)
+
+            self._alert_signals.pop(handle, None)
             self._alerts.pop(handle, None)
             entities = [
                 entity
-                for entity in (self.mdib.entities.by_handle(h) for h in [*signal_handles, handle])
+                for entity in (
+                    self.mdib.entities.by_handle(h)
+                    for h in [*action_handles, *signal_handles, handle]
+                )
                 if entity is not None
             ]
             with self.mdib.descriptor_transaction() as mgr:
@@ -1551,6 +1587,31 @@ class ProviderService:
         return coerce_metric_value(spec, value, handle)
 
     # -- internals -----------------------------------------------------------------
+
+    def _dependent_action_handles(
+        self,
+        descriptor_handles: set[str],
+        *,
+        effect_metric: str | None = None,
+    ) -> list[str]:
+        """Find actions depending on a descriptor closure, dependents before targets."""
+        waves = []
+        found: set[str] = set()
+        while True:
+            wave = []
+            for action_handle, spec in sorted(self._actions.items()):
+                if action_handle in found:
+                    continue
+                entity = self.mdib.entities.by_handle(action_handle)
+                target = getattr(getattr(entity, "descriptor", None), "OperationTarget", spec.target_handle)
+                if target in descriptor_handles or effect_metric is not None and effect_metric in spec.effects:
+                    wave.append(action_handle)
+            if not wave:
+                break
+            waves.append(wave)
+            found.update(wave)
+            descriptor_handles.update(wave)
+        return [action_handle for wave in reversed(waves) for action_handle in wave]
 
     def _create_entities(self, entities: list) -> None:
         """Write brand new entities in one descriptor transaction, undoing them if it fails.
