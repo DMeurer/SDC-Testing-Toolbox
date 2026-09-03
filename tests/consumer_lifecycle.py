@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 import weakref
+from collections.abc import Iterable
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -85,6 +86,7 @@ class FakeRemote:
         self.alert_values: dict[str, RemoteAlert] = {}
         self.context_values: dict[str, object] = {}
         self.metrics_count = 0
+        self.metrics_requests: list[frozenset[str] | None] = []
 
     def close(self) -> None:
         self.close_count += 1
@@ -95,9 +97,13 @@ class FakeRemote:
     def run_action(self, *_args) -> object:
         return self.action_call()
 
-    def metrics(self) -> dict[str, RemoteMetric]:
+    def metrics(self, handles: Iterable[str] | None = None) -> dict[str, RemoteMetric]:
         self.metrics_count += 1
-        return dict(self.metric_values)
+        wanted = None if handles is None else frozenset(handles)
+        self.metrics_requests.append(wanted)
+        if wanted is None:
+            return dict(self.metric_values)
+        return {handle: metric for handle, metric in self.metric_values.items() if handle in wanted}
 
     def actions(self) -> dict[str, RemoteAction]:
         return dict(self.action_values)
@@ -643,6 +649,82 @@ def waveform_reports_are_scoped(app: QApplication, provider: ProviderService) ->
     check(remote.close_count == 1 and service.stop_count == 1, "sample session resources close once")
 
 
+def metric_reports_are_scoped(app: QApplication, provider: ProviderService) -> None:
+    window, pane, service = new_window(provider)
+    remote = FakeRemote("metric-reports")
+    initial_distribution = (Decimal("1"), Decimal("2"), Decimal("3"))
+    target_distribution = (Decimal("9"), Decimal("7"), Decimal("8"))
+    remote.metric_values = {
+        "distribution": RemoteMetric(
+            handle="distribution",
+            node_type_name="DistributionSampleArrayMetricDescriptor",
+            kind=MetricKind.DISTRIBUTION,
+            samples=initial_distribution,
+        ),
+        "scalar": RemoteMetric(
+            handle="scalar",
+            node_type_name="NumericMetricDescriptor",
+            kind=MetricKind.NUMBER,
+            value=Decimal(0),
+        ),
+    }
+    attach(pane, remote)
+    pane.set_use_widgets(True)
+    distribution_plot = pane.board.card("distribution").control.plot
+    distribution_plot.flush()
+    requests_before = len(remote.metrics_requests)
+
+    remote.metric_values["distribution"].samples = target_distribution
+    pane.bridge.metrics_changed.emit({"distribution": object()})
+    tween_started = distribution_plot._tween_started  # noqa: SLF001
+    scalar_updates = 0
+    timer = QTimer(window)
+    timer.setInterval(10)
+
+    def emit_scalar() -> None:
+        nonlocal scalar_updates
+        scalar_updates += 1
+        remote.metric_values["scalar"].value = Decimal(scalar_updates)
+        pane.bridge.metrics_changed.emit({"scalar": object()})
+
+    timer.timeout.connect(emit_scalar)
+    timer.start()
+    settled = wait_for(
+        app,
+        lambda: scalar_updates >= 25
+        and distribution_plot.samples == [float(value) for value in target_distribution]
+        and not distribution_plot._timer.isActive(),  # noqa: SLF001
+        timeout=0.8,
+    )
+    timer.stop()
+    app.processEvents()
+
+    check(settled, "unrelated scalar reports do not keep a distribution tween alive")
+    check(
+        distribution_plot._tween_started == tween_started,  # noqa: SLF001
+        "unrelated metric reports do not restart the distribution tween",
+    )
+    scalar_text = pane.board.card("scalar").control.edit.text()
+    scalar_row = next(
+        row
+        for row in range(pane.table.rowCount())
+        if pane.table.item(row, consumer_module.COL_HANDLE).text() == "scalar"
+    )
+    check(
+        scalar_text == str(scalar_updates)
+        and pane.table.item(scalar_row, consumer_module.COL_VALUE).text() == str(scalar_updates),
+        "scalar reports update the affected card and table row",
+    )
+    requests = remote.metrics_requests[requests_before:]
+    check(
+        requests
+        and all(request in {frozenset({"distribution"}), frozenset({"scalar"})} for request in requests),
+        "metric reports request only their changed handles",
+    )
+    window.close()
+    check(remote.close_count == 1 and service.stop_count == 1, "metric session resources close once")
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     provider = ProviderService(instance_name="consumer-lifecycle")
@@ -666,6 +748,7 @@ def main() -> int:
         peer_restart_requires_manual_reconnect(app, provider)
         failed_reconnect_clears_peer_ui(app, provider)
         waveform_reports_are_scoped(app, provider)
+        metric_reports_are_scoped(app, provider)
     finally:
         consumer_module.ConsumerService = old_service
         consumer_module.MdibBridge = old_bridge

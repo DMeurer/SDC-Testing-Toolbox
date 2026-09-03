@@ -37,7 +37,7 @@ from .model import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
 
 logger = logging.getLogger("sdctoolbox.consumer")
 
@@ -218,17 +218,22 @@ class RemoteDevice:
         """The consumer-side MDIB."""
         return self._mdib
 
-    def metrics(self) -> dict[str, RemoteMetric]:
-        """Build a defensive snapshot of every metric on the peer.
+    def metrics(self, handles: Iterable[str] | None = None) -> dict[str, RemoteMetric]:
+        """Build defensive snapshots of the requested metrics on the peer.
 
         Unknown node types are skipped rather than guessed at; callers that want to show
-        them can walk ``mdib.entities`` themselves.
+        them can walk ``mdib.entities`` themselves. With no handles, snapshot every metric.
         """
+        wanted = None if handles is None else frozenset(handles)
+        if wanted == frozenset():
+            return {}
         with self._lock:
-            operations_by_target = self._operation_index()
+            operations_by_target = self._operation_index(wanted)
             result: dict[str, RemoteMetric] = {}
 
             for handle, entity in self._mdib.entities.items():
+                if wanted is not None and handle not in wanted:
+                    continue
                 node_type = getattr(entity, "node_type", None)
                 kind = METRIC_NODE_TYPES.get(node_type)
                 if kind is None:
@@ -314,7 +319,7 @@ class RemoteDevice:
             return next(iter(patients.values()))
         return PatientInfo()
 
-    def _operation_index(self) -> dict[str, list[_SetOperation]]:
+    def _operation_index(self, targets: frozenset[str] | None = None) -> dict[str, list[_SetOperation]]:
         """Index the peer's set operations by the metric they target.
 
         State and AllowedRange stay attached to their operation handle so selecting an
@@ -327,7 +332,7 @@ class RemoteDevice:
             if node_type not in SET_OPERATION_NODE_TYPES:
                 continue
             target = getattr(getattr(entity, "descriptor", None), "OperationTarget", None)
-            if not target:
+            if not target or targets is not None and target not in targets:
                 continue
 
             state = getattr(entity, "state", None)
@@ -411,7 +416,7 @@ class RemoteDevice:
             msg = "use Decimal, never float"
             raise TypeError(msg)
 
-        metrics = self.metrics()
+        metrics = self.metrics((metric_handle,))
         metric = metrics.get(metric_handle)
         if metric is None or not metric.operation_handles:
             logger.warning("no set operation targets %s", metric_handle)

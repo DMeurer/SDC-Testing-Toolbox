@@ -95,6 +95,29 @@ def main() -> int:
             str(distribution_plot.samples),
         )
 
+        distribution_plot.add_samples([9.0] * 32)
+        tween_started = distribution_plot._tween_started  # noqa: SLF001
+        distribution_plot.add_samples([9.0] * 32)
+        report.check(
+            distribution_plot._timer.isActive()  # noqa: SLF001
+            and distribution_plot._tween_started == tween_started,  # noqa: SLF001
+            "repeating an active distribution target does not restart its timer",
+        )
+        report.check(
+            wait_for(
+                app,
+                lambda: distribution_plot.samples == [9.0] * 32
+                and not distribution_plot._timer.isActive(),  # noqa: SLF001
+                timeout=0.5,
+            ),
+            "the unchanged distribution target still settles",
+        )
+        distribution_plot.add_samples([9.0] * 32)
+        report.check(
+            not distribution_plot._timer.isActive(),  # noqa: SLF001
+            "repeating a settled distribution target leaves its timer stopped",
+        )
+
     return report.summary()
 
 

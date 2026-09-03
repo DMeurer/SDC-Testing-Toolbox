@@ -50,6 +50,8 @@ from .table_columns import TableColumns
 from .widgets import WidgetBoard, from_remote_metric
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from ..consumer_service import DiscoveredDevice, RemoteDevice
 
 COLUMNS = ["Handle", "Label", "Kind", "Value", "Range", "Unit", "Writable"]
@@ -328,9 +330,7 @@ class ConsumerPane(QWidget):
         def current() -> bool:
             return not self._shutdown and generation == self._generation and self.remote is remote
 
-        self.bridge.metrics_changed.connect(
-            lambda _: self.refresh_values() if current() else None,
-        )
+        self.bridge.metrics_changed.connect(self._on_metrics_changed)
         for signal in (
             self.bridge.descriptors_added,
             self.bridge.descriptors_deleted,
@@ -487,15 +487,23 @@ class ConsumerPane(QWidget):
             return "disabled", "There is a set operation, but it is currently disabled"
         return "no", "No set operation targets this metric"
 
-    def refresh_values(self) -> None:
-        """Update just the value cells, keeping the selection and column widths."""
+    def _on_metrics_changed(self, states_by_handle: dict) -> None:
+        """Apply a metric report only while it belongs to the current connection."""
+        if not self._shutdown and self.sender() is self.bridge:
+            self.refresh_values(states_by_handle)
+
+    def refresh_values(self, handles: Iterable[str] | None = None) -> None:
+        """Update named values, or every value for an explicit full refresh."""
         if self.remote is None:
             return
-        metrics = self.remote.metrics()
+        wanted = None if handles is None else set(handles)
+        if wanted is not None and not wanted:
+            return
+        metrics = self.remote.metrics(wanted)
         self.board.show_values({handle: _displayable(metric) for handle, metric in metrics.items()})
         for row in range(self.table.rowCount()):
             handle_item = self.table.item(row, COL_HANDLE)
-            if handle_item is None:
+            if handle_item is None or wanted is not None and handle_item.text() not in wanted:
                 continue
             metric = metrics.get(handle_item.text())
             if metric is None:

@@ -171,6 +171,10 @@ class SamplePlot(QWidget):
         distribution that worked through a backlog of stale pictures would be showing the
         wrong one on purpose.
         """
+        # Compare with the destination, not the currently displayed in-between frame. The
+        # same target during a tween must let that tween finish rather than restart it.
+        if values == self._target:
+            return
         self._target = values
         current = list(self._samples)
         if len(current) != len(values):
