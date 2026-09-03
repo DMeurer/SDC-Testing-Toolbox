@@ -519,12 +519,7 @@ class MetricSpec:
         if self.kind is MetricKind.WAVEFORM:
             if self.sample_period is None:
                 self.sample_period = DEFAULT_SAMPLE_PERIOD
-            validate_decimal(
-                self.sample_period,
-                "sample_period",
-                positive=True,
-                float_representable=True,
-            )
+            self.generated_waveform_block_sample_count()
             self.shape = _coerce_enum(WaveformShape, self.shape, "shape")
             if not isinstance(self.cycle_samples, int) or self.cycle_samples < 2:  # noqa: PLR2004
                 msg = f"cycle_samples must be an integer of at least 2, not {self.cycle_samples!r}"
@@ -642,6 +637,34 @@ class MetricSpec:
             msg = f"generated sample range {low_value} to {high_value} must have a finite float span"
             raise ValueError(msg)
         return low, high
+
+    def generated_waveform_block_sample_count(self) -> int:
+        """Validate the sample period and return one generated block's bounded size."""
+        if self.kind is not MetricKind.WAVEFORM:
+            msg = f"{self.kind.value} metrics do not generate waveform blocks"
+            raise ValueError(msg)
+        period_value = validate_decimal(
+            self.sample_period,
+            "sample_period",
+            positive=True,
+            float_representable=True,
+        )
+        if period_value < constants.MIN_GENERATED_WAVEFORM_SAMPLE_PERIOD:
+            msg = (
+                f"sample_period must be at least {constants.MIN_GENERATED_WAVEFORM_SAMPLE_PERIOD} "
+                f"seconds so a generated block has at most "
+                f"{constants.MAX_GENERATED_WAVEFORM_BLOCK_SAMPLES} samples"
+            )
+            raise ValueError(msg)
+
+        ratio = constants.WAVEFORM_BLOCK_SECONDS / float(period_value)
+        if not math.isfinite(ratio) or ratio > constants.MAX_GENERATED_WAVEFORM_BLOCK_SAMPLES:
+            msg = (
+                "sample_period produces a non-finite or oversized generated waveform block "
+                f"(maximum {constants.MAX_GENERATED_WAVEFORM_BLOCK_SAMPLES} samples)"
+            )
+            raise ValueError(msg)
+        return max(1, round(ratio))
 
     def domain_text(self) -> str:
         """The distribution's domain as something readable, e.g. '0 to 100 Hz'."""

@@ -32,7 +32,6 @@ from . import constants
 from .handlers import apply_metric_value, make_activate_handler, make_set_handler
 from .model import (
     DEFAULT_PATIENT,
-    DEFAULT_SAMPLE_PERIOD,
     ActionSpec,
     AlertSpec,
     Coding,
@@ -87,7 +86,7 @@ class _ConfigurationSnapshot:
 # (see widgets/plot.py), so a block only decides how stale the newest sample is when it
 # arrives. A quarter second is a reasonable trade against four SOAP messages per second
 # per waveform - and a preset with three of them is twelve.
-WAVEFORM_BLOCK_SECONDS = 0.25
+WAVEFORM_BLOCK_SECONDS = constants.WAVEFORM_BLOCK_SECONDS
 
 # Samples per full cycle of the generated curve. Fixed rather than derived from the sample
 # period, so a slow waveform and a fast one look the same on screen and only differ in how
@@ -609,6 +608,8 @@ class ProviderService:
             if spec.is_sample_array:
                 # MetricSpec is mutable, so repeat this preflight immediately before any
                 # lazy section, descriptor, bookkeeping, or generator mutation.
+                if spec.kind is MetricKind.WAVEFORM:
+                    spec.generated_waveform_block_sample_count()
                 spec.generated_float_range()
             if spec.kind is MetricKind.DISTRIBUTION:
                 lower = spec.domain_minimum if spec.domain_minimum is not None else Decimal("0")
@@ -1508,8 +1509,7 @@ class ProviderService:
 
         Deliberately does not store the phase: see _publish_one_block.
         """
-        period = float(spec.sample_period or DEFAULT_SAMPLE_PERIOD)
-        count = max(1, int(round(WAVEFORM_BLOCK_SECONDS / period)))
+        count = spec.generated_waveform_block_sample_count()
         low, high = spec.generated_float_range()
 
         cycle = spec.cycle_samples or WAVEFORM_CYCLE_SAMPLES

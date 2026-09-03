@@ -711,24 +711,83 @@ def check_decimal_boundaries(report: Report, service: ProviderService) -> None:
         f"{limit_rejections} rejections",
     )
 
-    for period in (Decimal("0"), Decimal("-1"), Decimal("1e-324"), *non_finite):
+    for period in (
+        Decimal("0"),
+        Decimal("-1"),
+        Decimal("1e-324"),
+        Decimal("5e-324"),
+        Decimal("1e-12"),
+        *non_finite,
+    ):
         try:
-            MetricSpec(label="Period boundary", kind=MetricKind.WAVEFORM, sample_period=period)
+            MetricSpec(
+                label="Period boundary",
+                kind=MetricKind.WAVEFORM,
+                sample_period=period,
+            )
         except ValueError:
             continue
         report.check(False, f"sample period {period} is rejected", "it was accepted")  # noqa: FBT003
         break
     else:
-        report.check(True, "sample periods reject non-positive, non-finite, and float-underflow values")  # noqa: FBT003
-    tiny_period = MetricSpec(
-        label="Tiny period",
+        report.check(
+            True,
+            "sample periods reject invalid and oversized-block values",
+        )
+
+    boundary_period = constants.MIN_GENERATED_WAVEFORM_SAMPLE_PERIOD
+    boundary_spec = MetricSpec(
+        label="Boundary period",
         kind=MetricKind.WAVEFORM,
-        sample_period=Decimal("5e-324"),
+        sample_period=boundary_period,
     )
+    boundary_block, _ = service._next_block("m.boundary_period", boundary_spec)
     report.check(
-        float(tiny_period.sample_period) > 0,
-        "the smallest positive float-representable sample period remains valid",
-        str(tiny_period.sample_period),
+        len(boundary_block) == constants.MAX_GENERATED_WAVEFORM_BLOCK_SAMPLES,
+        "the exact minimum sample period generates the maximum permitted block",
+        f"{len(boundary_block)} samples",
+    )
+
+    boundary_spec.sample_period = boundary_period - Decimal("1e-30")
+    try:
+        service._next_block("m.below_boundary_period", boundary_spec)
+    except ValueError:
+        below_boundary_rejected = True
+    else:
+        below_boundary_rejected = False
+    report.check(
+        below_boundary_rejected,
+        "a direct block request just below the period boundary is rejected",
+    )
+
+    mutated_period = MetricSpec(label="Mutated period", kind=MetricKind.WAVEFORM)
+    mutated_period.handle = "m.mutated_period"
+    mutated_period.section = "Unsafe period section"
+    mutated_period.sample_period = Decimal("1e-12")
+    period_before_handles = {handle for handle, _ in service.mdib.entities.items()}
+    period_before_metrics = service.list_metrics()
+    period_before_sections = service.sections()
+    period_before_phase = dict(service._waveform_phase)
+    period_before_pinned = set(service._pinned_samples)
+    period_before_generator = service.generator_running
+    try:
+        service.add_metric(mutated_period)
+    except ValueError:
+        mutated_period_rejected = True
+    else:
+        mutated_period_rejected = False
+    report.check(
+        mutated_period_rejected
+        and {
+            handle for handle, _ in service.mdib.entities.items()
+        }
+        == period_before_handles
+        and service.list_metrics() == period_before_metrics
+        and service.sections() == period_before_sections
+        and service._waveform_phase == period_before_phase
+        and service._pinned_samples == period_before_pinned
+        and service.generator_running == period_before_generator,
+        "a mutated unsafe period leaves provider state unchanged",
     )
 
     before_handles = set(service.list_metrics())
