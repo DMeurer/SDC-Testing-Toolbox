@@ -16,3 +16,7 @@ The Python text is copied at build time from `LICENSE.txt` in the installed
 CPython distribution. Distribution-specific files are copied at build time
 from each installed wheel's declared license files. Their exact source paths
 and associations are recorded in `DEPENDENCY_INVENTORY.json`.
+
+`licenses/openssl/Apache-2.0.txt` is the unmodified Apache License 2.0 text
+from https://www.apache.org/licenses/LICENSE-2.0.txt, applicable to OpenSSL
+3.x.

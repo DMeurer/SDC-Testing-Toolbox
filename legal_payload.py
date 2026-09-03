@@ -26,6 +26,7 @@ REQUIRED_DOCUMENTS = (
     f"{LEGAL_ROOT}/licenses/qt/LGPL-3.0-only.txt",
     f"{LEGAL_ROOT}/licenses/qt/GPL-3.0-only.txt",
     f"{LEGAL_ROOT}/licenses/qt/Qt-GPL-exception-1.0.txt",
+    f"{LEGAL_ROOT}/licenses/openssl/Apache-2.0.txt",
 )
 
 _LICENSE_OVERRIDES = {
@@ -209,6 +210,7 @@ def _copy_static_documents(project_root: Path, output: Path) -> list[str]:
         f"{LEGAL_ROOT}/licenses/qt/LGPL-3.0-only.txt": project_root / LEGAL_ROOT / "licenses" / "qt" / "LGPL-3.0-only.txt",
         f"{LEGAL_ROOT}/licenses/qt/GPL-3.0-only.txt": project_root / "LICENSE",
         f"{LEGAL_ROOT}/licenses/qt/Qt-GPL-exception-1.0.txt": project_root / LEGAL_ROOT / "licenses" / "qt" / "Qt-GPL-exception-1.0.txt",
+        f"{LEGAL_ROOT}/licenses/openssl/Apache-2.0.txt": project_root / LEGAL_ROOT / "licenses" / "openssl" / "Apache-2.0.txt",
     }
     for destination, source in documents.items():
         if not source.is_file():
@@ -496,7 +498,7 @@ def generate_payload(
                             f"openssl-{version}/openssl-{version}.tar.gz"
                         )
                     ],
-                    "notice_paths": [python_notice],
+                    "notice_paths": [f"{LEGAL_ROOT}/licenses/openssl/Apache-2.0.txt"],
                     "evidence": {"modules": [], "artifact_paths": sorted(paths)},
                 }
             )
@@ -568,12 +570,19 @@ def generate_payload(
         )
 
     inventory = {
-        "schema_version": 1,
+        "schema_version": 2,
         "artifact_layout": "PyInstaller one-directory bundle with replaceable shared libraries",
         "platform": {"system": platform.system(), "machine": platform.machine()},
         "components": sorted(components, key=lambda item: str(item["name"]).lower()),
         "build_only": build_only,
         "resolved_runtime_not_packaged": resolved_not_packaged,
+        "resolved_runtime": [
+            {
+                "name": distributions[name].metadata["Name"],
+                "version": distributions[name].version,
+            }
+            for name in sorted(runtime_closure)
+        ],
         "required_documents": list(REQUIRED_DOCUMENTS),
         "generation": {
             "method": "installed distribution metadata plus PyInstaller Analysis TOCs",
@@ -609,6 +618,9 @@ def validate_payload(files: dict[str, bytes]) -> list[str]:
         inventory = json.loads(normalized[inventory_path].decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         return [f"invalid {inventory_path}: {error}"]
+
+    if inventory.get("schema_version") != 2:
+        errors.append(f"unsupported inventory schema version: {inventory.get('schema_version')!r}")
 
     def present(relative: str) -> bool:
         return prefix + relative in normalized
@@ -654,7 +666,10 @@ def validate_payload(files: dict[str, bytes]) -> list[str]:
             if not source_urls or not all(str(url).startswith("https://") for url in source_urls):
                 errors.append(f"{label}: no versioned corresponding-source archive URL")
     names = {component.get("name") for component in components if isinstance(component, dict)}
-    for expected in ("Python", "Qt", "PySide6_Essentials", "sdc11073"):
+    expected_components = ["Python", "Qt", "PySide6_Essentials", "sdc11073"]
+    if inventory.get("platform", {}).get("system") == "Windows":
+        expected_components.extend(("Microsoft Visual C++ Runtime", "OpenSSL"))
+    for expected in expected_components:
         if expected not in names:
             errors.append(f"inventory is missing expected runtime component {expected}")
     build_only = inventory.get("build_only")
@@ -671,6 +686,37 @@ def validate_payload(files: dict[str, bytes]) -> list[str]:
     for expected in ("pyinstaller-hooks-contrib", "PySide6_Addons"):
         if expected not in classified:
             errors.append(f"inventory does not classify expected unbundled distribution {expected}")
+    resolved_runtime = inventory.get("resolved_runtime")
+    if not isinstance(resolved_runtime, list) or not resolved_runtime:
+        errors.append("inventory has no resolved runtime dependency closure")
+    else:
+        resolved_names = {
+            _canonicalize_name(item.get("name", ""))
+            for item in resolved_runtime
+            if isinstance(item, dict) and item.get("name") and item.get("version")
+        }
+        classified_runtime = {
+            _canonicalize_name(component.get("name", ""))
+            for component in components
+            if isinstance(component, dict)
+        } | {
+            _canonicalize_name(item.get("name", ""))
+            for item in (resolved_not_packaged or [])
+            if isinstance(item, dict)
+        }
+        missing_runtime = resolved_names - classified_runtime
+        if missing_runtime:
+            errors.append(
+                "resolved runtime dependencies are unclassified: "
+                + ", ".join(sorted(missing_runtime))
+            )
+    native_notices = {
+        "OpenSSL": f"{LEGAL_ROOT}/licenses/openssl/Apache-2.0.txt",
+    }
+    for component in components:
+        expected_notice = native_notices.get(component.get("name"))
+        if expected_notice and expected_notice not in component.get("notice_paths", []):
+            errors.append(f"{component['name']}: missing component-specific legal notice")
     qt = next((component for component in components if component.get("name") == "Qt"), None)
     if qt and not any(
         str(path).lower().endswith((".dll", ".so", ".so.6"))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import tarfile
 import zipfile
@@ -62,6 +63,7 @@ def check_sources(report: Report) -> None:
         "legal/PROVENANCE.md",
         "legal/licenses/qt/LGPL-3.0-only.txt",
         "legal/licenses/qt/Qt-GPL-exception-1.0.txt",
+        "legal/licenses/openssl/Apache-2.0.txt",
     ):
         report.check((ROOT / relative).is_file(), f"source legal payload includes {relative}")
 
@@ -80,6 +82,62 @@ def check_archive(report: Report, archive_path: Path) -> None:
     report.check(inventory_count == 1, "artifact contains one dependency inventory", str(inventory_count))
     errors = validate_payload(files)
     report.check(not errors, "artifact legal payload and inventory are complete", "; ".join(errors))
+
+    inventory_path = next(
+        (name for name in files if name.replace("\\", "/").endswith(f"/{INVENTORY_NAME}")),
+        None,
+    )
+    if inventory_path is None:
+        return
+    inventory = json.loads(files[inventory_path].decode("utf-8"))
+
+    runtime_names = {
+        entry.get("name")
+        for entry in inventory.get("resolved_runtime", [])
+        if isinstance(entry, dict)
+    }
+    removable = next(
+        (
+            component.get("name")
+            for component in inventory.get("components", [])
+            if isinstance(component, dict) and component.get("name") in runtime_names
+        ),
+        None,
+    )
+    if removable:
+        omitted = dict(inventory)
+        omitted["components"] = [
+            component
+            for component in inventory["components"]
+            if component.get("name") != removable
+        ]
+        changed = dict(files)
+        changed[inventory_path] = json.dumps(omitted).encode("utf-8")
+        report.check(
+            any("unclassified" in error for error in validate_payload(changed)),
+            "artifact validation rejects an omitted resolved runtime component",
+            removable,
+        )
+
+    openssl = next(
+        (
+            component
+            for component in inventory.get("components", [])
+            if component.get("name") == "OpenSSL"
+        ),
+        None,
+    )
+    if openssl:
+        wrong_notice = json.loads(json.dumps(inventory))
+        next(
+            component for component in wrong_notice["components"] if component.get("name") == "OpenSSL"
+        )["notice_paths"] = ["legal/licenses/python/LICENSE.txt"]
+        changed = dict(files)
+        changed[inventory_path] = json.dumps(wrong_notice).encode("utf-8")
+        report.check(
+            any("OpenSSL: missing component-specific legal notice" in error for error in validate_payload(changed)),
+            "artifact validation rejects an unrelated OpenSSL notice",
+        )
 
 
 def main() -> int:

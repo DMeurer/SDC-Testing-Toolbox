@@ -32,7 +32,9 @@ source from one developer machine.
 On Windows, binaries copied from arbitrary `PATH` locations outside the Python
 installation and build environment are excluded, and Windows system libraries
 remain host dependencies. Native OpenSSL and Microsoft C/C++ runtime files are
-identified by embedded file version. On Linux, copied native libraries are
+identified by embedded file version; OpenSSL references its own bundled
+license rather than the unrelated Python license. On Linux, copied native
+libraries are
 assigned to installed Debian packages with `dpkg-query`; package versions and
 copyright files enter the inventory and payload, while PyInstaller's standard
 system-library exclusions remain host dependencies.
