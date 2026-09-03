@@ -135,6 +135,19 @@ def startup_dialog_checks(report: Report) -> None:
             dialog.close()
             dialog.deleteLater()
 
+    dialog = StartupDialog(name="non-local-address")
+    try:
+        dialog.ip_box.setCurrentText(" 192.0.2.10 ")
+        dialog._on_accept()
+        settings = dialog.settings()
+        report.check(
+            dialog.result() == QDialog.Accepted and settings is not None and settings.ip == "192.0.2.10",
+            "startup dialog accepts and normalizes a valid non-local IPv4 address",
+        )
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
 
 def main() -> int:
     application()

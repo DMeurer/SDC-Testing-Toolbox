@@ -11,7 +11,6 @@ first time and half an hour of confusion.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from ipaddress import AddressValueError, IPv4Address
 from pathlib import Path
 
 from PySide6.QtWidgets import (
@@ -29,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import config, constants
+from ..network import normalize_ipv4
 from .no_wheel import NoWheelComboBox
 from .styling import constrain_dynamic_label, mark_as_error, mute
 
@@ -207,8 +207,8 @@ class StartupDialog(QDialog):
             return
 
         try:
-            ip = str(IPv4Address(self.chosen_ip()))
-        except AddressValueError:
+            ip = normalize_ipv4(self.chosen_ip())
+        except ValueError:
             self._fail("Enter a valid IPv4 address to bind discovery to.")
             return
 
