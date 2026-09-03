@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import gc
 import os
 import sys
 import threading
 import time
+import weakref
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,12 +17,20 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from PySide6.QtCore import QObject, QTimer, Signal  # noqa: E402
+from PySide6.QtCore import (  # noqa: E402
+    QCoreApplication,
+    QEvent,
+    QObject,
+    QTimer,
+    Signal,
+)
 from PySide6.QtWidgets import QApplication  # noqa: E402
+from script_support import Report  # noqa: E402
 from sdc11073.xml_types import msg_types  # noqa: E402
 
 from sdctoolbox.consumer_service import DiscoveredDevice  # noqa: E402
 from sdctoolbox.gui import consumer_pane as consumer_module  # noqa: E402
+from sdctoolbox.gui.async_call import AsyncCall  # noqa: E402
 from sdctoolbox.gui.main_window import MainWindow  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
     MetricKind,
@@ -29,7 +39,6 @@ from sdctoolbox.model import (  # noqa: E402
     RemoteMetric,
 )
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
-from script_support import Report  # noqa: E402
 
 REPORT = Report()
 
@@ -98,6 +107,30 @@ class FakeRemote:
 
     def patient_contexts(self) -> dict[str, object]:
         return dict(self.context_values)
+
+
+class EqualResource:
+    def __init__(self, key: str) -> None:
+        self.key = key
+
+    def __hash__(self) -> int:
+        return hash(self.key)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, EqualResource):
+            return NotImplemented
+        return self.key == other.key
+
+
+class CollectableMdib:
+    def __init__(self) -> None:
+        self.entities: dict[str, object] = {}
+        self.nested: CollectableNode | None = None
+
+
+class CollectableNode:
+    def __init__(self, mdib: CollectableMdib) -> None:
+        self.mdib = mdib
 
 
 class FakeConsumerService:
@@ -212,6 +245,104 @@ def close_with_queued_connection(app: QApplication, provider: ProviderService) -
     check(service.stop_count == 1, "queued connection does not delay discovery close")
     pump(app)
     check(pane.remote is None, "queued connection cannot attach after window close")
+
+
+def async_resources_retire_once() -> None:
+    worker = AsyncCall()
+    resource = EqualResource("unused")
+    close_count = 0
+
+    def close_resource() -> None:
+        nonlocal close_count
+        close_count += 1
+
+    worker.retire(resource, close_resource)
+    check(close_count == 1, "an unused resource closes immediately")
+    check(
+        not worker._resources,  # noqa: SLF001
+        "an unused retired resource leaves no active bookkeeping",
+    )
+    worker.retire(resource, close_resource)
+    worker.close()
+    worker.close()
+    check(
+        close_count == 1,
+        "repeated retirement and shutdown do not close an unused resource again",
+    )
+
+
+def active_equal_resource_retires_after_release() -> None:
+    worker = AsyncCall()
+    call = BlockingCall()
+    resource = EqualResource("active")
+    equal_resource = EqualResource("active")
+    closed: list[EqualResource] = []
+
+    check(
+        worker.start_managed("active", resource, call),
+        "a managed call starts with its resource",
+    )
+    check(call.entered.wait(1.0), "the managed resource is active in the worker")
+    worker.retire(equal_resource, lambda: closed.append(equal_resource))
+    worker.retire(resource, lambda: closed.append(resource))
+    check(
+        not closed and len(worker._resources) == 1,  # noqa: SLF001
+        "an equal resource key stays tracked and open while its worker is active",
+    )
+    check(
+        not worker.start_managed("late", equal_resource, lambda: None),
+        "an equal key cannot start new work after retirement",
+    )
+    check(
+        not worker.close(timeout=0.0),
+        "shutdown may leave an active retired call to finish",
+    )
+    check(
+        not worker.close(timeout=0.0),
+        "repeated shutdown still waits for the active call",
+    )
+
+    call.release.set()
+    check(worker.wait(1.0), "the retired managed call finishes")
+    check(
+        len(closed) == 1
+        and closed[0] is equal_resource
+        and not worker._resources,  # noqa: SLF001
+        "the active resource closes once and is removed after its final release",
+    )
+    worker.retire(resource, lambda: closed.append(resource))
+    check(closed == [equal_resource], "retiring the released identity again is a no-op")
+
+
+def retired_remote_graph_is_collectable(
+    app: QApplication,
+    provider: ProviderService,
+) -> None:
+    window, pane, service = new_window(provider)
+    remote = FakeRemote("collectable")
+    mdib = CollectableMdib()
+    nested = CollectableNode(mdib)
+    mdib.nested = nested
+    remote.mdib = mdib
+    remote_ref = weakref.ref(remote)
+    mdib_ref = weakref.ref(mdib)
+    nested_ref = weakref.ref(nested)
+
+    attach(pane, remote)
+    pane._on_disconnect()  # noqa: SLF001
+    check(remote.close_count == 1, "disconnect closes an idle remote exactly once")
+    del remote, mdib, nested
+    for _ in range(3):
+        app.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        app.processEvents()
+        gc.collect()
+    check(
+        remote_ref() is None and mdib_ref() is None and nested_ref() is None,
+        "retirement and queued Qt cleanup release the remote and nested MDIB graph",
+    )
+    window.close()
+    check(service.stop_count == 1, "collectable session closes discovery once")
 
 
 def close_during_invocation(app: QApplication, provider: ProviderService, *, action: bool) -> None:
@@ -526,6 +657,9 @@ def main() -> int:
         close_during_scan(app, provider)
         close_during_connect(app, provider)
         close_with_queued_connection(app, provider)
+        async_resources_retire_once()
+        active_equal_resource_retires_after_release()
+        retired_remote_graph_is_collectable(app, provider)
         close_during_invocation(app, provider, action=False)
         close_during_invocation(app, provider, action=True)
         stale_set_after_reconnect(app, provider)
