@@ -36,9 +36,12 @@ specification:
 .venv\Scripts\python.exe -m PyInstaller --clean --noconfirm SDC-Testing-Toolbox.spec
 ```
 
-The Windows result is `dist\SDC-Testing-Toolbox.exe`. Any distribution must
-keep `LICENSE` and `THIRD_PARTY_NOTICES.md` with the executable; the GitHub
-Actions artifact includes all three files.
+The Windows result is the `dist\SDC-Testing-Toolbox` directory. Keep that
+directory intact: it contains replaceable shared libraries, `LICENSE`,
+`THIRD_PARTY_NOTICES.md`, an artifact-specific `DEPENDENCY_INVENTORY.json`,
+source/relinking instructions, and collected license texts. The inventory is
+generated from installed distributions and PyInstaller analysis for each
+native build; it is not a static lock file.
 
 ```bash
 sudo apt-get update
@@ -57,12 +60,13 @@ tar -C dist -czf dist/SDC-Testing-Toolbox-linux-x86_64.tar.gz SDC-Testing-Toolbo
 
 The workflow's Linux archive targets x86-64 desktop distributions with glibc 2.35 or newer
 because it is built on Ubuntu 22.04. A local build inherits its build host's glibc baseline.
-The archive contains application-specific shared libraries, while normal desktop system
+The archive contains application-specific shared libraries as separate files, while normal desktop system
 libraries remain host dependencies. Keep the bundle together after extracting it; the
 executable is `SDC-Testing-Toolbox/SDC-Testing-Toolbox`.
 
 The `Build application` GitHub Actions workflow performs both native builds, smoke-tests the
-actual packaged applications and uploads the Windows executable and Linux archive. Run it
+actual packaged applications, validates the final archives' legal payloads, and uploads Windows
+and Linux archives as release candidates. Run it
 manually when an artifact is needed; it also runs for pull requests to `develop` and version
 tags.
 
@@ -77,9 +81,11 @@ licensed, while PySide6 and Qt are available under applicable LGPLv3, GPL, or
 commercial terms depending on the components and license option. Packaged
 builds also contain Python and files produced or embedded by PyInstaller. See
 [Third-Party Notices](THIRD_PARTY_NOTICES.md) for attribution, authoritative
-links, and distribution considerations. Users and distributors must review the
-licenses and notices for the actual dependency versions and components they use
-or ship.
+links, and distribution considerations. Review the generated inventory and
+bundled texts for the exact artifact. Public binary releases must also publish
+the exact corresponding-source payload defined in `legal/SOURCE_OFFER.md`;
+these materials are operational guidance, not legal advice or a guarantee of
+compliance.
 
 ## Milestones
 

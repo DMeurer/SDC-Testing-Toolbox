@@ -144,7 +144,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           Remove-Item smoke-test-error.txt -ErrorAction SilentlyContinue
-          .\dist\SDC-Testing-Toolbox.exe --name packaged-smoke --ip 127.0.0.1 --smoke-test
+          .\dist\SDC-Testing-Toolbox\SDC-Testing-Toolbox.exe --name packaged-smoke --ip 127.0.0.1 --smoke-test
           if ($LASTEXITCODE -ne 0) {
             if (Test-Path smoke-test-error.txt) { Get-Content smoke-test-error.txt }
             exit $LASTEXITCODE
@@ -157,33 +157,31 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: ./dist/SDC-Testing-Toolbox/SDC-Testing-Toolbox --name packaged-smoke --ip 127.0.0.1 --smoke-test
 
-      - name: Stage Windows legal notices
+      - name: Archive Windows bundle
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Copy-Item LICENSE, THIRD_PARTY_NOTICES.md dist
-
-      - name: Verify packaged legal notices
-        shell: pwsh
-        run: |
-          $bundle = if ($IsWindows) { "dist" } else { "dist/SDC-Testing-Toolbox" }
-          if (-not (Test-Path "$bundle/LICENSE") -or
-              -not (Test-Path "$bundle/THIRD_PARTY_NOTICES.md")) {
-            throw "Packaged legal notices are missing from $bundle"
-          }
+        run: Compress-Archive -Path dist/SDC-Testing-Toolbox -DestinationPath dist/SDC-Testing-Toolbox-windows-x86_64.zip
 
       - name: Archive Linux bundle
         if: runner.os == 'Linux'
         run: tar -C dist -czf dist/SDC-Testing-Toolbox-linux-x86_64.tar.gz SDC-Testing-Toolbox
 
-      - name: Upload Windows executable
+      - name: Open final artifact and validate legal payload
+        shell: pwsh
+        run: |
+          $archive = if ($IsWindows) {
+            "dist/SDC-Testing-Toolbox-windows-x86_64.zip"
+          } else {
+            "dist/SDC-Testing-Toolbox-linux-x86_64.tar.gz"
+          }
+          python tests/licensing.py --artifact $archive
+
+      - name: Upload Windows bundle
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: SDC-Testing-Toolbox-windows-x86_64
-          path: |
-            dist/SDC-Testing-Toolbox.exe
-            dist/LICENSE
-            dist/THIRD_PARTY_NOTICES.md
+          path: dist/SDC-Testing-Toolbox-windows-x86_64.zip
           if-no-files-found: error
 
       - name: Upload Linux bundle
@@ -193,3 +191,33 @@ jobs:
           name: SDC-Testing-Toolbox-linux-x86_64
           path: dist/SDC-Testing-Toolbox-linux-x86_64.tar.gz
           if-no-files-found: error
+
+  inspect-artifacts:
+    name: Inspect Windows and Linux legal payloads
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: SDC-Testing-Toolbox-windows-x86_64
+          path: artifacts/windows
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: SDC-Testing-Toolbox-linux-x86_64
+          path: artifacts/linux
+
+      - name: Open both uploaded artifacts and validate legal payloads
+        run: |
+          python tests/licensing.py --artifact artifacts/windows/SDC-Testing-Toolbox-windows-x86_64.zip
+          python tests/licensing.py --artifact artifacts/linux/SDC-Testing-Toolbox-linux-x86_64.tar.gz

@@ -1,140 +1,131 @@
 # Third-Party Notices
 
 SDC Testing Toolbox is licensed separately under the GNU General Public License
-version 3 only (`GPL-3.0-only`); see `LICENSE`. This file summarizes important
-third-party licensing information for the pinned project dependencies and
-packaged application. It does not replace the dependencies' license texts or
-constitute legal advice.
+version 3 only (`GPL-3.0-only`); see `LICENSE`. These notices do not establish
+legal compliance or constitute legal advice.
 
-Distribution of toolbox executables is governed by GPLv3 section 6, including
-its requirements for conveying the machine-readable Corresponding Source.
-Keep the toolbox's `LICENSE` with every distribution and follow the complete
-license text rather than relying on this summary.
+`DEPENDENCY_INVENTORY.json` is generated separately for every native build from
+installed distribution metadata and PyInstaller's analyzed modules, binaries,
+and data files. It is the authoritative artifact-level list of packaged runtime
+components and records each component's exact version, declared license or
+license expression, project/source URL, bundled text paths, and graph/artifact
+evidence. This maintained document explains the release policy and major
+licensing choices; it is not a substitute for that inventory or the complete
+bundled texts.
+
+## Inventory Policy
+
+The build starts from the direct runtime roots `sdc11073` and `PySide6`, follows
+their environment-applicable installed requirements, and associates analyzed
+files and modules with installed distributions. Python and Qt are explicit
+non-wheel runtime components. PyInstaller is identified as an embedded build
+tool because its bootloader and loader enter the result. Resolved build
+dependencies that own no artifact file are listed separately as build-only.
+
+The build fails rather than emitting an incomplete package entry when a
+packaged distribution has no declared license, project/source URL, or license
+text. The result is deterministic for a fixed installed environment and module
+graph. Because direct requirements do not lock transitive versions, inventories
+are generated at build time and retained in their artifacts, not checked into
+source from one developer machine.
+
+On Windows, binaries copied from arbitrary `PATH` locations outside the Python
+installation and build environment are excluded, and Windows system libraries
+remain host dependencies. Native OpenSSL and Microsoft C/C++ runtime files are
+identified by embedded file version. On Linux, copied native libraries are
+assigned to installed Debian packages with `dpkg-query`; package versions and
+copyright files enter the inventory and payload, while PyInstaller's standard
+system-library exclusions remain host dependencies.
 
 ## Runtime Components
 
-### sdc11073 3.0.0
+### sdc11073
 
-`sdc11073` is licensed under the MIT License. Its required notice is reproduced
-below from the authoritative
-[sdc11073 3.0.0 license](https://github.com/Draegerwerk/sdc11073/blob/v3.0.0/LICENSE):
+The pinned direct dependency is `sdc11073 3.0.0`, licensed under the MIT
+License. The build copies the installed wheel's complete license, including
+`Copyright (c) 2026 Draeger`, to the inventory's notice path.
 
-> MIT License
->
-> Copyright (c) 2026 Draeger
->
-> Permission is hereby granted, free of charge, to any person obtaining a copy
-> of this software and associated documentation files (the "Software"), to deal
-> in the Software without restriction, including without limitation the rights
-> to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-> copies of the Software, and to permit persons to whom the Software is
-> furnished to do so, subject to the following conditions:
->
-> The above copyright notice and this permission notice shall be included in all
-> copies or substantial portions of the Software.
->
-> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-> IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-> FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-> AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-> LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-> SOFTWARE.
+Project and source: https://github.com/Draegerwerk/sdc11073
 
-### PySide6 and Qt 6.11.2
+### PySide6, Shiboken6, and Qt
 
-PySide6 is Qt's official Python binding. The installed PySide6 metadata offers
-LGPLv3, GPLv2, GPLv3, and commercial licensing options; individual Qt modules
-and third-party code shipped with Qt can have additional or different terms.
-The toolbox's GPL-3.0-only license does not erase or replace those terms.
+PySide6 is Qt's official Python binding. The wheel metadata declares
+`LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only`; its included
+`LicenseRef-Qt-Commercial.txt` is only a reference for holders of a separate
+commercial agreement and is not treated as an open-source license grant. These
+builds select LGPLv3 for dynamically loaded Qt, PySide6, and Shiboken6 shared
+libraries. Individual Qt modules and third-party code can carry additional
+terms, which remain applicable.
 
-Anyone distributing a build under an open-source Qt option must identify the
-license that actually applies to every included module and comply with it. For
-LGPL-covered Qt libraries, this generally includes providing the applicable
-license and prominent notice, providing or offering the corresponding Qt
-library source (including modifications), permitting replacement/relinking and
-reverse engineering for debugging modifications, and providing installation
-information where LGPLv3 requires it. Do not use GPL-only Qt modules unless the
-combined distribution is compatible with their GPL terms. A commercial Qt
-license is governed by its agreement instead.
+The release format is a one-directory bundle. The Qt, PySide6, Shiboken6, and
+plugin shared libraries remain separate in the bundle, so recipients can
+replace them with modified interface-compatible builds. This project imposes
+no restriction on reverse engineering needed to debug such modifications.
+`legal/SOURCE_OFFER.md` supplies replacement and smoke-test instructions.
+
+The artifact includes canonical LGPLv3 and GPLv3 texts and the Qt GPL
+exception, with provenance in `legal/PROVENANCE.md`. Before a binary is
+presented as a distributable release, the release maintainer must also publish
+the exact corresponding toolbox, PySide6/Shiboken6, and Qt source archives
+specified by the generated inventory and record all source and binary SHA-256
+hashes in the release notes. If that payload is unavailable, the binary remains
+a CI release candidate and must not be published as a distributable release.
 
 Authoritative references:
 
-- [Qt for Python licensing](https://doc.qt.io/qtforpython-6/licenses.html)
-- [Qt open-source obligations](https://www.qt.io/development/open-source-lgpl-obligations)
-- [Licenses used in Qt](https://doc.qt.io/qt-6/licenses-used-in-qt.html)
+- https://doc.qt.io/qtforpython-6/licenses.html
+- https://www.qt.io/development/open-source-lgpl-obligations
+- https://doc.qt.io/qt-6/licenses-used-in-qt.html
 
 ### Python
 
 PyInstaller bundles the Python interpreter and standard library. Python is
-licensed under the Python Software Foundation License Version 2 and includes
-components under other licenses and acknowledgements. A binary distributor
-must retain the notices and license materials required by the bundled Python
-version and its incorporated components. See Python's authoritative
-[license and acknowledgements](https://docs.python.org/3/license.html).
+licensed under the Python Software Foundation License Version 2 and contains
+historical licenses and acknowledgements. The build copies the complete
+`LICENSE.txt` from the installed Python into
+`legal/licenses/python/LICENSE.txt`; the generated inventory records its exact
+version and source URL.
 
-Python Software Foundation License Version 2:
+License reference: https://docs.python.org/3/license.html
 
-> 1. This LICENSE AGREEMENT is between the Python Software Foundation ("PSF"),
-> and the Individual or Organization ("Licensee") accessing and otherwise using
-> this software ("Python") in source or binary form and its associated
-> documentation.
->
-> 2. Subject to the terms and conditions of this License Agreement, PSF hereby
-> grants Licensee a nonexclusive, royalty-free, world-wide license to reproduce,
-> analyze, test, perform and/or display publicly, prepare derivative works,
-> distribute, and otherwise use Python alone or in any derivative version,
-> provided, however, that PSF's License Agreement and PSF's notice of copyright,
-> i.e., "Copyright © 2001 Python Software Foundation; All Rights Reserved" are
-> retained in Python alone or in any derivative version prepared by Licensee.
->
-> 3. In the event Licensee prepares a derivative work that is based on or
-> incorporates Python or any part thereof, and wants to make the derivative work
-> available to others as provided herein, then Licensee hereby agrees to include
-> in any such work a brief summary of the changes made to Python.
->
-> 4. PSF is making Python available to Licensee on an "AS IS" basis. PSF MAKES
-> NO REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED. BY WAY OF EXAMPLE, BUT
-> NOT LIMITATION, PSF MAKES NO AND DISCLAIMS ANY REPRESENTATION OR WARRANTY OF
-> MERCHANTABILITY OR FITNESS FOR ANY PARTICULAR PURPOSE OR THAT THE USE OF
-> PYTHON WILL NOT INFRINGE ANY THIRD PARTY RIGHTS.
->
-> 5. PSF SHALL NOT BE LIABLE TO LICENSEE OR ANY OTHER USERS OF PYTHON FOR ANY
-> INCIDENTAL, SPECIAL, OR CONSEQUENTIAL DAMAGES OR LOSS AS A RESULT OF
-> MODIFYING, DISTRIBUTING, OR OTHERWISE USING PYTHON, OR ANY DERIVATIVE THEREOF,
-> EVEN IF ADVISED OF THE POSSIBILITY THEREOF.
->
-> 6. This License Agreement will automatically terminate upon a material breach
-> of its terms and conditions.
->
-> 7. Nothing in this License Agreement shall be deemed to create any relationship
-> of agency, partnership, or joint venture between PSF and Licensee. This License
-> Agreement does not grant permission to use PSF trademarks or trade name in a
-> trademark sense to endorse or promote products or services of Licensee, or any
-> third party.
->
-> 8. By copying, installing or otherwise using Python, Licensee agrees to be
-> bound by the terms and conditions of this License Agreement.
+### Transitive Runtime Packages
+
+The actual transitive set can differ as package releases and platform markers
+change. Every included package, including `aiohttp`, `lxml`, and their packaged
+dependencies, appears in `DEPENDENCY_INVENTORY.json` with its installed license
+and notice files copied under `legal/licenses/<normalized-name>/`. No static
+list here overrides the artifact inventory.
 
 ## Build Tooling
 
-PyInstaller is build tooling and also embeds its bootloader and loader files in
-generated applications. It is licensed primarily under GPLv2-or-later with a
-Bootloader Exception; some files use Apache-2.0 or MIT. The exception permits
-distribution of generated bundles without imposing PyInstaller's GPL on the
-application, but does not change dependency licenses. Review the
-[PyInstaller licensing terms](https://pyinstaller.org/en/stable/license.html).
-`pyinstaller-hooks-contrib` is also build tooling; review its installed version
-and license if any part is copied into a distributed artifact.
+PyInstaller is primarily `GPL-2.0-or-later WITH Bootloader-exception`; its
+runtime hooks are Apache-2.0 and isolated files are additionally MIT. The
+installed `COPYING.txt`, including the Bootloader Exception, is copied into the
+artifact. The exception permits distribution of generated combinations without
+applying PyInstaller's GPL restrictions merely through embedded bootloader and
+loader files; dependency terms remain separate.
 
-## Distribution Checklist
+Project and source: https://github.com/pyinstaller/pyinstaller
 
-The tracked PyInstaller specification places this file, `LICENSE`, and the
-installed runtime distributions' metadata (including license files supplied by
-their wheels) in the application bundle. Release artifacts must keep the two
-top-level files available to recipients. Before distributing any artifact,
-inventory its actual contents and versions, review every dependency's installed
-license and notice files, include all required texts and attributions, and
-satisfy source-code, relinking, and installation-information obligations. This
-maintained summary is not a complete bill of materials and cannot establish
-compliance for a particular build.
+Other installed build dependencies, such as `pyinstaller-hooks-contrib`, are
+classified as build-only unless distribution-owned material is found in the
+artifact. This distinction is recorded rather than inferred from source
+requirements alone.
+
+## Release Process and Payload
+
+Each Windows ZIP and Linux tarball must contain exactly one complete
+`SDC-Testing-Toolbox` directory with the executable, separate shared
+libraries, `LICENSE`, this file, `DEPENDENCY_INVENTORY.json`, and the complete
+`legal` tree. CI opens each final archive and validates its bytes: every
+inventory field, listed notice, expected legal document, inventoried artifact
+path, and separately packaged Qt shared library. It does not validate source
+strings or only a pre-archive staging directory.
+
+For a release, the maintainer must retain the generated inventory unchanged,
+publish the corresponding-source archives defined in `legal/SOURCE_OFFER.md`
+beside both binaries, add SHA-256 hashes for every binary and source asset to
+the release notes, and keep those downloads together for as long as the
+binaries are offered. A candidate missing any part is not a distributable
+release. This process resolves the known release prerequisites but does not
+replace qualified review of the exact artifact and intended distribution.
