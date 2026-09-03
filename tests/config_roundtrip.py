@@ -940,6 +940,76 @@ def check_metric_handle_resolution(report: Report, service: ProviderService) -> 
     report.check(existing not in service.list_metrics(), "successful replacement removes the prior metric")
 
 
+def check_config_versions(report: Report, workdir: Path) -> None:
+    """All supported versions upgrade on export; rejected versions never reach apply."""
+    cases = [
+        ("missing version", False, None, True),
+        ("version 0", True, 0, False),
+        ("version -1", True, -1, False),
+        *[
+            (f"version {version}", True, version, True)
+            for version in range(config.LEGACY_CONFIG_VERSION, config.CONFIG_VERSION + 1)
+        ],
+        ("future version", True, config.CONFIG_VERSION + 1, False),
+        ("boolean true version", True, True, False),
+        ("boolean false version", True, False, False),
+        ("fractional version", True, 1.5, False),
+    ]
+    service = ProviderService(instance_name="config-versions")
+    service.start()
+    accepted = {}
+    try:
+        service.add_metric(MetricSpec(label="Existing", kind=MetricKind.NUMBER, initial_value=Decimal("9")))
+        for description, explicit, version, should_accept in cases:
+            payload = {
+                "metrics": [
+                    {
+                        "handle": "m.version_test",
+                        "label": "Version test",
+                        "kind": "number",
+                        "initial_value": "7",
+                    },
+                ],
+            }
+            if explicit:
+                payload["version"] = version
+            case_path = workdir / f"version-{len(accepted)}-{description.replace(' ', '-')}.json"
+            case_path.write_text(json.dumps(payload), encoding="utf-8")
+            before = complete_snapshot(service)
+            try:
+                config.load_into(service, case_path)
+            except config.ConfigError as exc:
+                report.check(
+                    not should_accept and "top level.version" in str(exc),
+                    f"rejects {description} with version field context",
+                    str(exc),
+                )
+                report.check(
+                    complete_snapshot(service) == before,
+                    f"rejected {description} does not mutate the provider",
+                )
+                continue
+
+            report.check(should_accept, f"accepts {description}")
+            serialized = config.to_dict(service)
+            round_tripped = config.parse(serialized)
+            accepted[description] = device_config_snapshot(round_tripped)
+            report.check(
+                serialized.get("version") == config.CONFIG_VERSION
+                and len(round_tripped.metrics) == 1
+                and round_tripped.metrics[0].initial_value == Decimal("7"),
+                f"{description} round-trips at current version {config.CONFIG_VERSION}",
+                str(serialized.get("version")),
+            )
+    finally:
+        service.stop()
+
+    report.check(
+        accepted.get("missing version") == accepted.get(f"version {config.LEGACY_CONFIG_VERSION}"),
+        f"a missing version uses legacy version {config.LEGACY_CONFIG_VERSION} semantics",
+    )
+
+
 BAD_FILES = [
     ('{"metrics": [{"label": "x"}]}', "a metric with no kind"),
     ('{"metrics": [{"label": "x", "kind": "nope"}]}', "an unknown kind"),
@@ -1261,27 +1331,7 @@ def main() -> int:
             "an alarm with limits comes back as a LimitAlertCondition",
         )
 
-        prior_versions = [
-            config.parse(
-                {
-                    "version": version,
-                    "contexts": {"patient": {"given_name": "Legacy"}},
-                    "metrics": [{"label": "Legacy metric", "kind": "number"}],
-                },
-            )
-            for version in range(1, config.CONFIG_VERSION)
-        ]
-        report.check(
-            len(prior_versions) == config.CONFIG_VERSION - 1
-            and all(
-                device.patient is not None
-                and device.patient.given_name == "Legacy"
-                and len(device.metrics) == 1
-                for device in prior_versions
-            ),
-            "every previous config version remains readable",
-            str(list(range(1, config.CONFIG_VERSION))),
-        )
+        check_config_versions(report, workdir)
 
         preset_round_trips = []
         for preset_path in sorted((ROOT / "presets").glob("*.json")):

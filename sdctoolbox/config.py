@@ -62,6 +62,7 @@ if TYPE_CHECKING:
 # Version 3 adds per-alert signal manifestation and latching settings. Earlier profiles remain
 # readable because absent signal definitions retain the original visual/audible defaults.
 CONFIG_VERSION = 3
+LEGACY_CONFIG_VERSION = 1
 
 FILE_SUFFIX = ".sdcprofile.json"
 
@@ -847,7 +848,7 @@ def _contexts_from_dict(data: Any) -> tuple[LocationInfo | None, PatientInfo | N
 
 
 def parse(data: Any) -> DeviceConfig:
-    """Turn a decoded config into specs, complaining clearly about anything wrong."""
+    """Turn a decoded config into specs, treating an omitted version as legacy version 1."""
     if not isinstance(data, dict):
         msg = f"expected an object at the top level, found {type(data).__name__}"
         raise ConfigError(msg)
@@ -867,9 +868,12 @@ def parse(data: Any) -> DeviceConfig:
         "top level",
     )
 
-    version = data.get("version")
-    if version is not None and version > CONFIG_VERSION:
-        msg = f"this file is version {version}, but this build only understands up to {CONFIG_VERSION}"
+    version = data.get("version", LEGACY_CONFIG_VERSION)
+    if not LEGACY_CONFIG_VERSION <= version <= CONFIG_VERSION:
+        msg = (
+            f"top level.version: unsupported config version {version}; "
+            f"supported versions are {LEGACY_CONFIG_VERSION} through {CONFIG_VERSION}"
+        )
         raise ConfigError(msg)
 
     device, instance_name = _device_from_dict(data.get("device"))

@@ -239,7 +239,7 @@ It is not a whole-MDIB replacement: contexts omitted by the file remain. Replace
 
 *File → Load preset* lists the ready-made devices in `presets/`, so the ones that ship with the tool need no file dialog.
 The same list appears in the startup window. Preset discovery skips files that raise JSON or configuration errors.
-Its validation is not exhaustive: a malformed field type can still interrupt preset-list construction; use *Import config* to inspect ordinary validation errors.
+Explicit profile versions must be JSON integers from 1 through the current format version, 3; preset discovery skips files outside that range. Profiles without a version predate versioning and are intentionally read with legacy version 1 semantics.
 The seven shipped presets are canonical current-schema profiles, not legacy compatibility fixtures. They are kept at profile format version 3 with explicit alert signal definitions. Tests for older readable formats use synthetic profile data instead of holding a shipped preset back on an earlier schema.
 
 Any of them can also be loaded at startup:

@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -24,7 +25,7 @@ from script_support import Report  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 
 from sdctoolbox import config  # noqa: E402
-from sdctoolbox.model import CODING_SYSTEMS, MetricKind  # noqa: E402
+from sdctoolbox.model import CODING_SYSTEMS  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 
@@ -191,6 +192,23 @@ def check_nomenclature(report: Report, paths: list[Path]) -> None:
     )
 
 
+def check_version_filter(report: Report) -> None:
+    """Preset discovery omits files with versions below the supported range."""
+    with tempfile.TemporaryDirectory(prefix="sdctoolbox-presets-") as directory:
+        folder = Path(directory)
+        for name, version in (("supported", config.LEGACY_CONFIG_VERSION), ("zero", 0), ("negative", -1)):
+            (folder / f"{name}.json").write_text(
+                json.dumps({"version": version, "name": name.title()}),
+                encoding="utf-8",
+            )
+        listed = config.list_presets(folder)
+    report.check(
+        [preset.name for preset in listed] == ["Supported"],
+        "preset discovery skips unsupported low config versions",
+        str([preset.name for preset in listed]),
+    )
+
+
 def main() -> int:
     basic_logging_setup(level=logging.ERROR)
     report = Report()
@@ -216,6 +234,7 @@ def main() -> int:
     )
     for preset in listed:
         report.check(bool(preset.description), f"{preset.name} says what it is", preset.description[:44])
+    check_version_filter(report)
 
     print()
     return report.summary()
