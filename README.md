@@ -469,7 +469,8 @@ This is a focused SDC learning fixture, not an IEEE 11073 conformance claim. IEE
 
 ## Tests
 
-The pull-request workflow runs each deterministic area as a separately reported job with `QT_QPA_PLATFORM=offscreen`:
+The pull-request workflow runs each deterministic area as a separately reported Linux job with
+`QT_QPA_PLATFORM=offscreen`:
 
 | Suite | Covers |
 |-------|--------|
@@ -487,6 +488,13 @@ The pull-request workflow runs each deterministic area as a separately reported 
 | `tests/consumer_lifecycle.py` | window-close races, stale work and natural real-window shutdown |
 | `tests/acceptance_readiness.py` | bounded provider readiness waits and subprocess cleanup |
 
+The platform-sensitive `application_defaults.py`, `provider_core.py`,
+`consumer_lifecycle.py`, and `acceptance_readiness.py` suites also run on Windows with Python
+3.12. These Windows jobs use offscreen Qt and upload their captured subprocess, Qt, and test
+output when they fail. A separate Windows job checks the console-rendered signal summary under
+a strict `cp1252` encoding. The other deterministic suites and the network acceptance suite
+are Linux-only; the native packaging smoke tests still cover both Windows and Linux artifacts.
+
 Run any deterministic suite with the project interpreter, for example:
 
 ```powershell
@@ -497,7 +505,7 @@ $env:QT_QPA_PLATFORM = "offscreen"
 .venv\Scripts\python.exe tests\consumer_lifecycle.py
 ```
 
-`tests/acceptance_core.py` is the network acceptance suite. CI runs it in an isolated eight-minute job on every pull request, version tag, manual workflow dispatch and weekly schedule. It starts the repository's provider in a subprocess, exercises it through a consumer, and uploads their combined output if the job fails. This checks this implementation across processes; it is not interoperability testing against an independent SDC stack or product.
+`tests/acceptance_core.py` is the Linux-only network acceptance suite. CI runs it in an isolated eight-minute job on every pull request, version tag, manual workflow dispatch and weekly schedule. It starts the repository's provider in a subprocess, exercises it through a consumer, and uploads their combined output if the job fails. This checks this implementation across processes; it is not interoperability testing against an independent SDC stack or product.
 
 `tests/gui_smoke.py` remains a manual broad regression script because it is intentionally long and duplicates the focused GUI suites while also starting a live peer. Run it when changing interactions that cross several GUI areas; it uses the offscreen backend and needs no display.
 

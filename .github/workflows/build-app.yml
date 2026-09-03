@@ -67,6 +67,74 @@ jobs:
       - name: Run ${{ matrix.name }}
         run: python ${{ matrix.script }}
 
+  windows-deterministic-tests:
+    name: ${{ matrix.name }} (Windows)
+    if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Application defaults
+            script: tests/application_defaults.py
+            artifact: application-defaults
+            console-encoding: false
+          - name: Provider core
+            script: tests/provider_core.py
+            artifact: provider-core
+            console-encoding: false
+          - name: Consumer window lifecycle
+            script: tests/consumer_lifecycle.py
+            artifact: consumer-lifecycle
+            console-encoding: false
+          - name: Acceptance readiness timeout
+            script: tests/acceptance_readiness.py
+            artifact: acceptance-readiness
+            console-encoding: false
+          - name: Console encoding
+            script: ""
+            artifact: console-encoding
+            console-encoding: true
+    runs-on: windows-2022
+    timeout-minutes: 10
+    env:
+      QT_QPA_PLATFORM: offscreen
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run ${{ matrix.name }}
+        if: matrix.console-encoding == false
+        shell: pwsh
+        run: |
+          $log = "windows-${{ matrix.artifact }}.log"
+          python ${{ matrix.script }} 2>&1 | Tee-Object -FilePath $log
+          $testExitCode = $LASTEXITCODE
+          exit $testExitCode
+
+      - name: Check strict Windows console encoding
+        if: matrix.console-encoding == true
+        shell: pwsh
+        run: |
+          python -c "import sys; from sdctoolbox.model import AlertSignalLocation, SignalInfo; sys.stdout.reconfigure(encoding='cp1252', errors='strict'); print(SignalInfo('signal', 'Vis', 'On', AlertSignalLocation.REMOTE, True).summary())" 2>&1 | Tee-Object -FilePath windows-console-encoding.log
+          $testExitCode = $LASTEXITCODE
+          exit $testExitCode
+
+      - name: Publish ${{ matrix.name }} output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-deterministic-${{ matrix.artifact }}-output
+          path: windows-${{ matrix.artifact }}.log
+          if-no-files-found: warn
+
   network-acceptance:
     name: Network acceptance
     runs-on: ubuntu-22.04
