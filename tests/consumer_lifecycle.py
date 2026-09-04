@@ -277,6 +277,97 @@ def async_resources_retire_once() -> None:
     )
 
 
+def non_weakrefable_resources_are_rejected() -> None:
+    worker = AsyncCall()
+    unmanaged_started = threading.Event()
+    call_started = threading.Event()
+    active_call = BlockingCall()
+    active_resource = EqualResource("valid")
+    resource_closed = threading.Event()
+    close_count = 0
+
+    def call() -> None:
+        call_started.set()
+
+    def close_resource() -> None:
+        nonlocal close_count
+        close_count += 1
+        resource_closed.set()
+
+    check(worker.start(unmanaged_started.set), "an unmanaged call still starts")
+    check(
+        unmanaged_started.wait(1.0) and worker.wait(1.0),
+        "an unmanaged call still finishes without resource validation",
+    )
+
+    try:
+        worker.start_managed("invalid", object(), call)
+    except TypeError as exc:
+        start_error = str(exc)
+    else:
+        start_error = None
+
+    check(
+        start_error == "managed resource must support weak references",
+        "a non-weak-referenceable managed resource is rejected synchronously",
+    )
+    check(
+        not call_started.is_set()
+        and not worker._threads  # noqa: SLF001
+        and not worker._resources,  # noqa: SLF001
+        "rejected managed work starts no callable and creates no bookkeeping",
+    )
+
+    check(
+        worker.start_managed("active", active_resource, active_call),
+        "a weak-referenceable managed resource starts normally",
+    )
+    check(active_call.entered.wait(1.0), "the valid managed call becomes active")
+    try:
+        worker.start_managed("invalid-active", object(), call)
+    except TypeError as exc:
+        active_error = str(exc)
+    else:
+        active_error = None
+
+    check(
+        active_error == "managed resource must support weak references"
+        and not call_started.is_set(),
+        "a non-weak-referenceable resource is rejected before work while another call is active",
+    )
+    check(
+        set(worker._threads) == {"active"}  # noqa: SLF001
+        and set(worker._resources) == {active_resource},  # noqa: SLF001
+        "active-call rejection creates no worker or resource entry",
+    )
+
+    try:
+        worker.retire(object(), close_resource)
+    except TypeError as exc:
+        retire_error = str(exc)
+    else:
+        retire_error = None
+
+    check(
+        retire_error == "managed resource must support weak references",
+        "a non-weak-referenceable retirement is rejected synchronously",
+    )
+    check(
+        close_count == 0
+        and not resource_closed.is_set()
+        and set(worker._resources) == {active_resource}  # noqa: SLF001
+        and not worker._retired_resources,  # noqa: SLF001
+        "rejected retirement calls no closer and creates no additional resource entry",
+    )
+    worker.retire(active_resource, close_resource)
+    active_call.release.set()
+    check(worker.wait(1.0), "the valid managed call finishes after rejection checks")
+    check(
+        resource_closed.wait(1.0) and close_count == 1,
+        "the valid managed resource still retires after its call",
+    )
+
+
 def active_equal_resource_retires_after_release() -> None:
     worker = AsyncCall()
     call = BlockingCall()
@@ -739,6 +830,7 @@ def main() -> int:
         close_during_scan(app, provider)
         close_during_connect(app, provider)
         close_with_queued_connection(app, provider)
+        non_weakrefable_resources_are_rejected()
         async_resources_retire_once()
         active_equal_resource_retires_after_release()
         retired_remote_graph_is_collectable(app, provider)

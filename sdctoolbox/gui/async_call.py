@@ -16,7 +16,7 @@ import threading
 import time
 import weakref
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 from PySide6.QtCore import QObject, Signal
 
@@ -24,6 +24,15 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 logger = logging.getLogger("sdctoolbox.gui.async_call")
+
+
+def _validate_managed_resource(
+    resource: Annotated[object, "supports weak references"],
+) -> None:
+    try:
+        weakref.ref(resource)
+    except TypeError as exc:
+        raise TypeError("managed resource must support weak references") from exc
 
 
 @dataclass
@@ -96,7 +105,7 @@ class AsyncCall(QObject):
     def start_managed(
         self,
         key: object,
-        resource: object | None,
+        resource: Annotated[object, "supports weak references"] | None,
         function: Callable[..., Any],
         *args: Any,
         discard_result: Callable[[Any], None] | None = None,
@@ -105,8 +114,13 @@ class AsyncCall(QObject):
         """Start one keyed call and keep its resource alive until the call returns.
 
         Different keys may run concurrently. Reusing an active key is refused, preserving
-        :meth:`start`'s one-call-at-a-time contract for existing users.
+        :meth:`start`'s one-call-at-a-time contract for existing users. A non-None resource
+        must support weak references so completed retirement records do not retain it. Such a
+        resource raises :class:`TypeError` synchronously, before any work starts.
         """
+        if resource is not None:
+            _validate_managed_resource(resource)
+
         def worker() -> None:
             result: Any = None
             error: Exception | None = None
@@ -174,8 +188,17 @@ class AsyncCall(QObject):
         thread.start()
         return True
 
-    def retire(self, resource: object, closer: Callable[[], None]) -> None:
-        """Close a resource once, immediately or after all calls using it finish."""
+    def retire(
+        self,
+        resource: Annotated[object, "supports weak references"],
+        closer: Callable[[], None],
+    ) -> None:
+        """Close a weak-referenceable resource now or after its managed calls finish.
+
+        A resource that does not support weak references raises :class:`TypeError` before
+        ``closer`` is registered or called.
+        """
+        _validate_managed_resource(resource)
         retirement: tuple[object, Callable[[], None]] | None = None
         with self._lock:
             use = self._resources.get(resource)
