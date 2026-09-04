@@ -8,12 +8,18 @@ import json
 import sys
 import tarfile
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from legal_payload import INVENTORY_NAME, filter_binaries, validate_payload
+from legal_payload import (  # noqa: I001 - ROOT must precede local imports
+    ARTIFACT_ROOT,
+    INVENTORY_NAME,
+    filter_binaries,
+    validate_payload,
+)
 from tests.script_support import Report
 
 
@@ -25,21 +31,22 @@ PINNED_LEGAL_SHA256 = {
 }
 
 
-def _archive_files(path: Path) -> dict[str, bytes]:
+def _archive_files(path: Path) -> list[tuple[str, bytes]]:
     if zipfile.is_zipfile(path):
         with zipfile.ZipFile(path) as archive:
-            return {
-                info.filename: archive.read(info)
+            return [
+                (info.filename, archive.read(info))
                 for info in archive.infolist()
                 if not info.is_dir()
-            }
+            ]
     if tarfile.is_tarfile(path):
         with tarfile.open(path, "r:*") as archive:
-            return {
-                member.name: extracted.read()
+            return [
+                (member.name, extracted.read())
                 for member in archive.getmembers()
-                if member.isfile() and (extracted := archive.extractfile(member)) is not None
-            }
+                if member.isfile()
+                and (extracted := archive.extractfile(member)) is not None
+            ]
     raise ValueError(f"unsupported or invalid archive: {path}")
 
 
@@ -53,7 +60,11 @@ def _check_pinned_legal_hashes(
             if name.replace("\\", "/") == relative
             or name.replace("\\", "/").endswith(f"/{relative}")
         ]
-        report.check(len(matches) == 1, f"{source} contains one pinned {relative}", str(len(matches)))
+        report.check(
+            len(matches) == 1,
+            f"{source} contains one pinned {relative}",
+            str(len(matches)),
+        )
         if len(matches) == 1:
             actual = hashlib.sha256(matches[0]).hexdigest()
             report.check(
@@ -73,7 +84,11 @@ def _pinned_legal_hashes_match(files: dict[str, bytes]) -> bool:
 def check_binary_filter(report: Report) -> None:
     windows_excluded = [
         (r"PySide6\Qt6Pdf.dll", r"C:\build\site-packages\PySide6\Qt6Pdf.dll", "BINARY"),
-        (r"PySide6\Qt6PdfWidgets.dll", r"C:\build\site-packages\PySide6\Qt6PdfWidgets.dll", "BINARY"),
+        (
+            r"PySide6\Qt6PdfWidgets.dll",
+            r"C:\build\site-packages\PySide6\Qt6PdfWidgets.dll",
+            "BINARY",
+        ),
         (
             r"PySide6\Qt6VirtualKeyboardQml.dll",
             r"C:\build\site-packages\PySide6\Qt6VirtualKeyboardQml.dll",
@@ -89,7 +104,11 @@ def check_binary_filter(report: Report) -> None:
             r"C:\build\site-packages\PySide6\plugins\platforminputcontexts\qtvirtualkeyboardplugin.dll",
             "BINARY",
         ),
-        (r"PySide6\QtPdf.pyd", r"C:\build\site-packages\PySide6\QtPdf.pyd", "EXTENSION"),
+        (
+            r"PySide6\QtPdf.pyd",
+            r"C:\build\site-packages\PySide6\QtPdf.pyd",
+            "EXTENSION",
+        ),
     ]
     linux_excluded = [
         (
@@ -136,12 +155,22 @@ def check_binary_filter(report: Report) -> None:
         ("vendor/libqpdf.so", str(installed / "vendor" / "libqpdf.so"), "BINARY"),
         (
             "PySide6/Qt/plugins/imageformats/libqpdf.so.debug",
-            str(installed / "PySide6" / "Qt" / "plugins" / "imageformats" / "libqpdf.so.debug"),
+            str(
+                installed
+                / "PySide6"
+                / "Qt"
+                / "plugins"
+                / "imageformats"
+                / "libqpdf.so.debug"
+            ),
             "BINARY",
         ),
     ]
 
-    for platform_name, excluded in (("Windows", windows_excluded), ("Linux", linux_excluded)):
+    for platform_name, excluded in (
+        ("Windows", windows_excluded),
+        ("Linux", linux_excluded),
+    ):
         filtered = filter_binaries(excluded + allowed, platform=platform_name)
         report.check(
             filtered == allowed,
@@ -163,10 +192,13 @@ def check_sources(report: Report) -> None:
     check_binary_filter(report)
     license_text = (ROOT / "LICENSE").read_text(encoding="utf-8")
     report.check(
-        "GNU GENERAL PUBLIC LICENSE\n                       Version 3, 29 June 2007" in license_text,
+        "GNU GENERAL PUBLIC LICENSE\n                       Version 3, 29 June 2007"
+        in license_text,
         "project includes canonical GPLv3 text",
     )
-    report.check("END OF TERMS AND CONDITIONS" in license_text, "GPLv3 text is complete")
+    report.check(
+        "END OF TERMS AND CONDITIONS" in license_text, "GPLv3 text is complete"
+    )
     source_files = {
         relative: (
             ROOT / "LICENSE"
@@ -195,10 +227,19 @@ def check_sources(report: Report) -> None:
         report.check(phrase in notices, f"third-party notice defines {phrase}")
 
     spec = (ROOT / "SDC-Testing-Toolbox.spec").read_text(encoding="utf-8")
-    report.check("generate_payload(" in spec, "PyInstaller spec generates artifact inventory")
-    report.check("exclude_binaries=True" in spec, "build keeps shared libraries outside executable")
-    report.check("bundle = COLLECT(" in spec, "both platforms use one-directory collection")
-    report.check('contents_directory="."' in spec, "legal payload is visible at bundle root")
+    report.check(
+        "generate_payload(" in spec, "PyInstaller spec generates artifact inventory"
+    )
+    report.check(
+        "exclude_binaries=True" in spec,
+        "build keeps shared libraries outside executable",
+    )
+    report.check(
+        "bundle = COLLECT(" in spec, "both platforms use one-directory collection"
+    )
+    report.check(
+        'contents_directory="."' in spec, "legal payload is visible at bundle root"
+    )
 
     for relative in (
         "legal/SOURCE_OFFER.md",
@@ -216,7 +257,9 @@ def check_sources(report: Report) -> None:
         "legal/licenses/qt-third-party/libtiff/COPYRIGHT",
         "legal/licenses/qt-third-party/libwebp/COPYING",
     ):
-        report.check((ROOT / relative).is_file(), f"source legal payload includes {relative}")
+        report.check(
+            (ROOT / relative).is_file(), f"source legal payload includes {relative}"
+        )
 
 
 def check_archive(report: Report, archive_path: Path) -> None:
@@ -228,20 +271,244 @@ def check_archive(report: Report, archive_path: Path) -> None:
         return
     report.check(bool(files), "artifact archive contains files", str(len(files)))
     inventory_count = sum(
-        name.replace("\\", "/").endswith(f"/{INVENTORY_NAME}") for name in files
+        name.replace("\\", "/").endswith(f"/{INVENTORY_NAME}") for name, _value in files
     )
-    report.check(inventory_count == 1, "artifact contains one dependency inventory", str(inventory_count))
+    report.check(
+        inventory_count == 1,
+        "artifact contains one dependency inventory",
+        str(inventory_count),
+    )
     errors = validate_payload(files)
-    report.check(not errors, "artifact legal payload and inventory are complete", "; ".join(errors))
-    _check_pinned_legal_hashes(report, files, source="artifact")
+    report.check(
+        not errors,
+        "artifact legal payload and inventory are complete",
+        "; ".join(errors),
+    )
+    file_map = dict(files)
+    _check_pinned_legal_hashes(report, file_map, source="artifact")
 
     inventory_path = next(
-        (name for name in files if name.replace("\\", "/").endswith(f"/{INVENTORY_NAME}")),
+        (
+            name
+            for name in file_map
+            if name.replace("\\", "/").endswith(f"/{INVENTORY_NAME}")
+        ),
         None,
     )
     if inventory_path is None:
         return
-    inventory = json.loads(files[inventory_path].decode("utf-8"))
+    inventory = json.loads(file_map[inventory_path].decode("utf-8"))
+
+    malformed_root = dict(file_map)
+    malformed_root[inventory_path] = b"[]"
+    try:
+        malformed_root_errors = validate_payload(malformed_root)
+    except Exception as error:  # noqa: BLE001 - this check must detect every exception
+        report.check(
+            False,
+            "artifact validation collects a malformed inventory-root error without raising",
+            f"raised {type(error).__name__}: {error}",
+        )
+    else:
+        report.check(
+            any(
+                "inventory root is not an object" in error
+                for error in malformed_root_errors
+            ),
+            "artifact validation collects a malformed inventory-root error without raising",
+            "; ".join(malformed_root_errors),
+        )
+
+    def inventory_mutation(
+        description: str,
+        mutate: Callable[[dict[str, object]], object],
+        expected: str,
+    ) -> None:
+        changed_inventory = json.loads(json.dumps(inventory))
+        mutate(changed_inventory)
+        changed = dict(file_map)
+        changed[inventory_path] = json.dumps(changed_inventory).encode("utf-8")
+        try:
+            mutation_errors = validate_payload(changed)
+        except Exception as error:  # noqa: BLE001 - this check must detect every exception
+            report.check(False, description, f"raised {type(error).__name__}: {error}")
+            return
+        report.check(
+            bool(mutation_errors)
+            and any(expected in error for error in mutation_errors),
+            description,
+            "; ".join(mutation_errors),
+        )
+
+    inventory_mutation(
+        "artifact validation rejects a missing required_documents field without raising",
+        lambda value: value.pop("required_documents"),
+        "required_documents",
+    )
+    inventory_mutation(
+        "artifact validation rejects an empty required_documents list without raising",
+        lambda value: value.__setitem__("required_documents", []),
+        "required_documents",
+    )
+    inventory_mutation(
+        "artifact validation rejects an extra required document without raising",
+        lambda value: value["required_documents"].append("legal/UNTRUSTED.txt"),
+        "required_documents",
+    )
+    missing_required_document = [
+        (name, value) for name, value in files if name != f"{ARTIFACT_ROOT}/LICENSE"
+    ]
+    report.check(
+        any(
+            "missing required legal payload: LICENSE" in error
+            for error in validate_payload(missing_required_document)
+        ),
+        "artifact validation rejects a code-required document missing from the archive",
+    )
+
+    malformed_mutations = (
+        (
+            "root field",
+            lambda value: value.__setitem__("platform", []),
+            "platform is not an object",
+        ),
+        (
+            "components",
+            lambda value: value.__setitem__("components", {}),
+            "components is not a list",
+        ),
+        (
+            "component entry",
+            lambda value: value["components"].__setitem__(0, []),
+            "components[0] is not an object",
+        ),
+        (
+            "component evidence",
+            lambda value: value["components"][0].__setitem__("evidence", []),
+            "evidence is not an object",
+        ),
+        (
+            "component notice paths",
+            lambda value: value["components"][0].__setitem__("notice_paths", {}),
+            "notice_paths is not a list",
+        ),
+        (
+            "native components",
+            lambda value: value.__setitem__("native_components", {}),
+            "native_components is not a list",
+        ),
+        (
+            "native entry",
+            lambda value: value["native_components"].__setitem__(0, []),
+            "native_components[0] is not an object",
+        ),
+        (
+            "native evidence",
+            lambda value: value["native_components"][0].__setitem__("evidence", []),
+            "evidence is not an object",
+        ),
+        (
+            "native notice hashes",
+            lambda value: value["native_components"][0].__setitem__(
+                "notice_sha256", []
+            ),
+            "notice_sha256 is not an object",
+        ),
+        (
+            "resolved runtime",
+            lambda value: value.__setitem__("resolved_runtime", {}),
+            "resolved_runtime is not a list",
+        ),
+        (
+            "build-only classification",
+            lambda value: value.__setitem__("build_only", {}),
+            "build_only is not a list",
+        ),
+        (
+            "unpackaged runtime classification",
+            lambda value: value.__setitem__("resolved_runtime_not_packaged", {}),
+            "resolved_runtime_not_packaged is not a list",
+        ),
+        (
+            "generation",
+            lambda value: value.__setitem__("generation", []),
+            "generation is not an object",
+        ),
+    )
+    for level, mutate, expected in malformed_mutations:
+        inventory_mutation(
+            f"artifact validation collects malformed {level} errors without raising",
+            mutate,
+            expected,
+        )
+
+    fabricated = json.loads(json.dumps(inventory["components"][0]))
+    fabricated["name"] = "Fabricated module component"
+    fabricated["evidence"] = {"modules": ["aiohappyeyeballs"], "artifact_paths": []}
+    inventory_mutation(
+        "artifact validation rejects fabricated module-only component evidence",
+        lambda value: value["components"].append(fabricated),
+        "module evidence has no code-owned component mapping",
+    )
+
+    executable = (
+        f"{ARTIFACT_ROOT}/SDC-Testing-Toolbox.exe"
+        if inventory.get("platform", {}).get("system") == "Windows"
+        else f"{ARTIFACT_ROOT}/SDC-Testing-Toolbox"
+    )
+    missing_executable = [(name, value) for name, value in files if name != executable]
+    report.check(
+        any(
+            "missing expected platform executable file" in error
+            for error in validate_payload(missing_executable)
+        ),
+        "artifact validation rejects a missing platform executable",
+    )
+    unexpected_root = files + [("unexpected-root/file.txt", b"unexpected")]
+    report.check(
+        any(
+            "outside the single" in error for error in validate_payload(unexpected_root)
+        ),
+        "artifact validation rejects a file at an unexpected archive root",
+    )
+    canonical_name, canonical_value = next(
+        (name, value) for name, value in files if name.endswith("/LICENSE")
+    )
+    duplicate_variants = (
+        canonical_name.swapcase(),
+        canonical_name.replace("/", "\\"),
+        f"{ARTIFACT_ROOT}/legal/caf\N{LATIN SMALL LETTER E WITH ACUTE}.txt",
+    )
+    for description, duplicate_name in zip(
+        ("case", "slash", "Unicode"), duplicate_variants
+    ):
+        entries = list(files)
+        if description == "Unicode":
+            entries.extend(
+                [
+                    (duplicate_name, b"first"),
+                    (
+                        f"{ARTIFACT_ROOT}/legal/cafe\N{COMBINING ACUTE ACCENT}.txt",
+                        b"second",
+                    ),
+                ]
+            )
+        else:
+            entries.append((duplicate_name, canonical_value))
+        report.check(
+            any(
+                "duplicate normalized path" in error
+                for error in validate_payload(entries)
+            ),
+            f"artifact validation rejects {description}-normalized duplicate paths",
+        )
+    traversal = files + [(f"{ARTIFACT_ROOT}/../escaped.txt", b"escape")]
+    report.check(
+        any(
+            "unsafe or malformed path" in error for error in validate_payload(traversal)
+        ),
+        "artifact validation rejects path traversal",
+    )
 
     runtime_names = {
         entry.get("name")
@@ -263,7 +530,7 @@ def check_archive(report: Report, archive_path: Path) -> None:
             for component in inventory["components"]
             if component.get("name") != removable
         ]
-        changed = dict(files)
+        changed = dict(file_map)
         changed[inventory_path] = json.dumps(omitted).encode("utf-8")
         report.check(
             any("unclassified" in error for error in validate_payload(changed)),
@@ -272,7 +539,9 @@ def check_archive(report: Report, archive_path: Path) -> None:
         )
 
     native_components = inventory.get("native_components", [])
-    report.check(bool(native_components), "artifact inventory identifies native components")
+    report.check(
+        bool(native_components), "artifact inventory identifies native components"
+    )
     for native in native_components:
         report.check(
             bool(native.get("evidence", {}).get("owner")),
@@ -287,11 +556,21 @@ def check_archive(report: Report, archive_path: Path) -> None:
         )
         mutated["notice_paths"] = ["legal/licenses/python/LICENSE.txt"]
         mutated["notice_sha256"] = {
-            "legal/licenses/python/LICENSE.txt": __import__("hashlib").sha256(
-                files[next(name for name in files if name.replace("\\", "/").endswith("/legal/licenses/python/LICENSE.txt"))]
-            ).hexdigest()
+            "legal/licenses/python/LICENSE.txt": __import__("hashlib")
+            .sha256(
+                file_map[
+                    next(
+                        name
+                        for name in file_map
+                        if name.replace("\\", "/").endswith(
+                            "/legal/licenses/python/LICENSE.txt"
+                        )
+                    )
+                ]
+            )
+            .hexdigest()
         }
-        changed = dict(files)
+        changed = dict(file_map)
         changed[inventory_path] = json.dumps(wrong_notice).encode("utf-8")
         report.check(
             any(
@@ -314,11 +593,13 @@ def check_archive(report: Report, archive_path: Path) -> None:
     if removable_notice:
         missing = {
             name: value
-            for name, value in files.items()
+            for name, value in file_map.items()
             if not name.replace("\\", "/").endswith(f"/{removable_notice}")
         }
         report.check(
-            any("missing bundled notice" in error for error in validate_payload(missing)),
+            any(
+                "missing bundled notice" in error for error in validate_payload(missing)
+            ),
             "artifact validation rejects a missing native notice",
             removable_notice,
         )
@@ -326,7 +607,9 @@ def check_archive(report: Report, archive_path: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--artifact", type=Path, help="validate an extracted final ZIP or tar archive")
+    parser.add_argument(
+        "--artifact", type=Path, help="validate an extracted final ZIP or tar archive"
+    )
     arguments = parser.parse_args()
 
     report = Report()

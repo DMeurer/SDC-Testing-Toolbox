@@ -6,13 +6,14 @@ legal compliance or constitute legal advice.
 
 `DEPENDENCY_INVENTORY.json` is generated separately for every native build from
 installed distribution metadata and PyInstaller's analyzed modules, binaries,
-and data files. It is the authoritative artifact-level list of packaged runtime
-components and embedded native components, and records each component's exact
-or evidence-qualified version, declared license or license expression,
-project/source URL, bundled text paths and hashes, and graph/artifact evidence.
-This maintained document explains the release policy and major
-licensing choices; it is not a substitute for that inventory or the complete
-bundled texts.
+and data files. It records the artifact-level list of packaged runtime and
+embedded native components, including versions, license expressions, source
+URLs, bundled text paths and hashes, and graph/artifact evidence. It is treated
+as untrusted input during final-archive validation: code-owned schema,
+dependency, carrier, executable, required-document, and component-specific
+notice rules are checked independently against the archive. This maintained
+document explains the release policy and major licensing choices; it is not a
+substitute for the inventory or the complete bundled texts.
 
 ## Inventory Policy
 
@@ -138,12 +139,16 @@ requirements alone.
 ## Release Process and Payload
 
 Each Windows ZIP and Linux tarball must contain exactly one complete
-`SDC-Testing-Toolbox` directory with the executable, separate shared
-libraries, `LICENSE`, this file, `DEPENDENCY_INVENTORY.json`, and the complete
-`legal` tree. CI opens each final archive and validates its bytes: every
-inventory field, listed notice, expected legal document, inventoried artifact
-path, and separately packaged Qt shared library. It does not validate source
-strings or only a pre-archive staging directory.
+`SDC-Testing-Toolbox` directory with the platform executable at its root,
+separate shared libraries, `LICENSE`, this file, `DEPENDENCY_INVENTORY.json`,
+and the complete `legal` tree. CI opens each final archive and validates its
+bytes. It rejects malformed inventory types, undeclared or missing required
+documents, unsafe or normalization-colliding paths, extra archive roots,
+missing carriers, unsupported components, and incorrect component-specific
+notices or hashes. Module-name claims are accepted only through code-owned
+component mappings; native carrier paths must exist. Validation concerns the
+final archive rather than source strings or only a pre-archive staging
+directory.
 
 For a release, the maintainer must retain the generated inventory unchanged,
 publish the corresponding-source archives defined in `legal/SOURCE_OFFER.md`
