@@ -11,8 +11,10 @@ import zipfile
 from collections.abc import Callable
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+TESTS = Path(__file__).resolve().parent
+ROOT = TESTS.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(TESTS))
 
 from legal_payload import (  # noqa: I001 - ROOT must precede local imports
     ARTIFACT_ROOT,
@@ -20,7 +22,7 @@ from legal_payload import (  # noqa: I001 - ROOT must precede local imports
     filter_binaries,
     validate_payload,
 )
-from tests.script_support import Report
+from script_support import Report
 
 
 PINNED_LEGAL_SHA256 = {

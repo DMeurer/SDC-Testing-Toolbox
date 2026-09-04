@@ -7,20 +7,22 @@ import io
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+TESTS = Path(__file__).resolve().parent
+ROOT = TESTS.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(TESTS))
 
-from script_support import Report  # noqa: E402
+from acceptance_provider import PEER_INSTANCE
+from script_support import Report
 
-import run_toolbox  # noqa: E402
-from examples import console  # noqa: E402
-from sdctoolbox import constants  # noqa: E402
-from tests.acceptance_provider import PEER_INSTANCE  # noqa: E402
+import run_toolbox
+from examples import console
+from sdctoolbox import constants
 
 REPORT = Report()
 
 
-def check(condition: bool, message: str) -> None:  # noqa: FBT001
+def check(condition: bool, message: str) -> None:
     REPORT.require(condition, message)
 
 
