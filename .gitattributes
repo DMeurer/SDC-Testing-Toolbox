@@ -1,8 +1,12 @@
 /LICENSE -text
 /legal/licenses/common/** -text
+/legal/licenses/common/Zlib.txt whitespace=-blank-at-eof
 /legal/licenses/iconv/** -text
 /legal/licenses/microsoft/** -text
+/legal/licenses/microsoft/Visual-Cpp-Runtime-2015-2022.txt whitespace=-blank-at-eol
 /legal/licenses/openssl/** -text
 /legal/licenses/qt/** -text
 /legal/licenses/qt/Qt-GPL-exception-1.0.txt whitespace=-blank-at-eof
 /legal/licenses/qt-third-party/** -text
+/legal/licenses/qt-third-party/libtiff/COPYRIGHT whitespace=-blank-at-eol
+/legal/licenses/qt-third-party/libwebp/COPYING whitespace=-blank-at-eof
