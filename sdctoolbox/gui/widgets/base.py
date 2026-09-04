@@ -101,6 +101,7 @@ def from_remote_metric(metric: RemoteMetric) -> WidgetSpec:
         allowed_values=metric.allowed_values,
         minimum=metric.minimum,
         maximum=metric.maximum,
+        resolution=metric.resolution,
         editable=metric.controllable_now,
         note=note,
         sample_period=metric.sample_period,

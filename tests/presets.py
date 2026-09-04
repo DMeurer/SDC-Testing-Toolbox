@@ -14,41 +14,19 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from script_support import Report  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 
 from sdctoolbox import config  # noqa: E402
-from sdctoolbox.model import CODING_SYSTEMS, MetricKind  # noqa: E402
+from sdctoolbox.model import CODING_SYSTEMS  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
-
-
-class Report:
-    """Collects pass/fail results and prints them as they happen."""
-
-    def __init__(self) -> None:
-        self.failures = 0
-        self.checks = 0
-
-    def check(self, ok: bool, description: str, detail: str = "") -> bool:  # noqa: FBT001
-        self.checks += 1
-        if not ok:
-            self.failures += 1
-        suffix = f"  [{detail}]" if detail else ""
-        print(f"  {'PASS' if ok else 'FAIL'}  {description}{suffix}", flush=True)
-        return ok
-
-    def summary(self) -> int:
-        print("-" * 74)
-        if self.failures:
-            print(f"RESULT: {self.failures} of {self.checks} checks FAILED")
-            return 1
-        print(f"RESULT: all {self.checks} checks passed")
-        return 0
 
 
 def check_preset(report: Report, path: Path) -> None:
@@ -56,11 +34,27 @@ def check_preset(report: Report, path: Path) -> None:
     print(f"\n{path.name}")
 
     try:
+        data = json.loads(path.read_text(encoding="utf-8"))
         device = config.load_file(path)
-    except config.ConfigError as exc:
+    except (OSError, UnicodeError, ValueError, config.ConfigError) as exc:
         report.check(False, f"{path.name} parses", str(exc)[:70])  # noqa: FBT003
         return
     report.check(True, "parses")  # noqa: FBT003
+    report.check(
+        data.get("version") == config.CONFIG_VERSION,
+        f"uses current profile version {config.CONFIG_VERSION}",
+        str(data.get("version")),
+    )
+    alerts_with_implicit_signals = [
+        alert.get("handle", alert.get("label", "?"))
+        for alert in data.get("alerts", [])
+        if not alert.get("signals")
+    ]
+    report.check(
+        not alerts_with_implicit_signals,
+        "records every alarm's version-3 signal definitions explicitly",
+        str(alerts_with_implicit_signals),
+    )
 
     report.check(
         device.device is not None and bool(device.device.friendly_name),
@@ -198,6 +192,23 @@ def check_nomenclature(report: Report, paths: list[Path]) -> None:
     )
 
 
+def check_version_filter(report: Report) -> None:
+    """Preset discovery omits files with versions below the supported range."""
+    with tempfile.TemporaryDirectory(prefix="sdctoolbox-presets-") as directory:
+        folder = Path(directory)
+        for name, version in (("supported", config.LEGACY_CONFIG_VERSION), ("zero", 0), ("negative", -1)):
+            (folder / f"{name}.json").write_text(
+                json.dumps({"version": version, "name": name.title()}),
+                encoding="utf-8",
+            )
+        listed = config.list_presets(folder)
+    report.check(
+        [preset.name for preset in listed] == ["Supported"],
+        "preset discovery skips unsupported low config versions",
+        str([preset.name for preset in listed]),
+    )
+
+
 def main() -> int:
     basic_logging_setup(level=logging.ERROR)
     report = Report()
@@ -207,7 +218,7 @@ def main() -> int:
     print("=" * 74)
 
     paths = sorted((ROOT / "presets").glob("*.json"))
-    report.check(len(paths) >= 6, "presets are shipped", f"{len(paths)} files")  # noqa: PLR2004
+    report.check(len(paths) == 7, "the seven canonical presets are shipped", f"{len(paths)} files")  # noqa: PLR2004
 
     for path in paths:
         check_preset(report, path)
@@ -223,6 +234,7 @@ def main() -> int:
     )
     for preset in listed:
         report.check(bool(preset.description), f"{preset.name} says what it is", preset.description[:44])
+    check_version_filter(report)
 
     print()
     return report.summary()

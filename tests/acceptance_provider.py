@@ -19,6 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from script_support import ACCEPTANCE_PROVIDER_READY  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 
 from sdctoolbox import constants  # noqa: E402
@@ -49,12 +50,14 @@ SAW = "m.saw"
 # 100 rises by exactly 100/40 each time. acceptance_core relies on that being exact.
 SAW_CYCLE = 40
 HOME_ACTION = "act.home_axes"
+INVALID_CHOICE_ACTION = "act.invalid_choice"
+INVALID_EFFECT_ACTION = "act.invalid_effect"
+MISSING_EFFECT_ACTION = "act.missing_effect"
 LIMIT_ALARM = "al.zoom_out_of_range"
 MANUAL_ALARM = "al.service_due"
 
-# Not "alpha": that is run_toolbox.py's default, and EPRs are derived from the name, so a
-# toolbox window left open would publish the same EPR as this process and a test could
-# connect to whichever answered first.
+# Deliberately different from DEFAULT_INSTANCE_NAME: EPRs are derived from the name, so an
+# application left open with defaults must not publish the same EPR as this test peer.
 PEER_INSTANCE = "acceptance-peer"
 UPDATED_PATIENT = "Grace Hopper"
 
@@ -193,9 +196,33 @@ def main() -> int:
         ActionSpec(
             label="Home axes",
             target_handle=constants.MDS_HANDLE,
-            effects={ZOOM: Decimal("1"), MODE: "IDLE"},
+            effects={ZOOM: "1", MODE: "IDLE", NOTE: "001"},
             handle=HOME_ACTION,
             note="Return the device to its reference state",
+        ),
+    )
+    service.add_action(
+        ActionSpec(
+            label="Invalid effect",
+            target_handle=constants.MDS_HANDLE,
+            effects={MODE: "PAUSE", ZOOM: "101"},
+            handle=INVALID_EFFECT_ACTION,
+        ),
+    )
+    service.add_action(
+        ActionSpec(
+            label="Invalid choice",
+            target_handle=constants.MDS_HANDLE,
+            effects={ZOOM: "5", MODE: "INVALID"},
+            handle=INVALID_CHOICE_ACTION,
+        ),
+    )
+    service.add_action(
+        ActionSpec(
+            label="Missing effect",
+            target_handle=constants.MDS_HANDLE,
+            effects={MODE: "PAUSE", "m.missing_effect": "1"},
+            handle=MISSING_EFFECT_ACTION,
         ),
     )
     # A distribution has nothing driving it, so it gets one block and keeps it.
@@ -224,7 +251,7 @@ def main() -> int:
 
     print(f"[provider] initial metrics: {sorted(service.list_metrics())}", flush=True)
     print(f"[provider] alarms: {sorted(service.list_alerts())}", flush=True)
-    print("[provider] READY", flush=True)
+    print(ACCEPTANCE_PROVIDER_READY, flush=True)
 
     started = time.monotonic()
     late_added = False

@@ -1,9 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import platform
 from pathlib import Path
 
-from PyInstaller.compat import is_win
 from PyInstaller.utils.hooks import collect_data_files
+
+from legal_payload import filter_binaries, generate_payload
 
 
 root = Path(SPECPATH)
@@ -26,50 +28,39 @@ analysis = Analysis(
     noarchive=False,
     optimize=0,
 )
+analysis.binaries = filter_binaries(analysis.binaries, platform=platform.system())
+analysis.datas += generate_payload(
+    root,
+    root / "build" / "legal-payload",
+    analysis.pure,
+    analysis.binaries,
+    analysis.datas,
+)
 pyz = PYZ(analysis.pure)
 
-if is_win:
-    executable = EXE(
-        pyz,
-        analysis.scripts,
-        analysis.binaries,
-        analysis.datas,
-        [],
-        name="SDC-Testing-Toolbox",
-        debug=False,
-        bootloader_ignore_signals=False,
-        strip=False,
-        upx=False,
-        console=False,
-        disable_windowed_traceback=False,
-        argv_emulation=False,
-        target_arch=None,
-        codesign_identity=None,
-        entitlements_file=None,
-    )
-else:
-    executable = EXE(
-        pyz,
-        analysis.scripts,
-        [],
-        exclude_binaries=True,
-        name="SDC-Testing-Toolbox",
-        debug=False,
-        bootloader_ignore_signals=False,
-        strip=False,
-        upx=False,
-        console=False,
-        disable_windowed_traceback=False,
-        argv_emulation=False,
-        target_arch=None,
-        codesign_identity=None,
-        entitlements_file=None,
-    )
-    bundle = COLLECT(
-        executable,
-        analysis.binaries,
-        analysis.datas,
-        strip=False,
-        upx=False,
-        name="SDC-Testing-Toolbox",
-    )
+executable = EXE(
+    pyz,
+    analysis.scripts,
+    [],
+    exclude_binaries=True,
+    name="SDC-Testing-Toolbox",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    contents_directory=".",
+)
+bundle = COLLECT(
+    executable,
+    analysis.binaries,
+    analysis.datas,
+    strip=False,
+    upx=False,
+    name="SDC-Testing-Toolbox",
+)

@@ -10,6 +10,7 @@ __pycache__/
 # Application builds
 /build/
 /dist/
+/*.sdcprofile.json
 smoke-test-error.txt
 
 # Diagnostic runtime artifacts

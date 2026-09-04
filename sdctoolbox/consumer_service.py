@@ -31,11 +31,13 @@ from .model import (
     RemoteAction,
     RemoteAlert,
     RemoteMetric,
+    fixed_point_decimal,
     patient_info_from_biceps,
+    validate_decimal,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
 
 logger = logging.getLogger("sdctoolbox.consumer")
 
@@ -56,6 +58,12 @@ SET_OPERATION_NODE_TYPES = frozenset(
         pm.SetStringOperationDescriptor,
     },
 )
+
+SET_OPERATION_BY_METRIC_KIND = {
+    MetricKind.NUMBER: pm.SetValueOperationDescriptor,
+    MetricKind.TEXT: pm.SetStringOperationDescriptor,
+    MetricKind.CHOICE: pm.SetStringOperationDescriptor,
+}
 
 
 def _first_text(coded_value: Any) -> str | None:
@@ -102,6 +110,12 @@ def _enum_value(value: Any) -> str | None:
     if value is None:
         return None
     return getattr(value, "value", None) or str(value)
+
+
+def _operation_is_enabled(state: Any) -> bool:
+    """Whether an operation is enabled, including BICEPS' default for an absent mode."""
+    mode = getattr(state, "OperatingMode", None)
+    return mode is None or _enum_value(mode) == _enum_value(pm_types.OperatingMode.ENABLED)
 
 
 def _seconds(duration: Any) -> Decimal | None:
@@ -178,6 +192,16 @@ class DiscoveredDevice:
         return None
 
 
+@dataclass(frozen=True)
+class _SetOperation:
+    """The state relevant to selecting one set operation from a foreign MDIB."""
+
+    handle: str
+    node_type: Any
+    enabled: bool
+    allowed_range: tuple[Any, Any] | None
+
+
 class RemoteDevice:
     """A connected peer. Wraps SdcConsumer plus its ConsumerMdib."""
 
@@ -194,17 +218,22 @@ class RemoteDevice:
         """The consumer-side MDIB."""
         return self._mdib
 
-    def metrics(self) -> dict[str, RemoteMetric]:
-        """Build a defensive snapshot of every metric on the peer.
+    def metrics(self, handles: Iterable[str] | None = None) -> dict[str, RemoteMetric]:
+        """Build defensive snapshots of the requested metrics on the peer.
 
         Unknown node types are skipped rather than guessed at; callers that want to show
-        them can walk ``mdib.entities`` themselves.
+        them can walk ``mdib.entities`` themselves. With no handles, snapshot every metric.
         """
+        wanted = None if handles is None else frozenset(handles)
+        if wanted == frozenset():
+            return {}
         with self._lock:
-            operations_by_target, enabled_targets, allowed_ranges = self._operation_index()
+            operations_by_target = self._operation_index(wanted)
             result: dict[str, RemoteMetric] = {}
 
             for handle, entity in self._mdib.entities.items():
+                if wanted is not None and handle not in wanted:
+                    continue
                 node_type = getattr(entity, "node_type", None)
                 kind = METRIC_NODE_TYPES.get(node_type)
                 if kind is None:
@@ -217,9 +246,20 @@ class RemoteDevice:
                 metric_value = getattr(state, "MetricValue", None)
 
                 technical_lower, technical_upper = _first_range(getattr(descriptor, "TechnicalRange", None))
-                # What we may ask for comes from the operation when it says so, otherwise we
-                # fall back on what the device says it can produce.
-                lower, upper = allowed_ranges.get(handle, (technical_lower, technical_upper))
+                operation_type = SET_OPERATION_BY_METRIC_KIND.get(kind)
+                operations = [
+                    operation
+                    for operation in operations_by_target.get(handle, ())
+                    if operation.node_type == operation_type
+                ]
+                selected_operation = next((operation for operation in operations if operation.enabled), None)
+                # What we may ask for comes from the selected operation when it says so,
+                # otherwise we fall back on what the device says it can produce.
+                lower, upper = (
+                    selected_operation.allowed_range
+                    if selected_operation is not None and selected_operation.allowed_range is not None
+                    else (technical_lower, technical_upper)
+                )
 
                 result[handle] = RemoteMetric(
                     handle=handle,
@@ -229,6 +269,7 @@ class RemoteDevice:
                     unit_label=_first_text(getattr(descriptor, "Unit", None)),
                     type_code=getattr(getattr(descriptor, "Type", None), "Code", None),
                     allowed_values=tuple(str(item.Value) for item in allowed),
+                    resolution=getattr(descriptor, "Resolution", None),
                     minimum=lower,
                     maximum=upper,
                     technical_minimum=technical_lower,
@@ -242,8 +283,11 @@ class RemoteDevice:
                     domain_minimum=getattr(getattr(descriptor, "DistributionRange", None), "Lower", None),
                     domain_maximum=getattr(getattr(descriptor, "DistributionRange", None), "Upper", None),
                     parent_handle=getattr(entity, "parent_handle", None),
-                    operation_handles=tuple(operations_by_target.get(handle, ())),
-                    controllable_now=handle in enabled_targets,
+                    operation_handles=tuple(operation.handle for operation in operations),
+                    selected_operation_handle=(
+                        selected_operation.handle if selected_operation is not None else None
+                    ),
+                    controllable_now=selected_operation is not None,
                 )
             return result
 
@@ -275,35 +319,35 @@ class RemoteDevice:
             return next(iter(patients.values()))
         return PatientInfo()
 
-    def _operation_index(self) -> tuple[dict[str, list[str]], set[str], dict[str, tuple[Any, Any]]]:
+    def _operation_index(self, targets: frozenset[str] | None = None) -> dict[str, list[_SetOperation]]:
         """Index the peer's set operations by the metric they target.
 
-        Returns the operation handles per target, the targets whose control is currently
-        enabled, and the AllowedRange per target.
+        State and AllowedRange stay attached to their operation handle so selecting an
+        enabled operation cannot accidentally borrow another operation's range.
         """
-        by_target: dict[str, list[str]] = {}
-        enabled: set[str] = set()
-        allowed_range: dict[str, tuple[Any, Any]] = {}
+        by_target: dict[str, list[_SetOperation]] = {}
 
         for handle, entity in self._mdib.entities.items():
-            if getattr(entity, "node_type", None) not in SET_OPERATION_NODE_TYPES:
+            node_type = getattr(entity, "node_type", None)
+            if node_type not in SET_OPERATION_NODE_TYPES:
                 continue
             target = getattr(getattr(entity, "descriptor", None), "OperationTarget", None)
-            if not target:
+            if not target or targets is not None and target not in targets:
                 continue
-            by_target.setdefault(target, []).append(handle)
 
             state = getattr(entity, "state", None)
-            mode = getattr(state, "OperatingMode", None)
-            # BICEPS implies En when the attribute is absent.
-            if mode in (None, pm_types.OperatingMode.ENABLED):
-                enabled.add(target)
-
             lower, upper = _first_range(getattr(state, "AllowedRange", None))
-            if lower is not None or upper is not None:
-                allowed_range[target] = (lower, upper)
+            allowed_range = (lower, upper) if lower is not None or upper is not None else None
+            by_target.setdefault(target, []).append(
+                _SetOperation(
+                    handle=handle,
+                    node_type=node_type,
+                    enabled=_operation_is_enabled(state),
+                    allowed_range=allowed_range,
+                ),
+            )
 
-        return by_target, enabled, allowed_range
+        return by_target
 
     def alerts(self) -> dict[str, RemoteAlert]:
         """Build a defensive snapshot of every alarm condition on the peer.
@@ -372,17 +416,31 @@ class RemoteDevice:
             msg = "use Decimal, never float"
             raise TypeError(msg)
 
-        metrics = self.metrics()
+        metrics = self.metrics((metric_handle,))
         metric = metrics.get(metric_handle)
         if metric is None or not metric.operation_handles:
             logger.warning("no set operation targets %s", metric_handle)
             return msg_types.InvocationState.FAILED
 
-        operation_handle = metric.operation_handles[0]
+        operation_handle = metric.selected_operation_handle
+        if operation_handle is None:
+            logger.warning("no enabled set operation targets %s", metric_handle)
+            return msg_types.InvocationState.FAILED
         client = self._consumer.set_service_client
 
         if metric.kind is MetricKind.NUMBER:
-            future = client.set_numeric_value(operation_handle, value)
+            try:
+                numeric_value = value if isinstance(value, Decimal) else Decimal(str(value))
+            except (InvalidOperation, ValueError) as exc:
+                msg = f"{value!r} is not a number for {metric_handle!r}"
+                raise ValueError(msg) from exc
+            future = client.set_numeric_value(
+                operation_handle,
+                fixed_point_decimal(
+                    validate_decimal(numeric_value, f"value for {metric_handle!r}"),
+                    f"value for {metric_handle!r}",
+                ),
+            )
         else:
             future = client.set_string(operation_handle, str(value))
 
@@ -411,7 +469,6 @@ class RemoteDevice:
                     continue
                 descriptor = getattr(entity, "descriptor", None)
                 state = getattr(entity, "state", None)
-                mode = _enum_value(getattr(state, "OperatingMode", None))
                 found[handle] = RemoteAction(
                     handle=handle,
                     label=_first_text(getattr(descriptor, "Type", None)),
@@ -419,19 +476,22 @@ class RemoteDevice:
                     target_handle=getattr(descriptor, "OperationTarget", None),
                     # Same rule as a metric editor: offer it only when the device says it
                     # is enabled, and follow operation_by_handle for changes.
-                    enabled=mode == pm_types.OperatingMode.ENABLED,
+                    enabled=_operation_is_enabled(state),
                 )
             return found
 
     def run_action(self, action_handle: str, timeout: float = 10.0) -> msg_types.InvocationState:
         """Tell the peer to do something, and wait for the final InvocationState.
 
-        Returns FAILED rather than raising when the action is unknown, so a caller has one
-        failure mode to handle instead of two.
+        Returns FAILED rather than raising when the action is unknown or disabled, so a caller
+        has one failure mode to handle instead of two.
         """
         action = self.actions().get(action_handle)
         if action is None:
             logger.warning("no action %s on this device", action_handle)
+            return msg_types.InvocationState.FAILED
+        if not action.enabled:
+            logger.warning("action %s is disabled", action_handle)
             return msg_types.InvocationState.FAILED
 
         future = self._consumer.set_service_client.activate(action_handle, arguments=None)
@@ -498,14 +558,22 @@ class ConsumerService:
             msg = "consumer service is already started"
             raise RuntimeError(msg)
         self._discovery = WSDiscovery(self.ip)
-        self._discovery.start()
+        try:
+            self._discovery.start()
+        except Exception:
+            try:
+                self.stop()
+            except Exception:
+                logger.exception("error while rolling back consumer discovery startup")
+            raise
         logger.info("discovery up on %s", self.ip)
 
     def stop(self) -> None:
         """Stop WS-Discovery."""
-        if self._discovery is not None:
-            self._discovery.stop()
-            self._discovery = None
+        discovery = self._discovery
+        self._discovery = None
+        if discovery is not None:
+            discovery.stop()
 
     def __enter__(self) -> ConsumerService:
         self.start()
@@ -514,7 +582,12 @@ class ConsumerService:
     def __exit__(self, *exc_info: object) -> None:
         self.stop()
 
-    def scan(self, timeout: float = 10.0, expected: int = 1) -> list[DiscoveredDevice]:
+    def scan(
+        self,
+        timeout: float = 10.0,
+        expected: int = 1,
+        cancel_event: threading.Event | None = None,
+    ) -> list[DiscoveredDevice]:
         """Search for SDC providers until `expected` are found or `timeout` expires."""
         if self._discovery is None:
             msg = "consumer service is not started"
@@ -522,7 +595,9 @@ class ConsumerService:
 
         deadline = time.monotonic() + timeout
         found: list[DiscoveredDevice] = []
-        while time.monotonic() < deadline:
+        while time.monotonic() < deadline and not (
+            cancel_event is not None and cancel_event.is_set()
+        ):
             services = self._discovery.search_services(types=SdcV1Definitions.MedicalDeviceTypesFilter)
             if self._own_epr is not None:
                 services = [service for service in services if service.epr != self._own_epr]
@@ -537,7 +612,10 @@ class ConsumerService:
             ]
             if len(found) >= expected:
                 break
-            time.sleep(1.0)
+            if cancel_event is None:
+                time.sleep(1.0)
+            elif cancel_event.wait(1.0):
+                break
 
         logger.info("discovered %d provider(s)", len(found))
         return found
@@ -545,8 +623,15 @@ class ConsumerService:
     def connect(self, device: DiscoveredDevice) -> RemoteDevice:
         """Connect to a discovered provider and load its MDIB."""
         consumer = SdcConsumer.from_wsd_service(device.service, ssl_context_container=None)
-        consumer.start_all()
-        mdib = ConsumerMdib(consumer, extras_cls=_PeriodicConsumerMdibMethods)
-        mdib.init_mdib()
+        try:
+            consumer.start_all()
+            mdib = ConsumerMdib(consumer, extras_cls=_PeriodicConsumerMdibMethods)
+            mdib.init_mdib()
+        except Exception:
+            try:
+                consumer.stop_all()
+            except Exception:
+                logger.exception("error while rolling back consumer connection to %s", device.epr)
+            raise
         logger.info("connected to %s, %d entities", device.epr, len(mdib.entities))
         return RemoteDevice(consumer, mdib, device.epr)

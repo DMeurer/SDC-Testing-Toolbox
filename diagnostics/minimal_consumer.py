@@ -32,10 +32,30 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def on_metric_update(metrics_by_handle: dict) -> None:
-    for handle, state in metrics_by_handle.items():
-        value = getattr(getattr(state, "MetricValue", None), "Value", None)
-        print(f"[consumer]   UPDATE {handle} = {value}", flush=True)
+class MetricUpdateObserver:
+    """Print metric reports while retaining the number of callbacks actually invoked."""
+
+    def __init__(self) -> None:
+        self.callback_count = 0
+
+    def __call__(self, metrics_by_handle: dict) -> None:
+        self.callback_count += 1
+        for handle, state in metrics_by_handle.items():
+            value = getattr(getattr(state, "MetricValue", None), "Value", None)
+            print(f"[consumer]   UPDATE {handle} = {value}", flush=True)
+
+
+def result_lines(metric_callback_count: int) -> tuple[str, str]:
+    """Describe connection health and metric receipt as independent outcomes."""
+    connection = "[consumer] RESULT: connection health: connection held"
+    if metric_callback_count:
+        receipt = (
+            "[consumer] RESULT: metric update receipt: "
+            f"{metric_callback_count} callback(s) received"
+        )
+    else:
+        receipt = "[consumer] RESULT: metric update receipt: no callbacks received"
+    return connection, receipt
 
 
 def main() -> int:
@@ -74,12 +94,14 @@ def main() -> int:
         mdib.init_mdib()
         print(f"[consumer] MDIB loaded: {len(mdib.entities)} entities")
 
-        observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
+        metric_observer = MetricUpdateObserver()
+        observableproperties.bind(mdib, metrics_by_handle=metric_observer)
         print(f"[consumer] observing for {args.watch_seconds}s ...", flush=True)
         time.sleep(args.watch_seconds)
 
         consumer.stop_all()
-        print("[consumer] RESULT: connection held, updates received")
+        for line in result_lines(metric_observer.callback_count):
+            print(line)
     return 0
 
 

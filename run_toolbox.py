@@ -15,23 +15,36 @@ from __future__ import annotations
 
 import argparse
 import logging
-from pathlib import Path
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
-
 from sdc11073.loghelper import basic_logging_setup
 
 from sdctoolbox import config, constants
 from sdctoolbox.gui.main_window import MainWindow
 from sdctoolbox.gui.startup_dialog import StartupDialog, StartupSettings
+from sdctoolbox.network import normalize_ipv4
 from sdctoolbox.provider_service import ProviderService
+
+
+def ipv4_argument(value: str) -> str:
+    """Normalize an argparse IPv4 value and provide a field-specific error."""
+    try:
+        return normalize_ipv4(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a valid IPv4 address") from exc
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--ip", default=constants.DEFAULT_IP, help="interface to bind discovery to")
+    parser.add_argument(
+        "--ip",
+        default=constants.DEFAULT_IP,
+        type=ipv4_argument,
+        help="interface to bind discovery to",
+    )
     parser.add_argument("--name", default=constants.DEFAULT_INSTANCE_NAME, help="instance name, decides the EPR")
     parser.add_argument("--config", help="config file to load on startup")
     parser.add_argument("--verbose", action="store_true", help="show sdc11073 logging")

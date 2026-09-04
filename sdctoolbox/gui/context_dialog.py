@@ -27,15 +27,20 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QLabel,
     QLineEdit,
-    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 from sdc11073.xml_types.xml_structure import DateOfBirthProperty
 
-from ..model import Coding, LocationInfo, PatientInfo, PatientMeasurement, patient_measurement_wire_value
+from ..model import (
+    Coding,
+    LocationInfo,
+    PatientInfo,
+    PatientMeasurement,
+    patient_measurement_wire_value,
+)
 from .no_wheel import NoWheelComboBox
-from .styling import mark_as_error, mute
+from .styling import constrain_dynamic_label, mark_as_error, mute
 
 # pm:Sex and pm:PatientType, with the BICEPS code as the data. The empty first entry leaves
 # the element out altogether, which is not the same as "Unspecified".
@@ -157,10 +162,8 @@ class ContextDialog(QDialog):
         mute(self.hint)
 
         self.error_label = QLabel("")
-        self.error_label.setWordWrap(True)
-        self.error_label.setTextFormat(Qt.PlainText)
+        constrain_dynamic_label(self.error_label, max_lines=3)
         self.error_label.setTextInteractionFlags(Qt.NoTextInteraction)
-        self.error_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         mark_as_error(self.error_label)
         self.error_label.hide()
 

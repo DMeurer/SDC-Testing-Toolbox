@@ -6,13 +6,173 @@ on:
     branches: [develop]
   push:
     tags: ["v*"]
+  schedule:
+    - cron: "17 3 * * 2"
 
 permissions:
   contents: read
 
 jobs:
+  deterministic-tests:
+    name: ${{ matrix.name }}
+    if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: API compatibility
+            script: diagnostics/check_api.py
+          - name: Workflow security
+            script: tests/workflow_security.py
+          - name: Diagnostic behavior
+            script: tests/diagnostic_behavior.py
+          - name: Application defaults
+            script: tests/application_defaults.py
+          - name: Direct test import bootstrap
+            script: tests/import_bootstrap.py
+          - name: Licensing and notices
+            script: tests/licensing.py
+          - name: Provider core
+            script: tests/provider_core.py
+          - name: Presets
+            script: tests/presets.py
+          - name: Config round trip
+            script: tests/config_roundtrip.py
+          - name: Widget controls
+            script: tests/widget_controls.py
+          - name: GUI dialogs
+            script: tests/gui_dialogs.py
+          - name: GUI cards and plots
+            script: tests/gui_cards_plots.py
+          - name: GUI layout
+            script: tests/gui_layout.py
+          - name: GUI provider structure
+            script: tests/gui_provider_structure.py
+          - name: Service lifecycle
+            script: tests/service_lifecycle.py
+          - name: Consumer window lifecycle
+            script: tests/consumer_lifecycle.py
+          - name: Acceptance readiness timeout
+            script: tests/acceptance_readiness.py
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    env:
+      QT_QPA_PLATFORM: offscreen
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run ${{ matrix.name }}
+        run: python ${{ matrix.script }}
+
+  windows-deterministic-tests:
+    name: ${{ matrix.name }} (Windows)
+    if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Application defaults
+            script: tests/application_defaults.py
+            artifact: application-defaults
+            console-encoding: false
+          - name: Provider core
+            script: tests/provider_core.py
+            artifact: provider-core
+            console-encoding: false
+          - name: Consumer window lifecycle
+            script: tests/consumer_lifecycle.py
+            artifact: consumer-lifecycle
+            console-encoding: false
+          - name: Acceptance readiness timeout
+            script: tests/acceptance_readiness.py
+            artifact: acceptance-readiness
+            console-encoding: false
+          - name: Console encoding
+            script: ""
+            artifact: console-encoding
+            console-encoding: true
+    runs-on: windows-2022
+    timeout-minutes: 10
+    env:
+      QT_QPA_PLATFORM: offscreen
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run ${{ matrix.name }}
+        if: matrix.console-encoding == false
+        shell: pwsh
+        run: |
+          $log = "windows-${{ matrix.artifact }}.log"
+          python ${{ matrix.script }} 2>&1 | Tee-Object -FilePath $log
+          $testExitCode = $LASTEXITCODE
+          exit $testExitCode
+
+      - name: Check strict Windows console encoding
+        if: matrix.console-encoding == true
+        shell: pwsh
+        run: |
+          python -c "import sys; from sdctoolbox.model import AlertSignalLocation, SignalInfo; sys.stdout.reconfigure(encoding='cp1252', errors='strict'); print(SignalInfo('signal', 'Vis', 'On', AlertSignalLocation.REMOTE, True).summary())" 2>&1 | Tee-Object -FilePath windows-console-encoding.log
+          $testExitCode = $LASTEXITCODE
+          exit $testExitCode
+
+      - name: Publish ${{ matrix.name }} output on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-deterministic-${{ matrix.artifact }}-output
+          path: windows-${{ matrix.artifact }}.log
+          if-no-files-found: warn
+
+  network-acceptance:
+    name: Network acceptance
+    runs-on: ubuntu-22.04
+    timeout-minutes: 8
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run isolated provider/consumer acceptance
+        run: |
+          set -o pipefail
+          python tests/acceptance_core.py 2>&1 | tee network-acceptance.log
+
+      - name: Publish provider and consumer output on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: network-acceptance-output
+          path: network-acceptance.log
+          if-no-files-found: warn
+
   build:
     name: ${{ matrix.name }}
+    if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
       matrix:
@@ -25,9 +185,9 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
           cache: pip
@@ -46,12 +206,6 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt -r requirements-build.txt
 
-      - name: Run core tests
-        run: |
-          python diagnostics/check_api.py
-          python tests/provider_core.py
-          python tests/presets.py
-
       - name: Build application
         timeout-minutes: 15
         run: pyinstaller --clean --noconfirm SDC-Testing-Toolbox.spec
@@ -64,7 +218,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           Remove-Item smoke-test-error.txt -ErrorAction SilentlyContinue
-          .\dist\SDC-Testing-Toolbox.exe --name packaged-smoke --ip 127.0.0.1 --smoke-test
+          .\dist\SDC-Testing-Toolbox\SDC-Testing-Toolbox.exe --name packaged-smoke --ip 127.0.0.1 --smoke-test
           if ($LASTEXITCODE -ne 0) {
             if (Test-Path smoke-test-error.txt) { Get-Content smoke-test-error.txt }
             exit $LASTEXITCODE
@@ -77,22 +231,67 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: ./dist/SDC-Testing-Toolbox/SDC-Testing-Toolbox --name packaged-smoke --ip 127.0.0.1 --smoke-test
 
+      - name: Archive Windows bundle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/SDC-Testing-Toolbox -DestinationPath dist/SDC-Testing-Toolbox-windows-x86_64.zip
+
       - name: Archive Linux bundle
         if: runner.os == 'Linux'
         run: tar -C dist -czf dist/SDC-Testing-Toolbox-linux-x86_64.tar.gz SDC-Testing-Toolbox
 
-      - name: Upload Windows executable
+      - name: Open final artifact and validate legal payload
+        shell: pwsh
+        run: |
+          $archive = if ($IsWindows) {
+            "dist/SDC-Testing-Toolbox-windows-x86_64.zip"
+          } else {
+            "dist/SDC-Testing-Toolbox-linux-x86_64.tar.gz"
+          }
+          python tests/licensing.py --artifact $archive
+
+      - name: Upload Windows bundle
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: SDC-Testing-Toolbox-windows-x86_64
-          path: dist/SDC-Testing-Toolbox.exe
+          path: dist/SDC-Testing-Toolbox-windows-x86_64.zip
           if-no-files-found: error
 
       - name: Upload Linux bundle
         if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: SDC-Testing-Toolbox-linux-x86_64
           path: dist/SDC-Testing-Toolbox-linux-x86_64.tar.gz
           if-no-files-found: error
+
+  inspect-artifacts:
+    name: Inspect Windows and Linux legal payloads
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: SDC-Testing-Toolbox-windows-x86_64
+          path: artifacts/windows
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: SDC-Testing-Toolbox-linux-x86_64
+          path: artifacts/linux
+
+      - name: Open both uploaded artifacts and validate legal payloads
+        run: |
+          python tests/licensing.py --artifact artifacts/windows/SDC-Testing-Toolbox-windows-x86_64.zip
+          python tests/licensing.py --artifact artifacts/linux/SDC-Testing-Toolbox-linux-x86_64.tar.gz

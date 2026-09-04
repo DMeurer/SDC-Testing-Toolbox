@@ -7,7 +7,7 @@ one is chosen and a field that does not apply is worse than absent.
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
+import math
 
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -30,8 +30,9 @@ from ..model import (
     WaveformShape,
     slugify,
 )
+from .decimal_input import DecimalInputError, parse_decimal_input
 from .no_wheel import NoWheelComboBox
-from .styling import mark_as_error, mute
+from .styling import constrain_dynamic_label, mark_as_error, mute
 
 # Label shown in the combo box -> kind. Order decides the order in the dropdown.
 OFFERED_KINDS: list[tuple[str, MetricKind]] = [
@@ -153,10 +154,11 @@ class NewMetricDialog(QDialog):
         self.domain_widget.setLayout(domain)
 
         self.handle_preview = QLabel("-")
+        constrain_dynamic_label(self.handle_preview)
         mute(self.handle_preview)
 
         self.error_label = QLabel("")
-        self.error_label.setWordWrap(True)
+        constrain_dynamic_label(self.error_label, max_lines=3)
         mark_as_error(self.error_label)
         self.error_label.hide()
 
@@ -240,15 +242,19 @@ class NewMetricDialog(QDialog):
         fast the thing beats, so work it out for them rather than making them do it.
         """
         try:
-            period = Decimal(self.sample_period_edit.text().strip() or str(DEFAULT_SAMPLE_PERIOD))
+            period = parse_decimal_input(
+                self.sample_period_edit.text().strip() or str(DEFAULT_SAMPLE_PERIOD),
+                "sample period",
+                positive=True,
+            )
             cycle = int(self.cycle_edit.text().strip() or DEFAULT_CYCLE_SAMPLES)
-        except (InvalidOperation, ValueError):
+            seconds = float(period) * cycle
+        except (ArithmeticError, DecimalInputError, OverflowError, ValueError):
             self.rate_hint.setText("")
             return
-        if period <= 0 or cycle < 2:  # noqa: PLR2004
+        if cycle < 2 or not math.isfinite(seconds) or seconds <= 0:  # noqa: PLR2004
             self.rate_hint.setText("")
             return
-        seconds = float(period) * cycle
         self.rate_hint.setText(f"= {seconds:.2f} s per cycle, {60.0 / seconds:.0f}/min")
 
     def _set_row_visible(self, widget: QWidget, *, visible: bool) -> None:
@@ -368,12 +374,9 @@ class NewMetricDialog(QDialog):
             default_resolution = "1" if kind is MetricKind.NUMBER else "0.1"
             raw = self.resolution_edit.text().strip() or default_resolution
             try:
-                resolution = Decimal(raw)
-            except InvalidOperation:
-                self._fail(f"{raw!r} is not a valid resolution. Use a number such as 1 or 0.1.")
-                return
-            if resolution <= 0:
-                self._fail("The resolution must be greater than zero.")
+                resolution = parse_decimal_input(raw, "resolution", positive=True)
+            except DecimalInputError as exc:
+                self._fail(str(exc))
                 return
 
             for caption, edit in (("minimum", self.minimum_edit), ("maximum", self.maximum_edit)):
@@ -381,9 +384,9 @@ class NewMetricDialog(QDialog):
                 if not text:
                     continue
                 try:
-                    parsed = Decimal(text)
-                except InvalidOperation:
-                    self._fail(f"{text!r} is not a valid {caption}.")
+                    parsed = parse_decimal_input(text, caption)
+                except DecimalInputError as exc:
+                    self._fail(str(exc))
                     return
                 if caption == "minimum":
                     minimum = parsed
@@ -399,12 +402,9 @@ class NewMetricDialog(QDialog):
         if kind is MetricKind.WAVEFORM:
             raw = self.sample_period_edit.text().strip() or str(DEFAULT_SAMPLE_PERIOD)
             try:
-                sample_period = Decimal(raw)
-            except InvalidOperation:
-                self._fail(f"{raw!r} is not a valid sample period. Use seconds, such as 0.1.")
-                return
-            if sample_period <= 0:
-                self._fail("The sample period must be greater than zero.")
+                sample_period = parse_decimal_input(raw, "sample period", positive=True)
+            except DecimalInputError as exc:
+                self._fail(str(exc))
                 return
 
             raw = self.cycle_edit.text().strip() or str(DEFAULT_CYCLE_SAMPLES)
@@ -430,9 +430,9 @@ class NewMetricDialog(QDialog):
                 if not text:
                     continue
                 try:
-                    parsed = Decimal(text)
-                except InvalidOperation:
-                    self._fail(f"{text!r} is not a valid {caption}.")
+                    parsed = parse_decimal_input(text, caption)
+                except DecimalInputError as exc:
+                    self._fail(str(exc))
                     return
                 if caption.endswith("minimum"):
                     domain_minimum = parsed

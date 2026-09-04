@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pathlib
 import uuid
+from decimal import Decimal
 
 # --------------------------------------------------------------------------------------
 # MDIB scaffolding
@@ -83,11 +84,21 @@ DEFAULT_IP = "127.0.0.1"
 # with the same name keeps its identity.
 EPR_NAMESPACE = uuid.UUID("{7c2e4a10-6b3d-4f8e-9c21-0d5a8e3f1b47}")
 
+# Shared by the graphical and console entry points. Test peers use explicit, distinct names
+# so they cannot publish the same EPR as an application left running with defaults.
 DEFAULT_INSTANCE_NAME = "toolbox"
 
 # Location context published by every provider, so consumers can filter by it later.
 # Keys are LocationInfo field names, not the abbreviations SdcLocation takes.
 DEFAULT_LOCATION = {"facility": "HOSP", "point_of_care": "CU1", "bed": "Toolbox"}
+
+# Generated waveform reports cover this much signal. Bound their sample count so an unsafe
+# period cannot make the GUI/demo provider allocate an effectively unbounded block.
+WAVEFORM_BLOCK_SECONDS = 0.25
+MAX_GENERATED_WAVEFORM_BLOCK_SAMPLES = 1_000
+MIN_GENERATED_WAVEFORM_SAMPLE_PERIOD = (
+    Decimal(str(WAVEFORM_BLOCK_SECONDS)) / MAX_GENERATED_WAVEFORM_BLOCK_SAMPLES
+)
 
 # --------------------------------------------------------------------------------------
 # DPWS device metadata

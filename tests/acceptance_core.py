@@ -34,20 +34,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from sdc11073.loghelper import basic_logging_setup  # noqa: E402
-from sdc11073.xml_types import msg_types  # noqa: E402
-
-from sdctoolbox import constants  # noqa: E402
-from sdctoolbox.consumer_service import ConsumerService  # noqa: E402
-from sdctoolbox.model import MetricKind  # noqa: E402
-
 from acceptance_provider import (  # noqa: E402
     DIST,
     HOME_ACTION,
+    INVALID_CHOICE_ACTION,
+    INVALID_EFFECT_ACTION,
     LATE,
     LIMIT_ALARM,
     LOCKED,
     MANUAL_ALARM,
+    MISSING_EFFECT_ACTION,
     MODE,
     NOTE,
     PEER_INSTANCE,
@@ -57,59 +53,15 @@ from acceptance_provider import (  # noqa: E402
     WAVE,
     ZOOM,
 )
+from script_support import ProcessOutput, Report, stop_process, wait_for_ready  # noqa: E402
+from sdc11073.loghelper import basic_logging_setup  # noqa: E402
+from sdc11073.xml_types import msg_types  # noqa: E402
+
+from sdctoolbox import constants  # noqa: E402
+from sdctoolbox.consumer_service import ConsumerService  # noqa: E402
+from sdctoolbox.model import MetricKind  # noqa: E402
 
 FINISHED = (msg_types.InvocationState.FINISHED, msg_types.InvocationState.FINISHED_MOD)
-
-
-class Report:
-    """Collects pass/fail results and prints them as they happen."""
-
-    def __init__(self) -> None:
-        self.failures = 0
-        self.checks = 0
-
-    def check(self, ok: bool, description: str, detail: str = "") -> bool:  # noqa: FBT001
-        self.checks += 1
-        if not ok:
-            self.failures += 1
-        status = "PASS" if ok else "FAIL"
-        suffix = f"  [{detail}]" if detail else ""
-        print(f"  {status}  {description}{suffix}", flush=True)
-        return ok
-
-    def summary(self) -> int:
-        print("-" * 74)
-        if self.failures:
-            print(f"RESULT: {self.failures} of {self.checks} checks FAILED")
-            return 1
-        print(f"RESULT: all {self.checks} checks passed")
-        return 0
-
-
-def wait_for_ready(process: subprocess.Popen, timeout: float) -> bool:
-    """Block until the provider prints READY, echoing its output meanwhile."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        line = process.stdout.readline()
-        if not line:
-            if process.poll() is not None:
-                return False
-            continue
-        print(f"    {line.rstrip()}", flush=True)
-        if "READY" in line:
-            return True
-    return False
-
-
-def drain(process: subprocess.Popen) -> None:
-    """Keep echoing provider output in the background so it never blocks on a full pipe."""
-
-    def pump() -> None:
-        for line in process.stdout:
-            print(f"    {line.rstrip()}", flush=True)
-
-    thread = threading.Thread(target=pump, daemon=True)
-    thread.start()
 
 
 def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one piece
@@ -133,12 +85,12 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
         text=True,
         bufsize=1,
     )
+    output = ProcessOutput(process)
 
     try:
-        if not wait_for_ready(process, timeout=45):
+        if not wait_for_ready(output, timeout=45):
             print("FAIL: provider never reported READY")
             return 1
-        drain(process)
 
         # ---------------------------------------------------------------- discovery
         print("\n1. Discovery and connection", flush=True)
@@ -267,8 +219,8 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
 
             # ------------------------------------------------------- remote control
             print("\n3. Remote control", flush=True)
-            state = remote.set_value(ZOOM, Decimal("7"))
-            report.check(state in FINISHED, "setting a numeric value finishes", str(state))
+            state = remote.set_value(ZOOM, "7")
+            report.check(state in FINISHED, "setting a numeric string finishes", str(state))
             time.sleep(1.5)
             report.check(
                 remote.metrics()[ZOOM].value == Decimal("7"),
@@ -590,6 +542,33 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
                     "including on a metric of a different kind",
                     str(remote.metrics()[MODE].value),
                 )
+                report.check(
+                    remote.metrics()[NOTE].value == "001",
+                    "and numeric-looking text remains text",
+                    repr(remote.metrics()[NOTE].value),
+                )
+
+                for invalid_action, description in (
+                    (INVALID_EFFECT_ACTION, "out-of-range"),
+                    (INVALID_CHOICE_ACTION, "invalid-choice"),
+                    (MISSING_EFFECT_ACTION, "missing-target"),
+                ):
+                    remote.set_value(ZOOM, Decimal("42"))
+                    remote.set_value(MODE, "RUN")
+                    time.sleep(1.0)
+                    state = remote.run_action(invalid_action)
+                    report.check(
+                        state is msg_types.InvocationState.FAILED,
+                        f"a remote {description} action fails",
+                        str(state),
+                    )
+                    time.sleep(1.0)
+                    current = remote.metrics()
+                    report.check(
+                        current[ZOOM].value == Decimal("42") and current[MODE].value == "RUN",
+                        f"a remote {description} action is all-or-nothing",
+                        f"{current[ZOOM].value}, {current[MODE].value}",
+                    )
 
             report.check(
                 remote.run_action("act.no_such_thing") is msg_types.InvocationState.FAILED,
@@ -599,11 +578,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
             remote.close()
 
     finally:
-        process.terminate()
-        try:
-            process.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            process.kill()
+        stop_process(process, output)
 
     print()
     return report.summary()

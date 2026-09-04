@@ -1,83 +1,32 @@
 {
-  "version": 1,
+  "version": 3,
   "name": "Endoscopic camera",
   "description": "Camera control unit and its light source: image processing settings, white balance, and the colour temperature of the illumination.",
   "device": {
     "instance_name": "endoscope",
     "friendly_name": "Endoscopic Camera",
     "manufacturer": "SDC Testing Toolbox",
+    "manufacturer_url": "https://d-meurer.com",
     "model_name": "Endovision 4K",
     "model_number": "4K-2",
     "firmware_version": "5.2.0"
   },
   "metrics": [
     {
-      "handle": "m.image_profile",
-      "label": "Image profile",
-      "kind": "choice",
-      "section": "Camera",
-      "controllable": true,
-      "allowed_values": ["LAPAROSCOPY", "ARTHROSCOPY", "HYSTEROSCOPY", "UROLOGY", "ENT"],
-      "initial_value": "LAPAROSCOPY",
-      "type": {"code": "cam_image_profile", "system": "private"}
-    },
-    {
-      "handle": "m.enhancement",
-      "label": "Contrast enhancement",
-      "kind": "choice",
-      "section": "Camera",
-      "controllable": true,
-      "allowed_values": ["OFF", "TISSUE", "VESSEL", "FLUORESCENCE"],
-      "initial_value": "OFF",
-      "type": {"code": "cam_enhancement_mode", "system": "private"}
-    },
-    {
-      "handle": "m.gain",
-      "label": "Gain",
-      "kind": "number",
-      "section": "Camera",
-      "controllable": true,
-      "unit": {"label": "dB", "code": "MDC_DIM_DECIBEL", "system": "mdc"},
-      "type": {"code": "cam_gain", "system": "private"},
-      "resolution": "0.5",
-      "minimum": "0",
-      "maximum": "24",
-      "initial_value": "6"
-    },
-    {
-      "handle": "m.exposure",
-      "label": "Exposure time",
-      "kind": "number",
-      "section": "Camera",
-      "controllable": true,
-      "unit": {"label": "ms", "code": "MDC_DIM_MILLI_SEC", "system": "mdc"},
-      "type": {"code": "cam_exposure_time", "system": "private"},
-      "resolution": "0.1",
-      "minimum": "0.5",
-      "maximum": "40",
-      "initial_value": "8"
-    },
-    {
-      "handle": "m.white_balance",
-      "label": "White balance",
-      "kind": "number",
-      "section": "Camera",
-      "controllable": true,
-      "unit": {"label": "K", "code": "MDC_DIM_KELVIN", "system": "mdc"},
-      "type": {"code": "cam_white_balance", "system": "private"},
-      "resolution": "50",
-      "minimum": "2800",
-      "maximum": "7500",
-      "initial_value": "5600"
-    },
-    {
       "handle": "m.brightness_trace",
       "label": "Scene brightness",
       "kind": "waveform",
-      "section": "Camera",
       "controllable": false,
-      "unit": {"label": "%", "code": "MDC_DIM_PERCENT", "system": "mdc"},
-      "type": {"code": "cam_scene_brightness", "system": "private"},
+      "section": "Camera",
+      "unit": {
+        "code": "MDC_DIM_PERCENT",
+        "system": "mdc",
+        "label": "%"
+      },
+      "type": {
+        "code": "cam_scene_brightness",
+        "system": "private"
+      },
       "resolution": "0.1",
       "minimum": "0",
       "maximum": "100",
@@ -89,110 +38,275 @@
       "handle": "m.colour_histogram",
       "label": "Luminance histogram",
       "kind": "distribution",
-      "section": "Camera",
       "controllable": false,
-      "unit": {"label": "px", "code": "cam_pixel_count", "system": "private"},
-      "type": {"code": "cam_luminance_histogram", "system": "private"},
+      "section": "Camera",
+      "unit": {
+        "code": "cam_pixel_count",
+        "system": "private",
+        "label": "px"
+      },
+      "type": {
+        "code": "cam_luminance_histogram",
+        "system": "private"
+      },
       "resolution": "1",
       "minimum": "0",
       "maximum": "5000",
-      "domain_unit": {"label": "level", "code": "cam_luminance_level", "system": "private"},
+      "domain_unit": {
+        "code": "cam_luminance_level",
+        "system": "private",
+        "label": "level"
+      },
       "domain_minimum": "0",
       "domain_maximum": "255",
       "distribution_shape": "bell"
     },
     {
-      "handle": "m.light_intensity",
-      "label": "Light intensity",
-      "kind": "number",
-      "section": "Light source",
+      "handle": "m.enhancement",
+      "label": "Contrast enhancement",
+      "kind": "choice",
       "controllable": true,
-      "unit": {"label": "%", "code": "MDC_DIM_PERCENT", "system": "mdc"},
-      "type": {"code": "light_intensity", "system": "private"},
-      "resolution": "1",
-      "minimum": "0",
-      "maximum": "100",
-      "initial_value": "70"
+      "section": "Camera",
+      "type": {
+        "code": "cam_enhancement_mode",
+        "system": "private"
+      },
+      "allowed_values": [
+        "OFF",
+        "TISSUE",
+        "VESSEL",
+        "FLUORESCENCE"
+      ],
+      "initial_value": "OFF"
     },
     {
-      "handle": "m.light_state",
-      "label": "Lamp",
-      "kind": "choice",
-      "section": "Light source",
+      "handle": "m.exposure",
+      "label": "Exposure time",
+      "kind": "number",
       "controllable": true,
-      "allowed_values": ["OFF", "STANDBY", "ON"],
-      "initial_value": "ON",
-      "type": {"code": "light_state", "system": "private"}
+      "section": "Camera",
+      "unit": {
+        "code": "MDC_DIM_MILLI_SEC",
+        "system": "mdc",
+        "label": "ms"
+      },
+      "type": {
+        "code": "cam_exposure_time",
+        "system": "private"
+      },
+      "resolution": "0.1",
+      "minimum": "0.5",
+      "maximum": "40",
+      "initial_value": "8"
+    },
+    {
+      "handle": "m.gain",
+      "label": "Gain",
+      "kind": "number",
+      "controllable": true,
+      "section": "Camera",
+      "unit": {
+        "code": "MDC_DIM_DECIBEL",
+        "system": "mdc",
+        "label": "dB"
+      },
+      "type": {
+        "code": "cam_gain",
+        "system": "private"
+      },
+      "resolution": "0.5",
+      "minimum": "0",
+      "maximum": "24",
+      "initial_value": "6"
+    },
+    {
+      "handle": "m.image_profile",
+      "label": "Image profile",
+      "kind": "choice",
+      "controllable": true,
+      "section": "Camera",
+      "type": {
+        "code": "cam_image_profile",
+        "system": "private"
+      },
+      "allowed_values": [
+        "LAPAROSCOPY",
+        "ARTHROSCOPY",
+        "HYSTEROSCOPY",
+        "UROLOGY",
+        "ENT"
+      ],
+      "initial_value": "LAPAROSCOPY"
     },
     {
       "handle": "m.lamp_hours",
       "label": "Lamp hours",
       "kind": "number",
-      "section": "Light source",
       "controllable": false,
-      "unit": {"label": "h", "code": "MDC_DIM_HR", "system": "mdc"},
-      "type": {"code": "light_lamp_hours", "system": "private"},
+      "section": "Light source",
+      "unit": {
+        "code": "MDC_DIM_HR",
+        "system": "mdc",
+        "label": "h"
+      },
+      "type": {
+        "code": "light_lamp_hours",
+        "system": "private"
+      },
       "resolution": "1",
       "minimum": "0",
       "maximum": "20000",
       "initial_value": "1840"
     },
     {
+      "handle": "m.light_intensity",
+      "label": "Light intensity",
+      "kind": "number",
+      "controllable": true,
+      "section": "Light source",
+      "unit": {
+        "code": "MDC_DIM_PERCENT",
+        "system": "mdc",
+        "label": "%"
+      },
+      "type": {
+        "code": "light_intensity",
+        "system": "private"
+      },
+      "resolution": "1",
+      "minimum": "0",
+      "maximum": "100",
+      "initial_value": "70"
+    },
+    {
       "handle": "m.light_spectrum",
       "label": "Light spectrum",
       "kind": "distribution",
-      "section": "Light source",
       "controllable": false,
-      "unit": {"label": "rel.", "code": "light_relative_intensity", "system": "private"},
-      "type": {"code": "light_spectrum", "system": "private"},
+      "section": "Light source",
+      "unit": {
+        "code": "light_relative_intensity",
+        "system": "private",
+        "label": "rel."
+      },
+      "type": {
+        "code": "light_spectrum",
+        "system": "private"
+      },
       "resolution": "0.1",
       "minimum": "0",
       "maximum": "100",
-      "domain_unit": {"label": "nm", "code": "MDC_DIM_NANO_M", "system": "mdc"},
+      "domain_unit": {
+        "code": "MDC_DIM_NANO_M",
+        "system": "mdc",
+        "label": "nm"
+      },
       "domain_minimum": "380",
       "domain_maximum": "780",
       "distribution_shape": "bimodal"
+    },
+    {
+      "handle": "m.light_state",
+      "label": "Lamp",
+      "kind": "choice",
+      "controllable": true,
+      "section": "Light source",
+      "type": {
+        "code": "light_state",
+        "system": "private"
+      },
+      "allowed_values": [
+        "OFF",
+        "STANDBY",
+        "ON"
+      ],
+      "initial_value": "ON"
+    },
+    {
+      "handle": "m.white_balance",
+      "label": "White balance",
+      "kind": "number",
+      "controllable": true,
+      "section": "Camera",
+      "unit": {
+        "code": "MDC_DIM_KELVIN",
+        "system": "mdc",
+        "label": "K"
+      },
+      "type": {
+        "code": "cam_white_balance",
+        "system": "private"
+      },
+      "resolution": "50",
+      "minimum": "2800",
+      "maximum": "7500",
+      "initial_value": "5600"
     }
   ],
   "alerts": [
-    {
-      "handle": "al.lamp_service",
-      "label": "Lamp service due",
-      "watches": "m.lamp_hours",
-      "kind": "Tec",
-      "priority": "Lo",
-      "upper_limit": "5000"
-    },
     {
       "handle": "al.image_too_dark",
       "label": "Image too dark",
       "watches": "m.light_intensity",
       "kind": "Tec",
       "priority": "Me",
+      "signals": [
+        {
+          "manifestation": "Vis",
+          "latching": false
+        },
+        {
+          "manifestation": "Aud",
+          "latching": false
+        }
+      ],
       "lower_limit": "15"
+    },
+    {
+      "handle": "al.lamp_service",
+      "label": "Lamp service due",
+      "watches": "m.lamp_hours",
+      "kind": "Tec",
+      "priority": "Lo",
+      "signals": [
+        {
+          "manifestation": "Vis",
+          "latching": false
+        },
+        {
+          "manifestation": "Aud",
+          "latching": false
+        }
+      ],
+      "upper_limit": "5000"
     }
   ],
   "actions": [
     {
-      "handle": "act.white_balance",
-      "label": "White balance now",
-      "target": "vmd.camera",
-      "note": "Point at a white swab and press. Nothing to write: the device works out the value",
-      "effects": {"m.white_balance": "5600", "m.gain": "6"}
-    },
-    {
       "handle": "act.capture_still",
       "label": "Capture still",
       "target": "vmd.camera",
-      "note": "SDC carries no image data, so this only records that a capture happened",
-      "effects": {}
+      "note": "SDC carries no image data, so this only records that a capture happened"
     },
     {
       "handle": "act.lamp_standby",
       "label": "Lamp to standby",
       "target": "vmd.light_source",
       "note": "Drop the lamp out of the light path without switching it off",
-      "effects": {"m.light_state": "STANDBY", "m.light_intensity": "0"}
+      "effects": {
+        "m.light_intensity": "0",
+        "m.light_state": "STANDBY"
+      }
+    },
+    {
+      "handle": "act.white_balance",
+      "label": "White balance now",
+      "target": "vmd.camera",
+      "note": "Point at a white swab and press. Nothing to write: the device works out the value",
+      "effects": {
+        "m.gain": "6",
+        "m.white_balance": "5600"
+      }
     }
   ]
 }

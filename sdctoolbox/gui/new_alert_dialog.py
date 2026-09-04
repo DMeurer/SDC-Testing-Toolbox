@@ -6,8 +6,6 @@ blank and it only moves when you raise or clear it by hand.
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
-
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -21,9 +19,19 @@ from PySide6.QtWidgets import (
 )
 
 from ..constants import ALERT_HANDLE_PREFIX
-from ..model import AlertKind, AlertManifestation, AlertPriority, AlertSignalSpec, AlertSpec, MetricKind, MetricSpec, slugify
+from ..model import (
+    AlertKind,
+    AlertManifestation,
+    AlertPriority,
+    AlertSignalSpec,
+    AlertSpec,
+    MetricKind,
+    MetricSpec,
+    slugify,
+)
+from .decimal_input import DecimalInputError, parse_decimal_input
 from .no_wheel import NoWheelComboBox
-from .styling import mark_as_error, mute
+from .styling import constrain_dynamic_label, mark_as_error, mute
 
 KIND_CAPTIONS = [
     ("Technical", AlertKind.TECHNICAL),
@@ -119,10 +127,11 @@ class NewAlertDialog(QDialog):
         mute(self.hint)
 
         self.handle_preview = QLabel("-")
+        constrain_dynamic_label(self.handle_preview)
         mute(self.handle_preview)
 
         self.error_label = QLabel("")
-        self.error_label.setWordWrap(True)
+        constrain_dynamic_label(self.error_label, max_lines=3)
         mark_as_error(self.error_label)
         self.error_label.hide()
 
@@ -223,9 +232,9 @@ class NewAlertDialog(QDialog):
                 if not text:
                     continue
                 try:
-                    parsed = Decimal(text)
-                except InvalidOperation:
-                    self._fail(f"{text!r} is not a valid {caption}.")
+                    parsed = parse_decimal_input(text, caption)
+                except DecimalInputError as exc:
+                    self._fail(str(exc))
                     return
                 if caption.startswith("lower"):
                     lower = parsed

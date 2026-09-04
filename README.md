@@ -2,7 +2,7 @@
 
 A desktop tool for understanding **IEEE 11073 SDC**: create data sources with a few clicks, publish them on the network, discover other SDC devices, subscribe to their data sources and remote-control them.
 
-Built on [sdc11073](https://github.com/Draegerwerk/sdc11073) (Draeger, MIT) and PySide6.
+Built on [sdc11073](https://github.com/Draegerwerk/sdc11073) and PySide6.
 
 > [!WARNING]
 > Learning tool, not a medical device. By its own notice `sdc11073` is not intended for
@@ -16,7 +16,11 @@ py -3.12 -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Python 3.12 is deliberate: `python` on a typical Windows box may point at a newer release, and an explicit `py -3.12` keeps the environment reproducible. Both dependencies also work on 3.13 and 3.14 if you prefer.
+Python 3.12 is the project's tested interpreter and is selected explicitly on Windows and in
+CI. The pinned runtime dependencies declare support for Python 3.10 through 3.14, so Ubuntu
+22.04's default Python 3.10 is also suitable. `requirements.txt` and
+`requirements-build.txt` pin direct dependencies only; pip still resolves transitive
+dependencies at install time, so they are not a complete reproducible lock.
 
 ## Application builds
 
@@ -32,17 +36,23 @@ specification:
 .venv\Scripts\python.exe -m PyInstaller --clean --noconfirm SDC-Testing-Toolbox.spec
 ```
 
-The Windows result is `dist\SDC-Testing-Toolbox.exe`.
+The Windows result is the `dist\SDC-Testing-Toolbox` directory. Keep that
+directory intact: it contains replaceable shared libraries, `LICENSE`,
+`THIRD_PARTY_NOTICES.md`, an artifact-specific `DEPENDENCY_INVENTORY.json`,
+source/relinking instructions, and collected license texts. The inventory is
+generated from installed distributions and PyInstaller analysis for each
+native build; it is not a static lock file.
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  binutils libbrotli1 libdbus-1-3 libegl1 libfontconfig1 libfreetype6 libgl1 \
+  python3 python3-venv binutils libbrotli1 libdbus-1-3 libegl1 \
+  libfontconfig1 libfreetype6 libgl1 \
   libglib2.0-0 libgtk-3-0 libx11-xcb1 libxcb-cursor0 libxcb-icccm4 \
   libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
   libxcb-render0 libxcb-shape0 libxcb-shm0 libxcb-sync1 libxcb-xfixes0 \
   libxcb-xkb1 libxkbcommon-x11-0 libxkbcommon0
-python3.12 -m venv .venv
+python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt -r requirements-build.txt
 .venv/bin/python -m PyInstaller --clean --noconfirm SDC-Testing-Toolbox.spec
 tar -C dist -czf dist/SDC-Testing-Toolbox-linux-x86_64.tar.gz SDC-Testing-Toolbox
@@ -50,27 +60,44 @@ tar -C dist -czf dist/SDC-Testing-Toolbox-linux-x86_64.tar.gz SDC-Testing-Toolbo
 
 The workflow's Linux archive targets x86-64 desktop distributions with glibc 2.35 or newer
 because it is built on Ubuntu 22.04. A local build inherits its build host's glibc baseline.
-The archive contains application-specific shared libraries, while normal desktop system
+The archive contains application-specific shared libraries as separate files, while normal desktop system
 libraries remain host dependencies. Keep the bundle together after extracting it; the
 executable is `SDC-Testing-Toolbox/SDC-Testing-Toolbox`.
 
 The `Build application` GitHub Actions workflow performs both native builds, smoke-tests the
-actual packaged applications and uploads the Windows executable and Linux archive. Run it
+actual packaged applications, validates the final archives' legal payloads, and uploads Windows
+and Linux archives as release candidates. Run it
 manually when an artifact is needed; it also runs for pull requests to `develop` and version
 tags.
 
+## License
+
+SDC Testing Toolbox is free software licensed under the
+[GNU General Public License version 3 only](LICENSE) (`GPL-3.0-only`). This is
+the toolbox's license, not the license of its dependencies.
+
+Dependencies retain their own terms. In particular, `sdc11073` 3.0.0 is MIT
+licensed, while PySide6 and Qt are available under applicable LGPLv3, GPL, or
+commercial terms depending on the components and license option. Packaged
+builds also contain Python and files produced or embedded by PyInstaller. See
+[Third-Party Notices](THIRD_PARTY_NOTICES.md) for attribution, authoritative
+links, and distribution considerations. Review the generated inventory and
+bundled texts for the exact artifact. Public binary releases must also publish
+the exact corresponding-source payload defined in `legal/SOURCE_OFFER.md`;
+these materials are operational guidance, not legal advice or a guarantee of
+compliance.
+
 ## Milestones
 
-- [x] **0 — Groundwork.** Pinned environment, sdc11073 API verified, networking settled.
+- [x] **0 — Groundwork.** Direct dependencies pinned, sdc11073 API verified, networking settled.
 - [x] **1 — Core.** Create data sources at runtime, publish them, remote-control them. Headless, with a console front end and an acceptance test.
 - [x] **2 — Provider UI.** Metric list with live values, "New data source" dialog.
 - [x] **3 — Consumer UI.** Discovery, MDIB browser, editors for controllable metrics. Accepts foreign MDIBs defensively; detailed metric and operation views cover the supported subset.
 - [x] **4a — Alarms and presets.** Alert conditions with their signals, and configs you can export, import and load at startup.
 - [x] **4b — Contexts and signal handling.** Editable patient and location, acknowledgement and delegation, a preset picker.
 - [x] **4c — Waveforms and distributions.** Both sample-array kinds, a generator for both, and a plot to watch them on.
-- [x] **4d — Realistic presets.** Coded values, device identity, subsystem structure, and actions. Seven virtual device profiles, each built by tests.
+- [x] **4d — Device presets.** Seven realistic virtual device profiles with coded values, device identity, subsystem structure, and actions, each built by tests.
 - [ ] **4e — TLS.**
-- [x] **5 - Device presets.** Provide virtual device profiles, so a consumer can be tested without physical hardware being present.
 
 ## Try it
 
@@ -199,21 +226,22 @@ provider> where HOSP/Surgery/2/OR1/1/Table
 provider> patient Ada Lovelace F Ad 1815-12-10
   Ada Lovelace (F, Ad, 1815-12-10)
 provider> presets
-  Insufflator        6 data source(s), 3 alarm(s)
-      Six data sources and three alarms, roughly what a laparoscopic insufflator publishes.
+  Insufflator        9 data source(s), 3 alarm(s)
+      Laparoscopic insufflator: nine metrics for gas flow, pressure control, and related alarms. One metric larger than the infusion pump, and the first preset this project had.
 ```
 
 ## Presets
 
 *File → Export config* writes device metadata, data-source definitions and scalar current values, alarm and action definitions, and currently associated patient/location contexts to a JSON file.
 It is not a full live-device snapshot: sample blocks, alert/signal state, control mode, generator state and context history are not exported.
-*File → Import config* validates descriptor references before removing tracked metrics, alarms and actions, then rebuilds them.
-It is neither a whole-MDIB replacement nor transactional: existing sections and contexts omitted by the file remain, and an operational error after validation can still leave a device partly rebuilt.
-Export before experimenting with imports.
+*File → Import config* validates descriptor references and generated section containment before changing the provider. Replacement removes tracked metrics, alarms and actions before rebuilding them; `replace=False` appends the profile while retaining the existing graph.
+It is not a whole-MDIB replacement. In either mode, omitting `device` metadata leaves the running identity unchanged, while supplied metadata also cannot change an already running provider. Omitting `contexts.patient` or `contexts.location` leaves that currently associated context unchanged. An explicit patient block is associated, including an empty block to detach the current patient; an explicit empty location is rejected because a published location needs at least one detail.
+Both `replace=True` replacement and `replace=False` append are transactional for operational failures: the provider restores its prior managed metrics, alarms, actions, sections and associated contexts, publishing compensating transactions so connected consumers can recover the same graph. Append compensation removes only appended descriptors and restores contexts the failed import touched; it does not recreate unchanged pre-existing descriptors. This is recovery, not external atomicity: a subscribed consumer can observe temporary changes before the compensation, and a rollback failure is reported together with the import failure rather than hidden. Successful compensation keeps provider and consumer MDIB, descriptor, state and context-state versions monotonic; it advances versions instead of rewinding them.
 
 *File → Load preset* lists the ready-made devices in `presets/`, so the ones that ship with the tool need no file dialog.
-The same list appears in the startup window. Preset discovery skips files that raise JSON or configuration errors.
-Its validation is not exhaustive: a malformed field type can still interrupt preset-list construction; use *Import config* to inspect ordinary validation errors.
+The same list appears in the startup window. Loading a profile with malformed field types or other schema errors raises `ConfigError`; `list_presets` catches those strict validation failures, invalid JSON and unreadable files and skips those entries, so one malformed preset does not interrupt discovery.
+Explicit profile versions must be JSON integers from 1 through the current format version, 3; preset discovery skips files outside that range. Profiles without a version predate versioning and are intentionally read with legacy version 1 semantics.
+The seven shipped presets are canonical current-schema profiles, not legacy compatibility fixtures. They are kept at profile format version 3 with explicit alert signal definitions. Tests for older readable formats use synthetic profile data instead of holding a shipped preset back on an earlier schema.
 
 Any of them can also be loaded at startup:
 
@@ -222,9 +250,8 @@ Any of them can also be loaded at startup:
 .venv\Scripts\python.exe examples\console.py provider --config presets\ventilator.json
 ```
 
-Load it at startup rather than importing it afterwards if you want the device to announce that model:
-DPWS metadata is fixed when the provider is built, so a preset imported into a running toolbox brings its metrics but keeps the metadata it started with.
-The profile is parsed before startup where possible, but applied after the provider starts; an error found during application can leave that provider partially configured.
+Load it at startup rather than importing it afterwards if you want the device to announce that model.
+DPWS `ThisModel` and `ThisDevice` metadata is fixed when the provider is constructed. Startup loading reads the profile's `device` block before construction and then applies its live graph after startup; importing into an already running provider applies the graph but cannot change that provider's manufacturer, model, firmware, friendly name or other construction-time device metadata.
 The startup name still decides the EPR and serial number; a saved `device.instance_name` does not override it.
 
 For a profile that imports successfully, recorded handles make its defined metrics, alerts and actions addressable under stable names. They do not reproduce an identical live MDIB or provider identity.
@@ -239,7 +266,7 @@ For a profile that imports successfully, recorded handles make its defined metri
 | `hf-generator`        | Electrosurgery                        | A bimodal impedance spectrum, and a *Stop output* action                                                            |
 | `surgical-microscope` | Robotic scope, after an Aesculap Aeos | Six axes, fixpoint and free modes, ICG fluorescence, and *Home axes* — none of which is a value you write           |
 | `endoscopic-camera`   | Camera and light source               | Image profiles, and a *White balance now* action with nothing to type                                               |
-| `insufflator`         | Laparoscopic insufflator              | The first preset this project had                                                                                   |
+| `insufflator`         | Laparoscopic insufflator              | Nine metrics, one more than the infusion pump; the first preset this project had                                    |
 
 ### What the presets are actually demonstrating
 
@@ -255,6 +282,7 @@ Which is which is the interesting part, and `tests/presets.py` counts it:
 patient-monitor         24 mdc,   2 private  (92% standard)
 ventilator              21 mdc,   3 private  (88% standard)
 infusion-pump           11 mdc,   5 private  (69% standard)
+insufflator              9 mdc,   9 private  (50% standard)
 hf-generator            10 mdc,  10 private  (50% standard)
 surgical-microscope     15 mdc,  19 private  (44% standard)
 endoscopic-camera        9 mdc,  13 private  (41% standard)
@@ -441,27 +469,52 @@ This is a focused SDC learning fixture, not an IEEE 11073 conformance claim. IEE
 
 ## Tests
 
-Six suites, all runnable from a terminal, all printing PASS/FAIL per check.
+The pull-request workflow runs all 17 deterministic suites as separately reported Linux jobs
+with `QT_QPA_PLATFORM=offscreen`:
 
-| Suite                       | Checks | Covers                                                                                |
-|-----------------------------|--------|---------------------------------------------------------------------------------------|
-| `tests/acceptance_core.py`  | 80     | two processes: discovery, context updates, control, rejections, runtime descriptors, alarms, waveforms |
-| `tests/gui_smoke.py`        | 278    | the real window offscreen, including live peer patient demographics                  |
-| `tests/widget_controls.py`  | 67     | which control for which metric, then controls driven for real                         |
-| `tests/provider_core.py`    | 99     | descriptor rollback, sample arrays, signal handling, demographics, contexts, presets  |
-| `tests/presets.py`          | 74     | every shipped preset builds into a working device                                     |
-| `tests/config_roundtrip.py` | 38     | versioned export/reimport, demographics, broken files refused                         |
+| Suite | Covers |
+|-------|--------|
+| `diagnostics/check_api.py` | required sdc11073 API surface |
+| `tests/workflow_security.py` | full-SHA action pins, release comments and Dependabot policy |
+| `tests/diagnostic_behavior.py` | diagnostic signature and update-result reporting |
+| `tests/application_defaults.py` | shared application defaults and distinct acceptance identity |
+| `tests/import_bootstrap.py` | direct test imports under unrelated package shadowing |
+| `tests/licensing.py` | project licensing, notices and build legal-payload sources |
+| `tests/provider_core.py` | provider descriptors, values, alarms, contexts and rollback |
+| `tests/presets.py` | every shipped preset built as a working device |
+| `tests/config_roundtrip.py` | versioned export/import, validation and transactional replacement/append |
+| `tests/widget_controls.py` | widget selection and real control interactions |
+| `tests/gui_dialogs.py` | metric, alarm, context and startup validation |
+| `tests/gui_cards_plots.py` | card construction and waveform/distribution rendering |
+| `tests/gui_layout.py` | split/tab modes and responsive card reflow |
+| `tests/gui_provider_structure.py` | provider action, alarm and operation structural refreshes |
+| `tests/service_lifecycle.py` | provider and consumer startup fault cleanup |
+| `tests/consumer_lifecycle.py` | window-close races, stale work and natural real-window shutdown |
+| `tests/acceptance_readiness.py` | bounded provider readiness waits and subprocess cleanup |
+
+The platform-sensitive `application_defaults.py`, `provider_core.py`,
+`consumer_lifecycle.py`, and `acceptance_readiness.py` suites also run on Windows with Python
+3.12. These Windows jobs use offscreen Qt and upload their captured subprocess, Qt, and test
+output when they fail. A separate Windows job checks the console-rendered signal summary under
+a strict `cp1252` encoding. The other deterministic suites and the network acceptance suite
+are Linux-only; the native packaging smoke tests still cover both Windows and Linux artifacts.
+
+Run any deterministic suite with the project interpreter, for example:
 
 ```powershell
-.venv\Scripts\python.exe tests\acceptance_core.py
-.venv\Scripts\python.exe tests\gui_smoke.py
-.venv\Scripts\python.exe tests\widget_controls.py
-.venv\Scripts\python.exe tests\provider_core.py
-.venv\Scripts\python.exe tests\presets.py
-.venv\Scripts\python.exe tests\config_roundtrip.py
+$env:QT_QPA_PLATFORM = "offscreen"
+.venv\Scripts\python.exe tests\gui_dialogs.py
+.venv\Scripts\python.exe tests\gui_cards_plots.py
+.venv\Scripts\python.exe tests\gui_layout.py
+.venv\Scripts\python.exe tests\gui_provider_structure.py
+.venv\Scripts\python.exe tests\consumer_lifecycle.py
 ```
 
-The acceptance test runs a provider in one process and checks it from a consumer in another. The GUI suite builds the real window on Qt's offscreen backend and drives the actual widgets, including a live connection to a provider in another process — no display needed. All end-to-end suites use providers bundled with this repository; they test this implementation across processes, not interoperability with an independent SDC stack or product.
+`tests/acceptance_core.py` is the Linux-only network acceptance suite. CI runs it in an isolated eight-minute job on every pull request, version tag, manual workflow dispatch and weekly schedule. It starts the repository's provider in a subprocess, exercises it through a consumer, and uploads their combined output if the job fails. This checks this implementation across processes; it is not interoperability testing against an independent SDC stack or product.
+
+`tests/gui_smoke.py` remains a manual broad regression script because it is intentionally long and duplicates the focused GUI suites while also starting a live peer. Run it when changing interactions that cross several GUI areas; it uses the offscreen backend and needs no display.
+
+The packaging jobs separately launch each built Windows and Linux application with `--smoke-test`. `tests/acceptance_provider.py` is a subprocess fixture used by acceptance scripts, not a standalone suite.
 
 `provider_core.py` is the odd one out: it is about what the MDIB must never be left in. Its first section deliberately writes a descriptor BICEPS cannot serialise *without* the rollback, watches the orphan appear, and only then checks that the guarded path leaves nothing behind — so a passing run means the check is still capable of failing.
 

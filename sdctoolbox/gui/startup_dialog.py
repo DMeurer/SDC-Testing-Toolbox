@@ -28,8 +28,9 @@ from PySide6.QtWidgets import (
 )
 
 from .. import config, constants
+from ..network import normalize_ipv4
 from .no_wheel import NoWheelComboBox
-from .styling import mark_as_error, mute
+from .styling import constrain_dynamic_label, mark_as_error, mute
 
 CONFIG_FILE_FILTER = "SDC toolbox config (*.json);;All files (*)"
 
@@ -96,7 +97,8 @@ class StartupDialog(QDialog):
         self._select_ip(ip)
         self.ip_box.setToolTip(
             "Discovery binds to one address only. Loopback lets two instances on this\n"
-            "machine talk without involving the network.",
+            "machine talk without involving the network. You may also type any valid\n"
+            "IPv4 address, even if it is not listed for this machine.",
         )
 
         self.config_box = NoWheelComboBox()
@@ -132,7 +134,7 @@ class StartupDialog(QDialog):
         mute(self.hint)
 
         self.error_label = QLabel("")
-        self.error_label.setWordWrap(True)
+        constrain_dynamic_label(self.error_label, max_lines=3)
         mark_as_error(self.error_label)
         self.error_label.hide()
 
@@ -169,12 +171,12 @@ class StartupDialog(QDialog):
         self.ip_box.setCurrentText(ip)
 
     def chosen_ip(self) -> str:
-        """The address, without the adapter name the list shows beside it."""
+        """The listed address data or stripped text entered manually."""
         index = self.ip_box.currentIndex()
         # An index only matches when the text was not edited by hand.
         if index >= 0 and self.ip_box.currentText() == self.ip_box.itemText(index):
             return self.ip_box.itemData(index)
-        return self.ip_box.currentText().split("\u2014")[0].strip()
+        return self.ip_box.currentText().strip()
 
     def chosen_config(self) -> str | None:
         """The config file path, or None when the user picked nothing.
@@ -204,9 +206,10 @@ class StartupDialog(QDialog):
             self._fail("Give the device a name. It decides the EPR other devices see.")
             return
 
-        ip = self.chosen_ip()
-        if not ip:
-            self._fail("Choose an address to bind discovery to.")
+        try:
+            ip = normalize_ipv4(self.chosen_ip())
+        except ValueError:
+            self._fail("Enter a valid IPv4 address to bind discovery to.")
             return
 
         config_path = self.chosen_config()

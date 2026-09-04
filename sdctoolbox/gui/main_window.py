@@ -8,7 +8,8 @@ By default the two sit in panels either side of a movable divider, so you can wa
 react to the other. View > Split view turns that off and stacks them as tabs instead, which
 is easier on a narrow screen.
 
-The menu bar stays hidden until Alt is pressed, the way Thunderbird and Firefox do it.
+The menu bar is visible and pinned by default. View > Always show menu bar can unpin it so
+that it hides when unused and Alt reveals it again.
 """
 
 from __future__ import annotations

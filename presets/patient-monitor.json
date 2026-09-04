@@ -1,34 +1,83 @@
 {
-  "version": 1,
+  "version": 3,
   "name": "Patient monitor",
   "description": "Bedside vitals: three waveforms, the usual numerics, and the limit alarms that go with them. The one device here whose parameters have real IEEE 11073-10101 terms.",
   "device": {
     "instance_name": "monitor",
     "friendly_name": "Bedside Monitor",
     "manufacturer": "SDC Testing Toolbox",
+    "manufacturer_url": "https://d-meurer.com",
     "model_name": "Vitalis 500",
     "model_number": "500",
     "firmware_version": "3.4.1"
   },
-  "contexts": {
-    "location": {
-      "facility": "HOSP",
-      "building": "Surgery",
-      "floor": "2",
-      "point_of_care": "OR1",
-      "room": "1",
-      "bed": "Table"
-    }
-  },
   "metrics": [
+    {
+      "handle": "m.abp",
+      "label": "Arterial pressure",
+      "kind": "waveform",
+      "controllable": false,
+      "section": "Haemodynamics",
+      "unit": {
+        "code": "MDC_DIM_MMHG",
+        "system": "mdc",
+        "label": "mmHg"
+      },
+      "type": {
+        "code": "MDC_PRESS_BLD_ART_ABP",
+        "system": "mdc"
+      },
+      "resolution": "1",
+      "minimum": "40",
+      "maximum": "160",
+      "sample_period": "0.02",
+      "shape": "arterial",
+      "cycle_samples": 50
+    },
+    {
+      "handle": "m.alarm_volume",
+      "label": "Alarm volume",
+      "kind": "choice",
+      "controllable": true,
+      "section": "Settings",
+      "type": {
+        "code": "monitor_alarm_volume",
+        "system": "private"
+      },
+      "allowed_values": [
+        "OFF",
+        "LOW",
+        "MEDIUM",
+        "HIGH"
+      ],
+      "initial_value": "MEDIUM"
+    },
+    {
+      "handle": "m.display_note",
+      "label": "Display note",
+      "kind": "text",
+      "controllable": true,
+      "section": "Settings",
+      "type": {
+        "code": "monitor_display_note",
+        "system": "private"
+      }
+    },
     {
       "handle": "m.ecg_ii",
       "label": "ECG lead II",
       "kind": "waveform",
-      "section": "ECG",
       "controllable": false,
-      "unit": {"label": "mV", "code": "MDC_DIM_MILLI_VOLT", "system": "mdc"},
-      "type": {"code": "MDC_ECG_ELEC_POTL_II", "system": "mdc"},
+      "section": "ECG",
+      "unit": {
+        "code": "MDC_DIM_MILLI_VOLT",
+        "system": "mdc",
+        "label": "mV"
+      },
+      "type": {
+        "code": "MDC_ECG_ELEC_POTL_II",
+        "system": "mdc"
+      },
       "resolution": "0.01",
       "minimum": "-1",
       "maximum": "2",
@@ -40,92 +89,37 @@
       "handle": "m.heart_rate",
       "label": "Heart rate",
       "kind": "number",
-      "section": "ECG",
       "controllable": false,
-      "unit": {"label": "bpm", "code": "MDC_DIM_BEAT_PER_MIN", "system": "mdc"},
-      "type": {"code": "MDC_ECG_HEART_RATE", "system": "mdc"},
+      "section": "ECG",
+      "unit": {
+        "code": "MDC_DIM_BEAT_PER_MIN",
+        "system": "mdc",
+        "label": "bpm"
+      },
+      "type": {
+        "code": "MDC_ECG_HEART_RATE",
+        "system": "mdc"
+      },
       "resolution": "1",
       "minimum": "0",
       "maximum": "300",
       "initial_value": "72"
     },
     {
-      "handle": "m.pleth",
-      "label": "Plethysmogram",
-      "kind": "waveform",
-      "section": "Oximetry",
-      "controllable": false,
-      "unit": {"label": "%", "code": "MDC_DIM_PERCENT", "system": "mdc"},
-      "type": {"code": "MDC_PULS_OXIM_PLETH", "system": "mdc"},
-      "resolution": "0.1",
-      "minimum": "0",
-      "maximum": "100",
-      "sample_period": "0.02",
-      "shape": "pulse",
-      "cycle_samples": 50
-    },
-    {
-      "handle": "m.spo2",
-      "label": "SpO2",
-      "kind": "number",
-      "section": "Oximetry",
-      "controllable": false,
-      "unit": {"label": "%", "code": "MDC_DIM_PERCENT", "system": "mdc"},
-      "type": {"code": "MDC_PULS_OXIM_SAT_O2", "system": "mdc"},
-      "resolution": "1",
-      "minimum": "0",
-      "maximum": "100",
-      "initial_value": "98"
-    },
-    {
-      "handle": "m.pulse_rate",
-      "label": "Pulse rate",
-      "kind": "number",
-      "section": "Oximetry",
-      "controllable": false,
-      "unit": {"label": "bpm", "code": "MDC_DIM_BEAT_PER_MIN", "system": "mdc"},
-      "type": {"code": "MDC_PULS_OXIM_PULS_RATE", "system": "mdc"},
-      "resolution": "1",
-      "minimum": "0",
-      "maximum": "300",
-      "initial_value": "74"
-    },
-    {
-      "handle": "m.abp",
-      "label": "Arterial pressure",
-      "kind": "waveform",
-      "section": "Haemodynamics",
-      "controllable": false,
-      "unit": {"label": "mmHg", "code": "MDC_DIM_MMHG", "system": "mdc"},
-      "type": {"code": "MDC_PRESS_BLD_ART_ABP", "system": "mdc"},
-      "resolution": "1",
-      "minimum": "40",
-      "maximum": "160",
-      "sample_period": "0.02",
-      "shape": "arterial",
-      "cycle_samples": 50
-    },
-    {
-      "handle": "m.nibp_sys",
-      "label": "NIBP systolic",
-      "kind": "number",
-      "section": "Haemodynamics",
-      "controllable": false,
-      "unit": {"label": "mmHg", "code": "MDC_DIM_MMHG", "system": "mdc"},
-      "type": {"code": "MDC_PRESS_BLD_NONINV_SYS", "system": "mdc"},
-      "resolution": "1",
-      "minimum": "0",
-      "maximum": "300",
-      "initial_value": "118"
-    },
-    {
       "handle": "m.nibp_dia",
       "label": "NIBP diastolic",
       "kind": "number",
-      "section": "Haemodynamics",
       "controllable": false,
-      "unit": {"label": "mmHg", "code": "MDC_DIM_MMHG", "system": "mdc"},
-      "type": {"code": "MDC_PRESS_BLD_NONINV_DIA", "system": "mdc"},
+      "section": "Haemodynamics",
+      "unit": {
+        "code": "MDC_DIM_MMHG",
+        "system": "mdc",
+        "label": "mmHg"
+      },
+      "type": {
+        "code": "MDC_PRESS_BLD_NONINV_DIA",
+        "system": "mdc"
+      },
       "resolution": "1",
       "minimum": "0",
       "maximum": "200",
@@ -135,78 +129,200 @@
       "handle": "m.nibp_mean",
       "label": "NIBP mean",
       "kind": "number",
-      "section": "Haemodynamics",
       "controllable": false,
-      "unit": {"label": "mmHg", "code": "MDC_DIM_MMHG", "system": "mdc"},
-      "type": {"code": "MDC_PRESS_BLD_NONINV_MEAN", "system": "mdc"},
+      "section": "Haemodynamics",
+      "unit": {
+        "code": "MDC_DIM_MMHG",
+        "system": "mdc",
+        "label": "mmHg"
+      },
+      "type": {
+        "code": "MDC_PRESS_BLD_NONINV_MEAN",
+        "system": "mdc"
+      },
       "resolution": "1",
       "minimum": "0",
       "maximum": "200",
       "initial_value": "89"
     },
     {
+      "handle": "m.nibp_sys",
+      "label": "NIBP systolic",
+      "kind": "number",
+      "controllable": false,
+      "section": "Haemodynamics",
+      "unit": {
+        "code": "MDC_DIM_MMHG",
+        "system": "mdc",
+        "label": "mmHg"
+      },
+      "type": {
+        "code": "MDC_PRESS_BLD_NONINV_SYS",
+        "system": "mdc"
+      },
+      "resolution": "1",
+      "minimum": "0",
+      "maximum": "300",
+      "initial_value": "118"
+    },
+    {
+      "handle": "m.pleth",
+      "label": "Plethysmogram",
+      "kind": "waveform",
+      "controllable": false,
+      "section": "Oximetry",
+      "unit": {
+        "code": "MDC_DIM_PERCENT",
+        "system": "mdc",
+        "label": "%"
+      },
+      "type": {
+        "code": "MDC_PULS_OXIM_PLETH",
+        "system": "mdc"
+      },
+      "resolution": "0.1",
+      "minimum": "0",
+      "maximum": "100",
+      "sample_period": "0.02",
+      "shape": "pulse",
+      "cycle_samples": 50
+    },
+    {
+      "handle": "m.pulse_rate",
+      "label": "Pulse rate",
+      "kind": "number",
+      "controllable": false,
+      "section": "Oximetry",
+      "unit": {
+        "code": "MDC_DIM_BEAT_PER_MIN",
+        "system": "mdc",
+        "label": "bpm"
+      },
+      "type": {
+        "code": "MDC_PULS_OXIM_PULS_RATE",
+        "system": "mdc"
+      },
+      "resolution": "1",
+      "minimum": "0",
+      "maximum": "300",
+      "initial_value": "74"
+    },
+    {
       "handle": "m.resp_rate",
       "label": "Respiration rate",
       "kind": "number",
-      "section": "Respiration",
       "controllable": false,
-      "unit": {"label": "1/min", "code": "MDC_DIM_RESP_PER_MIN", "system": "mdc"},
-      "type": {"code": "MDC_RESP_RATE", "system": "mdc"},
+      "section": "Respiration",
+      "unit": {
+        "code": "MDC_DIM_RESP_PER_MIN",
+        "system": "mdc",
+        "label": "1/min"
+      },
+      "type": {
+        "code": "MDC_RESP_RATE",
+        "system": "mdc"
+      },
       "resolution": "1",
       "minimum": "0",
       "maximum": "80",
       "initial_value": "14"
     },
     {
+      "handle": "m.spo2",
+      "label": "SpO2",
+      "kind": "number",
+      "controllable": false,
+      "section": "Oximetry",
+      "unit": {
+        "code": "MDC_DIM_PERCENT",
+        "system": "mdc",
+        "label": "%"
+      },
+      "type": {
+        "code": "MDC_PULS_OXIM_SAT_O2",
+        "system": "mdc"
+      },
+      "resolution": "1",
+      "minimum": "0",
+      "maximum": "100",
+      "initial_value": "98"
+    },
+    {
       "handle": "m.temp_body",
       "label": "Body temperature",
       "kind": "number",
-      "section": "Temperature",
       "controllable": false,
-      "unit": {"label": "\u00b0C", "code": "MDC_DIM_DEGC", "system": "mdc"},
-      "type": {"code": "MDC_TEMP_BODY", "system": "mdc"},
+      "section": "Temperature",
+      "unit": {
+        "code": "MDC_DIM_DEGC",
+        "system": "mdc",
+        "label": "\u00b0C"
+      },
+      "type": {
+        "code": "MDC_TEMP_BODY",
+        "system": "mdc"
+      },
       "resolution": "0.1",
       "minimum": "25",
       "maximum": "45",
       "initial_value": "36.8"
-    },
-    {
-      "handle": "m.alarm_volume",
-      "label": "Alarm volume",
-      "kind": "choice",
-      "section": "Settings",
-      "controllable": true,
-      "allowed_values": ["OFF", "LOW", "MEDIUM", "HIGH"],
-      "initial_value": "MEDIUM",
-      "type": {"code": "monitor_alarm_volume", "system": "private"}
-    },
-    {
-      "handle": "m.display_note",
-      "label": "Display note",
-      "kind": "text",
-      "section": "Settings",
-      "controllable": true,
-      "type": {"code": "monitor_display_note", "system": "private"}
     }
   ],
   "alerts": [
-    {
-      "handle": "al.spo2_low",
-      "label": "SpO2 low",
-      "watches": "m.spo2",
-      "kind": "Phy",
-      "priority": "Hi",
-      "lower_limit": "90",
-      "delegable": true
-    },
     {
       "handle": "al.hr_out_of_range",
       "label": "Heart rate out of range",
       "watches": "m.heart_rate",
       "kind": "Phy",
       "priority": "Hi",
+      "signals": [
+        {
+          "manifestation": "Vis",
+          "latching": false
+        },
+        {
+          "manifestation": "Aud",
+          "latching": false
+        }
+      ],
       "lower_limit": "45",
       "upper_limit": "120",
+      "delegable": true
+    },
+    {
+      "handle": "al.sensor_check",
+      "label": "Check oximetry sensor",
+      "watches": "m.spo2",
+      "kind": "Tec",
+      "priority": "Lo",
+      "signals": [
+        {
+          "manifestation": "Vis",
+          "latching": false
+        },
+        {
+          "manifestation": "Aud",
+          "latching": false
+        }
+      ]
+    },
+    {
+      "handle": "al.spo2_low",
+      "label": "SpO2 low",
+      "watches": "m.spo2",
+      "kind": "Phy",
+      "priority": "Hi",
+      "signals": [
+        {
+          "manifestation": "Vis",
+          "latching": false
+        },
+        {
+          "manifestation": "Aud",
+          "latching": false
+        }
+      ],
+      "lower_limit": "90",
       "delegable": true
     },
     {
@@ -215,30 +331,49 @@
       "watches": "m.temp_body",
       "kind": "Phy",
       "priority": "Me",
+      "signals": [
+        {
+          "manifestation": "Vis",
+          "latching": false
+        },
+        {
+          "manifestation": "Aud",
+          "latching": false
+        }
+      ],
       "upper_limit": "38.5"
-    },
-    {
-      "handle": "al.sensor_check",
-      "label": "Check oximetry sensor",
-      "watches": "m.spo2",
-      "kind": "Tec",
-      "priority": "Lo"
     }
   ],
   "actions": [
-    {
-      "handle": "act.start_nibp",
-      "label": "Start NIBP measurement",
-      "target": "vmd.haemodynamics",
-      "note": "Inflate the cuff and take a reading now, rather than waiting for the interval",
-      "effects": {"m.nibp_sys": "124", "m.nibp_dia": "79", "m.nibp_mean": "94"}
-    },
     {
       "handle": "act.silence_alarms",
       "label": "Silence alarms",
       "target": "mds0",
       "note": "Audio pause. In BICEPS this is an alert signal's ActivationState, so what this does here is a stand-in",
-      "effects": {"m.alarm_volume": "OFF"}
+      "effects": {
+        "m.alarm_volume": "OFF"
+      }
+    },
+    {
+      "handle": "act.start_nibp",
+      "label": "Start NIBP measurement",
+      "target": "vmd.haemodynamics",
+      "note": "Inflate the cuff and take a reading now, rather than waiting for the interval",
+      "effects": {
+        "m.nibp_dia": "79",
+        "m.nibp_mean": "94",
+        "m.nibp_sys": "124"
+      }
     }
-  ]
+  ],
+  "contexts": {
+    "location": {
+      "facility": "HOSP",
+      "building": "Surgery",
+      "floor": "2",
+      "point_of_care": "OR1",
+      "room": "1",
+      "bed": "Table"
+    }
+  }
 }

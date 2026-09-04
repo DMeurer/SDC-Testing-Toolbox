@@ -1,5 +1,5 @@
-# Direct dependencies, pinned exactly. Transitive packages follow from these;
-# use `pip freeze` for a full snapshot of a working environment.
+# Direct dependencies, pinned exactly. Transitive packages are resolved dynamically,
+# so this is not a complete lock; `pip freeze` records a working environment snapshot.
 #
 # Installation:
 #   py -3.12 -m venv .venv
