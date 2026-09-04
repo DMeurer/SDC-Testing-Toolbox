@@ -14,7 +14,9 @@ from script_support import (
     wait_for_ready,
 )
 
-TIMEOUT = 0.3
+SHORT_TIMEOUT = 0.3
+POSITIVE_STARTUP_TIMEOUT = 4.0
+POSITIVE_STARTUP_RUNS = 8
 
 
 def start_child(code: str) -> tuple[subprocess.Popen[str], ProcessOutput]:
@@ -38,19 +40,19 @@ def check_deadline(
     process, output = start_child(output_code)
     try:
         if expect_output:
-            startup_deadline = time.monotonic() + 5.0
+            startup_deadline = time.monotonic() + POSITIVE_STARTUP_TIMEOUT
             while not output.buffered_output and time.monotonic() < startup_deadline:
                 time.sleep(0.01)
             report.check(bool(output.buffered_output), f"{description} emits startup output")
 
         started = time.monotonic()
-        ready = wait_for_ready(output, timeout=TIMEOUT)
+        ready = wait_for_ready(output, timeout=SHORT_TIMEOUT)
         elapsed = time.monotonic() - started
         report.check(not ready, f"{description} does not report readiness")
         report.check(
-            TIMEOUT - 0.03 <= elapsed <= TIMEOUT + 1.0,
+            SHORT_TIMEOUT - 0.03 <= elapsed <= SHORT_TIMEOUT + 1.0,
             f"{description} observes the requested timeout",
-            f"requested {TIMEOUT:.2f}s, elapsed {elapsed:.3f}s",
+            f"requested {SHORT_TIMEOUT:.2f}s, elapsed {elapsed:.3f}s",
         )
     finally:
         stop_process(process, output)
@@ -59,18 +61,15 @@ def check_deadline(
 
 
 def check_ready(
-    report: Report,
-    description: str,
     output_code: str,
-) -> tuple[str, bool, bool]:
+) -> tuple[bool, str, bool, bool]:
     process, output = start_child(output_code)
     try:
-        ready = wait_for_ready(output, timeout=TIMEOUT)
-        report.check(ready, f"{description} reports readiness")
+        ready = wait_for_ready(output, timeout=POSITIVE_STARTUP_TIMEOUT)
     finally:
         stop_process(process, output)
 
-    return output.buffered_output, process.poll() is not None, output.is_alive
+    return ready, output.buffered_output, process.poll() is not None, output.is_alive
 
 
 def main() -> int:
@@ -130,10 +129,27 @@ def main() -> int:
         "the misleading child and reader are cleaned up",
     )
 
+    exact_output = f"{ACCEPTANCE_PROVIDER_READY}\n"
+    startup_results = [
+        check_ready(f"print({ACCEPTANCE_PROVIDER_READY!r}, flush=True)")
+        for _ in range(POSITIVE_STARTUP_RUNS)
+    ]
+    report.check(
+        all(ready for ready, _, _, _ in startup_results),
+        f"all {POSITIVE_STARTUP_RUNS} exact-marker startup runs report readiness",
+    )
+    report.check(
+        all(buffered == exact_output for _, buffered, _, _ in startup_results),
+        "all exact-marker startup output is retained",
+        repr([buffered for _, buffered, _, _ in startup_results]),
+    )
+    report.check(
+        all(stopped and not reader_alive for _, _, stopped, reader_alive in startup_results),
+        "all exact-marker children and readers are cleaned up",
+    )
+
     ready_output = f"NOT READY\n\t {ACCEPTANCE_PROVIDER_READY} \t\n"
-    buffered, stopped, reader_alive = check_ready(
-        report,
-        "a misleading-then-exact child",
+    ready, buffered, stopped, reader_alive = check_ready(
         (
             "import sys, time; "
             f"sys.stdout.write({ready_output!r}); "
@@ -141,6 +157,7 @@ def main() -> int:
             "time.sleep(30)"
         ),
     )
+    report.check(ready, "a misleading-then-exact child reports readiness")
     report.check(
         buffered == ready_output,
         "misleading and normalized readiness output is retained",
