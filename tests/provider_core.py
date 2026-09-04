@@ -592,6 +592,91 @@ def check_metric_removal_dependencies(report: Report, service: ProviderService) 
         str(sorted(reconstructed_targets - reconstructed_handles)),
     )
 
+    action_a = service.add_action(ActionSpec(label="Action dependency A", target_handle=survivor))
+    action_b = service.add_action(ActionSpec(label="Action dependency B", target_handle=action_a))
+    action_c = service.add_action(ActionSpec(label="Action dependency C", target_handle=action_b))
+    action_d = service.add_action(ActionSpec(label="Action dependency D", target_handle=action_a))
+    removed_actions = {action_a, action_b, action_c, action_d}
+    action_observations = []
+
+    def capture_action_removal(_deleted: dict) -> None:
+        live_handles = {entity.handle for _, entity in service.mdib.entities.items()}
+        listed_actions = service.list_actions()
+        operation_targets = {
+            entity.handle: entity.descriptor.OperationTarget
+            for _, entity in service.mdib.entities.items()
+            if getattr(entity.descriptor, "OperationTarget", None) is not None
+        }
+        action_observations.append((live_handles, listed_actions, operation_targets))
+
+    observableproperties.bind(service.mdib, deleted_descriptors_by_handle=capture_action_removal)
+    try:
+        service.remove_action(action_a)
+    finally:
+        observableproperties.unbind(service.mdib, deleted_descriptors_by_handle=capture_action_removal)
+
+    action_observer_failures = [
+        (listed_actions, operation_targets)
+        for live_handles, listed_actions, operation_targets in action_observations
+        if not removed_actions.isdisjoint(listed_actions)
+        or any(spec.target_handle not in live_handles for spec in listed_actions.values())
+        or any(target not in live_handles for target in operation_targets.values())
+    ]
+
+    report.check(
+        all(service.mdib.entities.by_handle(handle) is None for handle in removed_actions)
+        and removed_actions.isdisjoint(service.list_actions()),
+        "removing an action removes its transitive branching dependency closure",
+        str(sorted(removed_actions & set(service.list_actions()))),
+    )
+    report.check(
+        surviving_action in service.list_actions() and service.mdib.entities.by_handle(surviving_action) is not None,
+        "transitive action removal leaves unrelated actions in place",
+    )
+    report.check(
+        bool(action_observations) and not action_observer_failures,
+        "action deletion observers see no removed bookkeeping or dangling targets",
+        str(action_observer_failures),
+    )
+    report.check(
+        removed_actions.isdisjoint(service._sco._registered_operations),
+        "the SCO registry contains none of the removed action closure",
+        str(sorted(removed_actions & set(service._sco._registered_operations))),
+    )
+
+    mdib_node, _ = service.mdib.reconstruct_mdib_with_context_states()
+    reconstructed_handles = set(mdib_node.xpath("//*[@Handle]/@Handle"))
+    reconstructed_targets = set(mdib_node.xpath("//*[@OperationTarget]/@OperationTarget"))
+    report.check(
+        reconstructed_targets <= reconstructed_handles and removed_actions.isdisjoint(reconstructed_handles),
+        "transitive action removal leaves no dangling target in the reconstructed MDIB",
+        str(sorted(reconstructed_targets - reconstructed_handles)),
+    )
+
+    cycle_specs = {
+        "cycle.a": ActionSpec(label="Cycle A", target_handle="cycle.b"),
+        "cycle.b": ActionSpec(label="Cycle B", target_handle="cycle.a"),
+        "cycle.c": ActionSpec(label="Cycle C", target_handle="cycle.a"),
+        "cycle.d": ActionSpec(label="Cycle D", target_handle="cycle.c"),
+        "cycle.unrelated": ActionSpec(label="Cycle unrelated", target_handle=constants.MDS_HANDLE),
+    }
+    cycle_entities = {
+        handle: SimpleNamespace(descriptor=SimpleNamespace(OperationTarget=spec.target_handle))
+        for handle, spec in cycle_specs.items()
+    }
+    cycle_service = SimpleNamespace(
+        _actions=cycle_specs,
+        mdib=SimpleNamespace(entities=SimpleNamespace(by_handle=cycle_entities.get)),
+    )
+    cycle_closure = ProviderService._dependent_action_handles(cycle_service, {"cycle.a"})
+    report.check(
+        len(cycle_closure) == len(set(cycle_closure))
+        and set(cycle_closure) == {"cycle.a", "cycle.b", "cycle.c", "cycle.d"}
+        and cycle_closure.index("cycle.d") < cycle_closure.index("cycle.c"),
+        "the action dependency closure terminates on cycles and remains dependents-first where ordered",
+        str(cycle_closure),
+    )
+
     service.remove_action(surviving_action)
     service.remove_metric(survivor)
 

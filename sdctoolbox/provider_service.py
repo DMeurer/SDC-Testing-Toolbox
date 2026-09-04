@@ -1637,16 +1637,25 @@ class ProviderService:
             return handle
 
     def remove_action(self, handle: str) -> None:
-        """Delete an action and its descriptor."""
+        """Delete an action and every action that transitively targets it."""
         with self._lock:
-            if self._actions.pop(handle, None) is None:
+            if handle not in self._actions:
                 return
-            self._sco.unregister_operation_by_handle(handle)
-            entity = self.mdib.entities.by_handle(handle)
-            if entity is not None:
-                with self.mdib.descriptor_transaction() as mgr:
-                    mgr.remove_entity(entity)
-            logger.info("removed action %s", handle)
+
+            action_handles = self._dependent_action_handles({handle})
+            if handle not in action_handles:
+                action_handles.append(handle)
+
+            for action_handle in action_handles:
+                self._sco.unregister_operation_by_handle(action_handle)
+                self._actions.pop(action_handle, None)
+
+            with self.mdib.descriptor_transaction() as mgr:
+                for action_handle in action_handles:
+                    entity = self.mdib.entities.by_handle(action_handle)
+                    if entity is not None:
+                        mgr.remove_entity(entity)
+            logger.info("removed action %s and %d dependent action(s)", handle, len(action_handles) - 1)
 
     def list_actions(self) -> dict[str, ActionSpec]:
         """The specs of every action we published, keyed by handle."""
