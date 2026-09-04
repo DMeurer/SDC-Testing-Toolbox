@@ -469,12 +469,13 @@ This is a focused SDC learning fixture, not an IEEE 11073 conformance claim. IEE
 
 ## Tests
 
-The pull-request workflow runs all 16 deterministic suites as separately reported Linux jobs
+The pull-request workflow runs all 17 deterministic suites as separately reported Linux jobs
 with `QT_QPA_PLATFORM=offscreen`:
 
 | Suite | Covers |
 |-------|--------|
 | `diagnostics/check_api.py` | required sdc11073 API surface |
+| `tests/workflow_security.py` | full-SHA action pins, release comments and Dependabot policy |
 | `tests/diagnostic_behavior.py` | diagnostic signature and update-result reporting |
 | `tests/application_defaults.py` | shared application defaults and distinct acceptance identity |
 | `tests/import_bootstrap.py` | direct test imports under unrelated package shadowing |
