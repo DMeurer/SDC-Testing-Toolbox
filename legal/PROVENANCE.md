@@ -1,25 +1,34 @@
 # Legal Text Provenance
 
-The Qt texts in this directory are unmodified canonical files from the Qt 6.11
-source repositories:
+The Qt texts are byte-for-byte copies from the Qt 6.11.2 release repositories:
 
-- `LGPL-3.0-only.txt`: `qtbase/LICENSES/LGPL-3.0-only.txt`, retrieved from
-  https://code.qt.io/cgit/qt/qtbase.git/plain/LICENSES/LGPL-3.0-only.txt?h=6.11
-- `GPL-3.0-only.txt`: generated from the repository's unmodified top-level
-  `LICENSE`, which is the same GPLv3 text as
-  https://code.qt.io/cgit/qt/qtbase.git/plain/LICENSES/GPL-3.0-only.txt?h=6.11
-- `Qt-GPL-exception-1.0.txt`:
-  `pyside-setup/LICENSES/Qt-GPL-exception-1.0.txt`, retrieved from
-  https://code.qt.io/cgit/pyside/pyside-setup.git/plain/LICENSES/Qt-GPL-exception-1.0.txt?h=6.11
+- `licenses/qt/LGPL-3.0-only.txt` is
+  `qtbase/LICENSES/LGPL-3.0-only.txt` at commit
+  `ef55f427f2c8b410d34f8a7681020a3000cf6866` (tag `v6.11.2`), retrieved from
+  https://raw.githubusercontent.com/qt/qtbase/ef55f427f2c8b410d34f8a7681020a3000cf6866/LICENSES/LGPL-3.0-only.txt
+  (SHA-256 `da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768`).
+- `licenses/qt/GPL-3.0-only.txt` is generated from the repository's top-level
+  `LICENSE`, itself a byte-for-byte copy of `qtbase/LICENSES/GPL-3.0-only.txt`
+  at the same commit and tag, retrieved from
+  https://raw.githubusercontent.com/qt/qtbase/ef55f427f2c8b410d34f8a7681020a3000cf6866/LICENSES/GPL-3.0-only.txt
+  (SHA-256 `8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903`).
+- `licenses/qt/Qt-GPL-exception-1.0.txt` is
+  `pyside-setup/LICENSES/Qt-GPL-exception-1.0.txt` at commit
+  `24627cd36e1593adf22eb1f2950e4248e7bcc1ec` (tag `v6.11.2`), retrieved from
+  https://code.qt.io/cgit/pyside/pyside-setup.git/plain/LICENSES/Qt-GPL-exception-1.0.txt?id=24627cd36e1593adf22eb1f2950e4248e7bcc1ec
+  (SHA-256 `40678d338ce53cd93f8b22b281a2ecbcaa3ee65ce60b25ffb0c462b0530846b2`).
 
 The Python text is copied at build time from `LICENSE.txt` in the installed
 CPython distribution. Distribution-specific files are copied at build time
 from each installed wheel's declared license files. Their exact source paths
 and associations are recorded in `DEPENDENCY_INVENTORY.json`.
 
-`licenses/openssl/Apache-2.0.txt` is the unmodified Apache License 2.0 text
-from https://www.apache.org/licenses/LICENSE-2.0.txt, applicable to OpenSSL
-3.x.
+`licenses/openssl/Apache-2.0.txt` is the byte-for-byte `LICENSE.txt` from
+OpenSSL 3.0.16 commit `fa1e5dfb142bb1c26c3c38a10aafa7a095df52e5`
+(tag `openssl-3.0.16`), retrieved from
+https://raw.githubusercontent.com/openssl/openssl/fa1e5dfb142bb1c26c3c38a10aafa7a095df52e5/LICENSE.txt
+(SHA-256 `7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a`).
+This Apache-2.0 text applies to OpenSSL 3.x.
 
 The additional native-component texts were retrieved on 2026-09-03:
 

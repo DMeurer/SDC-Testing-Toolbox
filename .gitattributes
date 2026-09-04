@@ -1,4 +1,8 @@
+/LICENSE -text
 /legal/licenses/common/** -text
 /legal/licenses/iconv/** -text
 /legal/licenses/microsoft/** -text
+/legal/licenses/openssl/** -text
+/legal/licenses/qt/** -text
+/legal/licenses/qt/Qt-GPL-exception-1.0.txt whitespace=-blank-at-eof
 /legal/licenses/qt-third-party/** -text

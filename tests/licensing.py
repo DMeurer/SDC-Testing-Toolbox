@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import tarfile
@@ -14,6 +15,14 @@ sys.path.insert(0, str(ROOT))
 
 from legal_payload import INVENTORY_NAME, filter_binaries, validate_payload
 from tests.script_support import Report
+
+
+PINNED_LEGAL_SHA256 = {
+    "legal/licenses/qt/LGPL-3.0-only.txt": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768",
+    "legal/licenses/qt/GPL-3.0-only.txt": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+    "legal/licenses/qt/Qt-GPL-exception-1.0.txt": "40678d338ce53cd93f8b22b281a2ecbcaa3ee65ce60b25ffb0c462b0530846b2",
+    "legal/licenses/openssl/Apache-2.0.txt": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a",
+}
 
 
 def _archive_files(path: Path) -> dict[str, bytes]:
@@ -32,6 +41,33 @@ def _archive_files(path: Path) -> dict[str, bytes]:
                 if member.isfile() and (extracted := archive.extractfile(member)) is not None
             }
     raise ValueError(f"unsupported or invalid archive: {path}")
+
+
+def _check_pinned_legal_hashes(
+    report: Report, files: dict[str, bytes], *, source: str
+) -> None:
+    for relative, expected in PINNED_LEGAL_SHA256.items():
+        matches = [
+            value
+            for name, value in files.items()
+            if name.replace("\\", "/") == relative
+            or name.replace("\\", "/").endswith(f"/{relative}")
+        ]
+        report.check(len(matches) == 1, f"{source} contains one pinned {relative}", str(len(matches)))
+        if len(matches) == 1:
+            actual = hashlib.sha256(matches[0]).hexdigest()
+            report.check(
+                actual == expected,
+                f"{source} {relative} matches pinned upstream bytes",
+                f"expected {expected}, got {actual}",
+            )
+
+
+def _pinned_legal_hashes_match(files: dict[str, bytes]) -> bool:
+    return all(
+        hashlib.sha256(files[relative]).hexdigest() == expected
+        for relative, expected in PINNED_LEGAL_SHA256.items()
+    )
 
 
 def check_binary_filter(report: Report) -> None:
@@ -131,6 +167,22 @@ def check_sources(report: Report) -> None:
         "project includes canonical GPLv3 text",
     )
     report.check("END OF TERMS AND CONDITIONS" in license_text, "GPLv3 text is complete")
+    source_files = {
+        relative: (
+            ROOT / "LICENSE"
+            if relative == "legal/licenses/qt/GPL-3.0-only.txt"
+            else ROOT / relative
+        ).read_bytes()
+        for relative in PINNED_LEGAL_SHA256
+    }
+    _check_pinned_legal_hashes(report, source_files, source="source tree")
+    mutated = dict(source_files)
+    target = "legal/licenses/qt/LGPL-3.0-only.txt"
+    mutated[target] = bytes([mutated[target][0] ^ 1]) + mutated[target][1:]
+    report.check(
+        not _pinned_legal_hashes_match(mutated),
+        "pinned legal hash check rejects a one-byte mutation",
+    )
 
     notices = (ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
     for phrase in (
@@ -181,6 +233,7 @@ def check_archive(report: Report, archive_path: Path) -> None:
     report.check(inventory_count == 1, "artifact contains one dependency inventory", str(inventory_count))
     errors = validate_payload(files)
     report.check(not errors, "artifact legal payload and inventory are complete", "; ".join(errors))
+    _check_pinned_legal_hashes(report, files, source="artifact")
 
     inventory_path = next(
         (name for name in files if name.replace("\\", "/").endswith(f"/{INVENTORY_NAME}")),

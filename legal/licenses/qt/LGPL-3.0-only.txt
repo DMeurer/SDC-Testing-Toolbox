@@ -36,8 +36,8 @@ based on the Application, and not on the Linked Version.
 
   The "Corresponding Application Code" for a Combined Work means the
 object code and/or source code for the Application, including any data
-and utility programs needed for reproducing the Combined Work, but
-excluding the System Libraries of the Combined Work.
+and utility programs needed for reproducing the Combined Work from the
+Application, but excluding the System Libraries of the Combined Work.
 
   1. Exception to Section 3 of the GNU GPL.
 
@@ -114,15 +114,16 @@ the following:
        Version.
 
    e) Provide Installation Information, but only if you would otherwise
-   be required to provide such information under section 6 of the GNU
-   GPL, and only to the extent that such information is necessary to
-   install and execute a modified version of the Combined Work produced
-   by recombining or relinking the Application with a modified version
-   of the Linked Version. (If you use option 4d0, the Installation
-   Information must accompany the Minimal Corresponding Source and
-   Corresponding Application Code. If you use option 4d1, you must
-   provide the Installation Information in the manner specified by
-   section 6 of the GNU GPL for conveying Corresponding Source.)
+   be required to provide such information under section 6 of the
+   GNU GPL, and only to the extent that such information is
+   necessary to install and execute a modified version of the
+   Combined Work produced by recombining or relinking the
+   Application with a modified version of the Linked Version. (If
+   you use option 4d0, the Installation Information must accompany
+   the Minimal Corresponding Source and Corresponding Application
+   Code. If you use option 4d1, you must provide the Installation
+   Information in the manner specified by section 6 of the GNU GPL
+   for conveying Corresponding Source.)
 
   5. Combined Libraries.
 
@@ -149,15 +150,16 @@ differ in detail to address new problems or concerns.
 
   Each version is given a distinguishing version number. If the
 Library as you received it specifies that a certain numbered version
-"or any later version" applies to it, you have the option of following
-the terms and conditions either of that published version or of any
-later version published by the Free Software Foundation. If the
-Library as you received it does not specify a version number of the
-GNU Lesser General Public License, you may choose any version of the
-GNU Lesser General Public License ever published.
+of the GNU Lesser General Public License "or any later version"
+applies to it, you have the option of following the terms and
+conditions either of that published version or of any later version
+published by the Free Software Foundation. If the Library as you
+received it does not specify a version number of the GNU Lesser
+General Public License, you may choose any version of the GNU Lesser
+General Public License ever published by the Free Software Foundation.
 
   If the Library as you received it specifies that a proxy can decide
 whether future versions of the GNU Lesser General Public License shall
-apply, that proxy's public statement of acceptance of a version is
+apply, that proxy's public statement of acceptance of any version is
 permanent authorization for you to choose that version for the
 Library.
