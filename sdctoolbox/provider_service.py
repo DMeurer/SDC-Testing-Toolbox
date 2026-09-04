@@ -13,7 +13,7 @@ import threading
 import time
 from copy import deepcopy
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal, localcontext
 from typing import TYPE_CHECKING
 
 from sdc11073.location import SdcLocation
@@ -32,6 +32,7 @@ from . import constants
 from .handlers import apply_metric_value, make_activate_handler, make_set_handler
 from .model import (
     DEFAULT_PATIENT,
+    MAX_DECIMAL_WIRE_CHARS,
     ActionSpec,
     AlertSpec,
     Coding,
@@ -154,13 +155,13 @@ def _distribution_samples(spec: MetricSpec, phase: float) -> list[Decimal]:
     one is whatever makes the device recognisable. It still moves, because a card that never
     changes tells you nothing about whether reports are arriving.
     """
-    low, high = spec.generated_float_range()
+    sample_range = spec.generated_sample_range()
     shape = spec.distribution_shape
 
     samples = []
     for index in range(DISTRIBUTION_BINS):
         position = index / (DISTRIBUTION_BINS - 1)
-        samples.append(Decimal(str(round(low + _bin_weight(shape, position, phase) * (high - low), 2))))
+        samples.append(_generated_sample(spec, _bin_weight(shape, position, phase), sample_range))
     return samples
 
 
@@ -277,15 +278,37 @@ def _ecg_fraction(position: float) -> float:
     return min(1.0, max(0.0, value))
 
 
-def _shape_sample(shape: WaveformShape, phase: float, low: float, high: float) -> Decimal:
-    """One sample of a curve, as a Decimal between low and high.
+def _generated_sample(
+    spec: MetricSpec,
+    fraction: float,
+    sample_range: tuple[Decimal, Decimal],
+) -> Decimal:
+    """Map a normalized shape value to the metric's bounded resolution grid."""
+    low, high = sample_range
+    if low == high:
+        return low
+    if not math.isfinite(fraction):
+        msg = f"generated sample fraction must be finite, not {fraction}"
+        raise ValueError(msg)
 
-    ``phase`` counts cycles, so its fractional part is the position within one.
-    """
-    fraction = _shape_fraction(shape, phase % 1.0)
-    # Two decimal places: enough to draw a smooth curve, short enough that a block of
-    # samples does not bloat the report.
-    return Decimal(str(round(low + fraction * (high - low), 2)))
+    # A maximum-only range has no lower descriptor endpoint to define its grid, so count
+    # down from the declared maximum. Every other range counts up from its lower endpoint.
+    anchor_at_high = spec.minimum is None and spec.maximum is not None
+    normalized = Decimal(str(min(1.0, max(0.0, fraction))))
+    with localcontext() as context:
+        # Bounds and resolution can each occupy the full permitted fixed-point width.
+        context.prec = MAX_DECIMAL_WIRE_CHARS * 2 + 32
+        step_count = ((high - low) / spec.resolution).to_integral_value(rounding=ROUND_FLOOR)
+        if step_count == 0:
+            return high if anchor_at_high else low
+        distance = (Decimal(1) - normalized) if anchor_at_high else normalized
+        step_index = (distance * step_count).to_integral_value(rounding=ROUND_HALF_UP)
+        sample = high - step_index * spec.resolution if anchor_at_high else low + step_index * spec.resolution
+
+    if not low <= sample <= high:
+        msg = f"generated sample {sample} escaped range {low} to {high}"
+        raise ArithmeticError(msg)
+    return sample
 
 
 class ProviderService:
@@ -610,7 +633,7 @@ class ProviderService:
                 # lazy section, descriptor, bookkeeping, or generator mutation.
                 if spec.kind is MetricKind.WAVEFORM:
                     spec.generated_waveform_block_sample_count()
-                spec.generated_float_range()
+                spec.generated_sample_range()
             if spec.kind is MetricKind.DISTRIBUTION:
                 lower = spec.domain_minimum if spec.domain_minimum is not None else Decimal("0")
                 upper = spec.domain_maximum if spec.domain_maximum is not None else Decimal("1")
@@ -1510,11 +1533,14 @@ class ProviderService:
         Deliberately does not store the phase: see _publish_one_block.
         """
         count = spec.generated_waveform_block_sample_count()
-        low, high = spec.generated_float_range()
+        sample_range = spec.generated_sample_range()
 
         cycle = spec.cycle_samples or WAVEFORM_CYCLE_SAMPLES
         phase = self._waveform_phase.get(handle, 0.0)
-        block = [_shape_sample(spec.shape, phase + index / cycle, low, high) for index in range(count)]
+        block = [
+            _generated_sample(spec, _shape_fraction(spec.shape, (phase + index / cycle) % 1.0), sample_range)
+            for index in range(count)
+        ]
         return block, (phase + count / cycle) % 1.0
 
     # -- actions -------------------------------------------------------------------

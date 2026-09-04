@@ -11,7 +11,7 @@ import enum
 import math
 import re
 from dataclasses import dataclass, field
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -577,7 +577,7 @@ class MetricSpec:
             msg = f"minimum {self.minimum} is greater than maximum {self.maximum}"
             raise ValueError(msg)
         if self.kind in SAMPLE_ARRAY_KINDS:
-            self.generated_float_range()
+            self.generated_sample_range()
         if self.kind in SAMPLE_ARRAY_KINDS and self.initial_value is not None:
             msg = f"initial_value is not meaningful for {self.kind.value} metrics; use samples instead"
             raise ValueError(msg)
@@ -620,21 +620,35 @@ class MetricSpec:
         """Whether one state of this metric carries many values rather than one."""
         return self.kind in SAMPLE_ARRAY_KINDS
 
-    def generated_float_range(self) -> tuple[float, float]:
-        """Return the finite float range used by sample generation."""
+    def generated_sample_range(self) -> tuple[Decimal, Decimal]:
+        """Return the finite Decimal range used by sample generation."""
         if not self.is_sample_array:
             msg = f"{self.kind.value} metrics do not have a generated sample range"
             raise ValueError(msg)
-        low_value = self.minimum if self.minimum is not None else Decimal(0)
-        high_value = self.maximum if self.maximum is not None else Decimal(100)
-        validate_decimal(low_value, "minimum used for sample generation", float_representable=True)
-        validate_decimal(high_value, "maximum used for sample generation", float_representable=True)
-        low = float(low_value)
-        high = float(high_value)
-        if high <= low:
-            high = low + 1.0
-        if not math.isfinite(high) or not math.isfinite(high - low):
-            msg = f"generated sample range {low_value} to {high_value} must have a finite float span"
+        validate_decimal(self.resolution, "resolution", positive=True)
+        fixed_point_decimal(self.resolution, "resolution")
+
+        with localcontext() as context:
+            context.prec = MAX_DECIMAL_WIRE_CHARS + 10
+            if self.minimum is None and self.maximum is None:
+                low, high = Decimal(0), Decimal(100)
+            elif self.minimum is None:
+                high = self.maximum
+                low = high - Decimal(100)
+            elif self.maximum is None:
+                low = self.minimum
+                high = low + Decimal(100)
+            else:
+                low, high = self.minimum, self.maximum
+            span = high - low
+
+        validate_decimal(low, "minimum used for sample generation", float_representable=True)
+        validate_decimal(high, "maximum used for sample generation", float_representable=True)
+        if span < 0:
+            msg = f"minimum {low} is greater than maximum {high}"
+            raise ValueError(msg)
+        if not math.isfinite(float(span)):
+            msg = f"generated sample range {low} to {high} must have a finite float span"
             raise ValueError(msg)
         return low, high
 

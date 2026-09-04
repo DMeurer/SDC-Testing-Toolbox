@@ -46,6 +46,7 @@ from sdctoolbox.model import (  # noqa: E402
     AlertSignalSpec,
     AlertSpec,
     Coding,
+    DistributionShape,
     LocationInfo,
     MetricKind,
     MetricSpec,
@@ -196,6 +197,95 @@ def check_sample_arrays(report: Report, service: ProviderService) -> None:
         all(isinstance(s, Decimal) for s in samples),
         "as Decimal, never float",
     )
+
+    range_cases = (
+        ("default", None, None, Decimal("0.1"), (Decimal("0"), Decimal("100"))),
+        ("negative maximum", None, Decimal("-5"), Decimal("0.1"), (Decimal("-105"), Decimal("-5"))),
+        ("positive minimum", Decimal("5"), None, Decimal("0.1"), (Decimal("5"), Decimal("105"))),
+        ("equal", Decimal("7"), Decimal("7"), Decimal("0.1"), (Decimal("7"), Decimal("7"))),
+        (
+            "narrow",
+            Decimal("0.001"),
+            Decimal("0.002"),
+            Decimal("0.0001"),
+            (Decimal("0.001"), Decimal("0.002")),
+        ),
+    )
+    range_failures = []
+    for kind in (MetricKind.WAVEFORM, MetricKind.DISTRIBUTION):
+        for case, minimum, maximum, resolution, expected_range in range_cases:
+            spec = MetricSpec(
+                label=f"Generated {kind.value} {case}",
+                kind=kind,
+                minimum=minimum,
+                maximum=maximum,
+                resolution=resolution,
+                domain_minimum=(Decimal("1000") if kind is MetricKind.DISTRIBUTION else None),
+                domain_maximum=(Decimal("2000") if kind is MetricKind.DISTRIBUTION else None),
+            )
+            low, high = spec.generated_sample_range()
+            origin = high if minimum is None and maximum is not None else low
+            blocks = []
+            if kind is MetricKind.WAVEFORM:
+                for shape in (
+                    WaveformShape.SINE,
+                    WaveformShape.SAWTOOTH,
+                    WaveformShape.SQUARE,
+                    WaveformShape.ECG,
+                    WaveformShape.FLOW,
+                ):
+                    spec.shape = shape
+                    for phase in (0.0, 0.137, 0.91):
+                        service._waveform_phase["m.range_probe"] = phase
+                        blocks.append(service._next_block("m.range_probe", spec)[0])
+                service._waveform_phase.pop("m.range_probe", None)
+            else:
+                for shape in DistributionShape:
+                    spec.distribution_shape = shape
+                    blocks.extend(_distribution_samples(spec, phase) for phase in (0.0, 0.137, 0.91))
+            values = [sample for block in blocks for sample in block]
+            bounded = all(low <= sample <= high for sample in values)
+            finite = all(sample.is_finite() and math.isfinite(float(sample)) for sample in values)
+            quantized = all((sample - origin) % resolution == 0 for sample in values)
+            equal_bounds = minimum is not None and minimum == maximum
+            constant = not equal_bounds or all(sample == minimum for sample in values)
+            if not (values and (low, high) == expected_range and bounded and finite and quantized and constant):
+                range_failures.append(
+                    (kind.value, case, (low, high), bounded, finite, quantized, constant),
+                )
+    report.check(
+        not range_failures,
+        "generated waveform and distribution blocks are finite, bounded, and resolution-aligned",
+        repr(range_failures),
+    )
+
+    equal_handles = []
+    for kind in (MetricKind.WAVEFORM, MetricKind.DISTRIBUTION):
+        handle = service.add_metric(
+            MetricSpec(
+                label=f"Equal {kind.value} range",
+                kind=kind,
+                minimum=Decimal("2.5"),
+                maximum=Decimal("2.5"),
+                resolution=Decimal("0.1"),
+            ),
+        )
+        equal_handles.append(handle)
+    equal_ranges = [
+        service.mdib.entities.by_handle(handle).descriptor.TechnicalRange[0]
+        for handle in equal_handles
+    ]
+    report.check(
+        all(
+            item.Lower == item.Upper == Decimal("2.5")
+            and item.StepWidth == service.mdib.entities.by_handle(handle).descriptor.Resolution == Decimal("0.1")
+            for handle, item in zip(equal_handles, equal_ranges, strict=True)
+        ),
+        "provider accepts equal sample ranges without changing their TechnicalRange",
+        repr([(item.Lower, item.Upper, item.StepWidth) for item in equal_ranges]),
+    )
+    for handle in equal_handles:
+        service.remove_metric(handle)
 
     # A block must continue the curve rather than restarting it, or a consumer sees a saw
     # edge every half second whatever shape was asked for.
