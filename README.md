@@ -234,9 +234,9 @@ provider> presets
 
 *File → Export config* writes device metadata, data-source definitions and scalar current values, alarm and action definitions, and currently associated patient/location contexts to a JSON file.
 It is not a full live-device snapshot: sample blocks, alert/signal state, control mode, generator state and context history are not exported.
-*File → Import config* validates descriptor references before removing tracked metrics, alarms and actions, then rebuilds them.
-It is not a whole-MDIB replacement. In either replacement or append mode, an omitted `contexts.patient` or `contexts.location` leaves that currently associated context unchanged. An explicit patient block is associated, including an empty block to detach the current patient; an explicit empty location is rejected because a published location needs at least one detail.
-If replacement fails operationally after it starts, the provider restores its prior managed metrics, alarms, actions, sections and associated contexts, publishing compensating transactions so connected consumers can recover the same graph. This is recovery, not external atomicity: a subscribed consumer can observe the temporary replacement before the compensation, and a rollback failure is reported together with the import failure rather than hidden. Successful compensation keeps provider and consumer MDIB, descriptor, state and context-state versions monotonic; it advances versions instead of rewinding them.
+*File → Import config* validates descriptor references and generated section containment before changing the provider. Replacement removes tracked metrics, alarms and actions before rebuilding them; `replace=False` appends the profile while retaining the existing graph.
+It is not a whole-MDIB replacement. In either mode, omitting `device` metadata leaves the running identity unchanged, while supplied metadata also cannot change an already running provider. Omitting `contexts.patient` or `contexts.location` leaves that currently associated context unchanged. An explicit patient block is associated, including an empty block to detach the current patient; an explicit empty location is rejected because a published location needs at least one detail.
+Both `replace=True` replacement and `replace=False` append are transactional for operational failures: the provider restores its prior managed metrics, alarms, actions, sections and associated contexts, publishing compensating transactions so connected consumers can recover the same graph. Append compensation removes only appended descriptors and restores contexts the failed import touched; it does not recreate unchanged pre-existing descriptors. This is recovery, not external atomicity: a subscribed consumer can observe temporary changes before the compensation, and a rollback failure is reported together with the import failure rather than hidden. Successful compensation keeps provider and consumer MDIB, descriptor, state and context-state versions monotonic; it advances versions instead of rewinding them.
 
 *File → Load preset* lists the ready-made devices in `presets/`, so the ones that ship with the tool need no file dialog.
 The same list appears in the startup window. Loading a profile with malformed field types or other schema errors raises `ConfigError`; `list_presets` catches those strict validation failures, invalid JSON and unreadable files and skips those entries, so one malformed preset does not interrupt discovery.
@@ -480,7 +480,7 @@ with `QT_QPA_PLATFORM=offscreen`:
 | `tests/licensing.py` | project licensing, notices and build legal-payload sources |
 | `tests/provider_core.py` | provider descriptors, values, alarms, contexts and rollback |
 | `tests/presets.py` | every shipped preset built as a working device |
-| `tests/config_roundtrip.py` | versioned export/import, validation and transactional replacement |
+| `tests/config_roundtrip.py` | versioned export/import, validation and transactional replacement/append |
 | `tests/widget_controls.py` | widget selection and real control interactions |
 | `tests/gui_dialogs.py` | metric, alarm, context and startup validation |
 | `tests/gui_cards_plots.py` | card construction and waveform/distribution rendering |

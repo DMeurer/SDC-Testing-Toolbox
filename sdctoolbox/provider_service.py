@@ -498,7 +498,7 @@ class ProviderService:
             raise first_error.with_traceback(first_traceback)
 
     def _snapshot_configuration(self) -> _ConfigurationSnapshot:
-        """Clone all mutable provider state needed to undo a profile replacement."""
+        """Clone all mutable provider state needed to undo a profile import."""
         with self._lock:
             mdib = self.mdib
             return _ConfigurationSnapshot(
@@ -599,6 +599,72 @@ class ProviderService:
 
             for operation in snapshot.registered_operations.values():
                 operation._operation_entity = mdib.entities.by_handle(operation.handle)  # noqa: SLF001
+
+        if location_changed:
+            self._provider.publish()
+        if snapshot.generator_running:
+            self.start_generator()
+
+    def _restore_appended_configuration(
+            self,
+            snapshot: _ConfigurationSnapshot,
+            touched_contexts: set[str],
+    ) -> None:
+        """Remove an interrupted append without recreating unchanged live descriptors."""
+        if not snapshot.generator_running:
+            self.stop_generator()
+        with self._lock:
+            mdib = self.mdib
+            saved_descriptors = {descriptor.Handle: descriptor for descriptor in snapshot.descriptors}
+            added_handles = {handle for handle, _ in mdib.entities.items()} - set(saved_descriptors)
+            added_roots = {
+                handle
+                for handle in added_handles
+                if mdib.entities.by_handle(handle).parent_handle not in added_handles
+            }
+
+            self._operations = snapshot.operations
+            self._specs = snapshot.specs
+            self._alerts = snapshot.alerts
+            self._alert_signals = snapshot.alert_signals
+            self._actions = snapshot.actions
+            self._sections = snapshot.sections
+            self._pending_alert_sources = snapshot.pending_alert_sources
+            self._waveform_phase = snapshot.waveform_phase
+            self._pinned_samples = snapshot.pinned_samples
+            self._sco._registered_operations = snapshot.registered_operations  # noqa: SLF001
+
+            if added_roots:
+                with mdib.descriptor_transaction() as mgr:
+                    for handle in added_roots:
+                        mgr.remove_entity(mdib.entities.by_handle(handle))
+
+            context_states: dict[str, list] = {}
+            for state in snapshot.context_states:
+                context_states.setdefault(state.DescriptorHandle, []).append(state)
+            restored_contexts = []
+            for handle in touched_contexts:
+                current = mdib.entities.by_handle(handle)
+                if current is not None:
+                    with mdib.descriptor_transaction() as mgr:
+                        mgr.remove_entity(current)
+                descriptor = deepcopy(saved_descriptors[handle])
+                restored_contexts.append(
+                    mdibbase.MultiStateEntity(
+                        mdib,
+                        descriptor,
+                        deepcopy(context_states.get(handle, [])),
+                    ),
+                )
+            if restored_contexts:
+                with mdib.descriptor_transaction() as mgr:
+                    mgr.write_entities(restored_contexts)
+
+            location_changed = (
+                constants.LOCATION_CONTEXT_HANDLE in touched_contexts
+                and self._provider._location != snapshot.provider_location  # noqa: SLF001
+            )
+            self._provider._location = snapshot.provider_location  # noqa: SLF001
 
         if location_changed:
             self._provider.publish()

@@ -29,6 +29,7 @@ from sdc11073.consumer.consumerimpl import SdcConsumer  # noqa: E402
 from sdc11073.definitions_sdc import SdcV1Definitions  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 from sdc11073.mdib import ConsumerMdib  # noqa: E402
+from sdc11073.xml_types import pm_qnames as pm  # noqa: E402
 
 from sdctoolbox import config  # noqa: E402
 from sdctoolbox.consumer_service import RemoteDevice  # noqa: E402
@@ -492,6 +493,43 @@ def check_section_handle_collisions(report: Report, service: ProviderService) ->
     service.remove_metric("m.existing")
 
 
+def check_append_section_type_preflight(report: Report, service: ProviderService) -> None:
+    """A late section collision is rejected before an earlier metric is appended."""
+    colliding_handle = "vmd.append_collision"
+    witness = service.mdib.entities.new_entity(
+        pm.ChannelDescriptor,
+        colliding_handle,
+        "vmd0",
+    )
+    service._create_entities([witness])  # noqa: SLF001 - construct a live foreign descriptor
+    profile = config.parse(
+        {
+            "metrics": [
+                {"label": "First append", "kind": "number"},
+                {"label": "Second append", "kind": "number", "section": "Append collision"},
+            ],
+        },
+    )
+    before = complete_snapshot(service)
+    try:
+        config.apply_to(service, profile, replace=False)
+    except config.ConfigError as exc:
+        report.check(
+            colliding_handle in str(exc) and "VmdDescriptor" in str(exc),
+            "append preflight rejects a generated VMD handle occupied by the wrong live type",
+            str(exc),
+        )
+    else:
+        report.check(False, "append preflight rejects a wrong-type generated VMD", "it was reused")
+    report.check(
+        complete_snapshot(service) == before
+        and service.mdib.entities.by_handle("m.first_append") is None,
+        "a second metric's section collision is rejected before the first metric mutates the provider",
+    )
+    with service.mdib.descriptor_transaction() as mgr:
+        mgr.remove_entity(service.mdib.entities.by_handle(colliding_handle))
+
+
 def check_operational_failure_rolls_back(report: Report, service: ProviderService) -> None:
     """A failure after one successful creation restores the complete live provider."""
     metric = service.add_metric(
@@ -716,6 +754,138 @@ def check_connected_consumer_rollback(report: Report) -> None:  # noqa: PLR0915 
         report.check(
             all(current_state_versions[handle] >= version for handle, version in original_state_versions.items()),
             "restored state and context versions do not rewind",
+        )
+    finally:
+        if remote is not None:
+            remote.close()
+        service.stop()
+
+
+def check_connected_consumer_append_rollback(report: Report) -> None:  # noqa: PLR0915 - linear integration check
+    """A consumer-observed partial append is compensated without replacing originals."""
+    service = ProviderService(instance_name="config-live-append-rollback")
+    service.start()
+    remote = None
+    try:
+        original = service.add_metric(
+            MetricSpec(label="Append original", kind=MetricKind.NUMBER, initial_value=Decimal("9")),
+        )
+        service.set_location(LocationInfo(facility="OLD", bed="4"))
+        service.set_patient(PatientInfo(given_name="Before", family_name="Append"))
+
+        consumer = SdcConsumer(
+            provider_address=service._provider.get_xaddrs()[0],  # noqa: SLF001 - deterministic loopback fixture
+            sdc_definitions=SdcV1Definitions,
+            ssl_context_container=None,
+        )
+        consumer.start_all()
+        consumer_mdib = ConsumerMdib(consumer)
+        consumer_mdib.init_mdib()
+        remote = RemoteDevice(consumer, consumer_mdib, service.epr.urn)
+
+        before = complete_snapshot(service)
+        before_graph = semantic_mdib(service.mdib)
+        consumer_graph = semantic_mdib(remote.mdib)
+        original_descriptor_version = service.mdib.entities.by_handle(original).descriptor.DescriptorVersion
+        provider_versions = [mdib_versions(service.mdib)]
+        consumer_versions = [mdib_versions(remote.mdib)]
+        first_seen = threading.Event()
+        original_churn = []
+
+        def on_description(_report) -> None:  # noqa: ANN001 - observable payload
+            consumer_versions.append(mdib_versions(remote.mdib))
+
+        def on_created(descriptors: dict) -> None:
+            if "m.first_append" in descriptors:
+                first_seen.set()
+            if original in descriptors:
+                original_churn.append("created")
+
+        def on_deleted(descriptors: dict) -> None:
+            if original in descriptors:
+                original_churn.append("deleted")
+
+        remote.bind(
+            description_modifications=on_description,
+            new_descriptors_by_handle=on_created,
+            deleted_descriptors_by_handle=on_deleted,
+        )
+        profile = config.parse(
+            {
+                "metrics": [
+                    {"label": "First append", "kind": "number", "initial_value": "1"},
+                    {"label": "Second append", "kind": "number"},
+                ],
+                "contexts": {
+                    "location": {"facility": "NEW", "bed": "1"},
+                    "patient": {"given_name": "After"},
+                },
+            },
+        )
+        original_set_patient = service.set_patient
+        first_seen_locally = False
+
+        def fail_after_consumer_observes_append(info: PatientInfo) -> None:
+            nonlocal first_seen_locally
+            first_seen_locally = service.mdib.entities.by_handle("m.first_append") is not None
+            if not first_seen.wait(10):
+                raise RuntimeError("consumer did not observe first appended descriptor")
+            provider_versions.append(mdib_versions(service.mdib))
+            original_set_patient(info)
+            raise RuntimeError("injected append failure after consumer observation")
+
+        service.set_patient = fail_after_consumer_observes_append
+        try:
+            try:
+                config.apply_to(service, profile, replace=False)
+            except config.ConfigError as exc:
+                report.check(
+                    "injected append failure after consumer observation" in str(exc),
+                    "append failure is injected after provider and consumer observe the first metric",
+                    str(exc),
+                )
+            else:
+                report.check(False, "partial append failure reaches the caller", "it was accepted")
+        finally:
+            service.set_patient = original_set_patient
+
+        provider_versions.append(mdib_versions(service.mdib))
+        consumer_complete = wait_until(lambda: semantic_mdib(remote.mdib) == consumer_graph)
+        after = complete_snapshot(service)
+        versioned = {"mdib", "mdib_versions", "version_lookups", "descriptors", "context_states"}
+        changed = [name for name in before if name not in versioned and before[name] != after[name]]
+        report.check(
+            first_seen_locally
+            and not changed
+            and semantic_mdib(service.mdib) == before_graph
+            and service.mdib.entities.by_handle("m.first_append") is None,
+            "failed append restores complete provider state and removes the first metric",
+            str(changed),
+        )
+        report.check(
+            not original_churn
+            and service.mdib.entities.by_handle(original).descriptor.DescriptorVersion
+            == original_descriptor_version,
+            "append compensation does not recreate an unchanged pre-existing descriptor",
+            str(original_churn),
+        )
+        report.check(
+            consumer_complete
+            and set(remote.metrics()) == {original}
+            and remote.mdib.entities.by_handle("m.first_append") is None,
+            "subscribed consumer returns to the complete pre-append graph",
+        )
+        report.check(
+            all(
+                all(new_part >= old_part for old_part, new_part in zip(old, new, strict=True))
+                for old, new in pairwise(provider_versions)
+            )
+            and all(
+                all(new_part >= old_part for old_part, new_part in zip(old, new, strict=True))
+                for old, new in pairwise([*consumer_versions, mdib_versions(remote.mdib)])
+            ),
+            "append rollback keeps provider and consumer MDIB versions monotonic",
+            f"provider={provider_versions}, consumer={consumer_versions}",
         )
     finally:
         if remote is not None:
@@ -1396,6 +1566,7 @@ def run_checks(report: Report, workdir: Path) -> None:
     try:
         check_preflight_preserves_device(report, guarded)
         check_section_handle_collisions(report, guarded)
+        check_append_section_type_preflight(report, guarded)
     finally:
         guarded.stop()
 
@@ -1409,6 +1580,9 @@ def run_checks(report: Report, workdir: Path) -> None:
 
     print("\n6. Connected consumers observe compensating rollback")
     check_connected_consumer_rollback(report)
+
+    print("\n6a. Append failures compensate consumer-observed partial changes")
+    check_connected_consumer_append_rollback(report)
 
     print("\n7. Replacement updates section containment")
     sections = ProviderService(instance_name="config-sections")

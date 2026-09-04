@@ -2,7 +2,7 @@
 
 A config records descriptors, scalar current values, associated patient/location contexts,
 and device metadata. It does not capture all live state. Loading one into a running provider
-replaces tracked metrics, alerts, and actions before applying the new profile.
+replaces tracked metrics, alerts, and actions by default, or appends them with ``replace=False``.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types import pm_types
 from sdc11073.xml_types.xml_structure import DateOfBirthProperty
 
@@ -987,7 +988,7 @@ def _resolve_metric_handles(
 
 
 def _preflight_apply(service: ProviderService, device: DeviceConfig, *, replace: bool) -> None:
-    """Validate the final descriptor graph before replacing any live descriptors.
+    """Validate the final descriptor graph before changing any live descriptors.
 
     This is intentionally a pure namespace simulation. Calling the provider's creation
     methods to validate references would create sections and defeat the point of preflight.
@@ -995,6 +996,7 @@ def _preflight_apply(service: ProviderService, device: DeviceConfig, *, replace:
     descriptors = {handle for handle, _ in service.mdib.entities.items()}
     metric_specs = service.list_metrics()
     metrics = set(metric_specs)
+    removed: set[str] = set()
     if replace:
         removed = set(service.list_actions()) | set(service.list_alerts()) | set(service.list_metrics())
         for alert_handle in service.list_alerts():
@@ -1007,6 +1009,28 @@ def _preflight_apply(service: ProviderService, device: DeviceConfig, *, replace:
         descriptors.difference_update(removed)
         metric_specs.clear()
         metrics.clear()
+
+    for section in {spec.section for spec in device.metrics if spec.section}:
+        slug = slugify(section)
+        vmd_handle = VMD_HANDLE_PREFIX + slug
+        channel_handle = CHANNEL_HANDLE_PREFIX + slug
+        vmd = service.mdib.entities.by_handle(vmd_handle)
+        channel = service.mdib.entities.by_handle(channel_handle)
+        if vmd_handle in removed:
+            vmd = None
+        if channel_handle in removed:
+            channel = None
+        if vmd is not None and (vmd.node_type != pm.VmdDescriptor or vmd.parent_handle != MDS_HANDLE):
+            msg = f"sections[{section}]: {vmd_handle!r} must be a VmdDescriptor under {MDS_HANDLE!r}"
+            raise ConfigError(msg)
+        if channel is not None and (
+            channel.node_type != pm.ChannelDescriptor or channel.parent_handle != vmd_handle
+        ):
+            msg = f"sections[{section}]: {channel_handle!r} must be a ChannelDescriptor under {vmd_handle!r}"
+            raise ConfigError(msg)
+        if channel is not None and vmd is None:
+            msg = f"sections[{section}]: {channel_handle!r} requires live parent {vmd_handle!r}"
+            raise ConfigError(msg)
 
     descriptors.update(_section_handles(device.metrics))
     for spec in device.metrics:
@@ -1090,19 +1114,19 @@ def apply_to(
     Metrics go in before alarms, since an alarm names the metric it watches. Returns how
     many of each were created.
 
-    :param replace: clear whatever the provider already had first. Without it, handles that
-        already exist would collide.
+    :param replace: clear tracked descriptors first. Without it, append to the live graph;
+        collisions are rejected during preflight. Operational failures in either mode are
+        compensated back to the pre-import graph.
     """
     _preflight_apply(service, device, replace=replace)
-    snapshot = None
-    if replace:
-        try:
-            snapshot = service._snapshot_configuration()  # noqa: SLF001 - config owns replacement rollback
-        except Exception as exc:  # noqa: BLE001 - provider/library failures become profile errors
-            msg = f"profile: could not prepare transactional import: {exc}"
-            raise ConfigError(msg) from exc
+    try:
+        snapshot = service._snapshot_configuration()  # noqa: SLF001 - config owns import rollback
+    except Exception as exc:  # noqa: BLE001 - provider/library failures become profile errors
+        msg = f"profile: could not prepare transactional import: {exc}"
+        raise ConfigError(msg) from exc
 
     field = "profile"
+    touched_contexts: set[str] = set()
     try:
         if replace:
             for handle in list(service.list_actions()):
@@ -1135,17 +1159,24 @@ def apply_to(
         # a patient leaves the one already attached alone rather than silently detaching them.
         if device.location is not None:
             field = "contexts.location"
+            touched_contexts.add(LOCATION_CONTEXT_HANDLE)
             service.set_location(device.location)
         if device.patient is not None:
             field = "contexts.patient"
+            touched_contexts.add(PATIENT_CONTEXT_HANDLE)
             service.set_patient(device.patient)
     except Exception as exc:  # noqa: BLE001 - all operational failures need profile context
-        if snapshot is not None:
-            try:
+        try:
+            if replace:
                 service._restore_configuration(snapshot)  # noqa: SLF001 - paired with snapshot above
-            except Exception as rollback_exc:  # noqa: BLE001 - preserve both failure causes
-                msg = f"{field}: profile import failed ({exc}); rollback failed: {rollback_exc}"
-                raise ConfigError(msg) from exc
+            else:
+                service._restore_appended_configuration(  # noqa: SLF001 - paired with snapshot above
+                    snapshot,
+                    touched_contexts,
+                )
+        except Exception as rollback_exc:  # noqa: BLE001 - preserve both failure causes
+            msg = f"{field}: profile import failed ({exc}); rollback failed: {rollback_exc}"
+            raise ConfigError(msg) from exc
         msg = f"{field}: profile import failed: {exc}"
         raise ConfigError(msg) from exc
 
