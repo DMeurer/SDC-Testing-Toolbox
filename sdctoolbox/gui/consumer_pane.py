@@ -11,6 +11,7 @@ AsyncCall rather than on the GUI thread.
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
@@ -77,6 +78,7 @@ MIN_CHILD_WIDTH = 200
 MIN_PANEL_WIDTH = 240
 ACTION_BUTTON_WIDTH = 180
 ACTION_BUTTON_TEXT_WIDTH = ACTION_BUTTON_WIDTH - 24
+_DISPLAY_LINE_BREAKS = re.compile(r"[\r\n\v\f\x1c-\x1e\x85\u2028\u2029]+")
 
 NO_VALUE = "\u2014"
 
@@ -102,13 +104,15 @@ def _set_action_button_caption(button: QPushButton, caption: str) -> None:
     policy.setHorizontalPolicy(QSizePolicy.Fixed)
     button.setSizePolicy(policy)
     button.setFixedWidth(ACTION_BUTTON_WIDTH)
+    display_caption = _DISPLAY_LINE_BREAKS.sub(" ", caption)
     button.setText(
         QFontMetrics(button.font()).elidedText(
-            caption,
+            display_caption,
             Qt.ElideRight,
             ACTION_BUTTON_TEXT_WIDTH,
         ),
     )
+    button.setFixedHeight(max(button.sizeHint().height(), button.fontMetrics().height()))
     button.setToolTip(caption)
     button.setAccessibleName(caption)
     button.setAccessibleDescription(caption)
@@ -161,7 +165,8 @@ class ConsumerPane(QWidget):
         # What the peer says it can be told to *do*, as opposed to the values it holds.
         # A device may be able to home its axes without publishing a metric for it.
         self.actions_row = QHBoxLayout()
-        self.actions_row.addWidget(QLabel("Actions"))
+        self.actions_label = QLabel("Actions")
+        self.actions_row.addWidget(self.actions_label)
         self.actions_row.addStretch(1)
         self.action_buttons: dict[str, QPushButton] = {}
         self.actions_content = QWidget()
@@ -623,10 +628,22 @@ class ConsumerPane(QWidget):
             # enabled, and OperatingMode can change under us.
             button.setEnabled(action.enabled and not self._invocation_busy())
         self.actions_content.adjustSize()
-        self.actions_widget.setFixedHeight(
-            self.actions_content.sizeHint().height()
-            + self.actions_widget.horizontalScrollBar().sizeHint().height(),
-        )
+        if self.action_buttons:
+            margins = self.actions_row.contentsMargins()
+            row_height = (
+                max(
+                    self.actions_label.sizeHint().height(),
+                    max(button.height() for button in self.action_buttons.values()),
+                )
+                + margins.top()
+                + margins.bottom()
+            )
+            self.actions_content.setFixedHeight(row_height)
+            self.actions_widget.setFixedHeight(
+                row_height
+                + self.actions_widget.horizontalScrollBar().sizeHint().height()
+                + 2 * self.actions_widget.frameWidth(),
+            )
         self.actions_widget.setVisible(bool(actions))
 
     def _on_run_action(self, handle: str) -> None:

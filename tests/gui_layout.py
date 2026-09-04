@@ -22,6 +22,8 @@ from sdc11073.xml_types import msg_types
 from sdctoolbox.gui.consumer_pane import ACTION_BUTTON_TEXT_WIDTH, ACTION_BUTTON_WIDTH
 from sdctoolbox.model import MetricKind, MetricSpec, RemoteAction
 
+LINE_SEPARATORS = "\r\n\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+
 
 class ActionRemote:
     def __init__(self, actions: dict[str, RemoteAction]) -> None:
@@ -68,31 +70,63 @@ def remote_action_checks(report: Report, fixture: WindowFixture) -> None:
     assert window is not None
     pane = window.network_pane
 
-    baseline_pane_minimum = pane.minimumSizeHint().width()
-    baseline_pane_hint = pane.sizeHint().width()
-    baseline_window_minimum = window.minimumSizeHint().width()
-    baseline_window_hint = window.sizeHint().width()
-    baseline_window_width = window.width()
-
     label_handle = "action-label"
     type_handle = "action-type"
     disabled_handle = "action-disabled"
-    handle_fallback = "H" * 10_000
+    separator_content = (LINE_SEPARATORS * ((10_000 // len(LINE_SEPARATORS)) + 1))[:10_000]
+    handle_fallback = f"Handle{separator_content}caption"
+    baseline_actions = {
+        label_handle: RemoteAction(handle=label_handle, label="Baseline label action", enabled=True),
+        type_handle: RemoteAction(handle=type_handle, type_code="baseline.type", enabled=True),
+        disabled_handle: RemoteAction(handle=disabled_handle, label="Baseline disabled", enabled=False),
+        handle_fallback: RemoteAction(
+            handle=handle_fallback,
+            label="Baseline handle action",
+            enabled=True,
+        ),
+    }
+    pane.remote = ActionRemote(baseline_actions)
+    pane.refresh_actions()
+    pump(fixture.app)
+
+    baseline_button = next(iter(pane.action_buttons.values()))
+    baseline_sizes = {
+        "button": (baseline_button.minimumWidth(), baseline_button.minimumHeight()),
+        "action row": (
+            pane.actions_content.minimumSizeHint().width(),
+            pane.actions_content.minimumSizeHint().height(),
+        ),
+        "action pane": (pane.actions_content.width(), pane.actions_content.height()),
+        "action scroll": (
+            pane.actions_widget.minimumSizeHint().width(),
+            pane.actions_widget.minimumSizeHint().height(),
+        ),
+        "pane": (pane.minimumSizeHint().width(), pane.minimumSizeHint().height()),
+        "window": (window.minimumSizeHint().width(), window.minimumSizeHint().height()),
+    }
+    baseline_hints = {
+        "pane": (pane.sizeHint().width(), pane.sizeHint().height()),
+        "window": (window.sizeHint().width(), window.sizeHint().height()),
+    }
+    baseline_window_size = (window.width(), window.height())
+
+    label_caption = f"Label{separator_content}caption"
+    type_caption = f"Type{separator_content}caption"
     actions = {
         label_handle: RemoteAction(
             handle=label_handle,
-            label="L" * 10_000,
+            label=label_caption,
             type_code="unused-label-code",
             enabled=True,
         ),
         type_handle: RemoteAction(
             handle=type_handle,
-            type_code="T" * 10_000,
+            type_code=type_caption,
             enabled=True,
         ),
         disabled_handle: RemoteAction(
             handle=disabled_handle,
-            label="D" * 10_000,
+            label=f"Disabled{separator_content}caption",
             enabled=False,
         ),
         handle_fallback: RemoteAction(handle=handle_fallback, enabled=True),
@@ -102,25 +136,47 @@ def remote_action_checks(report: Report, fixture: WindowFixture) -> None:
     pane.refresh_actions()
     pump(fixture.app)
 
-    growth_limit = ACTION_BUTTON_WIDTH
-    bounded_sizes = (
-        pane.minimumSizeHint().width() <= baseline_pane_minimum + growth_limit
-        and pane.sizeHint().width() <= baseline_pane_hint + growth_limit
-        and window.minimumSizeHint().width() <= baseline_window_minimum + growth_limit
-        and window.sizeHint().width() <= baseline_window_hint + growth_limit
-        and window.width() <= baseline_window_width + growth_limit
-    )
-    report.check(
-        bounded_sizes,
-        "long remote action captions keep pane and window sizes bounded",
-        (
-            f"pane min/hint {baseline_pane_minimum}/{baseline_pane_hint} -> "
-            f"{pane.minimumSizeHint().width()}/{pane.sizeHint().width()}, "
-            f"window min/hint/width {baseline_window_minimum}/"
-            f"{baseline_window_hint}/{baseline_window_width} -> "
-            f"{window.minimumSizeHint().width()}/{window.sizeHint().width()}/"
-            f"{window.width()}"
+    current_sizes = {
+        "button": (
+            next(iter(pane.action_buttons.values())).minimumWidth(),
+            next(iter(pane.action_buttons.values())).minimumHeight(),
         ),
+        "action row": (
+            pane.actions_content.minimumSizeHint().width(),
+            pane.actions_content.minimumSizeHint().height(),
+        ),
+        "action pane": (pane.actions_content.width(), pane.actions_content.height()),
+        "action scroll": (
+            pane.actions_widget.minimumSizeHint().width(),
+            pane.actions_widget.minimumSizeHint().height(),
+        ),
+        "pane": (pane.minimumSizeHint().width(), pane.minimumSizeHint().height()),
+        "window": (window.minimumSizeHint().width(), window.minimumSizeHint().height()),
+    }
+    for name, baseline in baseline_sizes.items():
+        current = current_sizes[name]
+        report.check(
+            all(abs(after - before) <= 4 for before, after in zip(baseline, current, strict=True)),
+            f"separator-heavy captions keep the {name} minimum width and height near baseline",
+            f"{baseline} -> {current}",
+        )
+
+    current_hints = {
+        "pane": (pane.sizeHint().width(), pane.sizeHint().height()),
+        "window": (window.sizeHint().width(), window.sizeHint().height()),
+    }
+    for name, baseline in baseline_hints.items():
+        current = current_hints[name]
+        report.check(
+            all(abs(after - before) <= 4 for before, after in zip(baseline, current, strict=True)),
+            f"separator-heavy captions keep the {name} size hint near baseline",
+            f"{baseline} -> {current}",
+        )
+    report.check(
+        abs(window.width() - baseline_window_size[0]) <= 4
+        and abs(window.height() - baseline_window_size[1]) <= 4,
+        "separator-heavy captions do not resize the window",
+        f"{baseline_window_size} -> {(window.width(), window.height())}",
     )
 
     for handle, action in actions.items():
@@ -134,10 +190,11 @@ def remote_action_checks(report: Report, fixture: WindowFixture) -> None:
         )
         report.check(
             button.text() != caption
-            and "\u2026" in button.text()
+            and not any(separator in button.text() for separator in LINE_SEPARATORS)
+            and len(button.text()) <= ACTION_BUTTON_TEXT_WIDTH
             and button.fontMetrics().horizontalAdvance(button.text())
             <= ACTION_BUTTON_TEXT_WIDTH,
-            f"the {handle[:20]!r} action caption is visibly elided",
+            f"the {handle[:20]!r} action caption is normalized and visibly bounded",
             f"{len(button.text())} displayed characters",
         )
         report.check(
@@ -179,22 +236,28 @@ def remote_action_checks(report: Report, fixture: WindowFixture) -> None:
         ),
         "an overflowing action button can be brought into view",
     )
-    QTest.mouseClick(invoked_button, Qt.LeftButton)
-    report.check(
-        wait_for(fixture.app, lambda: remote.invoked == [type_handle]),
-        "an elided action button invokes its original handle",
-        repr(remote.invoked),
-    )
-    report.check(
-        wait_for(
-            fixture.app,
-            lambda: all(
-                button.isEnabled() is actions[handle].enabled
-                for handle, button in pane.action_buttons.items()
+    expected_invocations: list[str] = []
+    for handle in (type_handle, label_handle, handle_fallback):
+        button = pane.action_buttons[handle]
+        pane.actions_widget.ensureWidgetVisible(button)
+        pump(fixture.app)
+        QTest.mouseClick(button, Qt.LeftButton)
+        expected_invocations.append(handle)
+        report.check(
+            wait_for(fixture.app, lambda: remote.invoked == expected_invocations),
+            f"the {handle[:20]!r} action button invokes its original handle",
+            f"invoked handle lengths: {[len(value) for value in remote.invoked]}",
+        )
+        report.check(
+            wait_for(
+                fixture.app,
+                lambda: all(
+                    candidate.isEnabled() is actions[candidate_handle].enabled
+                    for candidate_handle, candidate in pane.action_buttons.items()
+                ),
             ),
-        ),
-        "action buttons restore their advertised availability after invocation",
-    )
+            "action buttons restore their advertised availability after invocation",
+        )
 
 
 def main() -> int:
