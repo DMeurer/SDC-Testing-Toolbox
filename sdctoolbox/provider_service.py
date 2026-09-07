@@ -68,6 +68,7 @@ class _ConfigurationSnapshot:
     operations: dict[str, str]
     specs: dict[str, MetricSpec]
     alerts: dict[str, AlertSpec]
+    alert_truths: dict[str, bool]
     alert_signals: dict[str, list[str]]
     actions: dict[str, ActionSpec]
     sections: dict[str, str]
@@ -77,6 +78,71 @@ class _ConfigurationSnapshot:
     waveform_phase: dict[str, float]
     pinned_samples: set[str]
     generator_running: bool
+
+
+@dataclass(frozen=True)
+class _SignalTransitionInput:
+    activation: pm_types.AlertActivation
+    presence: pm_types.AlertSignalPresence
+    latching: bool
+
+
+@dataclass(frozen=True)
+class _AlertTransition:
+    condition_presence: bool
+    signal_presences: tuple[pm_types.AlertSignalPresence, ...]
+
+
+def _reduce_alert_transition(
+        *,
+        condition_truth: bool,
+        current_presence: bool,
+        condition_activation: pm_types.AlertActivation,
+        system_activation: pm_types.AlertActivation,
+        signals: tuple[_SignalTransitionInput, ...],
+        acknowledge: bool = False,
+        stop_latches: bool = False,
+) -> _AlertTransition:
+    """Purely derive condition presence and each signal's next presence."""
+    condition_present = (
+        condition_truth
+        and condition_activation is pm_types.AlertActivation.ON
+        and system_activation is pm_types.AlertActivation.ON
+    )
+    annunciation_enabled = (
+        condition_activation is pm_types.AlertActivation.ON
+        and system_activation is pm_types.AlertActivation.ON
+    )
+    signal_presences = []
+    for signal in signals:
+        if not annunciation_enabled or signal.activation is pm_types.AlertActivation.OFF:
+            presence = pm_types.AlertSignalPresence.OFF
+        elif signal.activation is pm_types.AlertActivation.PAUSED:
+            presence = (
+                pm_types.AlertSignalPresence.ACK
+                if condition_present and signal.presence is pm_types.AlertSignalPresence.ACK
+                else pm_types.AlertSignalPresence.OFF
+            )
+        elif condition_present:
+            if acknowledge and signal.presence is pm_types.AlertSignalPresence.ON:
+                presence = pm_types.AlertSignalPresence.ACK
+            elif current_presence:
+                presence = signal.presence
+            else:
+                presence = pm_types.AlertSignalPresence.ON
+        elif stop_latches and signal.presence is pm_types.AlertSignalPresence.LATCH:
+            presence = pm_types.AlertSignalPresence.OFF
+        elif signal.presence is pm_types.AlertSignalPresence.LATCH:
+            presence = signal.presence
+        elif signal.latching and signal.presence in (
+            pm_types.AlertSignalPresence.ON,
+            pm_types.AlertSignalPresence.ACK,
+        ):
+            presence = pm_types.AlertSignalPresence.LATCH
+        else:
+            presence = pm_types.AlertSignalPresence.OFF
+        signal_presences.append(presence)
+    return _AlertTransition(condition_present, tuple(signal_presences))
 
 
 # How much waveform data goes out per report. Samples are generated in blocks rather than
@@ -346,6 +412,8 @@ class ProviderService:
         self._specs: dict[str, MetricSpec] = {}
         # alarm handle -> the spec it was created from
         self._alerts: dict[str, AlertSpec] = {}
+        # alarm handle -> condition truth before activation predicates are applied
+        self._alert_truths: dict[str, bool] = {}
         # alarm handle -> the signals announcing it
         self._alert_signals: dict[str, list[str]] = {}
         # action handle -> the spec it was created from
@@ -480,6 +548,7 @@ class ProviderService:
             self._operations.clear()
             self._specs.clear()
             self._alerts.clear()
+            self._alert_truths.clear()
             self._alert_signals.clear()
             self._pending_alert_sources.clear()
             self._actions.clear()
@@ -502,6 +571,7 @@ class ProviderService:
                 operations=dict(self._operations),
                 specs=dict(self._specs),
                 alerts=dict(self._alerts),
+                alert_truths=dict(self._alert_truths),
                 alert_signals={handle: list(signals) for handle, signals in self._alert_signals.items()},
                 actions=dict(self._actions),
                 sections=dict(self._sections),
@@ -523,6 +593,7 @@ class ProviderService:
             self._operations = snapshot.operations
             self._specs = snapshot.specs
             self._alerts = snapshot.alerts
+            self._alert_truths = snapshot.alert_truths
             self._alert_signals = snapshot.alert_signals
             self._actions = snapshot.actions
             self._sections = snapshot.sections
@@ -593,6 +664,7 @@ class ProviderService:
 
             for operation in snapshot.registered_operations.values():
                 operation._operation_entity = mdib.entities.by_handle(operation.handle)  # noqa: SLF001
+            self._coordinate_alert_transition()
 
         if location_changed:
             self._provider.publish()
@@ -620,6 +692,7 @@ class ProviderService:
             self._operations = snapshot.operations
             self._specs = snapshot.specs
             self._alerts = snapshot.alerts
+            self._alert_truths = snapshot.alert_truths
             self._alert_signals = snapshot.alert_signals
             self._actions = snapshot.actions
             self._sections = snapshot.sections
@@ -659,6 +732,7 @@ class ProviderService:
                 and self._provider._location != snapshot.provider_location  # noqa: SLF001
             )
             self._provider._location = snapshot.provider_location  # noqa: SLF001
+            self._coordinate_alert_transition()
 
         if location_changed:
             self._provider.publish()
@@ -764,6 +838,8 @@ class ProviderService:
                 dependent_handles,
                 effect_metric=handle,
             )
+            if alert_handles:
+                self._coordinate_alert_transition(retiring_handles=set(alert_handles))
             for action_handle in action_handles:
                 self._sco.unregister_operation_by_handle(action_handle)
             if operation_handle is not None:
@@ -777,6 +853,7 @@ class ProviderService:
             self._operations.pop(handle, None)
             for alert_handle in alert_handles:
                 self._alerts.pop(alert_handle, None)
+                self._alert_truths.pop(alert_handle, None)
                 self._alert_signals.pop(alert_handle, None)
             self._specs.pop(handle, None)
             self._pending_alert_sources.discard(handle)
@@ -799,7 +876,6 @@ class ProviderService:
                     entity = self.mdib.entities.by_handle(removal_handle)
                     if entity is not None:
                         mgr.remove_entity(entity)
-
             logger.info("removed metric %s", handle)
 
     def _remove_empty_sections(self) -> None:
@@ -925,9 +1001,16 @@ class ProviderService:
         only ``set_alert_presence`` moves.
         """
         with self._lock:
-            if self.mdib.entities.by_handle(spec.source_handle) is None:
+            source = self.mdib.entities.by_handle(spec.source_handle)
+            if source is None:
                 msg = f"no metric with handle {spec.source_handle!r} to watch"
                 raise KeyError(msg)
+            source_spec = self._specs.get(spec.source_handle)
+            if spec.has_limits and (
+                source_spec is None or source_spec.kind is not MetricKind.NUMBER
+            ):
+                msg = "a limit alarm requires a numeric scalar source"
+                raise ValueError(msg)
 
             handle = spec.handle or self._unique_handle(constants.ALERT_HANDLE_PREFIX + spec.slug)
             node_type = pm.LimitAlertConditionDescriptor if spec.has_limits else pm.AlertConditionDescriptor
@@ -995,6 +1078,7 @@ class ProviderService:
             self._create_entities([entity, *signal_entities])
 
             self._alerts[handle] = spec
+            self._alert_truths[handle] = False
             self._alert_signals[handle] = [s.handle for s in signal_entities]
             logger.info(
                 "added alarm %r watching %s (%s)",
@@ -1005,6 +1089,8 @@ class ProviderService:
 
             if spec.has_limits:
                 self._evaluate_alerts({spec.source_handle})
+            else:
+                self._coordinate_alert_transition()
             return handle
 
     def remove_alert(self, handle: str) -> None:
@@ -1013,12 +1099,15 @@ class ProviderService:
             signal_handles = sorted(self._alert_signals.get(handle, []))
             dependent_handles = {handle, *signal_handles}
             action_handles = self._dependent_action_handles(dependent_handles)
+            if handle in self._alerts:
+                self._coordinate_alert_transition(retiring_handles={handle})
             for action_handle in action_handles:
                 self._sco.unregister_operation_by_handle(action_handle)
                 self._actions.pop(action_handle, None)
 
             self._alert_signals.pop(handle, None)
             self._alerts.pop(handle, None)
+            self._alert_truths.pop(handle, None)
             entities = [
                 entity
                 for entity in (
@@ -1035,10 +1124,17 @@ class ProviderService:
     def set_alert_presence(self, handle: str, present: bool) -> None:  # noqa: FBT001
         """Raise or clear an alarm by hand.
 
-        Only meaningful for a condition without limits; one with limits is recomputed from
-        its source metric and would overwrite this on the next change.
+        Limit-condition truth is always derived from its numeric source and cannot be
+        overridden manually.
         """
         with self._lock:
+            spec = self._alerts.get(handle)
+            if spec is None:
+                msg = f"no alarm with handle {handle!r}"
+                raise KeyError(msg)
+            if spec.has_limits:
+                msg = f"{handle!r} is a limit alarm; change its source metric instead"
+                raise ValueError(msg)
             self._write_alert_presence(handle, present=present)
 
     def alert_present(self, handle: str) -> bool:
@@ -1074,13 +1170,7 @@ class ProviderService:
         return infos
 
     def acknowledge_alert(self, handle: str) -> int:
-        """Acknowledge every signal of a condition. Returns how many were acknowledged.
-
-        Acknowledging changes how the alarm is announced, not whether it is true: the
-        condition keeps its Presence, and only the signals move to Ack. That distinction is
-        the reason conditions and signals are separate objects, so the tool has to honour it
-        rather than quietly clear the condition.
-        """
+        """Acknowledge each currently generated ``On`` signal of a present condition."""
         with self._lock:
             if handle not in self._alert_signals:
                 msg = f"no alarm with handle {handle!r}"
@@ -1088,22 +1178,9 @@ class ProviderService:
             if not self.alert_present(handle):
                 msg = f"{handle!r} is not raised, so there is nothing to acknowledge"
                 raise ValueError(msg)
-            acknowledged = [
-                entity
-                for entity in (
-                    self.mdib.entities.by_handle(h) for h in self._alert_signals[handle]
-                )
-                if entity is not None and entity.state.Presence != pm_types.AlertSignalPresence.ACK
-            ]
-            if not acknowledged:
-                return 0
-            for entity in acknowledged:
-                entity.state.Presence = pm_types.AlertSignalPresence.ACK
-            with self.mdib.alert_state_transaction() as mgr:
-                for entity in acknowledged:
-                    mgr.write_entity(entity)
-            logger.info("acknowledged %d signal(s) of %s", len(acknowledged), handle)
-            return len(acknowledged)
+            _, acknowledged = self._coordinate_alert_transition(acknowledge_handle=handle)
+            logger.info("acknowledged %d signal(s) of %s", acknowledged, handle)
+            return acknowledged
 
     def stop_latched_signals(self, handle: str) -> int:
         """Deliberately stop signals that are currently latching after a cleared condition."""
@@ -1111,32 +1188,15 @@ class ProviderService:
             if handle not in self._alert_signals:
                 msg = f"no alarm with handle {handle!r}"
                 raise KeyError(msg)
-            latched = [
-                entity
-                for entity in (self.mdib.entities.by_handle(h) for h in self._alert_signals[handle])
-                if entity is not None and entity.state.Presence == pm_types.AlertSignalPresence.LATCH
-            ]
-            if not latched:
-                return 0
-            for entity in latched:
-                entity.state.Presence = pm_types.AlertSignalPresence.OFF
-            with self.mdib.alert_state_transaction() as mgr:
-                for entity in latched:
-                    mgr.write_entity(entity)
-            logger.info("stopped %d latched signal(s) of %s", len(latched), handle)
-            return len(latched)
+            _, stopped = self._coordinate_alert_transition(stop_latches_handle=handle)
+            logger.info("stopped %d latched signal(s) of %s", stopped, handle)
+            return stopped
 
     def set_signal_delegated(self, signal_handle: str, *, delegated: bool) -> None:
-        """Hand a signal over to another device, or take it back.
+        """Simulate primary location without claiming a normative delegation handoff.
 
-        Delegation moves the signal's Location from Loc to Rem. BICEPS only allows it where
-        the descriptor says SignalDelegationSupported, and nothing in sdc11073 enforces that,
-        so this does.
-
-        Note what this is and is not. It records that the announcement now belongs somewhere
-        else. It does not arrange for anybody to pick it up: that needs a device offering a
-        delegable signal of its own and an operation to drive it, which is beyond a two-role
-        toolbox talking to itself.
+        The legacy method name describes the learning scenario, not a complete Clause 6
+        handoff. This only writes ``Location`` and derives local system-signal activation.
         """
         with self._lock:
             entity = self.mdib.entities.by_handle(signal_handle)
@@ -1154,12 +1214,8 @@ class ProviderService:
                 if delegated
                 else pm_types.AlertSignalPrimaryLocation.LOCAL
             )
-            if entity.state.Location == location:
-                return
-            entity.state.Location = location
-            with self.mdib.alert_state_transaction() as mgr:
-                mgr.write_entity(entity)
-            logger.info("signal %s is now announced %s", signal_handle, location)
+            self._coordinate_alert_transition(signal_locations={signal_handle: location})
+            logger.info("signal %s location simulation is now %s", signal_handle, location)
 
     def _on_metric_applied(self, metric_handle: str) -> None:
         """A metric changed, by whatever route. Recompute the alarms watching it."""
@@ -1205,7 +1261,7 @@ class ProviderService:
             self,
             source_handles: set[str],
     ) -> tuple[mdibbase.MdibVersionGroup | None, Exception | None]:
-        """Apply all derived alert changes and retain the last exact committed version."""
+        """Apply all derived alert changes in one transaction and retain its exact version."""
         with self._lock:
             alerts = [
                 (handle, spec)
@@ -1213,20 +1269,244 @@ class ProviderService:
                 if spec.has_limits and spec.source_handle in source_handles
             ]
 
-        last_version = None
-        first_error = None
-        for handle, spec in alerts:
-            try:
+        try:
+            condition_truths = {}
+            for handle, spec in alerts:
                 value = self.get_value(spec.source_handle)
-                version = self._write_alert_presence(handle, present=spec.breached_by(value))
-                last_version = version or last_version
-            except Exception as exc:  # noqa: BLE001 - update independent alerts before reporting failure
-                # The alert transaction may commit before report serialization raises.
-                # Action execution holds the service lock, so this cannot include a later
-                # unrelated update when it is used as the final invocation version.
-                last_version = self.mdib.mdib_version_group
-                first_error = first_error or exc
-        return last_version, first_error
+                condition_truths[handle] = spec.breached_by(value)
+            version, _ = self._coordinate_alert_transition(condition_truths=condition_truths)
+            return version, None
+        except Exception as exc:  # noqa: BLE001 - preserve a post-commit report failure
+            # The alert transaction may commit before report serialization raises.
+            # Action execution holds the service lock, so this cannot include a later
+            # unrelated update when it is used as the final invocation version.
+            return self.mdib.mdib_version_group, exc
+
+    def _coordinate_alert_transition(
+            self,
+            *,
+            condition_truths: dict[str, bool] | None = None,
+            acknowledge_handle: str | None = None,
+            stop_latches_handle: str | None = None,
+            signal_locations: dict[str, pm_types.AlertSignalPrimaryLocation] | None = None,
+            retiring_handles: set[str] | None = None,
+    ) -> tuple[mdibbase.MdibVersionGroup | None, int]:
+        """Reduce requested alert changes and commit conditions, signals, and parent once."""
+        with self._lock:
+            return self._coordinate_alert_transition_locked(
+                condition_truths=condition_truths,
+                acknowledge_handle=acknowledge_handle,
+                stop_latches_handle=stop_latches_handle,
+                signal_locations=signal_locations,
+                retiring_handles=retiring_handles,
+            )
+
+    def _coordinate_alert_transition_locked(
+            self,
+            *,
+            condition_truths: dict[str, bool] | None,
+            acknowledge_handle: str | None,
+            stop_latches_handle: str | None,
+            signal_locations: dict[str, pm_types.AlertSignalPrimaryLocation] | None,
+            retiring_handles: set[str] | None,
+    ) -> tuple[mdibbase.MdibVersionGroup | None, int]:
+        condition_truths = condition_truths or {}
+        signal_locations = signal_locations or {}
+        retiring_handles = retiring_handles or set()
+        unknown_conditions = (set(condition_truths) | retiring_handles) - self._alerts.keys()
+        if unknown_conditions:
+            handle = sorted(unknown_conditions)[0]
+            msg = f"no alarm with handle {handle!r}"
+            raise KeyError(msg)
+        self._alert_truths.update(condition_truths)
+        self._alert_truths.update(dict.fromkeys(retiring_handles, False))
+        alert_system = self.mdib.entities.by_handle(constants.ALERT_SYSTEM_HANDLE)
+        if alert_system is None:
+            raise RuntimeError("the MDIB has no parent AlertSystem")
+
+        handles = set(self._alerts)
+
+        changed = []
+        affected_signals = 0
+        next_condition_presence = {}
+        for handle in sorted(handles):
+            condition = self.mdib.entities.by_handle(handle)
+            if condition is None or handle not in self._alerts:
+                msg = f"no alarm with handle {handle!r}"
+                raise KeyError(msg)
+            signals = [
+                signal
+                for signal in (
+                    self.mdib.entities.by_handle(signal_handle)
+                    for signal_handle in self._alert_signals.get(handle, [])
+                )
+                if signal is not None
+            ]
+            if handle in retiring_handles:
+                if condition.state.ActivationState is not pm_types.AlertActivation.OFF:
+                    condition.state.ActivationState = pm_types.AlertActivation.OFF
+                    changed.append(condition)
+                for signal in signals:
+                    if signal.state.ActivationState is not pm_types.AlertActivation.OFF:
+                        signal.state.ActivationState = pm_types.AlertActivation.OFF
+                        changed.append(signal)
+            transition = _reduce_alert_transition(
+                condition_truth=self._alert_truths[handle],
+                current_presence=bool(condition.state.Presence),
+                condition_activation=condition.state.ActivationState,
+                system_activation=alert_system.state.ActivationState,
+                signals=tuple(
+                    _SignalTransitionInput(
+                        activation=signal.state.ActivationState,
+                        presence=signal.state.Presence,
+                        latching=bool(signal.descriptor.Latching),
+                    )
+                    for signal in signals
+                ),
+                acknowledge=handle == acknowledge_handle,
+                stop_latches=handle == stop_latches_handle,
+            )
+            next_condition_presence[handle] = transition.condition_presence
+            if transition.condition_presence != bool(condition.state.Presence):
+                condition.state.Presence = transition.condition_presence
+                condition.state.DeterminationTime = time.time()
+                changed.append(condition)
+            for signal, presence in zip(signals, transition.signal_presences, strict=True):
+                if signal.state.Presence == presence:
+                    continue
+                if (
+                    handle == acknowledge_handle
+                    and signal.state.Presence is pm_types.AlertSignalPresence.ON
+                    and presence is pm_types.AlertSignalPresence.ACK
+                ):
+                    affected_signals += 1
+                if (
+                    handle == stop_latches_handle
+                    and signal.state.Presence is pm_types.AlertSignalPresence.LATCH
+                    and presence is pm_types.AlertSignalPresence.OFF
+                ):
+                    affected_signals += 1
+                signal.state.Presence = presence
+                changed.append(signal)
+
+        known_signals = {
+            signal_handle
+            for signal_handles in self._alert_signals.values()
+            for signal_handle in signal_handles
+        }
+        for signal_handle, location in signal_locations.items():
+            if signal_handle not in known_signals:
+                msg = f"no alarm signal with handle {signal_handle!r}"
+                raise KeyError(msg)
+            signal = self.mdib.entities.by_handle(signal_handle)
+            if signal is None:
+                msg = f"no alarm signal with handle {signal_handle!r}"
+                raise KeyError(msg)
+            if signal.state.Location != location:
+                signal.state.Location = location
+                changed.append(signal)
+
+        physiological, technical = self._present_alarm_conditions(
+            alert_system,
+            next_condition_presence,
+        )
+        system_signals = self._system_signal_activation(
+            alert_system,
+            signal_locations,
+            excluding_conditions=retiring_handles,
+        )
+        current_system_signals = [
+            (entry.Manifestation, entry.State)
+            for entry in alert_system.state.SystemSignalActivation
+        ]
+        parent_changed = (
+            list(alert_system.state.PresentPhysiologicalAlarmConditions or ()) != physiological
+            or list(alert_system.state.PresentTechnicalAlarmConditions or ()) != technical
+            or current_system_signals != system_signals
+        )
+        if parent_changed:
+            alert_system.state.PresentPhysiologicalAlarmConditions = physiological
+            alert_system.state.PresentTechnicalAlarmConditions = technical
+            alert_system.state.SystemSignalActivation = [
+                pm_types.SystemSignalActivation(manifestation=manifestation, state=activation)
+                for manifestation, activation in system_signals
+            ]
+            changed.append(alert_system)
+
+        if not changed:
+            return None, affected_signals
+        unique = {entity.handle: entity for entity in changed}
+        with self.mdib.alert_state_transaction() as mgr:
+            for entity in unique.values():
+                mgr.write_entity(entity)
+            version_group = self._transaction_version(mgr)
+        return version_group, affected_signals
+
+    def _present_alarm_conditions(
+            self,
+            alert_system,
+            presence_overrides: dict[str, bool],
+    ) -> tuple[list[str], list[str]]:
+        physiological = []
+        technical = []
+        if alert_system.state.ActivationState is not pm_types.AlertActivation.ON:
+            return physiological, technical
+        applicable_priorities = {
+            pm_types.AlertConditionPriority.LOW,
+            pm_types.AlertConditionPriority.MEDIUM,
+            pm_types.AlertConditionPriority.HIGH,
+        }
+        for handle in sorted(self._alerts):
+            condition = self.mdib.entities.by_handle(handle)
+            if condition is None or not presence_overrides.get(handle, bool(condition.state.Presence)):
+                continue
+            if condition.state.ActivationState is not pm_types.AlertActivation.ON:
+                continue
+            priority = (
+                condition.state.ActualPriority
+                if condition.state.ActualPriority is not None
+                else condition.descriptor.Priority
+            )
+            if priority not in applicable_priorities:
+                continue
+            if condition.descriptor.Kind is pm_types.AlertConditionKind.PHYSIOLOGICAL:
+                physiological.append(handle)
+            elif condition.descriptor.Kind is pm_types.AlertConditionKind.TECHNICAL:
+                technical.append(handle)
+        return physiological, technical
+
+    def _system_signal_activation(
+            self,
+            alert_system,
+            location_overrides: dict[str, pm_types.AlertSignalPrimaryLocation],
+            *,
+            excluding_conditions: set[str] | None = None,
+    ) -> list[tuple[pm_types.AlertSignalManifestation, pm_types.AlertActivation]]:
+        activations: dict[pm_types.AlertSignalManifestation, pm_types.AlertActivation] = {}
+        excluding_conditions = excluding_conditions or set()
+        rank = {
+            pm_types.AlertActivation.OFF: 0,
+            pm_types.AlertActivation.PAUSED: 1,
+            pm_types.AlertActivation.ON: 2,
+        }
+        for condition_handle, signal_handles in self._alert_signals.items():
+            if condition_handle in excluding_conditions:
+                continue
+            for signal_handle in signal_handles:
+                signal = self.mdib.entities.by_handle(signal_handle)
+                if signal is None:
+                    continue
+                location = location_overrides.get(signal_handle, signal.state.Location)
+                if location is pm_types.AlertSignalPrimaryLocation.REMOTE:
+                    continue
+                activation = signal.state.ActivationState
+                if alert_system.state.ActivationState is not pm_types.AlertActivation.ON:
+                    activation = pm_types.AlertActivation.OFF
+                manifestation = signal.descriptor.Manifestation
+                current = activations.get(manifestation)
+                if current is None or rank[activation] > rank[current]:
+                    activations[manifestation] = activation
+        return sorted(activations.items(), key=lambda item: item[0].value)
 
     def _write_alert_presence(
             self,
@@ -1234,44 +1514,10 @@ class ProviderService:
             *,
             present: bool,
     ) -> mdibbase.MdibVersionGroup | None:
-        entity = self.mdib.entities.by_handle(handle)
-        if entity is None:
-            msg = f"no alarm with handle {handle!r}"
-            raise KeyError(msg)
-        if bool(getattr(entity.state, "Presence", False)) == present:
-            # Also what keeps an acknowledgement alive: alarms are re-evaluated on every
-            # change to the source metric, and without this an Ack would be overwritten with
-            # On by the very next value that is still out of range.
-            return None
-
-        entity.state.Presence = present
-        entity.state.DeterminationTime = time.time()
-        signals = [
-            signal
-            for signal in (
-                self.mdib.entities.by_handle(h) for h in self._alert_signals.get(handle, [])
-            )
-            if signal is not None
-        ]
-        for signal in signals:
-            # A fresh occurrence has not been acknowledged, so Ack does not survive the
-            # condition going away and coming back.
-            if present:
-                signal.state.Presence = pm_types.AlertSignalPresence.ON
-            elif signal.state.Presence == pm_types.AlertSignalPresence.ACK:
-                signal.state.Presence = pm_types.AlertSignalPresence.OFF
-            elif signal.descriptor.Latching:
-                signal.state.Presence = pm_types.AlertSignalPresence.LATCH
-            else:
-                signal.state.Presence = pm_types.AlertSignalPresence.OFF
-
-        with self.mdib.alert_state_transaction() as mgr:
-            mgr.write_entity(entity)
-            for signal in signals:
-                mgr.write_entity(signal)
-            version_group = self._transaction_version(mgr)
-        logger.info("alarm %s is now %s", handle, "present" if present else "clear")
-        return version_group
+        version, _ = self._coordinate_alert_transition(condition_truths={handle: present})
+        if version is not None:
+            logger.info("alarm %s is now %s", handle, "present" if present else "clear")
+        return version
 
     # -- contexts ------------------------------------------------------------------
 

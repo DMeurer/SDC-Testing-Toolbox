@@ -422,13 +422,14 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
             raised_alert_event = alert_reports.wait_for(
                 lambda payload: payload.get(LIMIT_ALARM, {}).get("presence") == "True"
                 and payload.get("sig.zoom_out_of_range.vis", {}).get("presence") == "On"
-                and payload.get("sig.zoom_out_of_range.aud", {}).get("presence") == "On",
+                and payload.get("sig.zoom_out_of_range.aud", {}).get("presence") == "On"
+                and payload.get(constants.ALERT_SYSTEM_HANDLE, {}).get("technical") == (LIMIT_ALARM,),
                 after=alert_cursor,
                 timeout=REPORT_TIMEOUT,
             )
             report.check(
                 raised_alert_event is not None,
-                "the condition and both signals are synchronized in one report",
+                "the condition, both signals, and parent list are synchronized in one report",
                 str(alert_reports.history()),
             )
 
@@ -730,13 +731,14 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
             cleared_event = alert_reports.wait_for(
                 lambda payload: payload.get(LIMIT_ALARM, {}).get("presence") == "False"
                 and payload.get("sig.zoom_out_of_range.vis", {}).get("presence") == "Off"
-                and payload.get("sig.zoom_out_of_range.aud", {}).get("presence") == "Off",
+                and payload.get("sig.zoom_out_of_range.aud", {}).get("presence") == "Off"
+                and payload.get(constants.ALERT_SYSTEM_HANDLE, {}).get("technical") == (),
                 after=alert_cursor,
                 timeout=REPORT_TIMEOUT,
             )
             report.check(
                 cleared_event is not None,
-                "the condition and both signals clear in one report",
+                "the condition, both signals, and parent list clear in one report",
                 str(alert_reports.history()),
             )
 

@@ -139,15 +139,14 @@ AlertKind = pm_types.AlertConditionKind
 AlertPriority = pm_types.AlertConditionPriority
 AlertManifestation = pm_types.AlertSignalManifestation
 
-# How a signal is currently announcing itself.
+# How a signal is currently represented as announcing a condition.
 #   ON=On  OFF=Off  LATCH=Latch  ACK=Ack
-# ACK is the acknowledgement: the user has seen the alarm. The condition stays present, so
-# the fact is not erased - only the way it is being announced changes.
+# ACK is a signal-presence state, not the condition truth. The provider's explicit policy
+# permits a user acknowledgement to move only a generated On signal to Ack.
 AlertSignalPresence = pm_types.AlertSignalPresence
 
-# Where a signal is announced. LOCAL=Loc means here, REMOTE=Rem means another device has
-# taken it over. That hand-over is what BICEPS calls signal delegation, and a signal may
-# only be delegated when its descriptor says SignalDelegationSupported.
+# Where a signal is announced. LOCAL=Loc means here and REMOTE=Rem means remote. Changing
+# this field alone does not perform the normative BICEPS signal-delegation workflow.
 AlertSignalLocation = pm_types.AlertSignalPrimaryLocation
 
 # Default signal definitions preserve the original visual and audible behavior.
@@ -834,8 +833,11 @@ class AlertSpec:
 
     def breached_by(self, value: object) -> bool:
         """Whether a source value puts this condition into the present state."""
-        if not self.has_limits or not isinstance(value, Decimal):
+        if not self.has_limits or value is None:
             return False
+        if not isinstance(value, Decimal):
+            msg = "a limit alarm requires a numeric scalar value"
+            raise TypeError(msg)
         if self.lower_limit is not None and value < self.lower_limit:
             return True
         return self.upper_limit is not None and value > self.upper_limit
@@ -854,12 +856,17 @@ class SignalInfo:
 
     @property
     def acknowledged(self) -> bool:
-        """Whether the user has already acknowledged this signal."""
+        """Whether this signal currently has the Ack presence value."""
         return self.presence == AlertSignalPresence.ACK
 
     @property
-    def delegated(self) -> bool:
-        """Whether another device has taken this signal over."""
+    def acknowledgeable(self) -> bool:
+        """Whether the toolbox acknowledgement policy can change this signal."""
+        return self.presence == AlertSignalPresence.ON
+
+    @property
+    def remote_location(self) -> bool:
+        """Whether this signal currently reports Rem, without implying a handoff."""
         return self.location == AlertSignalLocation.REMOTE
 
     @property
@@ -874,7 +881,7 @@ class SignalInfo:
         a Windows console on cp1252 cannot encode an arrow.
         """
         text = f"{self.manifestation}:{self.presence}"
-        return f"{text}->Rem" if self.delegated else text
+        return f"{text}->Rem" if self.remote_location else text
 
 
 # Patient and location are BICEPS *contexts*: who and where, as opposed to what the device

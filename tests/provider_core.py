@@ -36,7 +36,10 @@ sys.path.insert(0, str(ROOT))
 
 from script_support import Report  # noqa: E402
 from sdc11073 import observableproperties  # noqa: E402
+from sdc11073.consumer.consumerimpl import SdcConsumer  # noqa: E402
+from sdc11073.definitions_sdc import SdcV1Definitions  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
+from sdc11073.mdib import ConsumerMdib  # noqa: E402
 from sdc11073.xml_types import msg_types, pm_types  # noqa: E402
 from sdc11073.xml_types import pm_qnames as pm  # noqa: E402
 
@@ -48,7 +51,9 @@ from sdctoolbox.consumer_service import (  # noqa: E402
 from sdctoolbox.handlers import make_activate_handler  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
     ActionSpec,
+    AlertKind,
     AlertManifestation,
+    AlertPriority,
     AlertSignalSpec,
     AlertSpec,
     Coding,
@@ -63,7 +68,10 @@ from sdctoolbox.model import (  # noqa: E402
 from sdctoolbox.provider_service import (  # noqa: E402
     DISTRIBUTION_BINS,
     ProviderService,
+    _AlertTransition,
     _distribution_samples,
+    _reduce_alert_transition,
+    _SignalTransitionInput,
 )
 
 
@@ -1588,14 +1596,15 @@ def check_concurrent_alert_evaluation(report: Report, service: ProviderService) 
     first_evaluation_started = threading.Event()
     release_first_evaluation = threading.Event()
     worker_errors: list[Exception] = []
-    original_write = service._write_alert_presence  # noqa: SLF001 - deterministic overlap fixture
+    original_coordinate = service._coordinate_alert_transition  # noqa: SLF001 - deterministic overlap fixture
 
-    def overlapping_write(handle: str, *, present: bool) -> None:  # noqa: FBT001
-        if handle == first_alarm and present and not first_evaluation_started.is_set():
+    def overlapping_coordinate(**kwargs):  # noqa: ANN003, ANN202
+        truths = kwargs.get("condition_truths", {})
+        if truths.get(first_alarm) and not first_evaluation_started.is_set():
             first_evaluation_started.set()
             if not release_first_evaluation.wait(timeout=5.0):
                 raise TimeoutError("concurrent alert test did not release the first evaluation")
-        original_write(handle, present=present)
+        return original_coordinate(**kwargs)
 
     def update_source(handle: str) -> None:
         try:
@@ -1603,7 +1612,7 @@ def check_concurrent_alert_evaluation(report: Report, service: ProviderService) 
         except Exception as exc:  # noqa: BLE001 - report worker failures on the main thread
             worker_errors.append(exc)
 
-    service._write_alert_presence = overlapping_write  # noqa: SLF001 - deterministic overlap fixture
+    service._coordinate_alert_transition = overlapping_coordinate  # noqa: SLF001 - deterministic overlap fixture
     first_worker = threading.Thread(target=update_source, args=(first_source,), name="first-alarm-update")
     second_worker = threading.Thread(target=update_source, args=(second_source,), name="second-alarm-update")
     try:
@@ -1618,7 +1627,7 @@ def check_concurrent_alert_evaluation(report: Report, service: ProviderService) 
         first_worker.join(timeout=5.0)
         if second_worker.ident is not None:
             second_worker.join(timeout=5.0)
-        service._write_alert_presence = original_write  # noqa: SLF001 - restore the service method
+        service._coordinate_alert_transition = original_coordinate  # noqa: SLF001 - restore the service method
 
     report.check(
         second_completed_during_first,
@@ -1636,6 +1645,558 @@ def check_concurrent_alert_evaluation(report: Report, service: ProviderService) 
     service.remove_alert(second_alarm)
     service.remove_metric(first_source)
     service.remove_metric(second_source)
+
+
+def check_alert_transition_reducer(report: Report) -> None:
+    print("\n8a. Pure alert transition reducer")
+
+    on = pm_types.AlertActivation.ON
+    off = pm_types.AlertActivation.OFF
+    paused = pm_types.AlertActivation.PAUSED
+    signal_on = _SignalTransitionInput(on, pm_types.AlertSignalPresence.ON, False)
+    signal_off = _SignalTransitionInput(on, pm_types.AlertSignalPresence.OFF, False)
+    signal_ack = _SignalTransitionInput(on, pm_types.AlertSignalPresence.ACK, False)
+    signal_latching = _SignalTransitionInput(on, pm_types.AlertSignalPresence.ON, True)
+
+    cases = [
+        (
+            "raise",
+            {
+                "condition_truth": True,
+                "current_presence": False,
+                "condition_activation": on,
+                "system_activation": on,
+                "signals": (signal_off, signal_off),
+            },
+            _AlertTransition(True, (pm_types.AlertSignalPresence.ON, pm_types.AlertSignalPresence.ON)),
+        ),
+        (
+            "repeat preserves mixed signal state",
+            {
+                "condition_truth": True,
+                "current_presence": True,
+                "condition_activation": on,
+                "system_activation": on,
+                "signals": (signal_ack, signal_off),
+            },
+            _AlertTransition(True, (pm_types.AlertSignalPresence.ACK, pm_types.AlertSignalPresence.OFF)),
+        ),
+        (
+            "acknowledge only generated signals",
+            {
+                "condition_truth": True,
+                "current_presence": True,
+                "condition_activation": on,
+                "system_activation": on,
+                "signals": (signal_on, signal_off),
+                "acknowledge": True,
+            },
+            _AlertTransition(True, (pm_types.AlertSignalPresence.ACK, pm_types.AlertSignalPresence.OFF)),
+        ),
+        (
+            "clear preserves per-signal latching",
+            {
+                "condition_truth": False,
+                "current_presence": True,
+                "condition_activation": on,
+                "system_activation": on,
+                "signals": (signal_latching, signal_on),
+            },
+            _AlertTransition(False, (pm_types.AlertSignalPresence.LATCH, pm_types.AlertSignalPresence.OFF)),
+        ),
+        (
+            "latch reset",
+            {
+                "condition_truth": False,
+                "current_presence": False,
+                "condition_activation": on,
+                "system_activation": on,
+                "signals": (_SignalTransitionInput(on, pm_types.AlertSignalPresence.LATCH, True),),
+                "stop_latches": True,
+            },
+            _AlertTransition(False, (pm_types.AlertSignalPresence.OFF,)),
+        ),
+        (
+            "recurrence",
+            {
+                "condition_truth": True,
+                "current_presence": False,
+                "condition_activation": on,
+                "system_activation": on,
+                "signals": (_SignalTransitionInput(on, pm_types.AlertSignalPresence.LATCH, True), signal_off),
+            },
+            _AlertTransition(True, (pm_types.AlertSignalPresence.ON, pm_types.AlertSignalPresence.ON)),
+        ),
+        (
+            "inactive condition",
+            {
+                "condition_truth": True,
+                "current_presence": True,
+                "condition_activation": off,
+                "system_activation": on,
+                "signals": (signal_on,),
+            },
+            _AlertTransition(False, (pm_types.AlertSignalPresence.OFF,)),
+        ),
+        (
+            "inactive parent",
+            {
+                "condition_truth": True,
+                "current_presence": True,
+                "condition_activation": on,
+                "system_activation": paused,
+                "signals": (signal_on,),
+            },
+            _AlertTransition(False, (pm_types.AlertSignalPresence.OFF,)),
+        ),
+        (
+            "off and paused signals obey presence predicates",
+            {
+                "condition_truth": True,
+                "current_presence": True,
+                "condition_activation": on,
+                "system_activation": on,
+                "signals": (
+                     _SignalTransitionInput(off, pm_types.AlertSignalPresence.ON, False),
+                     _SignalTransitionInput(paused, pm_types.AlertSignalPresence.ON, False),
+                     _SignalTransitionInput(paused, pm_types.AlertSignalPresence.ACK, False),
+                ),
+            },
+            _AlertTransition(True, (
+                pm_types.AlertSignalPresence.OFF,
+                pm_types.AlertSignalPresence.OFF,
+                pm_types.AlertSignalPresence.ACK,
+            )),
+        ),
+    ]
+    failures = [name for name, arguments, expected in cases if _reduce_alert_transition(**arguments) != expected]
+    report.check(not failures, "the transition matrix separates condition truth and per-signal state", str(failures))
+
+
+def check_alert_transition_coordination(report: Report, service: ProviderService) -> None:  # noqa: PLR0915
+    print("\n8b. Atomic alert transition coordination")
+
+    source = service.add_metric(
+        MetricSpec(label="Transition source", kind=MetricKind.NUMBER, initial_value=Decimal("0")),
+    )
+    physiological = service.add_alert(
+        AlertSpec(
+            label="Physiological transition",
+            source_handle=source,
+            kind=AlertKind.PHYSIOLOGICAL,
+            priority=AlertPriority.HIGH,
+            upper_limit=Decimal("10"),
+            delegable=True,
+            signals=(
+                AlertSignalSpec(AlertManifestation.VIS, latching=True),
+                AlertSignalSpec(AlertManifestation.TAN),
+            ),
+        ),
+    )
+    technical = service.add_alert(
+        AlertSpec(
+            label="Technical transition",
+            source_handle=source,
+            kind=AlertKind.TECHNICAL,
+            priority=AlertPriority.LOW,
+            upper_limit=Decimal("10"),
+        ),
+    )
+    advisory = service.add_alert(
+        AlertSpec(
+            label="Unlisted advisory",
+            source_handle=source,
+            kind=AlertKind.OTHER,
+            priority=AlertPriority.HIGH,
+            upper_limit=Decimal("10"),
+        ),
+    )
+    no_priority = service.add_alert(
+        AlertSpec(
+            label="No priority",
+            source_handle=source,
+            kind=AlertKind.TECHNICAL,
+            priority=AlertPriority.NONE,
+            upper_limit=Decimal("10"),
+        ),
+    )
+    events = []
+    transactions = 0
+    original_transaction = service.mdib.alert_state_transaction
+
+    def record_alert(values: dict) -> None:
+        events.append(set(values))
+
+    def counted_transaction(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        nonlocal transactions
+        transactions += 1
+        return original_transaction(*args, **kwargs)
+
+    observableproperties.bind(service.mdib, alert_by_handle=record_alert)
+    try:
+        with patch.object(service.mdib, "alert_state_transaction", counted_transaction):
+            before = service.mdib.mdib_version
+            service.set_value(source, Decimal("20"))
+            raised_version = service.mdib.mdib_version
+            service.set_value(source, Decimal("25"))
+            repeated_version = service.mdib.mdib_version
+    finally:
+        observableproperties.unbind(service.mdib, alert_by_handle=record_alert)
+
+    parent = service.mdib.entities.by_handle(constants.ALERT_SYSTEM_HANDLE).state
+    expected_report = {
+        constants.ALERT_SYSTEM_HANDLE,
+        physiological,
+        technical,
+        advisory,
+        no_priority,
+        *service.signal_handles_for(physiological),
+        *service.signal_handles_for(technical),
+        *service.signal_handles_for(advisory),
+        *service.signal_handles_for(no_priority),
+    }
+    report.check(
+        transactions == 1 and raised_version == before + 2 and repeated_version == raised_version + 1,
+        "one source update uses one alert transaction and a truth no-op adds no alert version",
+        f"transactions {transactions}, versions {before}/{raised_version}/{repeated_version}",
+    )
+    report.check(
+        len(events) == 1 and events[0] == expected_report,
+        "all affected conditions, signals, and their parent are grouped in one alert report",
+        str(events),
+    )
+    report.check(
+        list(parent.PresentPhysiologicalAlarmConditions or ()) == [physiological]
+        and list(parent.PresentTechnicalAlarmConditions or ()) == [technical],
+        "the parent lists present Lo/Me/Hi physiological and technical conditions only",
+    )
+
+    physiological_entity = service.mdib.entities.by_handle(physiological)
+    technical_entity = service.mdib.entities.by_handle(technical)
+    physiological_entity.state.ActualPriority = AlertPriority.NONE
+    technical_entity.state.ActualPriority = AlertPriority.HIGH
+    with service.mdib.alert_state_transaction() as mgr:
+        mgr.write_entity(physiological_entity)
+        mgr.write_entity(technical_entity)
+    version, _ = service._coordinate_alert_transition()  # noqa: SLF001 - exercise effective aggregation
+    parent = service.mdib.entities.by_handle(constants.ALERT_SYSTEM_HANDLE).state
+    report.check(
+        version is not None
+        and list(parent.PresentPhysiologicalAlarmConditions or ()) == []
+        and list(parent.PresentTechnicalAlarmConditions or ()) == [technical],
+        "parent aggregation uses ActualPriority and excludes effective priority None",
+    )
+
+    first_handle, second_handle = service.signal_handles_for(physiological)
+    first_signal = service.mdib.entities.by_handle(first_handle)
+    first_signal.state.ActivationState = pm_types.AlertActivation.OFF
+    first_signal.state.Presence = pm_types.AlertSignalPresence.OFF
+    with service.mdib.alert_state_transaction() as mgr:
+        mgr.write_entity(first_signal)
+    before = service.mdib.mdib_version
+    acknowledged = service.acknowledge_alert(physiological)
+    first_signal = service.mdib.entities.by_handle(first_handle)
+    second_signal = service.mdib.entities.by_handle(second_handle)
+    report.check(
+        acknowledged == 1
+        and first_signal.state.Presence is pm_types.AlertSignalPresence.OFF
+        and second_signal.state.Presence is pm_types.AlertSignalPresence.ACK
+        and service.mdib.mdib_version == before + 1,
+        "acknowledgement changes On only and leaves an Off mixed signal alone",
+    )
+
+    before = service.mdib.mdib_version
+    service.set_signal_delegated(second_signal.handle, delegated=True)
+    remote_version = service.mdib.mdib_version
+    service.set_signal_delegated(second_signal.handle, delegated=True)
+    report.check(
+        remote_version == before + 1 and service.mdib.mdib_version == remote_version,
+        "location simulation changes once and repeated requests are version no-ops",
+    )
+    before = remote_version
+    service.set_value(source, Decimal("0"))
+    first_signal = service.mdib.entities.by_handle(first_handle)
+    second_signal = service.mdib.entities.by_handle(second_handle)
+    parent = service.mdib.entities.by_handle(constants.ALERT_SYSTEM_HANDLE).state
+    report.check(
+        second_signal.state.Location is pm_types.AlertSignalPrimaryLocation.REMOTE
+        and first_signal.state.Presence is pm_types.AlertSignalPresence.OFF
+        and second_signal.state.Presence is pm_types.AlertSignalPresence.OFF
+        and service.mdib.mdib_version == before + 2,
+        "clearing preserves location and follows signal activation and latching independently",
+    )
+    report.check(
+        all(entry.Manifestation is not AlertManifestation.TAN for entry in parent.SystemSignalActivation),
+        "remote signals are excluded from local SystemSignalActivation",
+    )
+
+    service.set_value(source, Decimal(20))
+    service.set_value(source, Decimal(0))
+    first_signal = service.mdib.entities.by_handle(first_handle)
+    report.check(
+        first_signal.state.Presence is pm_types.AlertSignalPresence.OFF,
+        "an inactive latching signal does not latch on later condition transitions",
+    )
+
+    physiological_entity = service.mdib.entities.by_handle(physiological)
+    physiological_entity.state.ActualPriority = AlertPriority.HIGH
+    physiological_entity.state.ActivationState = pm_types.AlertActivation.OFF
+    with service.mdib.alert_state_transaction() as mgr:
+        mgr.write_entity(physiological_entity)
+    service.set_value(source, Decimal(20))
+    service._coordinate_alert_transition()  # noqa: SLF001 - apply changed activation
+    inactive_presence = service.alert_present(physiological)
+    inactive_parent_conditions = tuple(
+        service.mdib.entities.by_handle(
+            constants.ALERT_SYSTEM_HANDLE,
+        ).state.PresentPhysiologicalAlarmConditions or ()
+    )
+    reactivating = service.mdib.entities.by_handle(physiological)
+    reactivating.state.ActivationState = pm_types.AlertActivation.ON
+    with service.mdib.alert_state_transaction() as mgr:
+        mgr.write_entity(reactivating)
+    service._coordinate_alert_transition()  # noqa: SLF001 - reapply retained truth
+    reactivated = service.mdib.entities.by_handle(physiological)
+    reactivated_parent = service.mdib.entities.by_handle(constants.ALERT_SYSTEM_HANDLE).state
+    report.check(
+        not inactive_presence
+        and physiological not in inactive_parent_conditions
+        and reactivated.state.Presence
+        and physiological in (reactivated_parent.PresentPhysiologicalAlarmConditions or ()),
+        "activation gates presence without discarding the underlying condition truth",
+    )
+
+    try:
+        service.set_alert_presence(physiological, False)
+    except ValueError as exc:
+        report.check("limit alarm" in str(exc), "manual presence is rejected for LimitAlertCondition", str(exc))
+    else:
+        report.check(False, "manual presence is rejected for LimitAlertCondition", "accepted")  # noqa: FBT003
+
+    manual = service.add_alert(AlertSpec(label="Manual transition", source_handle=source))
+    before = service.mdib.mdib_version
+    service.set_alert_presence(manual, False)
+    unchanged = service.mdib.mdib_version
+    service.set_alert_presence(manual, True)
+    raised = service.mdib.mdib_version
+    service.set_alert_presence(manual, True)
+    report.check(
+        unchanged == before and raised == before + 1 and service.mdib.mdib_version == raised,
+        "manual condition no-ops do not advance versions",
+    )
+
+    text_source = service.add_metric(MetricSpec(label="Text alert source", kind=MetricKind.TEXT))
+    before_handles = set(service.list_alerts())
+    try:
+        service.add_alert(AlertSpec(label="Invalid text limit", source_handle=text_source, upper_limit=Decimal("1")))
+    except ValueError as exc:
+        report.check(
+            "numeric scalar" in str(exc) and set(service.list_alerts()) == before_handles,
+            "limit alerts reject nonnumeric scalar sources before mutation",
+            str(exc),
+        )
+    else:
+        report.check(False, "limit alerts reject nonnumeric scalar sources before mutation", "accepted")  # noqa: FBT003
+
+    service.remove_metric(text_source)
+    service.remove_alert(physiological)
+    service.remove_alert(technical)
+    service.remove_alert(advisory)
+    service.remove_alert(no_priority)
+    service.remove_alert(manual)
+    service.remove_metric(source)
+
+
+def check_connected_alert_removal_order(report: Report, service: ProviderService) -> None:
+    print("\n8c. Connected alert-removal report order")
+
+    direct_source = service.add_metric(
+        MetricSpec(label="Direct removal source", kind=MetricKind.NUMBER, initial_value=Decimal(1)),
+    )
+    direct_alert = service.add_alert(
+        AlertSpec(label="Direct present removal", source_handle=direct_source, kind=AlertKind.TECHNICAL),
+    )
+    service.set_alert_presence(direct_alert, True)
+    direct_signals = service.signal_handles_for(direct_alert)
+
+    cascade_source = service.add_metric(
+        MetricSpec(
+            label="Cascade removal source",
+            kind=MetricKind.NUMBER,
+            section="Alert removal cascade",
+            initial_value=Decimal(20),
+        ),
+    )
+    cascade_alert = service.add_alert(
+        AlertSpec(
+            label="Cascade present removal",
+            source_handle=cascade_source,
+            kind=AlertKind.PHYSIOLOGICAL,
+            upper_limit=Decimal(10),
+        ),
+    )
+    cascade_signals = service.signal_handles_for(cascade_alert)
+    cascade_channel = "ch.alert_removal_cascade"
+    cascade_vmd = "vmd.alert_removal_cascade"
+
+    consumer = SdcConsumer(
+        provider_address=service._provider.get_xaddrs()[0],
+        sdc_definitions=SdcV1Definitions,
+        ssl_context_container=None,
+    )
+    consumer.start_all()
+    consumer_mdib = ConsumerMdib(consumer)
+    consumer_mdib.init_mdib()
+    events = []
+
+    def parent_snapshot() -> tuple[set[str], set[str]]:
+        parent = consumer_mdib.entities.by_handle(constants.ALERT_SYSTEM_HANDLE).state
+        references = set(parent.PresentTechnicalAlarmConditions or ())
+        references.update(parent.PresentPhysiologicalAlarmConditions or ())
+        live = {handle for handle, _entity in consumer_mdib.entities.items()}
+        return references, live
+
+    def on_alert(states: dict) -> None:
+        references, live = parent_snapshot()
+        events.append(
+            {
+                "kind": "alert",
+                "version": consumer_mdib.mdib_version,
+                "handles": tuple(states),
+                "states": {
+                    handle: (
+                        getattr(state, "ActivationState", None),
+                        getattr(state, "Presence", None),
+                    )
+                    for handle, state in states.items()
+                },
+                "references": references,
+                "live": live,
+            },
+        )
+
+    def on_description(description_report) -> None:
+        deleted = tuple(
+            descriptor.Handle
+            for part in description_report.ReportPart
+            if part.ModificationType is msg_types.DescriptionModificationType.DELETE
+            for descriptor in part.Descriptor
+        )
+        if not deleted:
+            return
+        references, live = parent_snapshot()
+        events.append(
+            {
+                "kind": "description",
+                "version": consumer_mdib.mdib_version,
+                "deleted": deleted,
+                "references": references,
+                "live": live,
+            },
+        )
+
+    observableproperties.bind(
+        consumer_mdib,
+        alert_by_handle=on_alert,
+        description_modifications=on_description,
+    )
+
+    def observed_removal(start: int, handle: str) -> bool:
+        return any(handle in event.get("deleted", ()) for event in events[start:])
+
+    def removal_events(start: int, handle: str) -> list[dict]:
+        return [
+            event
+            for event in events[start:]
+            if handle in event.get("handles", ()) or handle in event.get("deleted", ())
+        ]
+
+    try:
+        direct_start = len(events)
+        service.remove_alert(direct_alert)
+        direct_complete = wait_until(lambda: observed_removal(direct_start, direct_alert))
+        direct_events = removal_events(direct_start, direct_alert)
+        direct_state = next((event for event in direct_events if event["kind"] == "alert"), None)
+        direct_deletion = next((event for event in direct_events if event["kind"] == "description"), None)
+        report.check(
+            direct_complete
+            and [event["kind"] for event in direct_events] == ["alert", "description"]
+            and direct_state is not None
+            and direct_deletion is not None
+            and direct_deletion["version"] == direct_state["version"] + 1,
+            "direct present-alert removal reaches a consumer as alert V then descriptor V+1",
+            repr(direct_events),
+        )
+        report.check(
+            direct_state is not None
+            and set(direct_state["handles"]) == {direct_alert, *direct_signals, constants.ALERT_SYSTEM_HANDLE}
+            and direct_state["states"][direct_alert] == (pm_types.AlertActivation.OFF, False)
+            and all(
+                direct_state["states"][signal]
+                == (pm_types.AlertActivation.OFF, pm_types.AlertSignalPresence.OFF)
+                for signal in direct_signals
+            )
+            and direct_alert not in direct_state["references"],
+            "direct removal atomically deactivates its condition and signals and clears the parent",
+            repr(direct_state),
+        )
+        report.check(
+            all(event["references"] <= event["live"] for event in direct_events)
+            and direct_deletion is not None
+            and bool(direct_deletion["deleted"])
+            and set(direct_deletion["deleted"][:-1]) == set(direct_signals)
+            and direct_deletion["deleted"][-1] == direct_alert,
+            "direct removal exposes no dangling parent reference and keeps dependents first",
+            repr(direct_events),
+        )
+
+        cascade_start = len(events)
+        service.remove_metric(cascade_source)
+        cascade_complete = wait_until(lambda: observed_removal(cascade_start, cascade_alert))
+        cascade_events = removal_events(cascade_start, cascade_alert)
+        cascade_state = next((event for event in cascade_events if event["kind"] == "alert"), None)
+        cascade_deletion = next((event for event in cascade_events if event["kind"] == "description"), None)
+        deleted = cascade_deletion["deleted"] if cascade_deletion is not None else ()
+        report.check(
+            cascade_complete
+            and [event["kind"] for event in cascade_events] == ["alert", "description"]
+            and cascade_state is not None
+            and cascade_deletion is not None
+            and cascade_deletion["version"] == cascade_state["version"] + 1,
+            "metric cascade reaches a consumer as one alert report then descriptor deletion",
+            repr(cascade_events),
+        )
+        report.check(
+            cascade_state is not None
+            and set(cascade_state["handles"])
+            == {cascade_alert, *cascade_signals, constants.ALERT_SYSTEM_HANDLE}
+            and cascade_state["states"][cascade_alert] == (pm_types.AlertActivation.OFF, False)
+            and all(
+                cascade_state["states"][signal]
+                == (pm_types.AlertActivation.OFF, pm_types.AlertSignalPresence.OFF)
+                for signal in cascade_signals
+            )
+            and cascade_alert not in cascade_state["references"],
+            "metric cascade atomically retires its present alert report state",
+            repr(cascade_state),
+        )
+        report.check(
+            all(event["references"] <= event["live"] for event in cascade_events)
+            and all(deleted.index(signal) < deleted.index(cascade_alert) for signal in cascade_signals)
+            and deleted.index(cascade_source) < deleted.index(cascade_channel) < deleted.index(cascade_vmd),
+            "metric cascade has no dangling parent state and deletes children before parents",
+            repr(cascade_events),
+        )
+    finally:
+        observableproperties.unbind(
+            consumer_mdib,
+            alert_by_handle=on_alert,
+            description_modifications=on_description,
+        )
+        consumer.stop_all()
+        service.remove_alert(direct_alert)
+        service.remove_metric(direct_source)
+        service.remove_metric(cascade_source)
 
 
 def check_signals(report: Report, service: ProviderService) -> None:
@@ -1701,12 +2262,12 @@ def check_signals(report: Report, service: ProviderService) -> None:
     signal = service.signal_handles_for(alarm)[0]
     service.set_signal_delegated(signal, delegated=True)
     report.check(
-        service.signal_states(alarm)[0].delegated,
-        "a delegable signal moves to Rem",
+        service.signal_states(alarm)[0].remote_location,
+        "the location simulation moves a capable signal to Rem",
         summaries()[0],
     )
     service.set_signal_delegated(signal, delegated=False)
-    report.check(not service.signal_states(alarm)[0].delegated, "and back to Loc")
+    report.check(not service.signal_states(alarm)[0].remote_location, "and back to Loc")
 
     plain = service.add_alert(AlertSpec(label="Plain", source_handle="m.pressure"))
     try:
@@ -2539,6 +3100,9 @@ def main() -> int:
         check_action_execution(report, service)
         check_decimal_boundaries(report, service)
         check_concurrent_alert_evaluation(report, service)
+        check_alert_transition_reducer(report)
+        check_alert_transition_coordination(report, service)
+        check_connected_alert_removal_order(report, service)
         check_signals(report, service)
         check_latching_signals(report, service)
         check_contexts(report, service)

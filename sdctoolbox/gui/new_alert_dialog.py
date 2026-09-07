@@ -99,8 +99,8 @@ class NewAlertDialog(QDialog):
 
         self.delegable_box = QCheckBox("Another device may announce this alarm")
         self.delegable_box.setToolTip(
-            "Sets SignalDelegationSupported on every configured signal. Without it a delegation is\n"
-            "refused, because BICEPS only allows one where the descriptor says so.",
+            "Sets SignalDelegationSupported on every configured signal. The toolbox can then\n"
+            "simulate Loc/Rem state, but does not perform a delegation handoff.",
         )
 
         self.signal_boxes: list[tuple[AlertManifestation, QCheckBox, QCheckBox]] = []

@@ -1225,6 +1225,10 @@ BAD_FILES = [
         "a NaN alert limit",
     ),
     (
+        '{"metrics": [{"handle": "m.x", "label": "x", "kind": "text"}], "alerts": [{"label": "a", "watches": "m.x", "upper_limit": "1"}]}',
+        "a limit alarm on a nonnumeric scalar source",
+    ),
+    (
         '{"metrics": [{"handle": "m.x", "label": "x", "kind": "number"}], "actions": [{"label": "a", "target": "mds0", "effects": {"m.x": "-Infinity"}}]}',
         "an infinite numeric action effect",
     ),

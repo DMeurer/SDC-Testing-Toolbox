@@ -885,6 +885,9 @@ def parse(data: Any) -> DeviceConfig:
                 f"which this file does not define. It defines: {known}"
             )
             raise ConfigError(msg)
+        if alert.has_limits and metric_handles[alert.source_handle].kind is not MetricKind.NUMBER:
+            msg = f"alerts[{alert.label}]: a limit alarm requires a numeric scalar source"
+            raise ConfigError(msg)
 
     return DeviceConfig(
         metrics=metrics,
@@ -1041,6 +1044,9 @@ def _preflight_apply(service: ProviderService, device: DeviceConfig, *, replace:
     for spec in device.alerts:
         if spec.source_handle not in metrics:
             msg = f"alerts[{spec.label}]: watches {spec.source_handle!r}, which is not a metric available after import"
+            raise ConfigError(msg)
+        if spec.has_limits and metric_specs[spec.source_handle].kind is not MetricKind.NUMBER:
+            msg = f"alerts[{spec.label}]: a limit alarm requires a numeric scalar source"
             raise ConfigError(msg)
         handle = _claim_handle(descriptors, spec.handle, ALERT_HANDLE_PREFIX + spec.slug, f"alerts[{spec.label}]")
         for signal in spec.signals:

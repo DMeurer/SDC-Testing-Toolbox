@@ -1315,16 +1315,16 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         )
 
         report.check(
-            pane.delegate_button.isEnabled() and pane.delegate_button.text() == "Delegate",
-            "Delegate is offered for a delegable alarm",
+            pane.delegate_button.isEnabled() and pane.delegate_button.text() == "Remote*",
+            "remote-location simulation is offered for a capable alarm",
             pane.delegate_button.text(),
         )
         pane._on_delegate()  # noqa: SLF001
         pump(app)
-        report.check("->Rem" in signals_cell(), "delegating shows in the cell", signals_cell())
+        report.check("->Rem" in signals_cell(), "the simulated remote location shows in the cell", signals_cell())
         report.check(
-            pane.delegate_button.text() == "Take back",
-            "and the button offers the way back",
+            pane.delegate_button.text() == "Local*",
+            "and the button offers the local simulation",
             pane.delegate_button.text(),
         )
         pane._on_delegate()  # noqa: SLF001

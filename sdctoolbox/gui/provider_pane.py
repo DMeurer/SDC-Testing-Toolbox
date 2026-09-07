@@ -194,7 +194,7 @@ class ProviderPane(QWidget):
         self.acknowledge_button.clicked.connect(self._on_acknowledge)
         self.stop_latched_button = QPushButton("Stop latched")
         self.stop_latched_button.clicked.connect(self._on_stop_latched)
-        self.delegate_button = QPushButton("Delegate")
+        self.delegate_button = QPushButton("Remote*")
         self.delegate_button.clicked.connect(self._on_delegate)
 
         alert_buttons = QHBoxLayout()
@@ -478,8 +478,8 @@ class ProviderPane(QWidget):
                 if column == ACOL_SIGNALS:
                     item.setToolTip(
                         "How each signal is announcing the condition. Ack means it has been\n"
-                        "acknowledged; the condition itself is still present. ->Rem means it\n"
-                        "has been delegated to another device. Latch means a latching signal\n"
+                        "acknowledged; the condition itself is still present. ->Rem is a\n"
+                        "simulated remote location, not a delegation handoff. Latch means a signal\n"
                         "continues to announce a cleared condition until stopped.",
                     )
                     if not present:
@@ -522,13 +522,13 @@ class ProviderPane(QWidget):
         self._update_signal_buttons(handle, spec)
 
     def _update_signal_buttons(self, handle: str | None, spec: object | None) -> None:
-        """Acknowledge and Delegate follow the selected alarm's signals."""
+        """Signal controls follow the selected alarm's current state and capabilities."""
         signals = self.service.signal_states(handle) if handle and spec is not None else []
         present = bool(handle) and spec is not None and self.service.alert_present(handle)
 
         # Acknowledging a condition that is not raised is meaningless, and the provider
         # refuses it, so do not offer it either.
-        unacknowledged = [signal for signal in signals if not signal.acknowledged]
+        unacknowledged = [signal for signal in signals if signal.acknowledgeable]
         self.acknowledge_button.setEnabled(present and bool(unacknowledged))
         if spec is None:
             self.acknowledge_button.setToolTip("")
@@ -550,8 +550,8 @@ class ProviderPane(QWidget):
 
         delegable = [signal for signal in signals if signal.delegable]
         self.delegate_button.setEnabled(bool(delegable))
-        anywhere_delegated = any(signal.delegated for signal in delegable)
-        self.delegate_button.setText("Take back" if anywhere_delegated else "Delegate")
+        anywhere_remote = any(signal.remote_location for signal in delegable)
+        self.delegate_button.setText("Local*" if anywhere_remote else "Remote*")
         if spec is None:
             self.delegate_button.setToolTip("")
         elif not delegable:
@@ -561,8 +561,8 @@ class ProviderPane(QWidget):
             )
         else:
             self.delegate_button.setToolTip(
-                "Record that another device announces these signals, by moving their\n"
-                "Location from Loc to Rem.",
+                "Demonstrate Loc/Rem state only. This does not perform the normative\n"
+                "signal-delegation handoff with another device.",
             )
 
     def _on_new_alert(self) -> None:
@@ -641,10 +641,10 @@ class ProviderPane(QWidget):
         if not delegable:
             return
         # One button for the whole condition, so the target is whatever the majority is not.
-        delegate = not any(signal.delegated for signal in delegable)
+        remote = not any(signal.remote_location for signal in delegable)
         try:
             for signal in delegable:
-                self.service.set_signal_delegated(signal.handle, delegated=delegate)
+                self.service.set_signal_delegated(signal.handle, delegated=remote)
         except (KeyError, ValueError) as exc:
             QMessageBox.warning(self, "Could not delegate", str(exc))
         self.refresh_alerts()
