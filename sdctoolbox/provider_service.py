@@ -1908,7 +1908,7 @@ class ProviderService:
         )
         descriptor.MetricAvailability = pm_types.MetricAvailability.INTERMITTENT
 
-        if spec.kind is MetricKind.NUMBER:
+        if spec.kind is MetricKind.NUMBER or spec.is_sample_array:
             descriptor.Resolution = fixed_point_decimal(spec.resolution, "resolution")
             if spec.has_range:
                 # What the metric itself can produce. Distinct from the AllowedRange we put
@@ -1922,19 +1922,6 @@ class ProviderService:
                 ]
         if spec.kind is MetricKind.CHOICE:
             descriptor.AllowedValue = [pm_types.AllowedValue(value=value) for value in spec.allowed_values]
-
-        if spec.is_sample_array:
-            # Resolution is mandatory on both sample-array descriptors as well, and it is
-            # the one serialisation complains about first when it is missing.
-            descriptor.Resolution = fixed_point_decimal(spec.resolution, "resolution")
-            if spec.has_range:
-                descriptor.TechnicalRange = [
-                    pm_types.Range(
-                        lower=(fixed_point_decimal(spec.minimum, "minimum") if spec.minimum is not None else None),
-                        upper=(fixed_point_decimal(spec.maximum, "maximum") if spec.maximum is not None else None),
-                        step_width=fixed_point_decimal(spec.resolution, "resolution"),
-                    ),
-                ]
 
         if spec.kind is MetricKind.WAVEFORM:
             # An xsd:duration in seconds. sdc11073 takes a float here and renders it.
