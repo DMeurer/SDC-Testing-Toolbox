@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from ..consumer_service import DiscoveredDevice, RemoteDevice
+    from ..model import RemoteMetric
 
 COLUMNS = ["Handle", "Label", "Kind", "Value", "Range", "Unit", "Writable"]
 COL_HANDLE, COL_LABEL, COL_KIND, COL_VALUE, COL_RANGE, COL_UNIT, COL_WRITABLE = range(len(COLUMNS))
@@ -79,8 +80,8 @@ MIN_PANEL_WIDTH = 240
 ACTION_BUTTON_WIDTH = 180
 ACTION_BUTTON_TEXT_WIDTH = ACTION_BUTTON_WIDTH - 24
 _DISPLAY_LINE_BREAKS = re.compile(r"[\r\n\v\f\x1c-\x1e\x85\u2028\u2029]+")
-
 NO_VALUE = "\u2014"
+
 
 EDITOR_TEXT = 0
 EDITOR_CHOICE = 1
@@ -444,12 +445,13 @@ class ConsumerPane(QWidget):
 
     def refresh(self) -> None:
         """Rebuild both the tree and the table from whatever the peer currently says."""
+        metrics = {} if self.remote is None else self.remote.metrics()
         self._rebuild_tree()
-        self._rebuild_table()
+        self._rebuild_table(metrics)
         self._rebuild_alerts()
         self._refresh_contexts()
         self.refresh_actions()
-        self._refresh_board()
+        self._refresh_board(metrics)
         self._on_selection_changed()
 
     def _rebuild_tree(self) -> None:
@@ -479,8 +481,7 @@ class ConsumerPane(QWidget):
         self.tree.expandToDepth(2)
         self.tree.resizeColumnToContents(0)
 
-    def _rebuild_table(self) -> None:
-        metrics = {} if self.remote is None else self.remote.metrics()
+    def _rebuild_table(self, metrics: dict[str, RemoteMetric]) -> None:
         selected = self.selected_handle()
 
         self.table.setRowCount(len(metrics))
@@ -586,12 +587,13 @@ class ConsumerPane(QWidget):
         if enabled:
             self._refresh_board()
 
-    def _refresh_board(self) -> None:
+    def _refresh_board(self, metrics: dict[str, RemoteMetric] | None = None) -> None:
         """Rebuild the controls from what the peer currently publishes."""
         if self.remote is None:
             self.board.clear()
             return
-        metrics = self.remote.metrics()
+        if metrics is None:
+            metrics = self.remote.metrics()
         self.board.set_metrics([from_remote_metric(metric) for _, metric in sorted(metrics.items())])
         self.board.show_values({handle: _displayable(metric) for handle, metric in metrics.items()})
 
@@ -719,7 +721,11 @@ class ConsumerPane(QWidget):
     def _on_selection_changed(self) -> None:
         self.invocation_label.setText("")
         handle = self.selected_handle()
-        metric = None if (handle is None or self.remote is None) else self.remote.metrics().get(handle)
+        metric = (
+            None
+            if handle is None or self.remote is None
+            else self.remote.metrics((handle,)).get(handle)
+        )
 
         if metric is None:
             self.editor_label.setText("Connect to a device to control it")
@@ -759,7 +765,7 @@ class ConsumerPane(QWidget):
         handle = self.selected_handle()
         if handle is None or self.remote is None:
             return
-        metric = self.remote.metrics().get(handle)
+        metric = self.remote.metrics((handle,)).get(handle)
         if metric is None:
             return
 

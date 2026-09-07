@@ -841,6 +841,7 @@ def main() -> int:
         failed_reconnect_clears_peer_ui(app, provider)
         waveform_reports_are_scoped(app, provider)
         metric_reports_are_scoped(app, provider)
+        refresh_snapshot_and_editor_lookups_are_scoped(app, provider)
     finally:
         consumer_module.ConsumerService = old_service
         consumer_module.MdibBridge = old_bridge
@@ -850,3 +851,74 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+    finally:
+        consumer_module.ConsumerService = old_service
+        consumer_module.MdibBridge = old_bridge
+        provider.stop()
+    return REPORT.summary()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+def refresh_snapshot_and_editor_lookups_are_scoped(
+    app: QApplication,
+    provider: ProviderService,
+) -> None:
+    window, pane, service = new_window(provider)
+    remote = FakeRemote("metric-snapshot")
+    remote.metric_values = {
+        "first": RemoteMetric(
+            handle="first",
+            node_type_name="NumericMetricDescriptor",
+            kind=MetricKind.NUMBER,
+            label="First",
+            value=Decimal(1),
+            operation_handles=("set.first",),
+            controllable_now=True,
+        ),
+        "second": RemoteMetric(
+            handle="second",
+            node_type_name="NumericMetricDescriptor",
+            kind=MetricKind.NUMBER,
+            label="Second",
+            value=Decimal(2),
+        ),
+    }
+
+    attach(pane, remote)
+    check(
+        remote.metrics_requests == [None],
+        "one full metric snapshot supplies the consumer table and board",
+    )
+    first_row = next(
+        row
+        for row in range(pane.table.rowCount())
+        if pane.table.item(row, consumer_module.COL_HANDLE).text() == "first"
+    )
+    check(
+        pane.table.item(first_row, consumer_module.COL_VALUE).text() == "1"
+        and pane.board.card("first").control.edit.text() == "1",
+        "the shared snapshot gives the table and board the same value",
+    )
+
+    pane.select_handle("first")
+    check(
+        remote.metrics_requests[-1] == frozenset({"first"}),
+        "selection requests only the selected metric",
+    )
+    requests_before_apply = len(remote.metrics_requests)
+    remote.set_call.release.set()
+    pane.value_edit.setText("3")
+    pane._on_apply()  # noqa: SLF001
+    check(
+        remote.metrics_requests[requests_before_apply:] == [frozenset({"first"})],
+        "apply requests only the selected metric before invoking",
+    )
+    check(wait_for(app, lambda: not pane._invocation_busy()), "the scoped apply finishes")  # noqa: SLF001
+
+    window.close()
+    check(remote.close_count == 1 and service.stop_count == 1, "snapshot session resources close once")
+
+
+        refresh_snapshot_and_editor_lookups_are_scoped(app, provider)
