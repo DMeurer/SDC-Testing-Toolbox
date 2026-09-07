@@ -155,8 +155,118 @@ def check_rollback(report: Report, service: ProviderService) -> None:
 def check_sample_arrays(report: Report, service: ProviderService) -> None:
     print("\n2. Waveforms and distributions")
 
-    for kind in MetricKind:
-        report.check(kind.creatable, f"{kind.value} can be created")
+    mutated_cycle = MetricSpec(
+        label="Mutated cycle",
+        kind=MetricKind.WAVEFORM,
+        handle="m.mutated_cycle",
+        section="Mutated cycle section",
+    )
+    cycle_before_handles = {handle for handle, _ in service.mdib.entities.items()}
+    cycle_before_metrics = service.list_metrics()
+    cycle_before_sections = service.sections()
+    cycle_before_phase = dict(service._waveform_phase)
+    cycle_before_pinned = set(service._pinned_samples)
+    cycle_before_generator = service.generator_running
+    invalid_cycles = (None, Decimal("40"), True, 1)
+    cycle_rejections = 0
+    for invalid_cycle in invalid_cycles:
+        mutated_cycle.cycle_samples = invalid_cycle
+        try:
+            service.add_metric(mutated_cycle)
+        except ValueError:
+            cycle_rejections += 1
+    report.check(
+        cycle_rejections == len(invalid_cycles)
+        and {handle for handle, _ in service.mdib.entities.items()} == cycle_before_handles
+        and service.list_metrics() == cycle_before_metrics
+        and service.sections() == cycle_before_sections
+        and service._waveform_phase == cycle_before_phase
+        and service._pinned_samples == cycle_before_pinned
+        and service.generator_running == cycle_before_generator,
+        "mutated invalid cycle lengths fail before descriptor, bookkeeping, or generator mutation",
+        f"{cycle_rejections} rejections",
+    )
+
+    creation_specs = {
+        MetricKind.NUMBER: MetricSpec(
+            label="Creation number",
+            kind=MetricKind.NUMBER,
+            minimum=Decimal("-1.25"),
+            maximum=Decimal("2.50"),
+            resolution=Decimal("0.05"),
+        ),
+        MetricKind.TEXT: MetricSpec(label="Creation text", kind=MetricKind.TEXT),
+        MetricKind.CHOICE: MetricSpec(
+            label="Creation choice",
+            kind=MetricKind.CHOICE,
+            allowed_values=("A", "B"),
+        ),
+        MetricKind.WAVEFORM: MetricSpec(
+            label="Creation waveform",
+            kind=MetricKind.WAVEFORM,
+            minimum=Decimal("-1.25"),
+            maximum=Decimal("2.50"),
+            resolution=Decimal("0.05"),
+            sample_period=Decimal("0.125"),
+        ),
+        MetricKind.DISTRIBUTION: MetricSpec(
+            label="Creation distribution",
+            kind=MetricKind.DISTRIBUTION,
+            minimum=Decimal("-1.25"),
+            maximum=Decimal("2.50"),
+            resolution=Decimal("0.05"),
+            domain_minimum=Decimal("10"),
+            domain_maximum=Decimal("41"),
+        ),
+    }
+    creation_handles = {
+        kind: service.add_metric(spec)
+        for kind, spec in creation_specs.items()
+    }
+    creation_descriptors = {
+        kind: service.mdib.entities.by_handle(handle).descriptor
+        for kind, handle in creation_handles.items()
+    }
+    serialized_mdib = etree.tostring(
+        service.mdib.reconstruct_mdib_with_context_states()[0],
+        encoding="unicode",
+    )
+    numeric_descriptors = [
+        creation_descriptors[kind]
+        for kind in (MetricKind.NUMBER, MetricKind.WAVEFORM, MetricKind.DISTRIBUTION)
+    ]
+    report.check(
+        len(creation_handles) == len(MetricKind)
+        and all(handle in serialized_mdib for handle in creation_handles.values())
+        and all(descriptor.Unit.Code == constants.CODE_DIMENSIONLESS for descriptor in creation_descriptors.values()),
+        "all five metric kinds are created, serialized, and retain dimensionless units",
+    )
+    report.check(
+        all(
+            descriptor.Resolution == Decimal("0.05")
+            and len(descriptor.TechnicalRange) == 1
+            and descriptor.TechnicalRange[0].Lower == Decimal("-1.25")
+            and descriptor.TechnicalRange[0].Upper == Decimal("2.50")
+            and descriptor.TechnicalRange[0].StepWidth == Decimal("0.05")
+            for descriptor in numeric_descriptors
+        )
+        and getattr(creation_descriptors[MetricKind.TEXT], "Resolution", None) is None
+        and getattr(creation_descriptors[MetricKind.CHOICE], "Resolution", None) is None,
+        "numeric and sample-array value resolution and technical ranges share exact Decimal semantics",
+    )
+    creation_waveform = creation_descriptors[MetricKind.WAVEFORM]
+    creation_distribution = creation_descriptors[MetricKind.DISTRIBUTION]
+    report.check(
+        creation_waveform.SamplePeriod == 0.125
+        and creation_distribution.DomainUnit.Code == constants.CODE_DIMENSIONLESS
+        and (creation_distribution.DistributionRange.Lower, creation_distribution.DistributionRange.Upper)
+        == (Decimal("10"), Decimal("41"))
+        and creation_distribution.DistributionRange.StepWidth == Decimal("1.00000")
+        and creation_distribution.DistributionRange.StepWidth != creation_distribution.Resolution,
+        "waveform timing and distribution domain fields remain distinct from sample-value ranges",
+    )
+    for handle in creation_handles.values():
+        service.remove_metric(handle)
 
     wave = service.add_metric(
         MetricSpec(

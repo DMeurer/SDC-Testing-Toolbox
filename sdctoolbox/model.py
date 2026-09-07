@@ -55,17 +55,6 @@ class MetricKind(enum.Enum):
         """Whether a set operation exists for this kind."""
         return self in _OPERATION_CLASSES
 
-    @property
-    def creatable(self) -> bool:
-        """Whether this build can actually put such a descriptor on the wire."""
-        return self not in MISSING_MANDATORY_FIELDS
-
-    @property
-    def missing_fields(self) -> tuple[str, ...]:
-        """Mandatory descriptor fields this build never fills in, if any."""
-        return MISSING_MANDATORY_FIELDS.get(self, ())
-
-
 _DESCRIPTOR_QNAMES = {
     MetricKind.NUMBER: pm.NumericMetricDescriptor,
     MetricKind.TEXT: pm.StringMetricDescriptor,
@@ -81,13 +70,6 @@ _OPERATION_CLASSES: dict[MetricKind, type[OperationDefinitionBase]] = {
     MetricKind.TEXT: SetStringOperation,
     MetricKind.CHOICE: SetStringOperation,
 }
-
-# Kinds this build cannot put on the wire, and the mandatory descriptor fields it fails to
-# fill in for them. Empty: every kind BICEPS defines can now be created. Kept as the place
-# to record such a gap if one ever reappears, because the failure mode is nasty - BICEPS
-# only notices a missing mandatory field when the descriptor is serialised, which happens
-# after the transaction has already committed it. See ProviderService._create_entities.
-MISSING_MANDATORY_FIELDS: dict[MetricKind, tuple[str, ...]] = {}
 
 # The two sample-array kinds carry many values per state rather than one.
 SAMPLE_ARRAY_KINDS = (MetricKind.WAVEFORM, MetricKind.DISTRIBUTION)
@@ -147,10 +129,6 @@ class DistributionShape(enum.Enum):
 # A tenth of a second: fast enough to look alive on screen, slow enough that two instances
 # on one machine are not spending all their time serialising sample arrays.
 DEFAULT_SAMPLE_PERIOD = Decimal("0.1")
-
-# How many samples a waveform card keeps and draws.
-WAVEFORM_HISTORY = 300
-
 
 # The alarm vocabulary is taken straight from BICEPS rather than reinvented, so the values
 # that go on the wire are the standard's own:
@@ -405,10 +383,6 @@ def fixed_point_decimal(value: Decimal, field: str) -> Decimal:
     return _FixedPointDecimal("0") if value.is_zero() else _FixedPointDecimal(value)
 
 
-# MDC_DIM_DIMLESS, for a metric that measures a bare number.
-DIMENSIONLESS = Coding(code=constants.CODE_DIMENSIONLESS, system="mdc", label="")
-
-
 @dataclass(frozen=True)
 class DeviceInfo:
     """Who the device says it is, in DPWS terms.
@@ -429,11 +403,6 @@ class DeviceInfo:
     model_name: str = constants.MODEL_NAME
     model_number: str = constants.MODEL_NUMBER
     firmware_version: str = constants.FIRMWARE_VERSION
-
-    def is_empty(self) -> bool:
-        """Whether this says anything the defaults do not."""
-        return self == DeviceInfo()
-
 
 @dataclass
 class MetricSpec:
@@ -519,11 +488,9 @@ class MetricSpec:
         if self.kind is MetricKind.WAVEFORM:
             if self.sample_period is None:
                 self.sample_period = DEFAULT_SAMPLE_PERIOD
+            self.waveform_cycle_sample_count()
             self.generated_waveform_block_sample_count()
             self.shape = _coerce_enum(WaveformShape, self.shape, "shape")
-            if not isinstance(self.cycle_samples, int) or self.cycle_samples < 2:  # noqa: PLR2004
-                msg = f"cycle_samples must be an integer of at least 2, not {self.cycle_samples!r}"
-                raise ValueError(msg)
         elif self.sample_period is not None:
             msg = f"sample_period is only meaningful for {MetricKind.WAVEFORM.value} metrics"
             raise ValueError(msg)
@@ -679,6 +646,20 @@ class MetricSpec:
             )
             raise ValueError(msg)
         return max(1, round(ratio))
+
+    def waveform_cycle_sample_count(self) -> int:
+        """Validate and return the mutable waveform cycle length."""
+        if self.kind is not MetricKind.WAVEFORM:
+            msg = f"{self.kind.value} metrics do not have waveform cycles"
+            raise ValueError(msg)
+        if (
+            isinstance(self.cycle_samples, bool)
+            or not isinstance(self.cycle_samples, int)
+            or self.cycle_samples < 2  # noqa: PLR2004
+        ):
+            msg = f"cycle_samples must be an integer of at least 2, not {self.cycle_samples!r}"
+            raise ValueError(msg)
+        return self.cycle_samples
 
     def domain_text(self) -> str:
         """The distribution's domain as something readable, e.g. '0 to 100 Hz'."""

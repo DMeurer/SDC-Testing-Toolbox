@@ -89,11 +89,6 @@ class _ConfigurationSnapshot:
 # per waveform - and a preset with three of them is twelve.
 WAVEFORM_BLOCK_SECONDS = constants.WAVEFORM_BLOCK_SECONDS
 
-# Samples per full cycle of the generated curve. Fixed rather than derived from the sample
-# period, so a slow waveform and a fast one look the same on screen and only differ in how
-# quickly they get there.
-WAVEFORM_CYCLE_SAMPLES = 40
-
 # How many samples a generated distribution spreads across its domain. This is what fixes
 # DistributionRange/StepWidth, because the two have to agree: a descriptor saying the
 # samples are 0.1 Hz apart while five arrive for a 50 Hz domain describes nothing real.
@@ -687,17 +682,11 @@ class ProviderService:
         a DescriptionModificationReport, so connected consumers see the new metric appear.
         """
         with self._lock:
-            if not spec.kind.creatable:
-                missing = ", ".join(spec.kind.missing_fields)
-                msg = (
-                    f"this build cannot create {spec.kind.value} metrics yet: it never sets "
-                    f"{missing}, which BICEPS makes mandatory"
-                )
-                raise ValueError(msg)
             if spec.is_sample_array:
                 # MetricSpec is mutable, so repeat this preflight immediately before any
                 # lazy section, descriptor, bookkeeping, or generator mutation.
                 if spec.kind is MetricKind.WAVEFORM:
+                    spec.waveform_cycle_sample_count()
                     spec.generated_waveform_block_sample_count()
                 spec.generated_sample_range()
             if spec.kind is MetricKind.DISTRIBUTION:
@@ -1598,10 +1587,10 @@ class ProviderService:
 
         Deliberately does not store the phase: see _publish_one_block.
         """
+        cycle = spec.waveform_cycle_sample_count()
         count = spec.generated_waveform_block_sample_count()
         sample_range = spec.generated_sample_range()
 
-        cycle = spec.cycle_samples or WAVEFORM_CYCLE_SAMPLES
         phase = self._waveform_phase.get(handle, 0.0)
         block = [
             _generated_sample(spec, _shape_fraction(spec.shape, (phase + index / cycle) % 1.0), sample_range)
