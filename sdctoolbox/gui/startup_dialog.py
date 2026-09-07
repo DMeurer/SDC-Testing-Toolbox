@@ -40,12 +40,13 @@ LINK_LOCAL_PREFIX = "169.254."
 
 @dataclass(frozen=True)
 class StartupSettings:
-    """What the user chose. Mirrors the command line arguments exactly."""
+    """What the user chose, plus the validated config snapshot when present."""
 
     name: str
     ip: str
     config_path: str | None
     verbose: bool
+    device_config: config.DeviceConfig | None = None
 
 
 def available_ipv4() -> list[tuple[str, str]]:
@@ -213,13 +214,14 @@ class StartupDialog(QDialog):
             return
 
         config_path = self.chosen_config()
+        device_config = None
         if config_path is not None:
             # Check it now rather than after a window has appeared and half a device exists.
             if not Path(config_path).exists():
                 self._fail(f"No such file: {config_path}")
                 return
             try:
-                config.load_file(config_path)
+                device_config = config.load_file(config_path)
             except config.ConfigError as exc:
                 self._fail(str(exc))
                 return
@@ -229,5 +231,6 @@ class StartupDialog(QDialog):
             ip=ip,
             config_path=config_path,
             verbose=self.verbose_box.isChecked(),
+            device_config=device_config,
         )
         self.accept()

@@ -827,20 +827,21 @@ class ConsumerShell(Cmd):
 def run_provider(args: argparse.Namespace) -> int:
     # Before the provider exists: a preset says which machine it is, and sdc11073 fixes
     # ThisModel and ThisDevice at construction.
-    device = None
+    device_config = None
     if args.config:
         try:
-            device = config.load_file(args.config).device
+            device_config = config.load_file(args.config)
         except config.ConfigError as exc:
             print(f"error: {exc}")
             return 2
 
+    device = device_config.device if device_config is not None else None
     service = ProviderService(ip=args.ip, instance_name=args.name, device=device)
     service.start()
     try:
-        if args.config:
+        if args.config and device_config is not None:
             try:
-                metrics, alarms = config.load_into(service, args.config)
+                metrics, alarms = config.apply_to(service, device_config, replace=True)
             except config.ConfigError as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 return 2

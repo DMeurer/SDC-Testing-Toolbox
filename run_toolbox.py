@@ -84,34 +84,27 @@ def main(argv: list[str] | None = None) -> int:
             return 0
     else:
         settings = settings_from_args(args)
-        # The dialog validates as you go; from the command line the first chance is here,
-        # and failing before anything starts beats failing behind a window.
-        if settings.config_path:
-            try:
-                config.load_file(settings.config_path)
-            except config.ConfigError as exc:
-                print(f"error: {exc}", file=sys.stderr)
-                return 2
 
     basic_logging_setup(level=logging.INFO if settings.verbose else logging.WARNING)
 
     # Read the config before the provider exists, not after. A preset can say which machine
     # it describes, and sdc11073 fixes ThisModel and ThisDevice when the provider is built -
     # so a device loaded afterwards would still announce itself as the toolbox.
-    device = None
-    if settings.config_path:
+    device_config = settings.device_config
+    if settings.config_path and device_config is None:
         try:
-            device = config.load_file(settings.config_path).device
+            device_config = config.load_file(settings.config_path)
         except config.ConfigError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
 
+    device = device_config.device if device_config is not None else None
     service = ProviderService(ip=settings.ip, instance_name=settings.name, device=device)
     try:
         service.start()
         window = MainWindow(service)
-        if settings.config_path:
-            window.load_config(settings.config_path)
+        if settings.config_path and device_config is not None:
+            window.apply_config(device_config, settings.config_path)
         window.show()
         if args.smoke_test:
             bundled_files = {path.name for path in constants.PRESET_DIR.glob("*.json")}
@@ -123,8 +116,13 @@ def main(argv: list[str] | None = None) -> int:
             if usable_files != constants.SHIPPED_PRESET_FILES:
                 msg = f"packaged presets are invalid: loaded {sorted(usable_files)}"
                 raise RuntimeError(msg)
+            startup_path = (
+                Path(settings.config_path).resolve() if settings.config_path else None
+            )
             for preset in presets:
-                config.load_file(preset.path)
+                # The startup profile was already validated and applied from its snapshot.
+                if preset.path.resolve() != startup_path:
+                    config.load_file(preset.path)
             QTimer.singleShot(1000, window.close)
         return app.exec()
     except Exception as exc:  # noqa: BLE001 - a crash here should still say why
