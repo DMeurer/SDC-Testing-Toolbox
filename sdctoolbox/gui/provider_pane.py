@@ -33,6 +33,13 @@ from sdc11073.xml_types import pm_types
 from ..model import MetricKind
 from .context_dialog import ContextDialog
 from .decimal_input import DecimalInputError, parse_decimal_input
+from .helpers import (
+    NO_VALUE,
+    sample_count_text,
+    select_table_row,
+    selected_table_value,
+    value_text,
+)
 from .new_alert_dialog import NewAlertDialog
 from .new_metric_dialog import NewMetricDialog
 from .no_wheel import NoWheelComboBox
@@ -51,8 +58,6 @@ if TYPE_CHECKING:
 
 COLUMNS = ["Handle", "Label", "Kind", "Value", "Range", "Unit", "Remote control"]
 COL_HANDLE, COL_LABEL, COL_KIND, COL_VALUE, COL_RANGE, COL_UNIT, COL_CONTROL = range(len(COLUMNS))
-
-NO_VALUE = "\u2014"  # em dash
 
 ALERT_COLUMNS = ["Handle", "Label", "Watches", "Raise when", "Kind", "Priority", "State", "Signals"]
 (
@@ -359,10 +364,8 @@ class ProviderPane(QWidget):
         would be useless, so the cell says how many arrived instead. The card draws them.
         """
         if spec.is_sample_array:
-            count = len(self.service.get_samples(handle))
-            return f"{count} sample(s)" if count else NO_VALUE
-        value = self.service.get_value(handle)
-        return NO_VALUE if value is None else str(value)
+            return sample_count_text(self.service.get_samples(handle))
+        return value_text(self.service.get_value(handle))
 
     def _refresh_sample_cells(self, handles) -> None:  # noqa: ANN001 - any iterable
         """Update the count in the Value column for the metrics named."""
@@ -490,20 +493,11 @@ class ProviderPane(QWidget):
 
     def selected_alert_handle(self) -> str | None:
         """Handle of the selected alarm row, or None."""
-        model = self.alert_table.selectionModel()
-        rows = model.selectedRows() if model else []
-        if not rows:
-            return None
-        item = self.alert_table.item(rows[0].row(), ACOL_HANDLE)
-        return item.text() if item else None
+        return selected_table_value(self.alert_table, ACOL_HANDLE)
 
     def select_alert_handle(self, handle: str) -> None:
         """Restore the alarm selection, if that alarm still exists."""
-        for row in range(self.alert_table.rowCount()):
-            item = self.alert_table.item(row, ACOL_HANDLE)
-            if item is not None and item.text() == handle:
-                self.alert_table.selectRow(row)
-                return
+        select_table_row(self.alert_table, ACOL_HANDLE, handle)
 
     def _on_alert_selection_changed(self) -> None:
         handle = self.selected_alert_handle()
@@ -719,19 +713,11 @@ class ProviderPane(QWidget):
 
     def selected_handle(self) -> str | None:
         """Handle of the selected row, or None."""
-        rows = self.table.selectionModel().selectedRows() if self.table.selectionModel() else []
-        if not rows:
-            return None
-        item = self.table.item(rows[0].row(), COL_HANDLE)
-        return item.text() if item else None
+        return selected_table_value(self.table, COL_HANDLE)
 
     def select_handle(self, handle: str) -> None:
         """Restore the selection to a given handle, if it still exists."""
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, COL_HANDLE)
-            if item is not None and item.text() == handle:
-                self.table.selectRow(row)
-                return
+        select_table_row(self.table, COL_HANDLE, handle)
 
     def _on_selection_changed(self) -> None:
         handle = self.selected_handle()

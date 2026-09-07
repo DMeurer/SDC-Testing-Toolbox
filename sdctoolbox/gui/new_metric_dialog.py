@@ -31,6 +31,7 @@ from ..model import (
     slugify,
 )
 from .decimal_input import DecimalInputError, parse_decimal_input
+from .helpers import set_form_row_visible
 from .no_wheel import NoWheelComboBox
 from .styling import constrain_dynamic_label, mark_as_error, mute
 
@@ -264,10 +265,7 @@ class NewMetricDialog(QDialog):
         something to read and dismiss, and the dialog is short enough that the rows moving
         is less distracting than the clutter.
         """
-        widget.setVisible(visible)
-        label = self.form.labelForField(widget)
-        if label is not None:
-            label.setVisible(visible)
+        set_form_row_visible(self.form, widget, visible=visible)
 
     def _on_kind_changed(self) -> None:
         kind = self._kind

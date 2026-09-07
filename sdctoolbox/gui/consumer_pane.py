@@ -42,6 +42,13 @@ from ..consumer_service import ConsumerService
 from ..model import MetricKind
 from .async_call import AsyncCall
 from .decimal_input import DecimalInputError, parse_decimal_input
+from .helpers import (
+    NO_VALUE,
+    sample_count_text,
+    select_table_row,
+    selected_table_value,
+    value_text,
+)
 from .no_wheel import NoWheelComboBox
 from .qt_bridge import MdibBridge
 from .styling import (
@@ -80,8 +87,6 @@ MIN_PANEL_WIDTH = 240
 ACTION_BUTTON_WIDTH = 180
 ACTION_BUTTON_TEXT_WIDTH = ACTION_BUTTON_WIDTH - 24
 _DISPLAY_LINE_BREAKS = re.compile(r"[\r\n\v\f\x1c-\x1e\x85\u2028\u2029]+")
-NO_VALUE = "\u2014"
-
 
 EDITOR_TEXT = 0
 EDITOR_CHOICE = 1
@@ -95,8 +100,8 @@ def _displayable(metric) -> object:  # noqa: ANN001 - a RemoteMetric
 def _value_text(metric) -> str:  # noqa: ANN001 - a RemoteMetric
     """What the table's Value cell shows."""
     if metric.is_sample_array:
-        return f"{len(metric.samples)} sample(s)" if metric.samples else NO_VALUE
-    return NO_VALUE if metric.value is None else str(metric.value)
+        return sample_count_text(metric.samples)
+    return value_text(metric.value)
 
 
 def _set_action_button_caption(button: QPushButton, caption: str) -> None:
@@ -569,7 +574,7 @@ class ConsumerPane(QWidget):
             item = self.table.item(row, COL_VALUE)
             if item is not None:
                 samples = blocks_by_handle[handle_item.text()]
-                item.setText(f"{len(samples)} sample(s)" if samples else NO_VALUE)
+                item.setText(sample_count_text(samples))
 
     # -- widgets or table ----------------------------------------------------------
 
@@ -703,20 +708,11 @@ class ConsumerPane(QWidget):
 
     def selected_handle(self) -> str | None:
         """Handle of the selected metric row, or None."""
-        model = self.table.selectionModel()
-        rows = model.selectedRows() if model else []
-        if not rows:
-            return None
-        item = self.table.item(rows[0].row(), COL_HANDLE)
-        return item.text() if item else None
+        return selected_table_value(self.table, COL_HANDLE)
 
     def select_handle(self, handle: str) -> None:
         """Restore the selection to a given handle, if it is still there."""
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, COL_HANDLE)
-            if item is not None and item.text() == handle:
-                self.table.selectRow(row)
-                return
+        select_table_row(self.table, COL_HANDLE, handle)
 
     def _on_selection_changed(self) -> None:
         self.invocation_label.setText("")

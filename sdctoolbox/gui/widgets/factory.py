@@ -36,7 +36,7 @@ def pick_control(spec: WidgetSpec) -> type[MetricWidget]:
     for control in CONTROLS:
         if control.matches(spec):
             return control
-    return ReadoutWidget
+    raise RuntimeError("the control registry must end with a universal catch-all")
 
 
 def build_widget(spec: WidgetSpec, parent=None) -> MetricWidget:  # noqa: ANN001

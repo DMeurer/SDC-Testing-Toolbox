@@ -14,9 +14,17 @@ sys.path.insert(0, str(ROOT))
 
 from gui_test_support import Report, application, pump
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QDialog
+from PySide6.QtWidgets import QDialog, QFormLayout, QLineEdit, QTableWidget, QTableWidgetItem
 
 from sdctoolbox.gui.context_dialog import ContextDialog
+from sdctoolbox.gui.helpers import (
+    NO_VALUE,
+    sample_count_text,
+    select_table_row,
+    selected_table_value,
+    set_form_row_visible,
+    value_text,
+)
 from sdctoolbox.gui.new_alert_dialog import NewAlertDialog
 from sdctoolbox.gui.new_metric_dialog import NewMetricDialog
 from sdctoolbox.gui.startup_dialog import StartupDialog
@@ -112,6 +120,50 @@ def context_dialog_checks(report: Report) -> None:
         dialog.deleteLater()
 
 
+def helper_checks(report: Report) -> None:
+    table = QTableWidget(2, 2)
+    table.setItem(0, 0, QTableWidgetItem("first"))
+    table.setItem(1, 0, QTableWidgetItem("second"))
+    select_table_row(table, 0, "second")
+    report.check(
+        selected_table_value(table, 0) == "second",
+        "table selection helpers find and restore a row",
+    )
+    select_table_row(table, 0, "missing")
+    report.check(
+        selected_table_value(table, 0) == "second",
+        "restoring a missing row leaves the current selection unchanged",
+    )
+
+    form = QFormLayout()
+    field = QLineEdit()
+    form.addRow("Field", field)
+    label = form.labelForField(field)
+    set_form_row_visible(form, field, visible=False)
+    report.check(
+        field.isHidden() and label is not None and label.isHidden(),
+        "form row visibility moves the field and label together",
+    )
+    set_form_row_visible(form, field, visible=True)
+    report.check(
+        not field.isHidden() and label is not None and not label.isHidden(),
+        "a hidden form row can be restored as a unit",
+    )
+
+    report.check(
+        value_text(None) == NO_VALUE
+        and value_text(0) == "0"
+        and value_text(False) == "False"
+        and value_text("") == "",
+        "value summaries distinguish None from valid falsy values",
+    )
+    report.check(
+        sample_count_text([]) == NO_VALUE and sample_count_text([0, 0]) == "2 sample(s)",
+        "sample summaries report emptiness and count without inspecting values",
+    )
+    table.deleteLater()
+
+
 def startup_dialog_checks(report: Report) -> None:
     for description, address in (
         ("hostname", "localhost"),
@@ -156,6 +208,7 @@ def main() -> int:
     metric_dialog_checks(report)
     alert_dialog_checks(report)
     context_dialog_checks(report)
+    helper_checks(report)
     startup_dialog_checks(report)
     return report.summary()
 

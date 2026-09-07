@@ -14,7 +14,6 @@ from __future__ import annotations
 import logging
 import os
 import sys
-import time
 from decimal import Decimal
 from pathlib import Path
 
@@ -23,7 +22,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from script_support import Report  # noqa: E402
+from script_support import Report, wait_until  # noqa: E402
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox, QSizePolicy  # noqa: E402
@@ -64,10 +63,13 @@ from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 
 def pump(app: QApplication, seconds: float = 0.3) -> None:
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        app.processEvents()
-        time.sleep(0.02)
+    wait_until(
+        lambda: False,
+        timeout=seconds,
+        interval=0.02,
+        pump=app.processEvents,
+        check_boundary=False,
+    )
 
 
 def number(**kwargs) -> WidgetSpec:  # noqa: ANN003
@@ -224,6 +226,11 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         CONTROLS[-1] is ReadoutWidget,
         "the catch-all is asked last, so nothing is ever dropped",
         CONTROLS[-1].__name__,
+    )
+    unknown = WidgetSpec("m.unknown", "Unknown", None)
+    report.check(
+        [control for control in CONTROLS if control.matches(unknown)] == [ReadoutWidget],
+        "exactly one universal fallback exists and it is the final registry entry",
     )
     report.check(
         [c.priority for c in CONTROLS] == sorted(c.priority for c in CONTROLS),

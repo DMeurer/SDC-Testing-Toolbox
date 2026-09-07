@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from ...model import SAMPLE_ARRAY_KINDS, MetricKind
 from ..decimal_input import DecimalInputError, parse_decimal_input
+from ..helpers import NO_VALUE, value_text
 from ..no_wheel import NoWheelComboBox, NoWheelSlider
 from ..styling import constrain_dynamic_label, mark_as_error, mute
 from .base import MetricWidget, WidgetSpec
@@ -32,9 +33,6 @@ MAX_SLIDER_STEPS = 100_000
 # How much the stepper's buttons move the value.
 STEP_SMALL = Decimal("1")
 STEP_LARGE = Decimal("10")
-
-NO_VALUE = "\u2014"
-
 
 def _trim(value: Decimal) -> str:
     """Render a Decimal without a trailing '.0' but keep genuine decimals."""
@@ -430,7 +428,7 @@ class ReadoutWidget(MetricWidget):
         layout.addWidget(self.readout)
 
     def show_value(self, value: Any) -> None:
-        self.readout.setText(NO_VALUE if value is None else str(value))
+        self.readout.setText(value_text(value))
 
     def set_editable(self, editable: bool) -> None:  # noqa: FBT001, ARG002
         # Nothing to enable; this control never writes.
