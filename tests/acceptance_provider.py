@@ -4,7 +4,8 @@ Started as a subprocess by acceptance_core.py; not useful on its own, though it 
 by hand to have a device on the network to poke at.
 
 Creates four data sources up front and disables remote control on one of them. Its stdin
-commands add a fifth source and update patient context after a consumer has subscribed.
+commands add a fifth source, update patient context, and remove generated sample sources
+after a consumer has subscribed.
 """
 
 from __future__ import annotations
@@ -63,6 +64,7 @@ PEER_INSTANCE = "acceptance-peer"
 UPDATED_PATIENT = "Grace Hopper"
 ADD_LATE_COMMAND = "add-late"
 UPDATE_CONTEXT_COMMAND = "update-context"
+REMOVE_SAMPLES_COMMAND = "remove-samples"
 STOP_COMMAND = "stop"
 COMMAND_DONE_PREFIX = "[provider] COMMAND DONE:"
 
@@ -293,6 +295,7 @@ def main() -> int:
     deadline = time.monotonic() + args.seconds
     late_added = False
     context_updated = False
+    samples_removed = False
     while (remaining := deadline - time.monotonic()) > 0:
         try:
             command = commands.get(timeout=remaining)
@@ -306,7 +309,11 @@ def main() -> int:
         elif command == UPDATE_CONTEXT_COMMAND and not context_updated:
             update_patient_context(service)
             context_updated = True
-        elif command not in {ADD_LATE_COMMAND, UPDATE_CONTEXT_COMMAND}:
+        elif command == REMOVE_SAMPLES_COMMAND and not samples_removed:
+            for handle in (WAVE, DIST, SAW):
+                service.remove_metric(handle)
+            samples_removed = True
+        elif command not in {ADD_LATE_COMMAND, UPDATE_CONTEXT_COMMAND, REMOVE_SAMPLES_COMMAND}:
             print(f"[provider] unknown command: {command}", flush=True)
             continue
         print(f"{COMMAND_DONE_PREFIX} {command}", flush=True)

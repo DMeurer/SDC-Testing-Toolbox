@@ -14,6 +14,7 @@ from script_support import Report  # noqa: E402
 
 from sdctoolbox import consumer_service as consumer_module  # noqa: E402
 from sdctoolbox import provider_service as provider_module  # noqa: E402
+from sdctoolbox import sample_generation as sample_module  # noqa: E402
 from sdctoolbox.consumer_service import ConsumerService, DiscoveredDevice  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
@@ -95,8 +96,6 @@ def assert_provider_reset(service: ProviderService, discovery: Tracker, provider
                 "_pending_alert_sources",
                 "_actions",
                 "_sections",
-                "_waveform_phase",
-                "_pinned_samples",
             )
         ),
         "provider failure resets mutable lifecycle state",
@@ -206,9 +205,9 @@ def generator_start_failure() -> None:
         def start(self) -> None:
             raise RuntimeError("generator start failed")
 
-    with patch.object(provider_module.threading, "Thread", FailingThread):
+    with patch.object(sample_module.threading, "Thread", FailingThread):
         raises("generator start failed", service.start_generator)
-    check(service._waveform_thread is None, "generator start failure resets its thread reference")
+    check(service._sample_generator.thread is None, "generator start failure resets its thread reference")  # noqa: SLF001
     check(not service.generator_running, "generator start failure leaves no active generator")
 
 

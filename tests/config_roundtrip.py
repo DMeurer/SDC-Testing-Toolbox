@@ -31,6 +31,7 @@ from sdc11073.definitions_sdc import SdcV1Definitions  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 from sdc11073.mdib import ConsumerMdib  # noqa: E402
 from sdc11073.xml_types import pm_qnames as pm  # noqa: E402
+from sdc11073.xml_types import pm_types  # noqa: E402
 
 from sdctoolbox import config, constants  # noqa: E402
 from sdctoolbox.consumer_service import RemoteDevice  # noqa: E402
@@ -255,9 +256,14 @@ def complete_snapshot(service: ProviderService) -> dict:
         "location": service.get_location(),
         "patient": service.get_patient(),
         "provider_location": vars(service._provider._location).copy(),  # noqa: SLF001
+        "mds_operating_mode": service.mdib.entities.by_handle(constants.MDS_HANDLE).state.OperatingMode,
+        "mds_mode_before_demo": service._mds_mode_before_demo,  # noqa: SLF001
         "pending_alert_sources": set(service._pending_alert_sources),  # noqa: SLF001
-        "waveform_phase": dict(service._waveform_phase),  # noqa: SLF001
-        "pinned_samples": set(service._pinned_samples),  # noqa: SLF001
+        "waveform_phase": dict(service._sample_generator.phases),  # noqa: SLF001
+        "pinned_samples": set(service._sample_generator.pinned),  # noqa: SLF001
+        "quarantined_samples": set(service._sample_generator.quarantined),  # noqa: SLF001
+        "waveform_clocks": dict(service._sample_generator.next_waveform_times),  # noqa: SLF001
+        "sample_deadlines": dict(service._sample_generator.deadlines),  # noqa: SLF001
         "generator_running": service.generator_running,
     }
 
@@ -604,6 +610,73 @@ def check_operational_failure_rolls_back(report: Report, service: ProviderServic
         str(changed),
     )
     report.check(versions_advance, "provider rollback never rewinds MDIB version counters")
+
+
+def check_profile_demo_mode_lifecycle(report: Report, service: ProviderService) -> None:
+    """Replacement and compensation preserve the mode displaced by demo samples."""
+    service._set_mds_operating_mode(pm_types.MdsOperatingMode.SERVICE)  # noqa: SLF001
+    sample_profile = config.parse(
+        {"metrics": [{"label": "Profile waveform", "kind": "waveform"}]},
+    )
+    scalar_profile = config.parse(
+        {"metrics": [{"label": "Profile scalar", "kind": "number"}]},
+    )
+    config.apply_to(service, sample_profile)
+    config.apply_to(service, scalar_profile)
+    report.check(
+        service.mdib.entities.by_handle(constants.MDS_HANDLE).state.OperatingMode
+        is pm_types.MdsOperatingMode.SERVICE
+        and service._mds_mode_before_demo is None,  # noqa: SLF001
+        "replacing generated sample metrics with scalar metrics restores the prior MDS mode",
+    )
+
+    config.apply_to(service, sample_profile)
+    before = complete_snapshot(service)
+    before_graph = semantic_mdib(service.mdib)
+    failing_profile = config.parse(
+        {
+            "metrics": [{"label": "Failed scalar", "kind": "number"}],
+            "contexts": {"patient": {"given_name": "Failure"}},
+        },
+    )
+    original_set_patient = service.set_patient
+
+    def fail_patient(_info: PatientInfo) -> None:
+        raise RuntimeError("injected demo mode rollback failure")
+
+    service.set_patient = fail_patient
+    try:
+        try:
+            config.apply_to(service, failing_profile)
+        except config.ConfigError as exc:
+            report.check(
+                "injected demo mode rollback failure" in str(exc),
+                "sample-to-scalar replacement failure reaches profile compensation",
+                str(exc),
+            )
+        else:
+            report.check(False, "sample-to-scalar replacement failure reaches profile compensation", "accepted")
+    finally:
+        service.set_patient = original_set_patient
+
+    after = complete_snapshot(service)
+    versioned = {"mdib", "mdib_versions", "version_lookups", "descriptors", "context_states"}
+    changed = [name for name in before if name not in versioned and before[name] != after[name]]
+    report.check(
+        not changed
+        and semantic_mdib(service.mdib) == before_graph
+        and service.mdib.entities.by_handle(constants.MDS_HANDLE).state.OperatingMode
+        is pm_types.MdsOperatingMode.DEMO
+        and service._mds_mode_before_demo is pm_types.MdsOperatingMode.SERVICE,  # noqa: SLF001
+        "rollback restores both Demo mode and the non-demo mode it displaced",
+        str(changed),
+    )
+    service.remove_metric("m.profile_waveform")
+    report.check(
+        service.mdib.entities.by_handle(constants.MDS_HANDLE).state.OperatingMode
+        is pm_types.MdsOperatingMode.SERVICE,
+        "the rolled-back sample source still restores its original prior mode on removal",
+    )
 
 
 def check_connected_consumer_rollback(report: Report) -> None:  # noqa: PLR0915 - linear integration check
@@ -1583,6 +1656,7 @@ def run_checks(report: Report, workdir: Path) -> None:
     transactional.start()
     try:
         check_operational_failure_rolls_back(report, transactional)
+        check_profile_demo_mode_lifecycle(report, transactional)
     finally:
         transactional.stop()
 

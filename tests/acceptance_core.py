@@ -47,6 +47,7 @@ from acceptance_provider import (  # noqa: E402
     MODE,
     NOTE,
     PEER_INSTANCE,
+    REMOVE_SAMPLES_COMMAND,
     SAW,
     SAW_CYCLE,
     UPDATED_PATIENT,
@@ -97,6 +98,13 @@ def copy_descriptor_types(values: object) -> dict[str, str]:
 
 
 def copy_operation_modes(values: object) -> dict[str, str]:
+    return {
+        handle: str(getattr(state, "OperatingMode", ""))
+        for handle, state in dict(values).items()
+    }
+
+
+def copy_component_modes(values: object) -> dict[str, str]:
     return {
         handle: str(getattr(state, "OperatingMode", ""))
         for handle, state in dict(values).items()
@@ -205,6 +213,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
             metric_reports = CallbackRecorder(copy_metric_values)
             descriptor_reports = CallbackRecorder(copy_descriptor_types)
             operation_reports = CallbackRecorder(copy_operation_modes)
+            component_reports = CallbackRecorder(copy_component_modes)
             context_reports = CallbackRecorder(copy_contexts)
             alert_reports = CallbackRecorder(copy_alert_states)
             waveform_reports = CallbackRecorder(copy_waveform_blocks)
@@ -213,6 +222,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
                 new_descriptors_by_handle=descriptor_reports,
                 metrics_by_handle=metric_reports,
                 operation_by_handle=operation_reports,
+                component_by_handle=component_reports,
                 context_by_handle=context_reports,
                 alert_by_handle=alert_reports,
                 waveform_by_handle=waveform_reports,
@@ -598,6 +608,17 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
                     not wave.controllable,
                     "no operation targets it: BICEPS has none that writes a sample array",
                 )
+                wave_entity = remote.mdib.entities.by_handle(WAVE)
+                wave_value = wave_entity.state.MetricValue
+                mds = remote.mdib.entities.by_handle(constants.MDS_HANDLE)
+                report.check(
+                    wave_entity.descriptor.MetricAvailability == "Cont"
+                    and Decimal(str(wave_entity.descriptor.DeterminationPeriod)) == Decimal("0.1")
+                    and wave_value.MetricQuality.Mode == "Demo"
+                    and wave_value.DeterminationTime is not None
+                    and mds.state.OperatingMode == "Dmo",
+                    "waveform cadence, Demo quality, timestamp, and containing MDS mode arrive over the wire",
+                )
 
                 # The blocks have to join up. A sawtooth is used at the far end precisely
                 # because a break is arithmetic rather than a matter of opinion: consecutive
@@ -666,6 +687,47 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
                     "and so does DistributionRange",
                     dist.domain_text(),
                 )
+                dist_entity = remote.mdib.entities.by_handle(DIST)
+                dist_value = dist_entity.state.MetricValue
+                technical = dist_entity.descriptor.TechnicalRange[0]
+                domain = dist_entity.descriptor.DistributionRange
+                report.check(
+                    dist_entity.descriptor.MetricAvailability == "Intr"
+                    and Decimal(str(dist_entity.descriptor.DeterminationPeriod))
+                    == Decimal(str(constants.WAVEFORM_BLOCK_SECONDS))
+                    and dist_value.MetricQuality.Mode == "Demo"
+                    and dist_value.DeterminationTime is not None,
+                    "periodic distribution cadence and Demo quality arrive over the metric report path",
+                )
+                report.check(
+                    (technical.Lower, technical.Upper) == (Decimal("0"), Decimal("100"))
+                    and (domain.Lower, domain.Upper) == (Decimal("0"), Decimal("500"))
+                    and technical.StepWidth != domain.StepWidth,
+                    "over-wire TechnicalRange remains independent of the distribution domain",
+                )
+
+            component_cursor = component_reports.cursor()
+            send_provider_command(process, REMOVE_SAMPLES_COMMAND)
+            restored_mode = component_reports.wait_for(
+                lambda payload: payload.get(constants.MDS_HANDLE) == "Nml",
+                after=component_cursor,
+                timeout=REPORT_TIMEOUT,
+            )
+            report.check(
+                restored_mode is not None
+                and remote.mdib.entities.by_handle(constants.MDS_HANDLE).state.OperatingMode == "Nml",
+                "removing the final generated sample source restores MDS mode over the wire",
+                str(component_reports.events_after(component_cursor)),
+            )
+            report.check(
+                wait_for_output_line(
+                    output,
+                    f"{COMMAND_DONE_PREFIX} {REMOVE_SAMPLES_COMMAND}",
+                    REPORT_TIMEOUT,
+                ),
+                "the provider confirms completion of sample-source removal",
+                output.buffered_output,
+            )
 
             # ------------------------------------------------------------- alarms
             print("\n6. Alarms", flush=True)

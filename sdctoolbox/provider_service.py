@@ -7,13 +7,11 @@ SCO in sync. It has no GUI dependency; stage 2 puts a PySide6 skin on top of it.
 from __future__ import annotations
 
 import logging
-import math
-import random
 import threading
 import time
 from copy import deepcopy
 from dataclasses import dataclass
-from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal, localcontext
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from sdc11073.location import SdcLocation
@@ -25,32 +23,28 @@ from sdc11073.provider.providerimpl import RoleProviderComponents
 from sdc11073.wsdiscovery import WSDiscovery
 from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types import pm_types
-from sdc11073.xml_types.dataconverters import DecimalConverter
 from sdc11073.xml_types.dpws_types import ThisDeviceType, ThisModelType
 
 from . import constants
 from .handlers import apply_metric_value, make_activate_handler, make_set_handler
 from .model import (
     DEFAULT_PATIENT,
-    MAX_DECIMAL_WIRE_CHARS,
     ActionSpec,
     AlertSpec,
     Coding,
     DeviceInfo,
-    DistributionShape,
     LocationInfo,
     MetricKind,
     MetricSpec,
     PatientInfo,
     SignalInfo,
-    WaveformShape,
     coerce_metric_value,
     fixed_point_decimal,
     patient_info_from_biceps,
     patient_measurement_wire_value,
     slugify,
-    validate_decimal,
 )
+from .sample_generation import DemoSampleGenerator, SampleGeneratorSnapshot, domain_step
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -75,8 +69,9 @@ class _ConfigurationSnapshot:
     registered_operations: dict
     provider_location: SdcLocation
     pending_alert_sources: set[str]
-    waveform_phase: dict[str, float]
-    pinned_samples: set[str]
+    mds_operating_mode: pm_types.MdsOperatingMode
+    mds_mode_before_demo: pm_types.MdsOperatingMode | None
+    sample_generator: SampleGeneratorSnapshot
     generator_running: bool
 
 
@@ -145,28 +140,6 @@ def _reduce_alert_transition(
     return _AlertTransition(condition_present, tuple(signal_presences))
 
 
-# How much waveform data goes out per report. Samples are generated in blocks rather than
-# one at a time, because a report per sample would be all overhead: a 0.1s sample period
-# would mean ten SOAP messages a second per waveform.
-#
-# This sets latency, not smoothness. The consumer paces what it draws from SamplePeriod
-# (see widgets/plot.py), so a block only decides how stale the newest sample is when it
-# arrives. A quarter second is a reasonable trade against four SOAP messages per second
-# per waveform - and a preset with three of them is twelve.
-WAVEFORM_BLOCK_SECONDS = constants.WAVEFORM_BLOCK_SECONDS
-
-# How many samples a generated distribution spreads across its domain. This is what fixes
-# DistributionRange/StepWidth, because the two have to agree: a descriptor saying the
-# samples are 0.1 Hz apart while five arrive for a 50 Hz domain describes nothing real.
-DISTRIBUTION_BINS = 32
-
-# How wide the generated bell is, as a fraction of the domain.
-DISTRIBUTION_WIDTH = 0.12
-
-# How far the bell's peak moves per tick, as a fraction of a full sweep.
-DISTRIBUTION_DRIFT = 0.02
-
-
 def _coded_value(coding: Coding, label: str = "") -> pm_types.CodedValue:
     """Turn one of our Codings into the BICEPS element.
 
@@ -179,197 +152,6 @@ def _coded_value(coding: Coding, label: str = "") -> pm_types.CodedValue:
         coding_system=coding.coding_system,
         concept_descriptions=[pm_types.LocalizedText(text, lang="en-US")] if text else None,
     )
-
-
-def _domain_step(spec: MetricSpec) -> Decimal:
-    """The gap between two samples along a distribution's domain.
-
-    Quantised to six significant digits, because a domain that does not divide evenly by the
-    bin count produces a repeating decimal and that would go on the wire in full. Precision
-    follows the domain span so small valid domains do not collapse to a zero step.
-    """
-    # `or` would be wrong here: Decimal("0") is falsy, so a domain ending at zero - which
-    # -60..0 dB is - would silently become 1 and the step would be computed over 61.
-    upper = spec.domain_maximum if spec.domain_maximum is not None else Decimal("1")
-    lower = spec.domain_minimum if spec.domain_minimum is not None else Decimal("0")
-    span = upper - lower
-    if span <= 0:
-        msg = f"distribution domain must increase, not {lower} to {upper}"
-        raise ValueError(msg)
-    step = span / Decimal(DISTRIBUTION_BINS - 1)
-    quantum = Decimal(1).scaleb(step.adjusted() - 5)
-    step = step.quantize(quantum)
-    if step.is_zero():
-        msg = f"distribution domain {lower} to {upper} produces a zero StepWidth"
-        raise ValueError(msg)
-    wire_step = fixed_point_decimal(step.normalize(), "distribution StepWidth")
-    if Decimal(DecimalConverter.to_xml(wire_step)).is_zero():
-        msg = f"distribution domain {lower} to {upper} produces a zero StepWidth on the wire"
-        raise ValueError(msg)
-    return wire_step
-
-
-def _distribution_samples(spec: MetricSpec, phase: float) -> list[Decimal]:
-    """A block across the domain, in the shape the spec asks for.
-
-    A distribution is a shape over a domain rather than a signal in time, so the generated
-    one is whatever makes the device recognisable. It still moves, because a card that never
-    changes tells you nothing about whether reports are arriving.
-    """
-    sample_range = spec.generated_sample_range()
-    shape = spec.distribution_shape
-
-    samples = []
-    for index in range(DISTRIBUTION_BINS):
-        position = index / (DISTRIBUTION_BINS - 1)
-        samples.append(_generated_sample(spec, _bin_weight(shape, position, phase), sample_range))
-    return samples
-
-
-def _bin_weight(shape: DistributionShape, position: float, phase: float) -> float:
-    """How full one bin is, 0..1, at a position across the domain."""
-    if shape is DistributionShape.BELL:
-        centre = 0.5 + 0.3 * math.sin(phase * 2.0 * math.pi)
-        return _bump(position, centre, DISTRIBUTION_WIDTH)
-
-    if shape is DistributionShape.SPECTRUM:
-        # A fundamental near the low end with harmonics above it, each smaller than the
-        # last: what a power spectrum looks like, and why a spectrum is a distribution
-        # rather than a waveform.
-        fundamental = 0.12 + 0.02 * math.sin(phase * 2.0 * math.pi)
-        total = 0.0
-        for harmonic in range(1, 6):
-            total += (1.0 / harmonic**1.6) * _bump(position, fundamental * harmonic, 0.022)
-        return min(1.0, total)
-
-    if shape is DistributionShape.BIMODAL:
-        drift = 0.06 * math.sin(phase * 2.0 * math.pi)
-        return min(1.0, _bump(position, 0.28 + drift, 0.075) + 0.72 * _bump(position, 0.68 - drift, 0.09))
-
-    if shape is DistributionShape.DECAY:
-        wobble = 1.0 + 0.15 * math.sin(phase * 2.0 * math.pi)
-        return min(1.0, math.exp(-position * 3.2 * wobble))
-
-    # FLAT: a baseline with a little noise, for a reference channel.
-    return min(1.0, max(0.0, 0.5 + 0.05 * math.sin(phase * 2.0 * math.pi) + random.uniform(-0.04, 0.04)))  # noqa: S311
-
-
-def _bump(position: float, centre: float, width: float) -> float:
-    """A gaussian bump, clamped to something a bin can hold."""
-    offset = position - centre
-    return math.exp(-(offset * offset) / (2.0 * width * width))
-
-
-def _shape_fraction(shape: WaveformShape, position: float) -> float:  # noqa: PLR0911
-    """Where the curve sits between its ends, at a position through one cycle.
-
-    Returns 0..1. The physiological ones are caricatures - drawn so a person recognises the
-    signal and a consumer has something with structure to render - not clinical models.
-    """
-    if shape is WaveformShape.SINE:
-        return (math.sin(position * 2.0 * math.pi) + 1.0) / 2.0
-    if shape is WaveformShape.SAWTOOTH:
-        return position
-    if shape is WaveformShape.SQUARE:
-        return 1.0 if position < 0.5 else 0.0  # noqa: PLR2004
-    if shape is WaveformShape.NOISE:
-        return random.random()  # noqa: S311 - a test signal, not a secret
-
-    if shape is WaveformShape.PULSE:
-        # Steep systolic upstroke, dicrotic notch, slow diastolic decay.
-        if position < 0.15:  # noqa: PLR2004
-            return _ease(position / 0.15)
-        if position < 0.30:  # noqa: PLR2004
-            return 1.0 - 0.45 * _ease((position - 0.15) / 0.15)
-        if position < 0.38:  # noqa: PLR2004
-            # The notch: the aortic valve closing puts a bump in the downslope.
-            return 0.55 + 0.12 * math.sin((position - 0.30) / 0.08 * math.pi)
-        return 0.67 * math.exp(-(position - 0.38) * 4.0)
-
-    if shape is WaveformShape.ARTERIAL:
-        # The same beat, but blood pressure never returns to zero.
-        return 0.35 + 0.65 * _shape_fraction(WaveformShape.PULSE, position)
-
-    if shape is WaveformShape.ECG:
-        return _ecg_fraction(position)
-
-    if shape is WaveformShape.RESPIRATION:
-        # Rise, plateau, passive fall, pause. Inspiration is shorter than expiration.
-        if position < 0.30:  # noqa: PLR2004
-            return _ease(position / 0.30)
-        if position < 0.40:  # noqa: PLR2004
-            return 1.0
-        if position < 0.75:  # noqa: PLR2004
-            return 1.0 - _ease((position - 0.40) / 0.35)
-        return 0.0
-
-    # FLOW: inspiratory limb positive, expiratory negative, so it crosses the middle.
-    if position < 0.30:  # noqa: PLR2004
-        return 0.5 + 0.5 * math.sin(position / 0.30 * math.pi)
-    if position < 0.75:  # noqa: PLR2004
-        return 0.5 - 0.4 * math.sin((position - 0.30) / 0.45 * math.pi)
-    return 0.5
-
-
-def _ease(fraction: float) -> float:
-    """A smooth 0..1 ramp, so a caricature does not look like it was drawn with a ruler."""
-    clamped = min(1.0, max(0.0, fraction))
-    return (1.0 - math.cos(clamped * math.pi)) / 2.0
-
-
-# Where each feature of the ECG sits in a beat, how tall it is, and how wide.
-# The QRS is narrow and large; P and T are broad and small. Baseline sits low so the
-# S wave has somewhere to go.
-_ECG_FEATURES = (
-    (0.16, 0.13, 0.035),  # P wave
-    (0.36, -0.10, 0.012),  # Q
-    (0.40, 0.85, 0.012),  # R
-    (0.44, -0.22, 0.014),  # S
-    (0.62, 0.22, 0.055),  # T wave
-)
-_ECG_BASELINE = 0.25
-
-
-def _ecg_fraction(position: float) -> float:
-    """A recognisable PQRST complex, as a sum of bumps on a baseline."""
-    value = _ECG_BASELINE
-    for centre, height, width in _ECG_FEATURES:
-        offset = position - centre
-        value += height * math.exp(-(offset * offset) / (2.0 * width * width))
-    return min(1.0, max(0.0, value))
-
-
-def _generated_sample(
-    spec: MetricSpec,
-    fraction: float,
-    sample_range: tuple[Decimal, Decimal],
-) -> Decimal:
-    """Map a normalized shape value to the metric's bounded resolution grid."""
-    low, high = sample_range
-    if low == high:
-        return low
-    if not math.isfinite(fraction):
-        msg = f"generated sample fraction must be finite, not {fraction}"
-        raise ValueError(msg)
-
-    # A maximum-only range has no lower descriptor endpoint to define its grid, so count
-    # down from the declared maximum. Every other range counts up from its lower endpoint.
-    anchor_at_high = spec.minimum is None and spec.maximum is not None
-    normalized = Decimal(str(min(1.0, max(0.0, fraction))))
-    with localcontext() as context:
-        # Bounds and resolution can each occupy the full permitted fixed-point width.
-        context.prec = MAX_DECIMAL_WIRE_CHARS * 2 + 32
-        step_count = ((high - low) / spec.resolution).to_integral_value(rounding=ROUND_FLOOR)
-        if step_count == 0:
-            return high if anchor_at_high else low
-        distance = (Decimal(1) - normalized) if anchor_at_high else normalized
-        step_index = (distance * step_count).to_integral_value(rounding=ROUND_HALF_UP)
-        sample = high - step_index * spec.resolution if anchor_at_high else low + step_index * spec.resolution
-
-    if not low <= sample <= high:
-        msg = f"generated sample {sample} escaped range {low} to {high}"
-        raise ArithmeticError(msg)
-    return sample
 
 
 class ProviderService:
@@ -424,14 +206,17 @@ class ProviderService:
         # service lock protects the set; the non-blocking lock elects exactly one drainer.
         self._pending_alert_sources: set[str] = set()
         self._alert_evaluator_lock = threading.Lock()
-        # Waveform generation: one thread for every waveform, and where each curve had
-        # got to, so a new block continues rather than restarting.
-        self._waveform_thread: threading.Thread | None = None
-        self._waveform_stop = threading.Event()
-        self._waveform_phase: dict[str, float] = {}
-        # Sample arrays whose block was set by hand, and which the generator leaves alone.
-        self._pinned_samples: set[str] = set()
         self._lock = threading.RLock()
+        self._profile_import_active = False
+        self._generator_start_deferred = False
+        self._mds_mode_before_demo: pm_types.MdsOperatingMode | None = None
+        self._adapter: Sdc11073V3Adapter | None = None
+        self._sample_generator = DemoSampleGenerator(
+            lambda: self.mdib,
+            lambda: self._specs,
+            self._lock,
+            instance_name,
+        )
 
     # -- lifecycle -----------------------------------------------------------------
 
@@ -553,9 +338,8 @@ class ProviderService:
             self._pending_alert_sources.clear()
             self._actions.clear()
             self._sections.clear()
-            self._waveform_phase.clear()
-            self._pinned_samples.clear()
-            self._waveform_thread = None
+            self._sample_generator.clear()
+            self._mds_mode_before_demo = None
         logger.info("provider %r stopped", self.instance_name)
         if first_error is not None:
             raise first_error.with_traceback(first_traceback)
@@ -578,8 +362,9 @@ class ProviderService:
                 registered_operations=dict(self._sco._registered_operations),  # noqa: SLF001
                 provider_location=deepcopy(self._provider._location),  # noqa: SLF001
                 pending_alert_sources=set(self._pending_alert_sources),
-                waveform_phase=dict(self._waveform_phase),
-                pinned_samples=set(self._pinned_samples),
+                mds_operating_mode=mdib.entities.by_handle(constants.MDS_HANDLE).state.OperatingMode,
+                mds_mode_before_demo=self._mds_mode_before_demo,
+                sample_generator=self._sample_generator.snapshot(),
                 generator_running=self.generator_running,
             )
 
@@ -598,8 +383,8 @@ class ProviderService:
             self._actions = snapshot.actions
             self._sections = snapshot.sections
             self._pending_alert_sources = snapshot.pending_alert_sources
-            self._waveform_phase = snapshot.waveform_phase
-            self._pinned_samples = snapshot.pinned_samples
+            self._mds_mode_before_demo = snapshot.mds_mode_before_demo
+            self._sample_generator.restore(snapshot.sample_generator)
             self._sco._registered_operations = snapshot.registered_operations  # noqa: SLF001
             self._provider._location = snapshot.provider_location  # noqa: SLF001
 
@@ -665,6 +450,7 @@ class ProviderService:
             for operation in snapshot.registered_operations.values():
                 operation._operation_entity = mdib.entities.by_handle(operation.handle)  # noqa: SLF001
             self._coordinate_alert_transition()
+            self._set_mds_operating_mode(snapshot.mds_operating_mode)
 
         if location_changed:
             self._provider.publish()
@@ -697,8 +483,8 @@ class ProviderService:
             self._actions = snapshot.actions
             self._sections = snapshot.sections
             self._pending_alert_sources = snapshot.pending_alert_sources
-            self._waveform_phase = snapshot.waveform_phase
-            self._pinned_samples = snapshot.pinned_samples
+            self._mds_mode_before_demo = snapshot.mds_mode_before_demo
+            self._sample_generator.restore(snapshot.sample_generator)
             self._sco._registered_operations = snapshot.registered_operations  # noqa: SLF001
 
             if added_roots:
@@ -733,6 +519,7 @@ class ProviderService:
             )
             self._provider._location = snapshot.provider_location  # noqa: SLF001
             self._coordinate_alert_transition()
+            self._set_mds_operating_mode(snapshot.mds_operating_mode)
 
         if location_changed:
             self._provider.publish()
@@ -769,7 +556,7 @@ class ProviderService:
                     msg = f"distribution domain must increase, not {lower} to {upper}"
                     raise ValueError(msg)
                 # Compute this before lazily creating a section or any metric entity.
-                _domain_step(spec)
+                domain_step(spec)
             if spec.is_sample_array and spec.initial_value is not None:
                 msg = f"initial_value is not meaningful for {spec.kind.value} metrics; use samples instead"
                 raise ValueError(msg)
@@ -787,6 +574,8 @@ class ProviderService:
             self._apply_spec_to_descriptor(entity.descriptor, spec)
 
             self._create_entities([entity])
+            if spec.is_sample_array:
+                self._set_demo_mode()
 
             self._specs[handle] = spec
             logger.info("added %s metric %r (%s)", spec.kind.value, spec.label, handle)
@@ -857,8 +646,7 @@ class ProviderService:
                 self._alert_signals.pop(alert_handle, None)
             self._specs.pop(handle, None)
             self._pending_alert_sources.discard(handle)
-            self._waveform_phase.pop(handle, None)
-            self._pinned_samples.discard(handle)
+            self._sample_generator.forget(handle)
             for entity in section_entities:
                 if entity.node_type == pm.ChannelDescriptor:
                     self._forget_section(entity.handle)
@@ -876,6 +664,8 @@ class ProviderService:
                     entity = self.mdib.entities.by_handle(removal_handle)
                     if entity is not None:
                         mgr.remove_entity(entity)
+            self._restore_mds_mode_without_demo_metrics()
+
             logger.info("removed metric %s", handle)
 
     def _remove_empty_sections(self) -> None:
@@ -1669,34 +1459,7 @@ class ProviderService:
             if not spec.is_sample_array:
                 msg = f"{handle!r} is a {spec.kind.value}, which holds one value; use set_value"
                 raise ValueError(msg)
-            if spec.kind is MetricKind.DISTRIBUTION and len(samples) != DISTRIBUTION_BINS:
-                msg = f"a distribution needs exactly {DISTRIBUTION_BINS} samples, not {len(samples)}"
-                raise ValueError(msg)
-
-            entity = self._apply_samples(handle, samples)
-            # Setting a block by hand takes the metric off the generator. Without this the
-            # next tick would overwrite it, which makes set_samples look broken.
-            self._pinned_samples.add(handle)
-            if spec.kind is MetricKind.WAVEFORM:
-                with self.mdib.rt_sample_state_transaction() as mgr:
-                    mgr.write_entity(entity)
-            else:
-                with self.mdib.metric_state_transaction() as mgr:
-                    mgr.write_entity(entity)
-
-    def _apply_samples(self, handle: str, samples: Sequence[Decimal]):  # noqa: ANN202 - an Entity
-        """Put a block on a state without committing it. Caller opens the transaction."""
-        prepared = [fixed_point_decimal(validate_decimal(sample, "sample"), "sample") for sample in samples]
-        entity = self.mdib.entities.by_handle(handle)
-        if entity is None:
-            msg = f"no metric with handle {handle!r}"
-            raise KeyError(msg)
-        # mk_metric_value raises if there already is one, so only ever call it once.
-        if entity.state.MetricValue is None:
-            entity.state.mk_metric_value()
-        entity.state.MetricValue.Samples = prepared
-        entity.state.MetricValue.DeterminationTime = time.time()
-        return entity
+            self._sample_generator.publish_manual(handle, spec, samples)
 
     def get_samples(self, handle: str) -> list[Decimal]:
         """The samples currently published for a sample-array metric."""
@@ -1707,165 +1470,25 @@ class ProviderService:
         return list(getattr(value, "Samples", None) or [])
 
     def start_generator(self) -> None:
-        """Begin generating samples for every sample array this device publishes.
-
-        Both kinds, not just waveforms: a distribution with nothing driving it shows an
-        empty card for ever, and until this existed there was no way to fill one from the
-        window at all. Pushing a block with set_samples takes that metric off the generator,
-        so your own data is not overwritten on the next tick.
-
-        One thread drives all of them. sdc11073 ships a WaveformProviderProtocol and no
-        implementation of it, and a provider configured with none must be started with
-        start_rtsample_loop=False - so rather than write that protocol, this walks the
-        waveforms itself and writes their states. The report comes out either way, because
-        the provider builds it from the transaction result.
-        """
-        with self._lock:
-            if self._waveform_thread is not None:
-                return
-            self._waveform_stop.clear()
-            thread = threading.Thread(
-                target=self._run_waveforms,
-                name=f"samples-{self.instance_name}",
-                daemon=True,
-            )
-            self._waveform_thread = thread
-            try:
-                thread.start()
-            except Exception:
-                self._waveform_thread = None
-                self._waveform_stop.set()
-                raise
-            logger.info("sample generator started")
+        """Begin generating samples for every unpinned sample-array metric."""
+        self._sample_generator.start()
 
     def stop_generator(self) -> None:
-        """Stop generating samples and wait for the thread to notice."""
-        thread = self._waveform_thread
-        if thread is None:
-            return
-        self._waveform_stop.set()
-        try:
-            thread.join(timeout=5.0)
-            if thread.is_alive():
-                msg = "sample generator did not stop within 5 seconds"
-                raise RuntimeError(msg)
-        finally:
-            self._waveform_thread = None
-        logger.info("sample generator stopped")
+        """Stop generating samples and wait for its worker thread."""
+        self._sample_generator.stop()
 
     @property
     def generator_running(self) -> bool:
         """Whether the generator thread is alive."""
-        return self._waveform_thread is not None and self._waveform_thread.is_alive()
-
-    def _run_waveforms(self) -> None:
-        """Push one block per sample array, per tick, until asked to stop.
-
-        Every waveform goes into **one** transaction, so the tick produces one
-        WaveformStream carrying all of them rather than one report each. sdc11073 builds
-        that report from TransactionResult.rt_updates, which is already a list.
-        """
-        failure_logged = False
-        while not self._waveform_stop.is_set():
-            started = time.monotonic()
-            try:
-                self._publish_one_block()
-                failure_logged = False
-            except Exception:
-                if not failure_logged:
-                    logger.exception("sample generator failed; retrying")
-                    failure_logged = True
-            # Sleep the remainder of the block, so generation keeps real time rather than
-            # drifting by however long the writes took.
-            self._waveform_stop.wait(max(0.0, WAVEFORM_BLOCK_SECONDS - (time.monotonic() - started)))
+        return self._sample_generator.running
 
     def _publish_one_block(self) -> None:
-        """Advance every generated sample array by one block and send them.
-
-        Two transactions, not one, and that is forced by the standard rather than chosen:
-        sdc11073 sorts states into buckets by type, and a distribution state is an ordinary
-        metric state. Putting it in the rt transaction would not make it a waveform, it
-        would just be in the wrong place.
-        """
-        with self._lock:
-            waveforms = []
-            distributions = []
-            for handle, spec in self._specs.items():
-                if not spec.is_sample_array or handle in self._pinned_samples:
-                    continue
-                if spec.kind is MetricKind.WAVEFORM:
-                    waveforms.append((handle, spec))
-                else:
-                    distributions.append((handle, spec))
-            if not waveforms and not distributions:
-                return
-
-            advanced: dict[str, float] = {}
-            wave_entities = []
-            for handle, spec in waveforms:
-                try:
-                    block, next_phase = self._next_block(handle, spec)
-                    entity = self._try_apply(handle, block)
-                except Exception:  # noqa: BLE001 - quarantine a permanently broken metric
-                    self._quarantine_generation(handle)
-                    continue
-                if entity is not None:
-                    wave_entities.append(entity)
-                    advanced[handle] = next_phase
-
-            dist_entities = []
-            for handle, spec in distributions:
-                phase = self._waveform_phase.get(handle, 0.0)
-                try:
-                    entity = self._try_apply(handle, _distribution_samples(spec, phase))
-                except Exception:  # noqa: BLE001 - quarantine a permanently broken metric
-                    self._quarantine_generation(handle)
-                    continue
-                if entity is not None:
-                    dist_entities.append(entity)
-                    advanced[handle] = (phase + DISTRIBUTION_DRIFT) % 1.0
-
-            if wave_entities:
-                with self.mdib.rt_sample_state_transaction() as mgr:
-                    for entity in wave_entities:
-                        mgr.write_entity(entity)
-            if dist_entities:
-                with self.mdib.metric_state_transaction() as mgr:
-                    for entity in dist_entities:
-                        mgr.write_entity(entity)
-
-            # Only once the blocks are out. Advancing a phase for samples that were never
-            # published would leave a step in the curve the size of the lost block.
-            self._waveform_phase.update(advanced)
-
-    def _try_apply(self, handle: str, block: list[Decimal]):  # noqa: ANN202 - an Entity or None
-        """Stage a block, or None if the metric went away between listing and writing."""
-        try:
-            return self._apply_samples(handle, block)
-        except KeyError:
-            logger.debug("skipped a block for %s", handle, exc_info=True)
-            return None
-
-    def _quarantine_generation(self, handle: str) -> None:
-        """Disable one broken metric after logging its generation failure once."""
-        self._pinned_samples.add(handle)
-        logger.exception("sample generation failed for %s; generation disabled", handle)
+        """Publish one immediately due block for each healthy generated source."""
+        self._sample_generator.publish_once()
 
     def _next_block(self, handle: str, spec: MetricSpec) -> tuple[list[Decimal], float]:
-        """The next block for one waveform, and the phase it leaves off at.
-
-        Deliberately does not store the phase: see _publish_one_block.
-        """
-        cycle = spec.waveform_cycle_sample_count()
-        count = spec.generated_waveform_block_sample_count()
-        sample_range = spec.generated_sample_range()
-
-        phase = self._waveform_phase.get(handle, 0.0)
-        block = [
-            _generated_sample(spec, _shape_fraction(spec.shape, (phase + index / cycle) % 1.0), sample_range)
-            for index in range(count)
-        ]
-        return block, (phase + count / cycle) % 1.0
+        """Return the next waveform block without advancing its committed phase."""
+        return self._sample_generator.next_block(handle, spec)
 
     # -- actions -------------------------------------------------------------------
 
@@ -2297,17 +1920,30 @@ class ProviderService:
         descriptor.MetricCategory = (
             pm_types.MetricCategory.SETTING if spec.controllable else pm_types.MetricCategory.MEASUREMENT
         )
-        descriptor.MetricAvailability = pm_types.MetricAvailability.INTERMITTENT
+        descriptor.MetricAvailability = (
+            pm_types.MetricAvailability.CONTINUOUS
+            if spec.kind is MetricKind.WAVEFORM
+            else pm_types.MetricAvailability.INTERMITTENT
+        )
+        if spec.kind is MetricKind.WAVEFORM:
+            descriptor.DeterminationPeriod = float(spec.sample_period)
+        elif spec.kind is MetricKind.DISTRIBUTION:
+            descriptor.DeterminationPeriod = constants.WAVEFORM_BLOCK_SECONDS
 
         if spec.kind is MetricKind.NUMBER or spec.is_sample_array:
             descriptor.Resolution = fixed_point_decimal(spec.resolution, "resolution")
-            if spec.has_range:
+            if spec.has_range or spec.is_sample_array:
                 # What the metric itself can produce. Distinct from the AllowedRange we put
                 # on the set operation, which is what a remote caller may ask for.
+                lower, upper = (
+                    spec.generated_sample_range()
+                    if spec.is_sample_array
+                    else (spec.minimum, spec.maximum)
+                )
                 descriptor.TechnicalRange = [
                     pm_types.Range(
-                        lower=(fixed_point_decimal(spec.minimum, "minimum") if spec.minimum is not None else None),
-                        upper=(fixed_point_decimal(spec.maximum, "maximum") if spec.maximum is not None else None),
+                        lower=fixed_point_decimal(lower, "minimum") if lower is not None else None,
+                        upper=fixed_point_decimal(upper, "maximum") if upper is not None else None,
                         step_width=fixed_point_decimal(spec.resolution, "resolution"),
                     ),
                 ]
@@ -2329,7 +1965,7 @@ class ProviderService:
                 # StepWidth is how far apart two samples sit along the domain, so it is
                 # fixed by how many we send. Passing Resolution here made the descriptor
                 # claim 501 samples across a 0..50 Hz domain while five were being sent.
-                step_width=_domain_step(spec),
+                step_width=domain_step(spec),
             )
 
     def _set_operating_mode(self, operation_handle: str, mode: pm_types.OperatingMode) -> None:
@@ -2348,6 +1984,33 @@ class ProviderService:
             return
         entity.descriptor.MetricCategory = category
         with self.mdib.descriptor_transaction() as mgr:
+            mgr.write_entity(entity)
+
+    def _set_demo_mode(self) -> None:
+        """Keep the containing MDS coherent with generated Demo metric values."""
+        current = self.mdib.entities.by_handle(constants.MDS_HANDLE).state.OperatingMode
+        if current is not pm_types.MdsOperatingMode.DEMO:
+            self._mds_mode_before_demo = current
+        self._set_mds_operating_mode(pm_types.MdsOperatingMode.DEMO)
+
+    def _restore_mds_mode_without_demo_metrics(self) -> None:
+        """Restore the mode displaced by generation after its last source is gone."""
+        if any(spec.is_sample_array for spec in self._specs.values()):
+            return
+        prior_mode = self._mds_mode_before_demo
+        self._mds_mode_before_demo = None
+        if prior_mode is None:
+            return
+        mds = self.mdib.entities.by_handle(constants.MDS_HANDLE)
+        if mds is not None and mds.state.OperatingMode is pm_types.MdsOperatingMode.DEMO:
+            self._set_mds_operating_mode(prior_mode)
+
+    def _set_mds_operating_mode(self, mode: pm_types.MdsOperatingMode) -> None:
+        entity = self.mdib.entities.by_handle(constants.MDS_HANDLE)
+        if entity is None or entity.state.OperatingMode is mode:
+            return
+        entity.state.OperatingMode = mode
+        with self.mdib.component_state_transaction() as mgr:
             mgr.write_entity(entity)
 
     def _set_allowed_range(self, operation_handle: str, spec: MetricSpec) -> None:

@@ -24,6 +24,7 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -66,12 +67,15 @@ from sdctoolbox.model import (  # noqa: E402
     WaveformShape,
 )
 from sdctoolbox.provider_service import (  # noqa: E402
-    DISTRIBUTION_BINS,
     ProviderService,
     _AlertTransition,
-    _distribution_samples,
     _reduce_alert_transition,
     _SignalTransitionInput,
+)
+from sdctoolbox.sample_generation import (  # noqa: E402
+    DISTRIBUTION_BINS,
+    DemoSampleGenerator,
+    distribution_samples,
 )
 
 
@@ -178,8 +182,8 @@ def check_sample_arrays(report: Report, service: ProviderService) -> None:
     cycle_before_handles = {handle for handle, _ in service.mdib.entities.items()}
     cycle_before_metrics = service.list_metrics()
     cycle_before_sections = service.sections()
-    cycle_before_phase = dict(service._waveform_phase)
-    cycle_before_pinned = set(service._pinned_samples)
+    cycle_before_phase = dict(service._sample_generator.phases)  # noqa: SLF001
+    cycle_before_pinned = set(service._sample_generator.pinned)  # noqa: SLF001
     cycle_before_generator = service.generator_running
     invalid_cycles = (None, Decimal("40"), True, 1)
     cycle_rejections = 0
@@ -194,8 +198,8 @@ def check_sample_arrays(report: Report, service: ProviderService) -> None:
         and {handle for handle, _ in service.mdib.entities.items()} == cycle_before_handles
         and service.list_metrics() == cycle_before_metrics
         and service.sections() == cycle_before_sections
-        and service._waveform_phase == cycle_before_phase
-        and service._pinned_samples == cycle_before_pinned
+        and service._sample_generator.phases == cycle_before_phase  # noqa: SLF001
+        and service._sample_generator.pinned == cycle_before_pinned  # noqa: SLF001
         and service.generator_running == cycle_before_generator,
         "mutated invalid cycle lengths fail before descriptor, bookkeeping, or generator mutation",
         f"{cycle_rejections} rejections",
@@ -360,13 +364,13 @@ def check_sample_arrays(report: Report, service: ProviderService) -> None:
                 ):
                     spec.shape = shape
                     for phase in (0.0, 0.137, 0.91):
-                        service._waveform_phase["m.range_probe"] = phase
+                        service._sample_generator.phases["m.range_probe"] = phase  # noqa: SLF001
                         blocks.append(service._next_block("m.range_probe", spec)[0])
-                service._waveform_phase.pop("m.range_probe", None)
+                service._sample_generator.phases.pop("m.range_probe", None)  # noqa: SLF001
             else:
                 for shape in DistributionShape:
                     spec.distribution_shape = shape
-                    blocks.extend(_distribution_samples(spec, phase) for phase in (0.0, 0.137, 0.91))
+                    blocks.extend(distribution_samples(spec, phase) for phase in (0.0, 0.137, 0.91))
             values = [sample for block in blocks for sample in block]
             bounded = all(low <= sample <= high for sample in values)
             finite = all(sample.is_finite() and math.isfinite(float(sample)) for sample in values)
@@ -510,6 +514,298 @@ def check_sample_arrays(report: Report, service: ProviderService) -> None:
     service.remove_metric(plain)
     service.remove_metric(dist)
     service.remove_metric(wave)
+
+
+def check_demo_mode_lifecycle(report: Report, service: ProviderService) -> None:
+    print("\n2a. Generated sample sources own the MDS demo mode transition")
+
+    service._set_mds_operating_mode(pm_types.MdsOperatingMode.SERVICE)  # noqa: SLF001
+    with patch.object(service, "start_generator", lambda: None):
+        waveform = service.add_metric(
+            MetricSpec(label="Mode waveform", kind=MetricKind.WAVEFORM),
+        )
+        distribution = service.add_metric(
+            MetricSpec(label="Mode distribution", kind=MetricKind.DISTRIBUTION),
+        )
+    service.remove_metric(waveform)
+    report.check(
+        service.mdib.entities.by_handle(constants.MDS_HANDLE).state.OperatingMode
+        is pm_types.MdsOperatingMode.DEMO,
+        "removing one generated sample source keeps Demo mode while another remains",
+    )
+    service.remove_metric(distribution)
+    report.check(
+        service.mdib.entities.by_handle(constants.MDS_HANDLE).state.OperatingMode
+        is pm_types.MdsOperatingMode.SERVICE,
+        "removing the final generated sample source restores the prior non-demo mode",
+    )
+    service._set_mds_operating_mode(pm_types.MdsOperatingMode.NORMAL)  # noqa: SLF001
+
+
+def check_sample_publication_semantics(report: Report, service: ProviderService) -> None:  # noqa: PLR0915
+    print("\n2b. Sample timing, quality, and failure isolation")
+
+    clock = [1_000.0]
+    monotonic = [50.0]
+    generator = DemoSampleGenerator(
+        lambda: service.mdib,
+        lambda: service._specs,  # noqa: SLF001 - exercising the extracted component
+        service._lock,  # noqa: SLF001
+        "deterministic",
+        clock=lambda: clock[0],
+        monotonic=lambda: monotonic[0],
+    )
+    original_generator = service._sample_generator  # noqa: SLF001
+    service._sample_generator = generator  # noqa: SLF001
+    handles = []
+    try:
+        with patch.object(service, "start_generator", lambda: None):
+            fast = service.add_metric(
+                MetricSpec(
+                    label="Fast deterministic waveform",
+                    kind=MetricKind.WAVEFORM,
+                    sample_period=Decimal("0.06"),
+                    shape=WaveformShape.SAWTOOTH,
+                ),
+            )
+            slow = service.add_metric(
+                MetricSpec(
+                    label="Slow deterministic waveform",
+                    kind=MetricKind.WAVEFORM,
+                    sample_period=Decimal("0.1"),
+                    shape=WaveformShape.SAWTOOTH,
+                ),
+            )
+            distribution = service.add_metric(
+                MetricSpec(
+                    label="Deterministic distribution",
+                    kind=MetricKind.DISTRIBUTION,
+                    minimum=Decimal("-10"),
+                    maximum=Decimal("10"),
+                    domain_minimum=Decimal("100"),
+                    domain_maximum=Decimal("410"),
+                ),
+            )
+        handles.extend((fast, slow, distribution))
+
+        descriptors = {
+            handle: service.mdib.entities.by_handle(handle).descriptor
+            for handle in handles
+        }
+        mds = service.mdib.entities.by_handle(constants.MDS_HANDLE)
+        report.check(
+            descriptors[fast].MetricAvailability is pm_types.MetricAvailability.CONTINUOUS
+            and descriptors[slow].DeterminationPeriod == 0.1
+            and descriptors[distribution].MetricAvailability is pm_types.MetricAvailability.INTERMITTENT
+            and descriptors[distribution].DeterminationPeriod == constants.WAVEFORM_BLOCK_SECONDS,
+            "generated waveform and periodic distribution descriptors advertise their distinct cadence",
+        )
+        dist_range = descriptors[distribution].DistributionRange
+        technical_range = descriptors[distribution].TechnicalRange[0]
+        report.check(
+            (technical_range.Lower, technical_range.Upper) == (Decimal("-10"), Decimal("10"))
+            and (dist_range.Lower, dist_range.Upper) == (Decimal("100"), Decimal("410"))
+            and technical_range.StepWidth == descriptors[distribution].Resolution
+            and dist_range.StepWidth != technical_range.StepWidth,
+            "distribution sample-value TechnicalRange remains separate from its domain axis",
+        )
+        report.check(
+            service.mdib.entities.by_handle(constants.MDS_HANDLE).state.OperatingMode
+            is pm_types.MdsOperatingMode.DEMO,
+            "the MDS containing generated demo metrics reports demo operating mode",
+        )
+        mds = service.mdib.entities.by_handle(constants.MDS_HANDLE)
+        mds.state.OperatingMode = pm_types.MdsOperatingMode.NORMAL
+        with service.mdib.component_state_transaction() as manager:
+            manager.write_entity(mds)
+        with patch.object(service, "start_generator", lambda: None):
+            mode_probe = service.add_metric(
+                MetricSpec(label="Demo mode probe", kind=MetricKind.WAVEFORM),
+            )
+        handles.append(mode_probe)
+        report.check(
+            service.mdib.entities.by_handle(constants.MDS_HANDLE).state.OperatingMode
+            is pm_types.MdsOperatingMode.DEMO,
+            "adding a generated metric restores a coherent containing MDS demo mode",
+        )
+
+        transactions = []
+        original_rt = service.mdib.rt_sample_state_transaction
+        original_metric = service.mdib.metric_state_transaction
+
+        @contextmanager
+        def record_rt(*, set_determination_time: bool = False):
+            transactions.append("waveform")
+            with original_rt(set_determination_time=set_determination_time) as manager:
+                yield manager
+
+        @contextmanager
+        def record_metric(*, set_determination_time: bool = True):
+            transactions.append("distribution")
+            with original_metric(set_determination_time=set_determination_time) as manager:
+                yield manager
+
+        with (
+            patch.object(service.mdib, "rt_sample_state_transaction", record_rt),
+            patch.object(service.mdib, "metric_state_transaction", record_metric),
+        ):
+            generator.publish_once()
+        first_times = {
+            handle: service.mdib.entities.by_handle(handle).state.MetricValue.DeterminationTime
+            for handle in handles
+        }
+        first_samples = {
+            handle: tuple(service.get_samples(handle))
+            for handle in (fast, slow)
+        }
+        report.check(
+            transactions == ["waveform", "distribution"],
+            "a mixed generation tick uses one waveform transaction and one metric transaction",
+            str(transactions),
+        )
+        report.check(
+            first_times[fast] == 1_000.0 - 3 * 0.06
+            and first_times[slow] == 1_000.0 - 0.1
+            and first_times[distribution] == 1_000.0,
+            "waveform DeterminationTime identifies the first sample while distribution time identifies its frame",
+            str(first_times),
+        )
+        report.check(
+            all(
+                service.mdib.entities.by_handle(handle).state.MetricValue.MetricQuality.Mode
+                is pm_types.GenerationMode.DEMO
+                for handle in handles
+            ),
+            "automatically generated sample arrays carry Demo quality",
+        )
+
+        clock[0] = 5_000.0
+        monotonic[0] = 51.0
+        generator.publish_once()
+        second_times = {
+            handle: service.mdib.entities.by_handle(handle).state.MetricValue.DeterminationTime
+            for handle in (fast, slow)
+        }
+        second_samples = {
+            handle: tuple(service.get_samples(handle))
+            for handle in (fast, slow)
+        }
+        report.check(
+            second_times[fast] == first_times[fast] + len(first_samples[fast]) * 0.06
+            and second_times[slow] == first_times[slow] + len(first_samples[slow]) * 0.1
+            and all(second_samples.values()),
+            "each waveform clock advances by its own SamplePeriod without wall-clock gaps or overlaps",
+            str(second_times),
+        )
+
+        phase_before = dict(generator.phases)
+        values_before = {handle: tuple(service.get_samples(handle)) for handle in handles}
+
+        @contextmanager
+        def fail_waveform_transaction(**_kwargs):
+            raise RuntimeError("injected waveform transaction failure")
+            yield  # pragma: no cover
+
+        monotonic[0] = 52.0
+        original_publish_waveforms = generator._publisher.publish_waveforms  # noqa: SLF001
+        publication_attempts = [0]
+
+        def fail_waveform_batch(prepared):  # noqa: ANN001, ANN202
+            publication_attempts[0] += 1
+            if publication_attempts[0] == 1:
+                raise RuntimeError("injected waveform batch failure")
+            if prepared[0].handle == fast:
+                raise RuntimeError("injected source transaction failure")
+            return original_publish_waveforms(prepared)
+
+        with patch.object(generator._publisher, "publish_waveforms", fail_waveform_batch):  # noqa: SLF001
+            generator.publish_once()
+        report.check(
+            generator.phases[fast] == phase_before[fast]
+            and generator.phases[slow] != phase_before[slow]
+            and tuple(service.get_samples(fast)) == values_before[fast]
+            and generator.phases[distribution] != phase_before[distribution],
+            "a failed waveform source is isolated while healthy waveform and distribution sources commit",
+        )
+        generator.quarantined.discard(fast)
+
+        state_class = type(service.mdib.entities.by_handle(fast).state)
+        original_serialize = state_class.mk_state_node
+
+        def fail_one_serialization(state, *args, **kwargs):  # noqa: ANN001, ANN202
+            if state.DescriptorHandle == fast:
+                raise ValueError("injected sample serialization failure")
+            return original_serialize(state, *args, **kwargs)
+
+        healthy_phase = generator.phases[slow]
+        monotonic[0] = 52.5
+        with patch.object(state_class, "mk_state_node", fail_one_serialization):
+            generator.publish_once()
+        report.check(
+            fast in generator.quarantined and generator.phases[slow] != healthy_phase,
+            "pre-publication serialization failure quarantines one source without blocking its family",
+        )
+        generator.quarantined.discard(fast)
+
+        bad = fast
+        service._specs[bad].maximum = Decimal("1e400")  # noqa: SLF001 - generation fault injection
+        good_phase = generator.phases[slow]
+        monotonic[0] = 53.0
+        generator.publish_once()
+        report.check(
+            bad in generator.quarantined
+            and bad not in generator.pinned
+            and generator.phases[slow] != good_phase,
+            "generation failure quarantines only its source and does not block a healthy peer",
+        )
+
+        manual_before = tuple(service.get_samples(slow))
+        manual_phase = generator.phases[slow]
+        manual_time = generator.next_waveform_times[slow]
+        manual = [Decimal("4"), Decimal("5")]
+        with patch.object(service.mdib, "rt_sample_state_transaction", fail_waveform_transaction):
+            try:
+                service.set_samples(slow, manual)
+            except RuntimeError:
+                pass
+        report.check(
+            tuple(service.get_samples(slow)) == manual_before
+            and slow not in generator.pinned
+            and generator.phases[slow] == manual_phase
+            and generator.next_waveform_times[slow] == manual_time,
+            "failed manual publication leaves sample state, pin, phase, and source clock unchanged",
+        )
+
+        service._specs[bad].maximum = Decimal("100")  # noqa: SLF001
+        generator.quarantined.discard(bad)
+        phase_before_commit_error = generator.phases[slow]
+
+        @contextmanager
+        def fail_after_commit(**kwargs):
+            with original_rt(**kwargs) as manager:
+                yield manager
+            raise RuntimeError("injected report serialization failure after commit")
+
+        monotonic[0] = 54.0
+        with patch.object(service.mdib, "rt_sample_state_transaction", fail_after_commit):
+            generator.publish_once()
+        report.check(
+            generator.phases[slow] != phase_before_commit_error and slow not in generator.quarantined,
+            "a committed waveform advances despite a later report serialization error",
+        )
+
+        xml = etree.tostring(service.mdib.reconstruct_mdib_with_context_states()[0], encoding="unicode")
+        report.check(
+            'MetricAvailability="Cont"' in xml
+            and 'DeterminationPeriod="PT0.1S"' in xml
+            and 'Mode="Demo"' in xml
+            and 'OperatingMode="Dmo"' in xml,
+            "availability, cadence, Demo quality, and containing MDS mode serialize over the wire",
+        )
+    finally:
+        for handle in handles:
+            service.remove_metric(handle)
+        service._sample_generator = original_generator  # noqa: SLF001
 
 def check_alarm_rollback(report: Report, service: ProviderService) -> None:
     print("\n3. An alarm is written whole or not at all")
@@ -1344,8 +1640,8 @@ def check_decimal_boundaries(report: Report, service: ProviderService) -> None:
     period_before_handles = {handle for handle, _ in service.mdib.entities.items()}
     period_before_metrics = service.list_metrics()
     period_before_sections = service.sections()
-    period_before_phase = dict(service._waveform_phase)
-    period_before_pinned = set(service._pinned_samples)
+    period_before_phase = dict(service._sample_generator.phases)  # noqa: SLF001
+    period_before_pinned = set(service._sample_generator.pinned)  # noqa: SLF001
     period_before_generator = service.generator_running
     try:
         service.add_metric(mutated_period)
@@ -1361,8 +1657,8 @@ def check_decimal_boundaries(report: Report, service: ProviderService) -> None:
         == period_before_handles
         and service.list_metrics() == period_before_metrics
         and service.sections() == period_before_sections
-        and service._waveform_phase == period_before_phase
-        and service._pinned_samples == period_before_pinned
+        and service._sample_generator.phases == period_before_phase  # noqa: SLF001
+        and service._sample_generator.pinned == period_before_pinned  # noqa: SLF001
         and service.generator_running == period_before_generator,
         "a mutated unsafe period leaves provider state unchanged",
     )
@@ -1442,8 +1738,8 @@ def check_decimal_boundaries(report: Report, service: ProviderService) -> None:
         and {handle for handle, _ in service.mdib.entities.items()} == before_handles
         and service.list_metrics() == before_metrics
         and service.sections() == before_sections
-        and not service._waveform_phase
-        and not service._pinned_samples
+        and not service._sample_generator.phases  # noqa: SLF001
+        and not service._sample_generator.pinned  # noqa: SLF001
         and not service.generator_running,
         "invalid generated ranges leave no section, MDIB, bookkeeping, or generator mutation",
         f"{add_rejections} rejections",
@@ -1458,7 +1754,7 @@ def check_decimal_boundaries(report: Report, service: ProviderService) -> None:
             if kind is MetricKind.WAVEFORM:
                 block, _ = service._next_block("m.float_edge", spec)
             else:
-                block = _distribution_samples(spec, 0.0)
+                block = distribution_samples(spec, 0.0)
             finite_blocks.append(bool(block) and all(sample.is_finite() and math.isfinite(float(sample)) for sample in block))
     report.check(
         all(finite_blocks),
@@ -1491,8 +1787,10 @@ def check_decimal_boundaries(report: Report, service: ProviderService) -> None:
     finally:
         provider_logger.removeHandler(counter)
     report.check(
-        all(handle in service._pinned_samples for handle in recurring) and len(generation_errors) == 2,
-        "recurring waveform and distribution errors are each logged once and quarantined",
+        all(handle in service._sample_generator.quarantined for handle in recurring)  # noqa: SLF001
+        and not (set(recurring) & service._sample_generator.pinned)  # noqa: SLF001
+        and len(generation_errors) == 2,
+        "recurring waveform and distribution errors are logged once and quarantined separately from pins",
         f"{len(generation_errors)} errors",
     )
     for handle in recurring:
@@ -3092,6 +3390,8 @@ def main() -> int:
     try:
         check_rollback(report, service)
         check_sample_arrays(report, service)
+        check_demo_mode_lifecycle(report, service)
+        check_sample_publication_semantics(report, service)
         check_alarm_rollback(report, service)
         check_metric_removal_dependencies(report, service)
         check_section_removal(report, service)
