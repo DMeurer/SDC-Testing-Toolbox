@@ -6,18 +6,98 @@ import queue
 import subprocess
 import threading
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
-from pathlib import Path
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Generic, TypeVar
 
 ACCEPTANCE_PROVIDER_READY = "[provider] READY"
 
 
-@contextmanager
-def owned_temp_directory(*, prefix: str, directory: Path | None = None) -> Iterator[Path]:
-    """Yield an owned temporary directory and remove it on every exit path."""
-    with tempfile.TemporaryDirectory(prefix=prefix, dir=directory) as raw:
-        yield Path(raw)
+T = TypeVar("T")
+
+
+def wait_until(
+    predicate: Callable[[], bool],
+    *,
+    timeout: float,
+    interval: float = 0.01,
+    pump: Callable[[], object] | None = None,
+    check_boundary: bool = True,
+) -> bool:
+    """Poll until true with explicit timing and optional event-loop semantics."""
+    if timeout < 0 or interval <= 0:
+        raise ValueError("timeout must be non-negative and interval must be positive")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if pump is not None:
+            pump()
+        if predicate():
+            return True
+        time.sleep(min(interval, max(0.0, deadline - time.monotonic())))
+    if check_boundary:
+        if pump is not None:
+            pump()
+        return bool(predicate())
+    return False
+
+
+@dataclass(frozen=True)
+class RecordedEvent(Generic[T]):
+    sequence: int
+    payload: T
+
+
+class CallbackRecorder(Generic[T]):
+    """Copy callback payloads and support bounded waits after causal cursors."""
+
+    def __init__(self, copy_payload: Callable[[object], T]) -> None:
+        self._copy_payload = copy_payload
+        self._events: list[RecordedEvent[T]] = []
+        self._condition = threading.Condition()
+
+    def __call__(self, value: object) -> None:
+        payload = self._copy_payload(value)
+        with self._condition:
+            event = RecordedEvent(len(self._events) + 1, payload)
+            self._events.append(event)
+            self._condition.notify_all()
+
+    def cursor(self) -> int:
+        with self._condition:
+            return len(self._events)
+
+    def events_after(self, cursor: int) -> tuple[RecordedEvent[T], ...]:
+        with self._condition:
+            return tuple(event for event in self._events if event.sequence > cursor)
+
+    def wait_for(
+        self,
+        predicate: Callable[[T], bool],
+        *,
+        after: int,
+        timeout: float,
+    ) -> RecordedEvent[T] | None:
+        deadline = time.monotonic() + timeout
+        with self._condition:
+            while True:
+                match = next(
+                    (
+                        event
+                        for event in self._events
+                        if event.sequence > after and predicate(event.payload)
+                    ),
+                    None,
+                )
+                if match is not None:
+                    return match
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._condition.wait(remaining)
+
+    def history(self) -> tuple[RecordedEvent[T], ...]:
+        with self._condition:
+            return tuple(self._events)
 
 
 class Report:
@@ -91,8 +171,8 @@ class ProcessOutput:
         self._thread.join()
 
 
-def wait_for_ready(output: ProcessOutput, timeout: float) -> bool:
-    """Wait at most timeout seconds for the acceptance provider's readiness marker."""
+def wait_for_output_line(output: ProcessOutput, expected: str, timeout: float) -> bool:
+    """Wait for an exact stripped subprocess output line."""
     deadline = time.monotonic() + timeout
     while True:
         remaining = deadline - time.monotonic()
@@ -106,6 +186,11 @@ def wait_for_ready(output: ProcessOutput, timeout: float) -> bool:
             return False
         if line.strip() == expected:
             return True
+
+
+def wait_for_ready(output: ProcessOutput, timeout: float) -> bool:
+    """Wait at most timeout seconds for the acceptance provider's readiness marker."""
+    return wait_for_output_line(output, ACCEPTANCE_PROVIDER_READY, timeout)
 
 
 def stop_process(process: subprocess.Popen[str], output: ProcessOutput) -> None:

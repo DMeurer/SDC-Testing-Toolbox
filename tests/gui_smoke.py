@@ -87,8 +87,8 @@ from sdctoolbox.model import (  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 # This file lives in tests/, so its own directory is on the path.
-from acceptance_provider import PEER_INSTANCE  # noqa: E402
-from script_support import Report, owned_temp_directory  # noqa: E402
+from acceptance_provider import PEER_INSTANCE, UPDATE_CONTEXT_COMMAND  # noqa: E402
+from script_support import Report  # noqa: E402
 
 
 def pump(app: QApplication, seconds: float = 0.4) -> None:
@@ -1651,6 +1651,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             cwd=str(ROOT),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            stdin=subprocess.PIPE,
             text=True,
             bufsize=1,
         )
@@ -1696,6 +1697,9 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                     "peer patient demographics are shown",
                     consumer.context_label.text(),
                 )
+                if peer.stdin is not None:
+                    peer.stdin.write(f"{UPDATE_CONTEXT_COMMAND}\n")
+                    peer.stdin.flush()
                 report.check(
                     wait_for(app, lambda: "Grace Hopper" in consumer.context_label.text(), timeout=30),
                     "peer context reports update the patient display automatically",
