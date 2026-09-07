@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from ..model import RemoteRange, numeric_value_in_ranges
+
 
 class DecimalInputError(ValueError):
     """A field-specific error suitable for showing directly to the user."""
@@ -16,8 +18,9 @@ def parse_decimal_input(
     positive: bool = False,
     minimum: Decimal | None = None,
     maximum: Decimal | None = None,
+    allowed_ranges: tuple[RemoteRange, ...] | None = None,
 ) -> Decimal:
-    """Parse a finite Decimal and optionally enforce positivity or inclusive bounds."""
+    """Parse a finite Decimal and optionally enforce bounds or an AllowedRange union."""
     raw = text.strip()
     try:
         value = Decimal(raw)
@@ -38,6 +41,9 @@ def parse_decimal_input(
             raise DecimalInputError(msg)
         if maximum is not None and value > maximum:
             msg = f"The {field} must be at most {maximum}."
+            raise DecimalInputError(msg)
+        if allowed_ranges is not None and not numeric_value_in_ranges(value, allowed_ranges):
+            msg = f"The {field} is not permitted by the allowed ranges and their step widths."
             raise DecimalInputError(msg)
     except DecimalInputError:
         raise

@@ -32,6 +32,7 @@ from .model import (
     RemoteAction,
     RemoteAlert,
     RemoteMetric,
+    RemoteRange,
     fixed_point_decimal,
     patient_info_from_biceps,
     validate_decimal,
@@ -114,9 +115,9 @@ def _enum_value(value: Any) -> str | None:
 
 
 def _operation_is_enabled(state: Any) -> bool:
-    """Whether an operation is enabled, including BICEPS' default for an absent mode."""
+    """Whether an operation explicitly has the mandatory enabled mode."""
     mode = getattr(state, "OperatingMode", None)
-    return mode is None or _enum_value(mode) == _enum_value(pm_types.OperatingMode.ENABLED)
+    return isinstance(mode, str) and mode == pm_types.OperatingMode.ENABLED
 
 
 def _seconds(duration: Any) -> Decimal | None:
@@ -133,11 +134,46 @@ def _seconds(duration: Any) -> Decimal | None:
         return None
 
 
-def _first_range(ranges: Any) -> tuple[Any, Any]:
-    """Lower and upper of the first Range in a list, tolerating an absent or empty list."""
-    for item in ranges or []:
-        return getattr(item, "Lower", None), getattr(item, "Upper", None)
-    return None, None
+def _sequence(value: Any) -> tuple[Any, ...]:
+    """Read an optional BICEPS sequence without treating text as characters."""
+    if value is None:
+        return ()
+    if isinstance(value, (str, bytes)):
+        return (value,)
+    try:
+        return tuple(value)
+    except TypeError:
+        return ()
+
+
+def _string_values(items: Any, attribute: str | None = None) -> tuple[str, ...]:
+    """Read string values while isolating malformed members of a foreign collection."""
+    values = []
+    for item in _sequence(items):
+        value = item if attribute is None else getattr(item, attribute, None)
+        if value is not None:
+            values.append(str(value))
+    return tuple(values)
+
+
+def _ranges(value: Any) -> tuple[RemoteRange, ...]:
+    """Copy every readable range, including StepWidth, into an immutable snapshot."""
+    return tuple(
+        RemoteRange(
+            lower=getattr(item, "Lower", None),
+            upper=getattr(item, "Upper", None),
+            step_width=getattr(item, "StepWidth", None),
+        )
+        for item in _sequence(value)
+        if item is not None
+    )
+
+
+def _first_bounds(ranges: tuple[RemoteRange, ...]) -> tuple[Any, Any]:
+    """Return the first range's bounds for the legacy single-range display fields."""
+    if not ranges:
+        return None, None
+    return ranges[0].lower, ranges[0].upper
 
 
 class _PeriodicConsumerMdibMethods(ConsumerMdibMethods):
@@ -201,7 +237,8 @@ class _SetOperation:
     handle: str
     node_type: Any
     enabled: bool
-    allowed_range: tuple[Any, Any] | None
+    allowed_ranges: tuple[RemoteRange, ...]
+    allowed_values: tuple[str, ...]
 
 
 class RemoteDevice:
@@ -244,10 +281,11 @@ class RemoteDevice:
                 descriptor = getattr(entity, "descriptor", None)
                 state = getattr(entity, "state", None)
 
-                allowed = getattr(descriptor, "AllowedValue", None) or []
+                metric_allowed_values = _string_values(getattr(descriptor, "AllowedValue", None), "Value")
                 metric_value = getattr(state, "MetricValue", None)
 
-                technical_lower, technical_upper = _first_range(getattr(descriptor, "TechnicalRange", None))
+                technical_ranges = _ranges(getattr(descriptor, "TechnicalRange", None))
+                technical_lower, technical_upper = _first_bounds(technical_ranges)
                 operation_type = SET_OPERATION_BY_METRIC_KIND.get(kind)
                 operations = [
                     operation
@@ -255,13 +293,10 @@ class RemoteDevice:
                     if operation.node_type == operation_type
                 ]
                 selected_operation = next((operation for operation in operations if operation.enabled), None)
-                # What we may ask for comes from the selected operation when it says so,
-                # otherwise we fall back on what the device says it can produce.
-                lower, upper = (
-                    selected_operation.allowed_range
-                    if selected_operation is not None and selected_operation.allowed_range is not None
-                    else (technical_lower, technical_upper)
+                allowed_ranges = (
+                    selected_operation.allowed_ranges if selected_operation is not None else ()
                 )
+                lower, upper = _first_bounds(allowed_ranges)
 
                 result[handle] = RemoteMetric(
                     handle=handle,
@@ -270,16 +305,21 @@ class RemoteDevice:
                     label=_first_text(getattr(descriptor, "Type", None)),
                     unit_label=_first_text(getattr(descriptor, "Unit", None)),
                     type_code=getattr(getattr(descriptor, "Type", None), "Code", None),
-                    allowed_values=tuple(str(item.Value) for item in allowed),
+                    allowed_values=metric_allowed_values,
+                    operation_allowed_values=(
+                        selected_operation.allowed_values if selected_operation is not None else ()
+                    ),
                     resolution=getattr(descriptor, "Resolution", None),
                     minimum=lower,
                     maximum=upper,
+                    allowed_ranges=allowed_ranges,
                     technical_minimum=technical_lower,
                     technical_maximum=technical_upper,
+                    technical_ranges=technical_ranges,
                     value=getattr(metric_value, "Value", None),
                     # A sample array carries Samples instead of Value, so a peer's waveform
                     # would otherwise look like a metric that never reports anything.
-                    samples=tuple(getattr(metric_value, "Samples", None) or ()),
+                    samples=_sequence(getattr(metric_value, "Samples", None)),
                     sample_period=_seconds(getattr(descriptor, "SamplePeriod", None)),
                     domain_unit_label=_first_text(getattr(descriptor, "DomainUnit", None)),
                     domain_minimum=getattr(getattr(descriptor, "DistributionRange", None), "Lower", None),
@@ -338,14 +378,14 @@ class RemoteDevice:
                 continue
 
             state = getattr(entity, "state", None)
-            lower, upper = _first_range(getattr(state, "AllowedRange", None))
-            allowed_range = (lower, upper) if lower is not None or upper is not None else None
+            allowed_values = getattr(getattr(state, "AllowedValues", None), "Value", None)
             by_target.setdefault(target, []).append(
                 _SetOperation(
                     handle=handle,
                     node_type=node_type,
                     enabled=_operation_is_enabled(state),
-                    allowed_range=allowed_range,
+                    allowed_ranges=_ranges(getattr(state, "AllowedRange", None)),
+                    allowed_values=_string_values(allowed_values),
                 ),
             )
 
@@ -361,7 +401,7 @@ class RemoteDevice:
         with self._lock:
             signals_by_condition: dict[str, dict[str, str]] = {}
             for handle, entity in self._mdib.entities.items():
-                if getattr(entity, "node_type", None) is not pm.AlertSignalDescriptor:
+                if getattr(entity, "node_type", None) != pm.AlertSignalDescriptor:
                     continue
                 descriptor = getattr(entity, "descriptor", None)
                 condition = getattr(descriptor, "ConditionSignaled", None)
@@ -381,22 +421,32 @@ class RemoteDevice:
                 descriptor = getattr(entity, "descriptor", None)
                 state = getattr(entity, "state", None)
                 lower, upper = None, None
-                limits = getattr(state, "Limits", None) or getattr(descriptor, "MaxLimits", None)
+                limits = getattr(state, "Limits", None)
                 if limits is not None:
                     lower = getattr(limits, "Lower", None)
                     upper = getattr(limits, "Upper", None)
+                max_lower, max_upper = None, None
+                max_limits = getattr(descriptor, "MaxLimits", None)
+                if max_limits is not None:
+                    max_lower = getattr(max_limits, "Lower", None)
+                    max_upper = getattr(max_limits, "Upper", None)
+                actual_priority = getattr(state, "ActualPriority", None)
 
                 result[handle] = RemoteAlert(
                     handle=handle,
                     node_type_name=getattr(node_type, "localname", str(node_type)),
                     label=_first_text(getattr(descriptor, "Type", None)),
                     kind=_enum_value(getattr(descriptor, "Kind", None)),
-                    priority=_enum_value(getattr(descriptor, "Priority", None)),
+                    priority=_enum_value(
+                        actual_priority if actual_priority is not None else getattr(descriptor, "Priority", None),
+                    ),
                     present=bool(getattr(state, "Presence", False)),
                     activation=_enum_value(getattr(state, "ActivationState", None)),
-                    source_handles=tuple(getattr(descriptor, "Source", None) or ()),
+                    source_handles=_string_values(getattr(descriptor, "Source", None)),
                     lower_limit=lower,
                     upper_limit=upper,
+                    max_lower_limit=max_lower,
+                    max_upper_limit=max_upper,
                     signals=signals_by_condition.get(handle, {}),
                 )
             return result
@@ -444,7 +494,15 @@ class RemoteDevice:
                 ),
             )
         else:
-            future = client.set_string(operation_handle, str(value))
+            string_value = str(value)
+            if metric.operation_allowed_values and string_value not in metric.operation_allowed_values:
+                logger.warning(
+                    "%r is not allowed by set operation %s",
+                    string_value,
+                    operation_handle,
+                )
+                return msg_types.InvocationState.FAILED
+            future = client.set_string(operation_handle, string_value)
 
         report_part = future.result(timeout=timeout)
         info = report_part.InvocationInfo
@@ -467,10 +525,11 @@ class RemoteDevice:
         with self._lock:
             found: dict[str, RemoteAction] = {}
             for handle, entity in self._mdib.entities.items():
-                if getattr(entity, "node_type", None) is not pm.ActivateOperationDescriptor:
+                if getattr(entity, "node_type", None) != pm.ActivateOperationDescriptor:
                     continue
                 descriptor = getattr(entity, "descriptor", None)
                 state = getattr(entity, "state", None)
+                arguments = _sequence(getattr(descriptor, "Argument", None))
                 found[handle] = RemoteAction(
                     handle=handle,
                     label=_first_text(getattr(descriptor, "Type", None)),
@@ -478,7 +537,8 @@ class RemoteDevice:
                     target_handle=getattr(descriptor, "OperationTarget", None),
                     # Same rule as a metric editor: offer it only when the device says it
                     # is enabled, and follow operation_by_handle for changes.
-                    enabled=_operation_is_enabled(state),
+                    enabled=_operation_is_enabled(state) and not arguments,
+                    argument_count=len(arguments),
                 )
             return found
 

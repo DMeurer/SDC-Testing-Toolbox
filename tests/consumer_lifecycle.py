@@ -26,7 +26,7 @@ from PySide6.QtCore import (  # noqa: E402
     Signal,
 )
 from PySide6.QtWidgets import QApplication  # noqa: E402
-from script_support import Report  # noqa: E402
+from script_support import Report, wait_until  # noqa: E402
 from sdc11073.xml_types import msg_types  # noqa: E402
 
 from sdctoolbox.consumer_service import DiscoveredDevice  # noqa: E402
@@ -38,6 +38,7 @@ from sdctoolbox.model import (  # noqa: E402
     RemoteAction,
     RemoteAlert,
     RemoteMetric,
+    RemoteRange,
 )
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
@@ -163,20 +164,23 @@ class FakeConsumerService:
 
 
 def pump(app: QApplication, seconds: float = 0.05) -> None:
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        app.processEvents()
-        time.sleep(0.005)
+    wait_until(
+        lambda: False,
+        timeout=seconds,
+        interval=0.005,
+        pump=app.processEvents,
+        check_boundary=False,
+    )
 
 
 def wait_for(app: QApplication, predicate, timeout: float = 2.0) -> bool:  # noqa: ANN001
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        app.processEvents()
-        if predicate():
-            return True
-        time.sleep(0.005)
-    return False
+    return wait_until(
+        predicate,
+        timeout=timeout,
+        interval=0.005,
+        pump=app.processEvents,
+        check_boundary=False,
+    )
 
 
 def check(condition: bool, message: str) -> None:  # noqa: FBT001
@@ -249,6 +253,7 @@ def close_with_queued_connection(app: QApplication, provider: ProviderService) -
     pane.device_list.setCurrentRow(0)
     pane._on_connect()  # noqa: SLF001
     check(service.connect_call.entered.wait(1.0), "connect result is queued for the GUI")
+    # Do not pump Qt here: the test needs the queued completion to remain pending.
     time.sleep(0.02)
     window.close()
     check(remote.close_count == 1, "queued connection closes once during window close")
@@ -365,10 +370,6 @@ def non_weakrefable_resources_are_rejected() -> None:
     )
 
 
-def active_equal_resource_retires_after_release() -> None:
-    worker = AsyncCall()
-    call = BlockingCall()
-    resource = EqualResource("active")
 def unhashable_keys_and_resources_are_rejected() -> None:
     worker = AsyncCall()
     call_started = threading.Event()
@@ -512,6 +513,10 @@ def thread_start_failure_restores_bookkeeping() -> None:
     check(not worker._resources, "the shared resource still retires after retry")  # noqa: SLF001
 
 
+def active_equal_resource_retires_after_release() -> None:
+    worker = AsyncCall()
+    call = BlockingCall()
+    resource = EqualResource("active")
     equal_resource = EqualResource("active")
     closed: list[EqualResource] = []
 
@@ -1016,7 +1021,140 @@ def refresh_snapshot_and_editor_lookups_are_scoped(
     check(remote.close_count == 1 and service.stop_count == 1, "snapshot session resources close once")
 
 
-        refresh_snapshot_and_editor_lookups_are_scoped(app, provider)
+def table_editor_enforces_complete_allowed_domain(
+    app: QApplication,
+    provider: ProviderService,
+) -> None:
+    window, pane, service = new_window(provider)
+    remote = FakeRemote("allowed-domain")
+    remote.metric_values = {
+        "number": RemoteMetric(
+            handle="number",
+            node_type_name="NumericMetricDescriptor",
+            kind=MetricKind.NUMBER,
+            label="Disjoint number",
+            value=Decimal("0"),
+            minimum=Decimal("0"),
+            maximum=Decimal("10"),
+            operation_handles=("set.number",),
+            selected_operation_handle="set.number",
+            controllable_now=True,
+            allowed_ranges=(
+                RemoteRange(Decimal("0"), Decimal("10"), Decimal("2")),
+                RemoteRange(Decimal("20"), Decimal("30"), Decimal("5")),
+            ),
+        ),
+    }
+    remote.set_call.release.set()
+    attach(pane, remote)
+    pane.select_handle("number")
+    check(
+        "0 to 10 (step 2); 20 to 30 (step 5)" in pane.editor_label.text(),
+        "the table editor displays each allowed range without merging the gap",
+    )
+
+    pane.value_edit.setText("25")
+    pane._on_apply()  # noqa: SLF001
+    check(
+        wait_for(app, lambda: pane.invocation_label.text().startswith("accepted")),
+        "the second-range write reports its accepted result",
+    )
+
+    remote.set_call = BlockingCall(msg_types.InvocationState.FINISHED)
+    remote.set_call.release.set()
+    for text in ("15", "3"):
+        pane.value_edit.setText(text)
+        pane._on_apply()  # noqa: SLF001
+        check(
+            "not permitted" in pane.invocation_label.text() and not remote.set_call.entered.is_set(),
+            f"the table editor rejects {text} without invoking the remote",
+        )
+
+    window.close()
+    check(remote.close_count == 1 and service.stop_count == 1, "allowed-domain session resources close once")
+
+
+def choice_controls_use_operation_allowed_values(
+    app: QApplication,
+    provider: ProviderService,
+) -> None:
+    window, pane, service = new_window(provider)
+    remote = FakeRemote("choice-domains")
+    remote.metric_values = {
+        "narrowed": RemoteMetric(
+            handle="narrowed",
+            node_type_name="EnumStringMetricDescriptor",
+            kind=MetricKind.CHOICE,
+            label="Narrowed choice",
+            allowed_values=("IDLE", "RUN", "PAUSE"),
+            operation_allowed_values=("IDLE", "RUN"),
+            value="RUN",
+            operation_handles=("set.narrowed",),
+            selected_operation_handle="set.narrowed",
+            controllable_now=True,
+        ),
+        "different": RemoteMetric(
+            handle="different",
+            node_type_name="EnumStringMetricDescriptor",
+            kind=MetricKind.CHOICE,
+            label="Different choice",
+            allowed_values=("descriptor-a", "descriptor-b"),
+            operation_allowed_values=("operation-a", "operation-b"),
+            value="operation-b",
+            operation_handles=("set.different",),
+            selected_operation_handle="set.different",
+            controllable_now=True,
+        ),
+        "read-only": RemoteMetric(
+            handle="read-only",
+            node_type_name="EnumStringMetricDescriptor",
+            kind=MetricKind.CHOICE,
+            label="Read-only choice",
+            allowed_values=("STANDBY", "ACTIVE"),
+            value="ACTIVE",
+        ),
+    }
+    attach(pane, remote)
+
+    for handle, expected in (
+        ("narrowed", ("IDLE", "RUN")),
+        ("different", ("operation-a", "operation-b")),
+    ):
+        card_box = pane.board.card(handle).control.box
+        card_values = tuple(card_box.itemText(index) for index in range(card_box.count()))
+        pane.select_handle(handle)
+        editor_values = tuple(
+            pane.choice_box.itemText(index) for index in range(pane.choice_box.count())
+        )
+        check(
+            card_values == expected and editor_values == expected,
+            f"the {handle} card and table editor use the operation choice domain",
+        )
+
+    read_only_box = pane.board.card("read-only").control.box
+    pane.select_handle("read-only")
+    read_only_editor_values = tuple(
+        pane.choice_box.itemText(index) for index in range(pane.choice_box.count())
+    )
+    check(
+        tuple(read_only_box.itemText(index) for index in range(read_only_box.count()))
+        == ("STANDBY", "ACTIVE")
+        and read_only_box.currentText() == "ACTIVE"
+        and not read_only_box.isEnabled()
+        and read_only_editor_values == ("STANDBY", "ACTIVE")
+        and not pane.editor_stack.isEnabled(),
+        "read-only card and table controls retain descriptor choices when no operation narrows them",
+    )
+    check(
+        remote.metric_values["different"].allowed_values
+        == ("descriptor-a", "descriptor-b"),
+        "GUI conversion preserves descriptor choices in the remote snapshot",
+    )
+
+    window.close()
+    check(remote.close_count == 1 and service.stop_count == 1, "choice-domain session resources close once")
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     provider = ProviderService(instance_name="consumer-lifecycle")
@@ -1044,3 +1182,15 @@ def main() -> int:
         failed_reconnect_clears_peer_ui(app, provider)
         waveform_reports_are_scoped(app, provider)
         metric_reports_are_scoped(app, provider)
+        refresh_snapshot_and_editor_lookups_are_scoped(app, provider)
+        table_editor_enforces_complete_allowed_domain(app, provider)
+        choice_controls_use_operation_allowed_values(app, provider)
+    finally:
+        consumer_module.ConsumerService = old_service
+        consumer_module.MdibBridge = old_bridge
+        provider.stop()
+    return REPORT.summary()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

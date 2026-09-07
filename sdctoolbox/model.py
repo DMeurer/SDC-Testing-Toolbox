@@ -1145,10 +1145,15 @@ class RemoteAlert:
     present: bool = False
     activation: str | None = None
     source_handles: tuple[str, ...] = field(default_factory=tuple)
+    # Current limits from AlertConditionState/Limits.
     lower_limit: Decimal | None = None
     upper_limit: Decimal | None = None
     # Handle -> manifestation for the signals that announce this condition.
     signals: dict[str, str] = field(default_factory=dict)
+    # Capability bounds from LimitAlertConditionDescriptor/MaxLimits, kept distinct from
+    # the current limits above. Appended to preserve positional snapshot construction.
+    max_lower_limit: Decimal | None = None
+    max_upper_limit: Decimal | None = None
 
     def limit_text(self) -> str:
         """The monitored limits, or an empty string when there are none."""
@@ -1180,11 +1185,56 @@ class RemoteAction:
     type_code: str | None = None
     target_handle: str | None = None
     enabled: bool = False
+    # The current client supports only argumentless Activate operations. Argument-bearing
+    # operations remain visible in the snapshot but are not marked enabled.
+    argument_count: int = 0
 
     @property
     def caption(self) -> str:
         """What to put on the button."""
         return self.label or self.type_code or self.handle
+
+
+@dataclass(frozen=True)
+class RemoteRange:
+    """One BICEPS Range copied without dropping open bounds or StepWidth."""
+
+    lower: Decimal | None = None
+    upper: Decimal | None = None
+    step_width: Decimal | None = None
+
+    def contains(self, value: Decimal) -> bool:
+        """Whether value is inside this range and aligned to its optional step."""
+        try:
+            if self.lower is not None and value < self.lower:
+                return False
+            if self.upper is not None and value > self.upper:
+                return False
+            if self.step_width is None:
+                return True
+            if self.lower is not None:
+                offset = value - self.lower
+            elif self.upper is not None:
+                offset = self.upper - value
+            else:
+                return True
+            if not self.step_width.is_finite() or self.step_width <= 0:
+                return False
+            return offset % self.step_width == 0
+        except (ArithmeticError, AttributeError, TypeError, ValueError):
+            return False
+
+    def text(self) -> str:
+        """Render this range without discarding its step width."""
+        bounds = format_range(self.lower, self.upper) or "any value"
+        if self.step_width is None:
+            return bounds
+        return f"{bounds} (step {self.step_width})"
+
+
+def numeric_value_in_ranges(value: Decimal, ranges: tuple[RemoteRange, ...]) -> bool:
+    """Apply BICEPS AllowedRange union semantics; no ranges means unrestricted."""
+    return not ranges or any(allowed_range.contains(value) for allowed_range in ranges)
 
 
 @dataclass
@@ -1201,11 +1251,12 @@ class RemoteMetric:
     label: str | None = None
     unit_label: str | None = None
     type_code: str | None = None
+    # EnumStringMetricDescriptor/AllowedValue describes values of the metric itself.
     allowed_values: tuple[str, ...] = ()
     # NumericMetricDescriptor/Resolution, which determines a numeric control's step size.
     resolution: Decimal | None = None
-    # Limits the peer publishes. `minimum`/`maximum` come from the set operation's
-    # AllowedRange when there is one, otherwise from the metric's TechnicalRange.
+    # First range of the selected operation, retained for existing single-range controls.
+    # No TechnicalRange fallback is used: technical capability is not a control limit.
     minimum: Decimal | None = None
     maximum: Decimal | None = None
     # The metric's own TechnicalRange, kept separately because it describes what the device
@@ -1230,6 +1281,13 @@ class RemoteMetric:
     selected_operation_handle: str | None = None
     # True when at least one of those operations currently has OperatingMode == En.
     controllable_now: bool = False
+    # Appended fields preserve positional construction of the original snapshot contract.
+    # SetStringOperationState/AllowedValues independently constrains the selected operation.
+    operation_allowed_values: tuple[str, ...] = ()
+    # Complete range data preserves additional ranges and StepWidth that the legacy display
+    # fields above intentionally cannot represent.
+    allowed_ranges: tuple[RemoteRange, ...] = field(default_factory=tuple)
+    technical_ranges: tuple[RemoteRange, ...] = field(default_factory=tuple)
 
     @property
     def controllable(self) -> bool:
@@ -1249,8 +1307,12 @@ class RemoteMetric:
     @property
     def has_range(self) -> bool:
         """Whether the peer publishes a limit we should respect."""
-        return self.minimum is not None or self.maximum is not None
+        return bool(self.allowed_ranges)
 
     def range_text(self) -> str:
-        """The limits as something readable, or an empty string when unbounded."""
-        return format_range(self.minimum, self.maximum)
+        """Every operation limit as readable text, or empty when unrestricted."""
+        return "; ".join(allowed_range.text() for allowed_range in self.allowed_ranges)
+
+    def numeric_value_allowed(self, value: Decimal) -> bool:
+        """Whether a numeric write satisfies any complete operation range."""
+        return numeric_value_in_ranges(value, self.allowed_ranges)

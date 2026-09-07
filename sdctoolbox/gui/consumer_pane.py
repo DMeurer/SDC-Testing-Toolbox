@@ -728,12 +728,11 @@ class ConsumerPane(QWidget):
             self._set_editor_enabled(enabled=False)
             return
 
-        # The editor comes from the *target* descriptor, never from the operation: it is the
-        # metric that says which values are legal.
-        if metric.kind is MetricKind.CHOICE and metric.allowed_values:
+        allowed_values = metric.operation_allowed_values or metric.allowed_values
+        if metric.kind is MetricKind.CHOICE and allowed_values:
             self.editor_stack.setCurrentIndex(EDITOR_CHOICE)
             self.choice_box.clear()
-            self.choice_box.addItems(list(metric.allowed_values))
+            self.choice_box.addItems(list(allowed_values))
             if metric.value is not None:
                 index = self.choice_box.findText(str(metric.value))
                 if index >= 0:
@@ -765,7 +764,8 @@ class ConsumerPane(QWidget):
         if metric is None:
             return
 
-        if metric.kind is MetricKind.CHOICE and metric.allowed_values:
+        allowed_values = metric.operation_allowed_values or metric.allowed_values
+        if metric.kind is MetricKind.CHOICE and allowed_values:
             value: Decimal | str = self.choice_box.currentText()
         elif metric.kind is MetricKind.NUMBER:
             raw = self.value_edit.text().strip()
@@ -773,8 +773,7 @@ class ConsumerPane(QWidget):
                 value = parse_decimal_input(
                     raw,
                     "value",
-                    minimum=metric.minimum,
-                    maximum=metric.maximum,
+                    allowed_ranges=metric.allowed_ranges,
                 )
             except DecimalInputError as exc:
                 self.invocation_label.setText(str(exc))

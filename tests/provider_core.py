@@ -1792,14 +1792,28 @@ def check_foreign_consumer_operations(report: Report) -> None:
             self.calls.append(("activate", handle, arguments))
             return self._future(self.activate_results.get(handle, msg_types.InvocationState.FINISHED))
 
-    def metric_entity(handle, node_type, *, lower="0", upper="100", resolution=None):
+    def copied_qname(qname, namespace=None):  # noqa: ANN001, ANN202 - test QName helper
+        return etree.QName(namespace or qname.namespace, qname.localname)
+
+    def metric_entity(handle, node_type, *, lower="0", upper="100", resolution=None, allowed=()):
         descriptor = SimpleNamespace(
-            AllowedValue=[],
-            TechnicalRange=[SimpleNamespace(Lower=Decimal(lower), Upper=Decimal(upper))],
+            AllowedValue=[SimpleNamespace(Value=value) for value in allowed],
+            TechnicalRange=[
+                SimpleNamespace(
+                    Lower=Decimal(lower),
+                    Upper=Decimal(upper),
+                    StepWidth=Decimal("0.25"),
+                ),
+            ],
             Resolution=resolution,
         )
         state = SimpleNamespace(MetricValue=SimpleNamespace(Value=None))
-        return SimpleNamespace(node_type=node_type, descriptor=descriptor, state=state, parent_handle=None)
+        return SimpleNamespace(
+            node_type=copied_qname(node_type),
+            descriptor=descriptor,
+            state=state,
+            parent_handle=None,
+        )
 
     def operation_entity(
         target,
@@ -1807,14 +1821,27 @@ def check_foreign_consumer_operations(report: Report) -> None:
         lower,
         upper,
         mode=pm_types.OperatingMode.ENABLED,
+        allowed_values=(),
     ):
         state = SimpleNamespace(
-            AllowedRange=[SimpleNamespace(Lower=Decimal(lower), Upper=Decimal(upper))],
+            AllowedRange=[
+                SimpleNamespace(
+                    Lower=Decimal(lower),
+                    Upper=Decimal(upper),
+                    StepWidth=Decimal("0.5"),
+                ),
+                SimpleNamespace(
+                    Lower=Decimal("100"),
+                    Upper=Decimal("200"),
+                    StepWidth=Decimal("1"),
+                ),
+            ],
+            AllowedValues=SimpleNamespace(Value=list(allowed_values)),
         )
         if mode is not None:
             state.OperatingMode = mode
         return SimpleNamespace(
-            node_type=node_type,
+            node_type=copied_qname(node_type),
             descriptor=SimpleNamespace(OperationTarget=target),
             state=state,
         )
@@ -1879,6 +1906,8 @@ def check_foreign_consumer_operations(report: Report) -> None:
                 and metric.selected_operation_handle == enabled_handle
                 and metric.controllable_now
                 and (metric.minimum, metric.maximum) == (Decimal("10"), Decimal("20"))
+                and len(metric.allowed_ranges) == 2  # noqa: PLR2004
+                and metric.allowed_ranges[0].step_width == Decimal("0.5")
             )
             value = Decimal("15") if kind is MetricKind.NUMBER else "value"
             remote.set_value(metric_handle, value)
@@ -1912,37 +1941,81 @@ def check_foreign_consumer_operations(report: Report) -> None:
         metric = remote.metrics()[metric_handle]
         remote_resolutions.append(
             metric.resolution == resolution
-            and metric.minimum == Decimal("0")
-            and metric.maximum == Decimal("1")
+            and metric.minimum is None
+            and metric.maximum is None
+            and metric.technical_minimum == Decimal("0")
+            and metric.technical_maximum == Decimal("1")
+            and metric.technical_ranges[0].step_width == Decimal("0.25")
         )
     report.check(
         all(remote_resolutions),
-        "foreign numeric descriptor resolutions remain exact in metric snapshots",
+        "technical ranges stay exact and are not substituted for operation limits",
         str(remote_resolutions),
+    )
+
+    choice_handle = "metric.choice.values"
+    choice_operation = "operation.choice.values"
+    remote, choice_client = remote_for(
+        {
+            choice_handle: metric_entity(
+                choice_handle,
+                pm.EnumStringMetricDescriptor,
+                allowed=("descriptor-a", "descriptor-b"),
+            ),
+            choice_operation: operation_entity(
+                choice_handle,
+                pm.SetStringOperationDescriptor,
+                "1",
+                "2",
+                allowed_values=("operation-a", "operation-b"),
+            ),
+        },
+    )
+    choice = remote.metrics()[choice_handle]
+    report.check(
+        choice.allowed_values == ("descriptor-a", "descriptor-b")
+        and choice.operation_allowed_values == ("operation-a", "operation-b"),
+        "descriptor AllowedValue and operation AllowedValues remain distinct",
+    )
+    rejected_choice = remote.set_value(choice_handle, "descriptor-a")
+    accepted_choice = remote.set_value(choice_handle, "operation-a")
+    report.check(
+        rejected_choice is msg_types.InvocationState.FAILED
+        and accepted_choice is msg_types.InvocationState.FINISHED
+        and choice_client.calls == [("string", choice_operation, "operation-a")],
+        "operation AllowedValues gate SetString transport independently of descriptor values",
     )
 
     absent_metric = "metric.absent-mode"
     absent_set = "operation.absent-mode"
+    enabled_metric = "metric.enabled-mode"
+    enabled_set = "operation.enabled-mode"
     disabled_action = "action.disabled"
     enabled_action = "action.enabled"
     absent_action = "action.absent-mode"
+    malformed_action = "action.malformed-mode"
+    argument_action = "action.with-argument"
 
-    def action_entity(mode):
+    def action_entity(mode, arguments=()):
         state = SimpleNamespace()
         if mode is not None:
             state.OperatingMode = mode
         return SimpleNamespace(
-            node_type=pm.ActivateOperationDescriptor,
-            descriptor=SimpleNamespace(OperationTarget="mds"),
+            node_type=copied_qname(pm.ActivateOperationDescriptor),
+            descriptor=SimpleNamespace(OperationTarget="mds", Argument=list(arguments)),
             state=state,
         )
 
     entities = {
         absent_metric: metric_entity(absent_metric, pm.NumericMetricDescriptor),
         absent_set: operation_entity(absent_metric, pm.SetValueOperationDescriptor, "30", "40", mode=None),
+        enabled_metric: metric_entity(enabled_metric, pm.NumericMetricDescriptor),
+        enabled_set: operation_entity(enabled_metric, pm.SetValueOperationDescriptor, "30", "40"),
         disabled_action: action_entity(pm_types.OperatingMode.DISABLED),
         enabled_action: action_entity(pm_types.OperatingMode.ENABLED),
         absent_action: action_entity(None),
+        malformed_action: action_entity(SimpleNamespace(value="En")),
+        argument_action: action_entity(pm_types.OperatingMode.ENABLED, arguments=(object(),)),
     }
     remote, client = remote_for(entities)
     metric = remote.metrics()[absent_metric]
@@ -1951,32 +2024,34 @@ def check_foreign_consumer_operations(report: Report) -> None:
         enabled_action: msg_types.InvocationState.FINISHED_MOD,
         absent_action: msg_types.InvocationState.CANCELLED,
     }
-    remote.set_value(absent_metric, Decimal("35"))
+    absent_set_result = remote.set_value(absent_metric, Decimal("35"))
     disabled_result = remote.run_action(disabled_action)
     enabled_result = remote.run_action(enabled_action)
     absent_result = remote.run_action(absent_action)
     report.check(
-        metric.controllable_now
-        and metric.selected_operation_handle == absent_set
-        and (metric.minimum, metric.maximum) == (Decimal("30"), Decimal("40"))
+        not metric.controllable_now
+        and metric.selected_operation_handle is None
+        and (metric.minimum, metric.maximum) == (None, None)
         and not actions[disabled_action].enabled
         and actions[enabled_action].enabled
-        and actions[absent_action].enabled,
-        "absent OperatingMode defaults to enabled for set and activate operations",
+        and not actions[absent_action].enabled
+        and not actions[malformed_action].enabled
+        and not actions[argument_action].enabled
+        and actions[argument_action].argument_count == 1,
+        "missing or malformed modes and argument-bearing Activate operations fail closed",
     )
     report.check(
         client.calls == [
-            ("number", absent_set, Decimal("35")),
             ("activate", enabled_action, None),
-            ("activate", absent_action, None),
         ],
-        "disabled actions do not reach transport while enabled and default-enabled actions do",
+        "only explicitly enabled supported operations reach the transport",
         str(client.calls),
     )
     report.check(
-        disabled_result is msg_types.InvocationState.FAILED
+        absent_set_result is msg_types.InvocationState.FAILED
+        and disabled_result is msg_types.InvocationState.FAILED
         and enabled_result is msg_types.InvocationState.FINISHED_MOD
-        and absent_result is msg_types.InvocationState.CANCELLED,
+        and absent_result is msg_types.InvocationState.FAILED,
         "action invocation returns local rejection or the enabled transport result",
         f"{disabled_result}, {enabled_result}, {absent_result}",
     )
@@ -1985,7 +2060,7 @@ def check_foreign_consumer_operations(report: Report) -> None:
     remote_write_rejections = 0
     for value in (Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")):
         try:
-            remote.set_value(absent_metric, value)
+            remote.set_value(enabled_metric, value)
         except ValueError:
             remote_write_rejections += 1
     report.check(
@@ -1993,41 +2068,6 @@ def check_foreign_consumer_operations(report: Report) -> None:
         "non-finite outbound numeric writes are rejected before transport",
     )
 
-
-def main() -> int:
-    basic_logging_setup(level=logging.ERROR)
-    report = Report()
-
-    print("=" * 74)
-    print("Provider core integrity")
-    print("=" * 74)
-
-    service = ProviderService(instance_name="provider-core")
-    service.start()
-    try:
-        check_rollback(report, service)
-        check_sample_arrays(report, service)
-        check_alarm_rollback(report, service)
-        check_metric_removal_dependencies(report, service)
-        check_section_removal(report, service)
-        check_section_handle_types(report, service)
-        check_metric_value_validation(report, service)
-        check_decimal_boundaries(report, service)
-        check_concurrent_alert_evaluation(report, service)
-        check_signals(report, service)
-        check_latching_signals(report, service)
-        check_contexts(report, service)
-        check_presets(report)
-        check_foreign_consumer_operations(report)
-    finally:
-        service.stop()
-
-    print()
-    return report.summary()
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
     recognized_metrics = {
         f"metric.equal.{index}": metric_entity(f"metric.equal.{index}", node_type)
         for index, node_type in enumerate(
@@ -2197,4 +2237,39 @@ def check_periodic_consumer_routing(report: Report) -> None:
         "all five periodic families have one strongly retained callback",
     )
 
+
+def main() -> int:
+    basic_logging_setup(level=logging.ERROR)
+    report = Report()
+
+    print("=" * 74)
+    print("Provider core integrity")
+    print("=" * 74)
+
+    service = ProviderService(instance_name="provider-core")
+    service.start()
+    try:
+        check_rollback(report, service)
+        check_sample_arrays(report, service)
+        check_alarm_rollback(report, service)
+        check_metric_removal_dependencies(report, service)
+        check_section_removal(report, service)
+        check_section_handle_types(report, service)
+        check_metric_value_validation(report, service)
+        check_decimal_boundaries(report, service)
+        check_concurrent_alert_evaluation(report, service)
+        check_signals(report, service)
+        check_latching_signals(report, service)
+        check_contexts(report, service)
+        check_presets(report)
+        check_foreign_consumer_operations(report)
         check_periodic_consumer_routing(report)
+    finally:
+        service.stop()
+
+    print()
+    return report.summary()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

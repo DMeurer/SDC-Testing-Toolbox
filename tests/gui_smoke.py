@@ -1702,10 +1702,11 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                 )
 
                 remote_cell = lambda h, c: cell_of(consumer.table, h, c)  # noqa: E731
+                zoom_range = remote_cell("m.zoom_level", COL_R_RANGE)
                 report.check(
-                    remote_cell("m.zoom_level", COL_R_RANGE) == "1 to 100",
-                    "the peer's range is shown",
-                    str(remote_cell("m.zoom_level", COL_R_RANGE)),
+                    "1 to 100" in zoom_range and "step 1" in zoom_range,
+                    "the peer's complete allowed range is shown",
+                    str(zoom_range),
                 )
                 report.check(
                     remote_cell("m.zoom_level", COL_R_WRITABLE) == "yes",
@@ -1819,7 +1820,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                 consumer.value_edit.setText("500")
                 consumer._on_apply()  # noqa: SLF001
                 report.check(
-                    "at most 100" in consumer.invocation_label.text(),
+                    "not permitted" in consumer.invocation_label.text(),
                     "an out-of-range remote write gets immediate field feedback",
                     consumer.invocation_label.text(),
                 )

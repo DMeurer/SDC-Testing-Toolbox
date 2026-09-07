@@ -57,6 +57,7 @@ from sdctoolbox.model import (  # noqa: E402
     MetricKind,
     MetricSpec,
     RemoteMetric,
+    RemoteRange,
     WaveformShape,
 )
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
@@ -126,6 +127,18 @@ CHOICES = [
     (
         "a zero-width range gets a stepper",
         number(minimum=Decimal("5"), maximum=Decimal("5")),
+        StepperWidget,
+    ),
+    (
+        "multiple allowed ranges get a stepper rather than a misleading slider",
+        number(
+            minimum=Decimal("0"),
+            maximum=Decimal("10"),
+            allowed_ranges=(
+                RemoteRange(Decimal("0"), Decimal("10"), Decimal("2")),
+                RemoteRange(Decimal("20"), Decimal("30"), Decimal("5")),
+            ),
+        ),
         StepperWidget,
     ),
     (
@@ -326,6 +339,66 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         )
         control.hide()
 
+    print("\nRemote choice domains")
+    for description, descriptor_values, operation_values, expected_values in (
+        (
+            "an operation can narrow the descriptor choices",
+            ("IDLE", "RUN", "PAUSE"),
+            ("IDLE", "RUN"),
+            ("IDLE", "RUN"),
+        ),
+        (
+            "an operation-only value is offered even when the descriptor differs",
+            ("descriptor-a", "descriptor-b"),
+            ("operation-a", "operation-b"),
+            ("operation-a", "operation-b"),
+        ),
+    ):
+        remote = RemoteMetric(
+            handle="remote.choice",
+            node_type_name="EnumStringMetricDescriptor",
+            kind=MetricKind.CHOICE,
+            allowed_values=descriptor_values,
+            operation_allowed_values=operation_values,
+            operation_handles=("operation",),
+            selected_operation_handle="operation",
+            controllable_now=True,
+        )
+        spec = from_remote_metric(remote)
+        control = build_widget(spec)
+        offered = tuple(control.box.itemText(index) for index in range(control.box.count()))
+        report.check(
+            spec.allowed_values == expected_values and offered == expected_values,
+            description,
+            f"spec={spec.allowed_values}, offered={offered}",
+        )
+        report.check(
+            remote.allowed_values == descriptor_values,
+            f"{description}, without replacing descriptor metadata",
+            str(remote.allowed_values),
+        )
+
+    read_only_remote = RemoteMetric(
+        handle="remote.read-only-choice",
+        node_type_name="EnumStringMetricDescriptor",
+        kind=MetricKind.CHOICE,
+        allowed_values=("STANDBY", "ACTIVE"),
+        value="ACTIVE",
+    )
+    read_only_choice = build_widget(from_remote_metric(read_only_remote))
+    read_only_choice.show_value(read_only_remote.value)
+    report.check(
+        isinstance(read_only_choice, ChoiceWidget)
+        and tuple(
+            read_only_choice.box.itemText(index)
+            for index in range(read_only_choice.box.count())
+        )
+        == read_only_remote.allowed_values
+        and read_only_choice.box.currentText() == "ACTIVE"
+        and not read_only_choice.box.isEnabled(),
+        "a read-only metric still displays its descriptor choices",
+    )
+
     stepper = build_widget(number(editable=True))
     sent.clear()
     stepper.value_requested.connect(lambda h, v: sent.append((h, v)))
@@ -374,6 +447,97 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         and bounded_stepper.error_label.sizePolicy().horizontalPolicy()
         == QSizePolicy.Ignored,
         "numeric errors use a bounded plain-text label",
+    )
+
+    print("\nAllowedRange numeric domains")
+    ranged = build_widget(
+        number(
+            editable=True,
+            allowed_ranges=(
+                RemoteRange(Decimal("0"), Decimal("10"), Decimal("2")),
+                RemoteRange(Decimal("20"), Decimal("30"), Decimal("5")),
+            ),
+        ),
+    )
+    ranged_values = []
+    ranged.value_requested.connect(lambda _h, value: ranged_values.append(value))
+    for text, accepted, description in (
+        ("25", True, "a value in the second allowed range is accepted"),
+        ("15", False, "a value in the gap between ranges is rejected"),
+        ("3", False, "a value off the range StepWidth is rejected"),
+    ):
+        ranged.edit.setText(text)
+        ranged._on_typed()  # noqa: SLF001
+        report.check(
+            (ranged_values[-1:] == [Decimal(text)]) == accepted,
+            description,
+            ranged.error_label.text(),
+        )
+        if not accepted:
+            report.check(ranged_values == [Decimal("25")], f"{description} without emitting a write")
+
+    for spec, text, accepted, description in (
+        (
+            number(allowed_ranges=(RemoteRange(None, Decimal("0"), Decimal("0.5")),)),
+            "-0.3",
+            False,
+            "an upper-only range rejects values off the Upper-based StepWidth",
+        ),
+        (
+            number(allowed_ranges=(RemoteRange(None, Decimal("0"), Decimal("0.5")),)),
+            "-0.5",
+            True,
+            "an upper-only range accepts values aligned to its Upper-based StepWidth",
+        ),
+        (
+            number(allowed_ranges=(RemoteRange(Decimal("10"), None, Decimal("2")),)),
+            "14",
+            True,
+            "a lower-only range accepts aligned values above its open end",
+        ),
+        (
+            number(allowed_ranges=(RemoteRange(Decimal("10"), None, Decimal("2")),)),
+            "15",
+            False,
+            "a lower-only range still enforces StepWidth",
+        ),
+        (
+            number(),
+            "123.456",
+            True,
+            "no allowed ranges leaves numeric input unrestricted",
+        ),
+        (
+            number(allowed_ranges=(RemoteRange(None, None, Decimal("0.5")),)),
+            "123.456",
+            True,
+            "an unbounded range cannot apply StepWidth without an anchor",
+        ),
+    ):
+        control = build_widget(spec)
+        values = []
+        control.value_requested.connect(lambda _h, value, target=values: target.append(value))
+        control.edit.setText(text)
+        control._on_typed()  # noqa: SLF001
+        report.check(bool(values) == accepted, description, control.error_label.text())
+
+    stepped_slider = build_widget(
+        number(
+            allowed_ranges=(
+                RemoteRange(Decimal("0"), Decimal("1"), Decimal("0.3")),
+            ),
+        ),
+    )
+    stepped_values = tuple(
+        stepped_slider._position_to_value(position)  # noqa: SLF001
+        for position in range(stepped_slider.slider.maximum() + 1)
+    )
+    report.check(
+        stepped_values
+        == (Decimal("0"), Decimal("0.3"), Decimal("0.6"), Decimal("0.9"))
+        and stepped_slider.high_label.text() == "0.9",
+        "a single stepped range slider exposes only aligned values",
+        str(stepped_values),
     )
 
     hostile_value = "<img src=not-found width=10000 height=10000>"
