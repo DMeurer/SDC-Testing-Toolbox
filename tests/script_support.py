@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import queue
 import subprocess
-import tempfile
 import threading
 import time
 from collections.abc import Iterator
@@ -60,7 +59,10 @@ class ProcessOutput:
         self._pending: queue.Queue[str | None] = queue.Queue()
         self._lines: list[str] = []
         self._lock = threading.Lock()
-        self._thread = threading.Thread(target=self._pump, name="provider-output-reader")
+        self._thread = threading.Thread(
+            target=self._pump,
+            name="provider-output-reader",
+        )
         self._thread.start()
 
     def _pump(self) -> None:
@@ -102,7 +104,7 @@ def wait_for_ready(output: ProcessOutput, timeout: float) -> bool:
             return False
         if line is None:
             return False
-        if line.strip() == ACCEPTANCE_PROVIDER_READY:
+        if line.strip() == expected:
             return True
 
 

@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import os
 import sys
-import time
 from typing import Self
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
+from script_support import Report as Report  # noqa: PLC0414
+from script_support import wait_until
 
-from script_support import Report as Report
 from sdctoolbox.gui.main_window import MainWindow
 from sdctoolbox.provider_service import ProviderService
 
@@ -21,20 +21,23 @@ def application() -> QApplication:
 
 
 def pump(app: QApplication, seconds: float = 0.2) -> None:
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        app.processEvents()
-        time.sleep(0.01)
+    wait_until(
+        lambda: False,
+        timeout=seconds,
+        interval=0.01,
+        pump=app.processEvents,
+        check_boundary=False,
+    )
 
 
 def wait_for(app: QApplication, predicate, timeout: float = 5.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        app.processEvents()
-        if predicate():
-            return True
-        time.sleep(0.02)
-    return predicate()
+    return wait_until(
+        predicate,
+        timeout=timeout,
+        interval=0.02,
+        pump=app.processEvents,
+        check_boundary=True,
+    )
 
 
 class WindowFixture:

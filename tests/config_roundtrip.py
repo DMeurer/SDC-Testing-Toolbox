@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import tempfile
 import threading
 import time
 from decimal import Decimal
@@ -24,14 +25,14 @@ from lxml import etree
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from script_support import Report, owned_temp_directory  # noqa: E402
+from script_support import Report  # noqa: E402
 from sdc11073.consumer.consumerimpl import SdcConsumer  # noqa: E402
 from sdc11073.definitions_sdc import SdcV1Definitions  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 from sdc11073.mdib import ConsumerMdib  # noqa: E402
 from sdc11073.xml_types import pm_qnames as pm  # noqa: E402
 
-from sdctoolbox import config  # noqa: E402
+from sdctoolbox import config, constants  # noqa: E402
 from sdctoolbox.consumer_service import RemoteDevice  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
     ActionSpec,
@@ -1500,7 +1501,9 @@ def run_checks(report: Report, workdir: Path) -> None:
         check_config_versions(report, workdir)
 
         preset_round_trips = []
-        for preset_path in sorted((ROOT / "presets").glob("*.json")):
+        preset_paths = sorted((ROOT / "presets").glob("*.json"))
+        preset_files = {preset_path.name for preset_path in preset_paths}
+        for preset_path in preset_paths:
             preset_data = json.loads(preset_path.read_text(encoding="utf-8"))
             preset = config.parse(preset_data)
             preset_service = ProviderService(instance_name=preset.instance_name, device=preset.device)
@@ -1541,9 +1544,10 @@ def run_checks(report: Report, workdir: Path) -> None:
             finally:
                 preset_service.stop()
         report.check(
-            len(preset_round_trips) == 7 and all(preset_round_trips),
+            preset_files == constants.SHIPPED_PRESET_FILES and all(preset_round_trips),
             "canonical presets round-trip at the current version with version-3 signals intact",
-            f"{sum(preset_round_trips)} of {len(preset_round_trips)}",
+            f"{sum(preset_round_trips)} of {len(constants.SHIPPED_PRESET_FILES)}; "
+            f"files {sorted(preset_files)}",
         )
 
         print("\n3. Import replaces rather than appends")
@@ -1636,13 +1640,16 @@ def run_checks(report: Report, workdir: Path) -> None:
 
 
 def check_owned_temp_cleanup(report: Report) -> None:
-    with owned_temp_directory(prefix="sdctoolbox-cleanup-root-") as root:
-        with owned_temp_directory(prefix="success-", directory=root) as successful:
+    with tempfile.TemporaryDirectory(prefix="sdctoolbox-cleanup-root-") as raw_root:
+        root = Path(raw_root)
+        with tempfile.TemporaryDirectory(prefix="success-", dir=root) as raw_successful:
+            successful = Path(raw_successful)
             (successful / "marker").write_text("closed", encoding="utf-8")
         report.check(not successful.exists(), "owned temporary directories are removed after success")
 
         try:
-            with owned_temp_directory(prefix="failure-", directory=root) as failed:
+            with tempfile.TemporaryDirectory(prefix="failure-", dir=root) as raw_failed:
+                failed = Path(raw_failed)
                 (failed / "marker").write_text("closed", encoding="utf-8")
                 raise AssertionError("forced temporary-directory failure")
         except AssertionError:
@@ -1654,7 +1661,8 @@ def main() -> int:
     basic_logging_setup(level=logging.WARNING)
     report = Report()
     check_owned_temp_cleanup(report)
-    with owned_temp_directory(prefix="sdctoolbox-config-") as workdir:
+    with tempfile.TemporaryDirectory(prefix="sdctoolbox-config-") as raw_workdir:
+        workdir = Path(raw_workdir)
         run_checks(report, workdir)
     report.check(not workdir.exists(), "the config test directory is removed after all services stop")
     print()

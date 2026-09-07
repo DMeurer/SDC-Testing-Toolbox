@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT))
 from script_support import Report  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 
-from sdctoolbox import config  # noqa: E402
+from sdctoolbox import config, constants  # noqa: E402
 from sdctoolbox.model import CODING_SYSTEMS  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
@@ -218,7 +218,13 @@ def main() -> int:
     print("=" * 74)
 
     paths = sorted((ROOT / "presets").glob("*.json"))
-    report.check(len(paths) == 7, "the seven canonical presets are shipped", f"{len(paths)} files")  # noqa: PLR2004
+    actual_files = {path.name for path in paths}
+    report.check(
+        actual_files == constants.SHIPPED_PRESET_FILES,
+        "the exact canonical preset inventory is shipped",
+        f"missing {sorted(constants.SHIPPED_PRESET_FILES - actual_files)}, "
+        f"extra {sorted(actual_files - constants.SHIPPED_PRESET_FILES)}",
+    )
 
     for path in paths:
         check_preset(report, path)
@@ -228,9 +234,9 @@ def main() -> int:
     print("\nThe menu builds from these")
     listed = config.list_presets()
     report.check(
-        len(listed) == len(paths),
-        "every file is offered, so none is silently unreadable",
-        f"{len(listed)} of {len(paths)}",
+        {preset.path.name for preset in listed} == constants.SHIPPED_PRESET_FILES,
+        "exactly the shipped files are offered, so none is silently unreadable",
+        str(sorted(preset.path.name for preset in listed)),
     )
     for preset in listed:
         report.check(bool(preset.description), f"{preset.name} says what it is", preset.description[:44])

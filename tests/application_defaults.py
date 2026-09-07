@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from unittest.mock import patch
 
 TESTS = Path(__file__).resolve().parent
 ROOT = TESTS.parent
@@ -69,20 +70,17 @@ def check_invalid_ip_precedes_construction() -> None:
     def record_provider(*_args: object, **_kwargs: object) -> None:
         constructions.append("ProviderService")
 
-    original_application = run_toolbox.QApplication
-    original_provider = run_toolbox.ProviderService
-    run_toolbox.QApplication = record_application
-    run_toolbox.ProviderService = record_provider
-    try:
+    with patch.object(run_toolbox, "QApplication", record_application), patch.object(
+        run_toolbox,
+        "ProviderService",
+        record_provider,
+    ):
         code, stderr = None, io.StringIO()
         try:
             with contextlib.redirect_stderr(stderr):
                 run_toolbox.main(["--ip", "not-an-address"])
         except SystemExit as exc:
             code = exc.code
-    finally:
-        run_toolbox.QApplication = original_application
-        run_toolbox.ProviderService = original_provider
 
     check(
         code == 2

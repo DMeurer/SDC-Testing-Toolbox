@@ -18,6 +18,7 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from decimal import Decimal
@@ -1837,7 +1838,8 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                 peer.kill()
 
         print("\n10c. Export and import from the File menu")
-        with owned_temp_directory(prefix="sdctoolbox-gui-") as workdir:
+        with tempfile.TemporaryDirectory(prefix="sdctoolbox-gui-") as raw_workdir:
+            workdir = Path(raw_workdir)
             preset = workdir / "preset.json"
 
             # The file dialogs would block with nobody to answer them.
@@ -1993,7 +1995,11 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             for i in range(startup.config_box.count())
             if startup.config_box.itemData(i)
         ]
-        report.check(bool(preset_paths), "presets are offered in the list", f"{len(preset_paths)} entries")
+        report.check(
+            {Path(path).name for path in preset_paths} == constants.SHIPPED_PRESET_FILES,
+            "the exact shipped preset inventory is offered in the list",
+            str(sorted(Path(path).name for path in preset_paths)),
+        )
         report.check(
             all(Path(p).exists() for p in preset_paths),
             "and every one of them exists",
