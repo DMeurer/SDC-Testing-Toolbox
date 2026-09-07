@@ -128,6 +128,10 @@ class EqualResource:
         return self.key == other.key
 
 
+class UnhashableResource:
+    __hash__ = None
+
+
 class CollectableMdib:
     def __init__(self) -> None:
         self.entities: dict[str, object] = {}
@@ -279,7 +283,6 @@ def async_resources_retire_once() -> None:
 
 def non_weakrefable_resources_are_rejected() -> None:
     worker = AsyncCall()
-    unmanaged_started = threading.Event()
     call_started = threading.Event()
     active_call = BlockingCall()
     active_resource = EqualResource("valid")
@@ -293,12 +296,6 @@ def non_weakrefable_resources_are_rejected() -> None:
         nonlocal close_count
         close_count += 1
         resource_closed.set()
-
-    check(worker.start(unmanaged_started.set), "an unmanaged call still starts")
-    check(
-        unmanaged_started.wait(1.0) and worker.wait(1.0),
-        "an unmanaged call still finishes without resource validation",
-    )
 
     try:
         worker.start_managed("invalid", object(), call)
@@ -372,6 +369,149 @@ def active_equal_resource_retires_after_release() -> None:
     worker = AsyncCall()
     call = BlockingCall()
     resource = EqualResource("active")
+def unhashable_keys_and_resources_are_rejected() -> None:
+    worker = AsyncCall()
+    call_started = threading.Event()
+    resource = UnhashableResource()
+
+    try:
+        worker.start_managed([], None, call_started.set)
+    except TypeError as exc:
+        key_error = str(exc)
+    else:
+        key_error = None
+
+    check(
+        key_error == "managed key must be hashable",
+        "an unhashable managed key is rejected synchronously",
+    )
+
+    try:
+        worker.start_managed("unhashable-resource", resource, call_started.set)
+    except TypeError as exc:
+        start_error = str(exc)
+    else:
+        start_error = None
+
+    check(
+        start_error == "managed resource must be hashable",
+        "an unhashable weak-referenceable resource is rejected synchronously",
+    )
+
+    try:
+        worker.retire(resource, lambda: None)
+    except TypeError as exc:
+        retire_error = str(exc)
+    else:
+        retire_error = None
+
+    check(
+        retire_error == "managed resource must be hashable",
+        "retirement rejects an unhashable resource synchronously",
+    )
+    check(
+        not call_started.is_set()
+        and not worker._threads  # noqa: SLF001
+        and not worker._resources  # noqa: SLF001
+        and not worker._retired_resources,  # noqa: SLF001
+        "hashability rejection starts no work and creates no bookkeeping",
+    )
+
+
+def thread_start_failure_restores_bookkeeping() -> None:
+    worker = AsyncCall()
+    original_start = threading.Thread.start
+    new_resource = EqualResource("new")
+
+    def fail_start(_thread: threading.Thread) -> None:
+        raise RuntimeError("forced thread start failure")
+
+    threading.Thread.start = fail_start
+    try:
+        try:
+            worker.start_managed("retry-new", new_resource, lambda: None)
+        except RuntimeError as exc:
+            new_error = str(exc)
+        else:
+            new_error = None
+    finally:
+        threading.Thread.start = original_start
+
+    check(
+        new_error == "forced thread start failure",
+        "a new-resource thread start failure is re-raised unchanged",
+    )
+    check(
+        not worker._threads and not worker._resources,  # noqa: SLF001
+        "a new-resource thread start failure restores empty bookkeeping",
+    )
+    retried_new = threading.Event()
+    check(
+        worker.start_managed("retry-new", new_resource, retried_new.set),
+        "the same key and new resource can be retried after start failure",
+    )
+    check(
+        retried_new.wait(1.0) and worker.wait(1.0),
+        "the new-resource retry completes",
+    )
+    worker.retire(new_resource, lambda: None)
+
+    active_call = BlockingCall()
+    active_resource = EqualResource("shared")
+    equal_resource = EqualResource("shared")
+    check(
+        worker.start_managed("active", active_resource, active_call),
+        "the shared resource has a pre-existing user",
+    )
+    check(active_call.entered.wait(1.0), "the pre-existing resource user starts")
+    active_thread = worker._threads["active"]  # noqa: SLF001
+    active_use = worker._resources[active_resource]  # noqa: SLF001
+
+    threading.Thread.start = fail_start
+    try:
+        try:
+            worker.start_managed("retry-shared", equal_resource, lambda: None)
+        except RuntimeError as exc:
+            shared_error = str(exc)
+        else:
+            shared_error = None
+    finally:
+        threading.Thread.start = original_start
+
+    check(
+        shared_error == "forced thread start failure",
+        "an existing-resource thread start failure is re-raised unchanged",
+    )
+    check(
+        worker._threads == {"active": active_thread}  # noqa: SLF001
+        and len(worker._resources) == 1  # noqa: SLF001
+        and next(iter(worker._resources)) is active_resource  # noqa: SLF001
+        and worker._resources[active_resource] is active_use  # noqa: SLF001
+        and active_use.users == 1,
+        "an existing equal resource retains its exact pre-call bookkeeping",
+    )
+
+    retried_shared = BlockingCall()
+    check(
+        worker.start_managed("retry-shared", equal_resource, retried_shared),
+        "the same key and equal resource can be retried after start failure",
+    )
+    check(retried_shared.entered.wait(1.0), "the existing-resource retry starts")
+    check(
+        active_use.users == 2 and len(worker._resources) == 1,  # noqa: SLF001
+        "the retry shares the existing equal resource entry",
+    )
+    retried_shared.release.set()
+    active_call.release.set()
+    check(worker.wait(1.0), "both shared-resource users finish")
+    check(
+        active_use.users == 0 and len(worker._resources) == 1,  # noqa: SLF001
+        "completed shared-resource calls preserve idle resource bookkeeping",
+    )
+    worker.retire(equal_resource, lambda: None)
+    check(not worker._resources, "the shared resource still retires after retry")  # noqa: SLF001
+
+
     equal_resource = EqualResource("active")
     closed: list[EqualResource] = []
 
@@ -816,51 +956,6 @@ def metric_reports_are_scoped(app: QApplication, provider: ProviderService) -> N
     check(remote.close_count == 1 and service.stop_count == 1, "metric session resources close once")
 
 
-def main() -> int:
-    app = QApplication(sys.argv)
-    provider = ProviderService(instance_name="consumer-lifecycle")
-    provider.start()
-    old_service = consumer_module.ConsumerService
-    old_bridge = consumer_module.MdibBridge
-    consumer_module.ConsumerService = FakeConsumerService
-    consumer_module.MdibBridge = FakeBridge
-    try:
-        print("Consumer lifecycle test (offscreen)")
-        close_idle_window(app, provider)
-        close_during_scan(app, provider)
-        close_during_connect(app, provider)
-        close_with_queued_connection(app, provider)
-        non_weakrefable_resources_are_rejected()
-        async_resources_retire_once()
-        active_equal_resource_retires_after_release()
-        retired_remote_graph_is_collectable(app, provider)
-        close_during_invocation(app, provider, action=False)
-        close_during_invocation(app, provider, action=True)
-        stale_set_after_reconnect(app, provider)
-        peer_restart_requires_manual_reconnect(app, provider)
-        failed_reconnect_clears_peer_ui(app, provider)
-        waveform_reports_are_scoped(app, provider)
-        metric_reports_are_scoped(app, provider)
-        refresh_snapshot_and_editor_lookups_are_scoped(app, provider)
-    finally:
-        consumer_module.ConsumerService = old_service
-        consumer_module.MdibBridge = old_bridge
-        provider.stop()
-    return REPORT.summary()
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-
-    finally:
-        consumer_module.ConsumerService = old_service
-        consumer_module.MdibBridge = old_bridge
-        provider.stop()
-    return REPORT.summary()
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
 def refresh_snapshot_and_editor_lookups_are_scoped(
     app: QApplication,
     provider: ProviderService,
@@ -922,3 +1017,30 @@ def refresh_snapshot_and_editor_lookups_are_scoped(
 
 
         refresh_snapshot_and_editor_lookups_are_scoped(app, provider)
+def main() -> int:
+    app = QApplication(sys.argv)
+    provider = ProviderService(instance_name="consumer-lifecycle")
+    provider.start()
+    old_service = consumer_module.ConsumerService
+    old_bridge = consumer_module.MdibBridge
+    consumer_module.ConsumerService = FakeConsumerService
+    consumer_module.MdibBridge = FakeBridge
+    try:
+        print("Consumer lifecycle test (offscreen)")
+        close_idle_window(app, provider)
+        close_during_scan(app, provider)
+        close_during_connect(app, provider)
+        close_with_queued_connection(app, provider)
+        non_weakrefable_resources_are_rejected()
+        unhashable_keys_and_resources_are_rejected()
+        thread_start_failure_restores_bookkeeping()
+        async_resources_retire_once()
+        active_equal_resource_retires_after_release()
+        retired_remote_graph_is_collectable(app, provider)
+        close_during_invocation(app, provider, action=False)
+        close_during_invocation(app, provider, action=True)
+        stale_set_after_reconnect(app, provider)
+        peer_restart_requires_manual_reconnect(app, provider)
+        failed_reconnect_clears_peer_ui(app, provider)
+        waveform_reports_are_scoped(app, provider)
+        metric_reports_are_scoped(app, provider)
