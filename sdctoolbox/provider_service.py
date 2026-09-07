@@ -394,12 +394,11 @@ class ProviderService:
                 self._mdib,
                 coerce_value=self._coerce_value,
                 on_applied=self._on_metric_applied,
+                execution_lock=self._lock,
             )
             self._activate_handler = make_activate_handler(
                 self._mdib,
-                effects_for=self._effects_for,
-                coerce_value=self._coerce_value,
-                on_applied=self._on_metric_applied,
+                execute_effects=self._execute_action_effects,
             )
 
             this_model = ThisModelType(
@@ -1192,18 +1191,8 @@ class ProviderService:
                         break
                     pending = set(self._pending_alert_sources)
                     self._pending_alert_sources.clear()
-                    alerts = [
-                        (handle, spec)
-                        for handle, spec in self._alerts.items()
-                        if spec.has_limits and spec.source_handle in pending
-                    ]
-
-                for handle, spec in alerts:
-                    try:
-                        value = self.get_value(spec.source_handle)
-                        self._write_alert_presence(handle, present=spec.breached_by(value))
-                    except Exception as exc:  # noqa: BLE001 - drain other queued sources first
-                        first_error = first_error or exc
+                _, error = self._apply_alert_updates(pending)
+                first_error = first_error or error
 
             if first_error is not None:
                 raise first_error
@@ -1212,7 +1201,39 @@ class ProviderService:
                 with self._lock:
                     self._alert_evaluator_lock.release()
 
-    def _write_alert_presence(self, handle: str, *, present: bool) -> None:
+    def _apply_alert_updates(
+            self,
+            source_handles: set[str],
+    ) -> tuple[mdibbase.MdibVersionGroup | None, Exception | None]:
+        """Apply all derived alert changes and retain the last exact committed version."""
+        with self._lock:
+            alerts = [
+                (handle, spec)
+                for handle, spec in self._alerts.items()
+                if spec.has_limits and spec.source_handle in source_handles
+            ]
+
+        last_version = None
+        first_error = None
+        for handle, spec in alerts:
+            try:
+                value = self.get_value(spec.source_handle)
+                version = self._write_alert_presence(handle, present=spec.breached_by(value))
+                last_version = version or last_version
+            except Exception as exc:  # noqa: BLE001 - update independent alerts before reporting failure
+                # The alert transaction may commit before report serialization raises.
+                # Action execution holds the service lock, so this cannot include a later
+                # unrelated update when it is used as the final invocation version.
+                last_version = self.mdib.mdib_version_group
+                first_error = first_error or exc
+        return last_version, first_error
+
+    def _write_alert_presence(
+            self,
+            handle: str,
+            *,
+            present: bool,
+    ) -> mdibbase.MdibVersionGroup | None:
         entity = self.mdib.entities.by_handle(handle)
         if entity is None:
             msg = f"no alarm with handle {handle!r}"
@@ -1221,7 +1242,7 @@ class ProviderService:
             # Also what keeps an acknowledgement alive: alarms are re-evaluated on every
             # change to the source metric, and without this an Ack would be overwritten with
             # On by the very next value that is still out of range.
-            return
+            return None
 
         entity.state.Presence = present
         entity.state.DeterminationTime = time.time()
@@ -1248,7 +1269,9 @@ class ProviderService:
             mgr.write_entity(entity)
             for signal in signals:
                 mgr.write_entity(signal)
+            version_group = self._transaction_version(mgr)
         logger.info("alarm %s is now %s", handle, "present" if present else "clear")
+        return version_group
 
     # -- contexts ------------------------------------------------------------------
 
@@ -1611,18 +1634,20 @@ class ProviderService:
             if self.mdib.entities.by_handle(spec.target_handle) is None:
                 msg = f"no descriptor with handle {spec.target_handle!r} for action {spec.label!r} to act on"
                 raise KeyError(msg)
+            operation_target = self._action_target_for(spec)
+            spec.target_handle = operation_target
 
             handle = spec.handle or self._unique_handle(constants.ACTION_HANDLE_PREFIX + spec.slug)
             operation = ActivateOperation(
                 handle=handle,
-                operation_target_handle=spec.target_handle,
+                operation_target_handle=operation_target,
                 operation_handler=self._activate_handler,
                 coded_value=_coded_value(spec.effective_type(), spec.label),
             )
             self._sco.register_operation(operation)
             self._actions[handle] = spec
             self._set_operating_mode(handle, pm_types.OperatingMode.ENABLED)
-            logger.info("added action %r (%s) on %s", spec.label, handle, spec.target_handle)
+            logger.info("added action %r (%s) on %s", spec.label, handle, operation_target)
             return handle
 
     def remove_action(self, handle: str) -> None:
@@ -1656,33 +1681,145 @@ class ProviderService:
         Deliberately routed through the same effects the remote path uses, so a button here
         and an invocation over the network cannot drift apart.
         """
-        with self._lock:
-            spec = self._actions.get(handle)
-            if spec is None:
-                msg = f"no action with handle {handle!r}"
-                raise KeyError(msg)
-            prepared = []
-            for target, value in spec.effects.items():
-                entity = self.mdib.entities.by_handle(target)
-                if entity is None:
-                    msg = f"effect target {target!r} does not exist"
+        _, alert_error = self._execute_action_effects(handle)
+        if alert_error is not None:
+            raise alert_error.with_traceback(alert_error.__traceback__)
+
+    def _execute_action_effects(
+            self,
+            operation_handle: str,
+    ) -> tuple[mdibbase.MdibVersionGroup, Exception | None]:
+        """Validate, atomically commit, and causally process one action's effects."""
+        self._alert_evaluator_lock.acquire()
+        try:
+            with self._lock:
+                spec = self._actions.get(operation_handle)
+                if spec is None:
+                    msg = f"no action with handle {operation_handle!r}"
                     raise KeyError(msg)
-                prepared.append((entity, self._coerce_value(target, value)))
+                operation = self.mdib.entities.by_handle(operation_handle)
+                operation_target = getattr(getattr(operation, "descriptor", None), "OperationTarget", None)
+                valid_target = self._action_target_for(spec)
+                if operation_target != valid_target:
+                    msg = (
+                        f"action {operation_handle!r} OperationTarget {operation_target!r} does not contain "
+                        "all current effects"
+                    )
+                    raise ValueError(msg)
 
-            for entity, value in prepared:
-                apply_metric_value(entity.state, value)
-            if prepared:
-                with self.mdib.metric_state_transaction() as mgr:
-                    for entity, _ in prepared:
-                        mgr.write_entity(entity)
+                prepared = []
+                for target, value in spec.effects.items():
+                    entity = self.mdib.entities.by_handle(target)
+                    if entity is None:
+                        msg = f"effect target {target!r} does not exist"
+                        raise KeyError(msg)
+                    prepared.append((entity, self._coerce_value(target, value)))
 
-        touched = {entity.handle for entity, _ in prepared}
-        self._evaluate_alerts(touched)
-        logger.info("action %s ran locally, changing %d metric(s)", handle, len(touched))
+                # A setter can queue its source after this helper wins the evaluator but
+                # before it wins the service lock. Finish that earlier causal work first.
+                pending = set(self._pending_alert_sources)
+                self._pending_alert_sources.clear()
+                if pending:
+                    _, pending_error = self._apply_alert_updates(pending)
+                    if pending_error is not None:
+                        logger.error(
+                            "queued alert processing failed before action %s",
+                            operation_handle,
+                            exc_info=(type(pending_error), pending_error, pending_error.__traceback__),
+                        )
 
-    def _effects_for(self, operation_handle: str) -> dict[str, object]:
-        spec = self._actions.get(operation_handle)
-        return dict(spec.effects) if spec is not None else {}
+                version_group = self.mdib.mdib_version_group
+                transaction_error = None
+                if prepared:
+                    before_group = self.mdib.mdib_version_group
+                    before_state_versions = tuple(
+                        (entity.handle, entity.state.StateVersion) for entity, _ in prepared
+                    )
+                    for entity, value in prepared:
+                        apply_metric_value(entity.state, value)
+                    try:
+                        with self.mdib.metric_state_transaction() as mgr:
+                            for entity, _ in prepared:
+                                mgr.write_entity(entity)
+                            version_group = self._transaction_version(mgr)
+                    except Exception as exc:  # noqa: BLE001 - distinguish commit from report failure
+                        after_group = self.mdib.mdib_version_group
+                        after_state_versions = tuple(
+                            (
+                                entity.handle,
+                                self.mdib.entities.by_handle(entity.handle).state.StateVersion,
+                            )
+                            for entity, _ in prepared
+                        )
+                        committed = (
+                            (
+                                after_group.mdib_version,
+                                after_group.sequence_id,
+                                after_group.instance_id,
+                            )
+                            == (
+                                before_group.mdib_version + 1,
+                                before_group.sequence_id,
+                                before_group.instance_id,
+                            )
+                            and after_state_versions
+                            == tuple(
+                                (handle, state_version + 1)
+                                for handle, state_version in before_state_versions
+                            )
+                        )
+                        if not committed:
+                            raise
+                        version_group = after_group
+                        transaction_error = exc
+
+                touched = {entity.handle for entity, _ in prepared}
+                alert_version, alert_error = self._apply_alert_updates(touched)
+                if transaction_error is not None and alert_error is not None:
+                    logger.error(
+                        "action %s alert processing also failed after its metric report failure",
+                        operation_handle,
+                        exc_info=(type(alert_error), alert_error, alert_error.__traceback__),
+                    )
+                logger.info(
+                    "action %s ran, changing %d metric(s)",
+                    operation_handle,
+                    len(touched),
+                )
+                return alert_version or version_group, transaction_error or alert_error
+        finally:
+            self._alert_evaluator_lock.release()
+
+    def _action_target_for(self, spec: ActionSpec) -> str:
+        """Return a declared target or the nearest common subtree of its known effects."""
+        effect_paths = []
+        for effect_handle in spec.effects:
+            entity = self.mdib.entities.by_handle(effect_handle)
+            if entity is None:
+                # Keep malformed-action fixtures publishable so execution can demonstrate
+                # all-or-nothing remote failure. Existing effects still determine the target.
+                continue
+            path = []
+            while entity is not None:
+                path.append(entity.handle)
+                entity = self.mdib.entities.by_handle(entity.parent_handle)
+            effect_paths.append(path)
+
+        if not effect_paths or all(spec.target_handle in path for path in effect_paths):
+            return spec.target_handle
+
+        common = set(effect_paths[0]).intersection(*effect_paths[1:])
+        if not common:
+            msg = f"action {spec.label!r} effects have no common containment subtree"
+            raise ValueError(msg)
+        target = next(handle for handle in effect_paths[0] if handle in common)
+        logger.warning(
+            "action %r target %s does not contain all effects; using common subtree %s",
+            spec.label,
+            spec.target_handle,
+            target,
+        )
+        return target
 
     def _coerce_value(self, handle: str, value: object) -> Decimal | str:
         spec = self._specs.get(handle)
@@ -1690,6 +1827,14 @@ class ProviderService:
             msg = f"no metric with handle {handle!r}"
             raise KeyError(msg)
         return coerce_metric_value(spec, value, handle)
+
+    def _transaction_version(self, manager) -> mdibbase.MdibVersionGroup:
+        """Copy the version assigned to a transaction before later updates can race it."""
+        return mdibbase.MdibVersionGroup(
+            manager.new_mdib_version,
+            self.mdib.sequence_id,
+            self.mdib.instance_id,
+        )
 
     # -- internals -----------------------------------------------------------------
 

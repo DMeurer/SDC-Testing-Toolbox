@@ -27,6 +27,7 @@ import time
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from lxml import etree
 
@@ -44,6 +45,7 @@ from sdctoolbox.consumer_service import (  # noqa: E402
     RemoteDevice,
     _PeriodicConsumerMdibMethods,
 )
+from sdctoolbox.handlers import make_activate_handler  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
     ActionSpec,
     AlertManifestation,
@@ -958,6 +960,284 @@ def check_metric_value_validation(report: Report, service: ProviderService) -> N
         service.remove_action(action)
     for handle in (number, text, choice):
         service.remove_metric(handle)
+
+
+def check_action_execution(report: Report, service: ProviderService) -> None:
+    print("\n6a. Shared local and remote action execution")
+
+    first = service.add_metric(
+        MetricSpec(
+            label="Action first",
+            kind=MetricKind.NUMBER,
+            section="Action scope",
+            maximum=Decimal("10"),
+            initial_value=Decimal("1"),
+        ),
+    )
+    second = service.add_metric(
+        MetricSpec(
+            label="Action second",
+            kind=MetricKind.NUMBER,
+            section="Action scope",
+            maximum=Decimal("10"),
+            initial_value=Decimal("2"),
+        ),
+    )
+    channel = service.mdib.entities.by_handle(first).parent_handle
+
+    corrected = service.add_action(
+        ActionSpec(
+            label="Invalid action scope",
+            target_handle=first,
+            effects={second: Decimal("3")},
+        ),
+    )
+    report.check(
+        service.mdib.entities.by_handle(corrected).descriptor.OperationTarget == second
+        and service.list_actions()[corrected].target_handle == second,
+        "an unrelated OperationTarget is normalized to the affected entry",
+    )
+
+    direct = service.add_action(
+        ActionSpec(label="Direct action target", target_handle=first, effects={first: Decimal("4")}),
+    )
+    common = service.add_action(
+        ActionSpec(
+            label="Common action target",
+            target_handle=channel,
+            effects={first: Decimal("5"), second: Decimal("6")},
+        ),
+    )
+    empty = service.add_action(ActionSpec(label="Empty action", target_handle=second))
+    report.check(
+        service.mdib.entities.by_handle(direct).descriptor.OperationTarget == first
+        and service.mdib.entities.by_handle(common).descriptor.OperationTarget == channel,
+        "OperationTarget may be an affected metric or their common containment subtree",
+    )
+
+    original_transaction = service.mdib.metric_state_transaction
+    transactions = 0
+
+    def counted_transaction(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        nonlocal transactions
+        transactions += 1
+        return original_transaction(*args, **kwargs)
+
+    with patch.object(service.mdib, "metric_state_transaction", counted_transaction):
+        service.run_action(common)
+        service.run_action(empty)
+    report.check(
+        transactions == 1
+        and service.get_value(first) == Decimal("5")
+        and service.get_value(second) == Decimal("6"),
+        "multi-effect actions use one metric transaction and empty actions use none",
+        f"{transactions} transaction(s)",
+    )
+
+    bad = service.add_action(
+        ActionSpec(
+            label="Atomic shared action",
+            target_handle=channel,
+            effects={first: Decimal("7"), second: Decimal("999999")},
+        ),
+    )
+    before_values = service.get_value(first), service.get_value(second)
+    before_version = service.mdib.mdib_version
+    try:
+        service.run_action(bad)
+    except ValueError:
+        local_rejected = True
+    else:
+        local_rejected = False
+    report.check(
+        local_rejected
+        and (service.get_value(first), service.get_value(second)) == before_values
+        and service.mdib.mdib_version == before_version,
+        "all effects validate before mutation and a local failure leaves the version unchanged",
+    )
+
+    operation = service._sco._registered_operations[bad]  # noqa: SLF001 - exercise the real remote adapter
+    params = SimpleNamespace(operation_instance=operation, operation_request=SimpleNamespace(argument=None))
+    remote_result = service._activate_handler(params)  # noqa: SLF001
+    report.check(
+        remote_result.invocation_state is msg_types.InvocationState.FAILED
+        and (service.get_value(first), service.get_value(second)) == before_values
+        and service.mdib.mdib_version == before_version,
+        "the same validation failure becomes remote FAILED without mutation",
+    )
+
+    alarm = service.add_alert(
+        AlertSpec(label="Action threshold", source_handle=first, upper_limit=Decimal("8")),
+    )
+    crossing = service.add_action(
+        ActionSpec(label="Cross action threshold", target_handle=first, effects={first: Decimal("9")}),
+    )
+    operation = service._sco._registered_operations[crossing]  # noqa: SLF001
+    params = SimpleNamespace(operation_instance=operation, operation_request=SimpleNamespace(argument=None))
+    versions = []
+
+    def metric_version(_values: dict) -> None:
+        versions.append(("metric", service.mdib.mdib_version))
+
+    def alert_version(_values: dict) -> None:
+        versions.append(("alert", service.mdib.mdib_version))
+
+    observableproperties.bind(
+        service.mdib,
+        metrics_by_handle=metric_version,
+        alert_by_handle=alert_version,
+    )
+
+    def execute_then_unrelated(handle: str):  # noqa: ANN202
+        result = service._execute_action_effects(handle)  # noqa: SLF001
+        service.set_value(second, Decimal("7"))
+        return result
+
+    try:
+        result = make_activate_handler(service.mdib, execute_then_unrelated)(params)
+    finally:
+        observableproperties.unbind(
+            service.mdib,
+            metrics_by_handle=metric_version,
+            alert_by_handle=alert_version,
+        )
+    metric_versions = [version for kind, version in versions if kind == "metric"]
+    alert_versions = [version for kind, version in versions if kind == "alert"]
+    report.check(
+        len(metric_versions) == 2  # noqa: PLR2004 - action then deliberate unrelated update
+        and len(alert_versions) == 1
+        and alert_versions[0] == metric_versions[0] + 1
+        and result.mdib_version_group.mdib_version == alert_versions[0]
+        and service.mdib.mdib_version == metric_versions[1] > alert_versions[0],
+        "remote results retain metric V / alert V+1 despite a later unrelated update",
+        f"events {versions}, result {result.mdib_version_group.mdib_version}",
+    )
+
+    def raise_on_metric_transaction(error: Exception):  # noqa: ANN202
+        def observer(result) -> None:  # noqa: ANN001
+            if result.metric_updates:
+                raise error
+
+        return observer
+
+    @contextmanager
+    def fail_before_metric_commit(*_args, **_kwargs):  # noqa: ANN003, ANN202
+        raise ValueError("pre-commit metric transaction failure")
+        yield  # pragma: no cover - makes this a context manager without permitting commit
+
+    service.set_value(first, Decimal("1"))
+    before_version = service.mdib.mdib_version
+    with patch.object(service.mdib, "metric_state_transaction", fail_before_metric_commit):
+        pre_commit_failure = service._activate_handler(params)  # noqa: SLF001
+    report.check(
+        pre_commit_failure.invocation_state is msg_types.InvocationState.FAILED
+        and service.get_value(first) == Decimal("1")
+        and not service.mdib.entities.by_handle(alarm).state.Presence
+        and service.mdib.mdib_version == before_version,
+        "a transaction failure before commit is remote FAILED without visible effects",
+    )
+
+    service.set_value(first, Decimal("1"))
+    local_metric_failure = ValueError("post-commit metric report failure")
+    before_version = service.mdib.mdib_version
+    local_observer = raise_on_metric_transaction(local_metric_failure)
+    observableproperties.bind(service.mdib, transaction=local_observer)
+    try:
+        try:
+            service.run_action(crossing)
+        except ValueError as exc:
+            local_post_commit_failure = exc is local_metric_failure
+        else:
+            local_post_commit_failure = False
+    finally:
+        observableproperties.unbind(service.mdib, transaction=local_observer)
+    report.check(
+        local_post_commit_failure
+        and service.get_value(first) == Decimal("9")
+        and service.mdib.entities.by_handle(alarm).state.Presence
+        and service.mdib.mdib_version == before_version + 2,  # metric V, alert V+1
+        "local callers receive metric report failures after committed effects and causal alerts",
+    )
+
+    service.set_value(first, Decimal("1"))
+    remote_metric_failure = ValueError("post-commit remote metric report failure")
+    before_version = service.mdib.mdib_version
+    remote_observer = raise_on_metric_transaction(remote_metric_failure)
+    observableproperties.bind(service.mdib, transaction=remote_observer)
+    try:
+        remote_post_commit_failure = service._activate_handler(params)  # noqa: SLF001
+    finally:
+        observableproperties.unbind(service.mdib, transaction=remote_observer)
+    report.check(
+        remote_post_commit_failure.invocation_state is msg_types.InvocationState.FINISHED
+        and remote_post_commit_failure.mdib_version_group.mdib_version == before_version + 2
+        and remote_post_commit_failure.mdib_version_group == service.mdib.mdib_version_group
+        and service.get_value(first) == Decimal("9")
+        and service.mdib.entities.by_handle(alarm).state.Presence,
+        "remote metric report failure stays FINISHED at the exact action version without inviting retry",
+    )
+
+    no_alert_operation = service._sco._registered_operations[corrected]  # noqa: SLF001
+    no_alert_params = SimpleNamespace(
+        operation_instance=no_alert_operation,
+        operation_request=SimpleNamespace(argument=None),
+    )
+    no_alert_failure = ValueError("post-commit report failure without an alert change")
+    before_group = service.mdib.mdib_version_group
+    no_alert_observer = raise_on_metric_transaction(no_alert_failure)
+    observableproperties.bind(service.mdib, transaction=no_alert_observer)
+    try:
+        no_alert_result = service._activate_handler(no_alert_params)  # noqa: SLF001
+    finally:
+        observableproperties.unbind(service.mdib, transaction=no_alert_observer)
+    committed_group = service.mdib.mdib_version_group
+    report.check(
+        no_alert_result.invocation_state is msg_types.InvocationState.FINISHED
+        and committed_group.mdib_version == before_group.mdib_version + 1
+        and no_alert_result.mdib_version_group == committed_group
+        and service.get_value(second) == Decimal("3"),
+        "R0202 uses the exact committed metric version after a no-alert post-commit failure",
+        f"before {before_group.mdib_version}, committed {committed_group.mdib_version}, "
+        f"result {no_alert_result.mdib_version_group.mdib_version}",
+    )
+
+    alert_failure = RuntimeError("post-commit alert failure")
+
+    def fail_alert(_sources: set[str]):
+        return None, alert_failure
+
+    service.set_value(first, Decimal("1"))
+    with patch.object(service, "_apply_alert_updates", fail_alert):
+        before_version = service.mdib.mdib_version
+        try:
+            service.run_action(crossing)
+        except RuntimeError as exc:
+            local_alert_failure = exc is alert_failure
+        else:
+            local_alert_failure = False
+    report.check(
+        local_alert_failure
+        and service.get_value(first) == Decimal("9")
+        and service.mdib.mdib_version == before_version + 1,
+        "local callers receive post-commit alert failures without rolling back visible effects",
+    )
+
+    service.set_value(first, Decimal("1"))
+    with patch.object(service, "_apply_alert_updates", fail_alert):
+        before_version = service.mdib.mdib_version
+        remote_alert_failure = service._activate_handler(params)  # noqa: SLF001
+    report.check(
+        remote_alert_failure.invocation_state is msg_types.InvocationState.FINISHED
+        and remote_alert_failure.mdib_version_group.mdib_version == before_version + 1
+        and service.get_value(first) == Decimal("9"),
+        "remote post-commit alert failure stays FINISHED with the committed metric version",
+    )
+
+    service.remove_alert(alarm)
+    for handle in (corrected, direct, common, empty, bad, crossing):
+        service.remove_action(handle)
+    service.remove_metric(first)
+    service.remove_metric(second)
 
 
 def check_decimal_boundaries(report: Report, service: ProviderService) -> None:
@@ -2256,6 +2536,7 @@ def main() -> int:
         check_section_removal(report, service)
         check_section_handle_types(report, service)
         check_metric_value_validation(report, service)
+        check_action_execution(report, service)
         check_decimal_boundaries(report, service)
         check_concurrent_alert_evaluation(report, service)
         check_signals(report, service)

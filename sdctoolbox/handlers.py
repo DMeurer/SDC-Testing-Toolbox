@@ -16,8 +16,10 @@ from sdc11073.xml_types import msg_types, pm_types
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from contextlib import AbstractContextManager
 
     from sdc11073.mdib import ProviderMdib
+    from sdc11073.mdib.mdibbase import MdibVersionGroup
 
 logger = logging.getLogger("sdctoolbox.handlers")
 
@@ -44,6 +46,7 @@ def make_set_handler(
     mdib: ProviderMdib,
     coerce_value: Callable[[str, object], Decimal | str],
     on_applied: Callable[[str], None] | None = None,
+    execution_lock: AbstractContextManager | None = None,
 ) -> Callable[[ExecuteParameters], ExecuteResult]:
     """Build the execute handler bound to one provider MDIB.
 
@@ -70,6 +73,12 @@ def make_set_handler(
     """
 
     def handler(params: ExecuteParameters) -> ExecuteResult:
+        if execution_lock is not None:
+            with execution_lock:
+                return execute(params)
+        return execute(params)
+
+    def execute(params: ExecuteParameters) -> ExecuteResult:
         operation_handle = params.operation_instance.handle
         target_handle = params.operation_instance.operation_target_handle
         requested = params.operation_request.argument
@@ -115,9 +124,7 @@ def make_set_handler(
 
 def make_activate_handler(
     mdib: ProviderMdib,
-    effects_for: Callable[[str], dict[str, object]],
-    coerce_value: Callable[[str, object], Decimal | str],
-    on_applied: Callable[[str], None] | None = None,
+    execute_effects: Callable[[str], tuple[MdibVersionGroup, Exception | None]],
 ) -> Callable[[ExecuteParameters], ExecuteResult]:
     """Build the handler shared by every ActivateOperation.
 
@@ -133,8 +140,9 @@ def make_activate_handler(
     OperatingMode is enforced here for the same reason as in the set handler:
     handle_operation_request never looks at it.
 
-    :param effects_for: given an operation handle, the metric values that operation sets.
-    :param on_applied: called once per touched metric, after the transaction closes.
+    :param execute_effects: provider-owned preparation, commit, and alert processing.
+        A returned exception means the effects committed but reporting or subsequent alert
+        processing failed; the remote invocation remains successful in that case.
     """
 
     def handler(params: ExecuteParameters) -> ExecuteResult:
@@ -153,33 +161,22 @@ def make_activate_handler(
                 target_handle,
             )
 
-        effects = effects_for(operation_handle)
-        prepared = []
-        for handle, value in effects.items():
-            entity = mdib.entities.by_handle(handle)
-            if entity is None:
-                return _failed(mdib, f"effect target {handle!r} does not exist", target_handle)
-            try:
-                prepared.append((entity, coerce_value(handle, value)))
-            except (KeyError, TypeError, ValueError) as exc:
-                return _failed(mdib, str(exc), target_handle)
+        try:
+            version_group, alert_error = execute_effects(operation_handle)
+        except (KeyError, TypeError, ValueError) as exc:
+            return _failed(mdib, str(exc), target_handle)
 
-        for entity, value in prepared:
-            apply_metric_value(entity.state, value)
+        if alert_error is not None:
+            logger.error(
+                "action %s committed its effects, but post-commit processing failed",
+                operation_handle,
+                exc_info=(type(alert_error), alert_error, alert_error.__traceback__),
+            )
 
-        if prepared:
-            with mdib.metric_state_transaction() as mgr:
-                for entity, _ in prepared:
-                    mgr.write_entity(entity)
-
-        if on_applied is not None:
-            for entity, _ in prepared:
-                on_applied(entity.handle)
-
-        logger.info("action %s ran, changing %d metric(s)", operation_handle, len(prepared))
+        logger.info("action %s ran", operation_handle)
         return ExecuteResult(
             msg_types.InvocationState.FINISHED,
-            mdib.mdib_version_group,
+            version_group,
             target_handle,
         )
 

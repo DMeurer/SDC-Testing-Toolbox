@@ -54,6 +54,10 @@ from acceptance_provider import (  # noqa: E402
     WAVE,
     ZOOM,
 )
+from sdc11073 import observableproperties  # noqa: E402
+from sdc11073.loghelper import basic_logging_setup  # noqa: E402
+from sdc11073.xml_types import msg_types  # noqa: E402
+
 from script_support import (  # noqa: E402
     CallbackRecorder,
     ProcessOutput,
@@ -62,8 +66,6 @@ from script_support import (  # noqa: E402
     wait_for_output_line,
     wait_for_ready,
 )
-from sdc11073.loghelper import basic_logging_setup  # noqa: E402
-from sdc11073.xml_types import msg_types  # noqa: E402
 
 from sdctoolbox import constants  # noqa: E402
 from sdctoolbox.consumer_service import ConsumerService  # noqa: E402
@@ -759,11 +761,12 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
                 # An action is not a set: nothing here says what value anything takes. The
                 # device decides, and the proof is in the metrics it moves.
                 setup_cursor = metric_reports.cursor()
-                setup_zoom = remote.set_value(ZOOM, Decimal("42"))
+                setup_alert_cursor = alert_reports.cursor()
+                setup_zoom = remote.set_value(ZOOM, Decimal("95"))
                 setup_mode = remote.set_value(MODE, "RUN")
                 setup_event = metric_reports.wait_for(
                     lambda _payload: any(
-                        event.payload.get(ZOOM) == Decimal("42")
+                        event.payload.get(ZOOM) == Decimal("95")
                         for event in metric_reports.events_after(setup_cursor)
                     )
                     and any(
@@ -778,8 +781,58 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
                     "action preconditions arrive by metric report",
                     str(metric_reports.events_after(setup_cursor)),
                 )
+                setup_alert = alert_reports.wait_for(
+                    lambda payload: payload.get(LIMIT_ALARM, {}).get("presence") == "True",
+                    after=setup_alert_cursor,
+                    timeout=REPORT_TIMEOUT,
+                )
+                report.check(setup_alert is not None, "the action precondition raises its limit alert")
+
+                action_metric_versions = CallbackRecorder(
+                    lambda values: (remote.mdib.mdib_version, copy_metric_values(values)),
+                )
+                action_alert_versions = CallbackRecorder(
+                    lambda values: (remote.mdib.mdib_version, copy_alert_states(values)),
+                )
+
+                def copy_invocation(message: object) -> tuple[int, tuple[tuple[int, str, str | None, str], ...]]:
+                    invoked = msg_types.OperationInvokedReport.from_node(message.p_msg.msg_node)
+                    return (
+                        message.mdib_version_group.mdib_version,
+                        tuple(
+                            (
+                                part.InvocationInfo.TransactionId,
+                                str(part.InvocationInfo.InvocationState),
+                                part.OperationTarget,
+                                part.OperationHandleRef,
+                            )
+                            for part in invoked.ReportPart
+                        ),
+                    )
+
+                invocation_reports = CallbackRecorder(copy_invocation)
+                remote.bind(
+                    metrics_by_handle=action_metric_versions,
+                    alert_by_handle=action_alert_versions,
+                )
+                observableproperties.bind(
+                    remote._consumer,  # noqa: SLF001 - raw reports carry invocation versions and IDs
+                    operation_invoked_report=invocation_reports,
+                )
                 action_cursor = metric_reports.cursor()
-                state = remote.run_action(HOME_ACTION)
+                invocation_cursor = invocation_reports.cursor()
+                try:
+                    state = remote.run_action(HOME_ACTION)
+                finally:
+                    observableproperties.unbind(
+                        remote._consumer,  # noqa: SLF001
+                        operation_invoked_report=invocation_reports,
+                    )
+                    observableproperties.unbind(
+                        remote.mdib,
+                        metrics_by_handle=action_metric_versions,
+                        alert_by_handle=action_alert_versions,
+                    )
                 report.check(state in FINISHED, "invoking it finishes", str(state))
                 action_event = metric_reports.wait_for(
                     lambda payload: payload.get(ZOOM) == Decimal("1")
@@ -802,6 +855,42 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
                     action_event is not None and action_event.payload.get(NOTE) == "001",
                     "and numeric-looking text remains text",
                     repr(action_event.payload.get(NOTE) if action_event is not None else None),
+                )
+                invocation_parts = [
+                    (version, *part)
+                    for event in invocation_reports.events_after(invocation_cursor)
+                    for version, parts in (event.payload,)
+                    for part in parts
+                    if part[3] == HOME_ACTION
+                ]
+                states = [part[2] for part in invocation_parts]
+                transaction_ids = {part[1] for part in invocation_parts}
+                action_metric_event = action_metric_versions.wait_for(
+                    lambda payload: payload[1].get(ZOOM) == Decimal("1")
+                    and payload[1].get(MODE) == "IDLE",
+                    after=0,
+                    timeout=REPORT_TIMEOUT,
+                )
+                action_alert_event = action_alert_versions.wait_for(
+                    lambda payload: payload[1].get(LIMIT_ALARM, {}).get("presence") == "False",
+                    after=0,
+                    timeout=REPORT_TIMEOUT,
+                )
+                final_version = invocation_parts[-1][0] if invocation_parts else None
+                report.check(
+                    states == ["Wait", "Start", "Fin"]
+                    and len(transaction_ids) == 1
+                    and invocation_parts[-1][3] == constants.MDS_HANDLE,
+                    "sdc11073 retains WAIT, START, final state, and one transaction ID",
+                    str(invocation_parts),
+                )
+                report.check(
+                    action_metric_event is not None
+                    and action_alert_event is not None
+                    and action_alert_event.payload[0] == action_metric_event.payload[0] + 1
+                    and final_version == action_alert_event.payload[0],
+                    "threshold action reports metric V, alert V+1, and exact final invocation V+1",
+                    f"metric {action_metric_event}, alert {action_alert_event}, invocation {final_version}",
                 )
 
                 for invalid_action, description in (
