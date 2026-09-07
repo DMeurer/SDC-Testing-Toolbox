@@ -81,7 +81,15 @@ def assert_provider_reset(service: ProviderService, discovery: Tracker, provider
     check(
         all(
             getattr(service, name) is None
-            for name in ("_discovery", "_provider", "_mdib", "_sco", "_handler", "_activate_handler")
+            for name in (
+                "_discovery",
+                "_provider",
+                "_mdib",
+                "_sco",
+                "_handler",
+                "_activate_handler",
+                "_adapter",
+            )
         ),
         "provider failure resets lifecycle references",
     )

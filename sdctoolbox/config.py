@@ -13,13 +13,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from sdc11073.xml_types import pm_qnames as pm
-from sdc11073.xml_types import pm_types
-from sdc11073.xml_types.xml_structure import DateOfBirthProperty
-
 from .constants import (
-    ACTION_HANDLE_PREFIX,
-    ALERT_HANDLE_PREFIX,
     ALERT_SYSTEM_HANDLE,
     CHANNEL_HANDLE,
     CHANNEL_HANDLE_PREFIX,
@@ -30,7 +24,6 @@ from .constants import (
     PATIENT_CONTEXT_HANDLE,
     PRESET_DIR,
     SCO_HANDLE,
-    SIGNAL_HANDLE_PREFIX,
     SYSTEM_CONTEXT_HANDLE,
     VMD_HANDLE,
     VMD_HANDLE_PREFIX,
@@ -980,125 +973,6 @@ def _resolve_metric_handles(
     return metrics_by_handle
 
 
-def _preflight_apply(service: ProviderService, device: DeviceConfig, *, replace: bool) -> None:
-    """Validate the final descriptor graph before changing any live descriptors.
-
-    This is intentionally a pure namespace simulation. Calling the provider's creation
-    methods to validate references would create sections and defeat the point of preflight.
-    """
-    descriptors = {handle for handle, _ in service.mdib.entities.items()}
-    metric_specs = service.list_metrics()
-    metrics = set(metric_specs)
-    removed: set[str] = set()
-    if replace:
-        removed = set(service.list_actions()) | set(service.list_alerts()) | set(service.list_metrics())
-        for alert_handle in service.list_alerts():
-            removed.update(service.signal_handles_for(alert_handle))
-        for metric_handle in service.list_metrics():
-            operation_handle = service.operation_handle_for(metric_handle)
-            if operation_handle is not None:
-                removed.add(operation_handle)
-        removed.update(service._section_descriptor_handles())  # noqa: SLF001 - simulate replacement cleanup
-        descriptors.difference_update(removed)
-        metric_specs.clear()
-        metrics.clear()
-
-    for section in {spec.section for spec in device.metrics if spec.section}:
-        slug = slugify(section)
-        vmd_handle = VMD_HANDLE_PREFIX + slug
-        channel_handle = CHANNEL_HANDLE_PREFIX + slug
-        vmd = service.mdib.entities.by_handle(vmd_handle)
-        channel = service.mdib.entities.by_handle(channel_handle)
-        if vmd_handle in removed:
-            vmd = None
-        if channel_handle in removed:
-            channel = None
-        if vmd is not None and (vmd.node_type != pm.VmdDescriptor or vmd.parent_handle != MDS_HANDLE):
-            msg = f"sections[{section}]: {vmd_handle!r} must be a VmdDescriptor under {MDS_HANDLE!r}"
-            raise ConfigError(msg)
-        if channel is not None and (
-            channel.node_type != pm.ChannelDescriptor or channel.parent_handle != vmd_handle
-        ):
-            msg = f"sections[{section}]: {channel_handle!r} must be a ChannelDescriptor under {vmd_handle!r}"
-            raise ConfigError(msg)
-        if channel is not None and vmd is None:
-            msg = f"sections[{section}]: {channel_handle!r} requires live parent {vmd_handle!r}"
-            raise ConfigError(msg)
-
-    descriptors.update(_section_handles(device.metrics))
-    for spec in device.metrics:
-        if spec.handle is None:
-            msg = f"metrics[{spec.label}]: metric handle was not resolved during parsing"
-            raise ConfigError(msg)
-        handle = _claim_handle(descriptors, spec.handle, "", f"metrics[{spec.label}]")
-        metrics.add(handle)
-        metric_specs[handle] = spec
-        if spec.controllable:
-            _claim_handle(
-                descriptors,
-                None,
-                OPERATION_HANDLE_PREFIX + handle.removeprefix(METRIC_HANDLE_PREFIX),
-                f"metrics[{spec.label}] control",
-            )
-
-    for spec in device.alerts:
-        if spec.source_handle not in metrics:
-            msg = f"alerts[{spec.label}]: watches {spec.source_handle!r}, which is not a metric available after import"
-            raise ConfigError(msg)
-        if spec.has_limits and metric_specs[spec.source_handle].kind is not MetricKind.NUMBER:
-            msg = f"alerts[{spec.label}]: a limit alarm requires a numeric scalar source"
-            raise ConfigError(msg)
-        handle = _claim_handle(descriptors, spec.handle, ALERT_HANDLE_PREFIX + spec.slug, f"alerts[{spec.label}]")
-        for signal in spec.signals:
-            _claim_handle(
-                descriptors,
-                None,
-                SIGNAL_HANDLE_PREFIX + spec.slug + "." + signal.manifestation.value.lower(),
-                f"alerts[{spec.label}] signal",
-            )
-
-    normalized_effects: list[tuple[ActionSpec, dict[str, Decimal | str]]] = []
-    for spec in device.actions:
-        if spec.target_handle not in descriptors:
-            msg = f"actions[{spec.label}]: target {spec.target_handle!r} is not available after import"
-            raise ConfigError(msg)
-        for effect_handle in spec.effects:
-            if effect_handle not in metrics:
-                msg = f"actions[{spec.label}].effects: {effect_handle!r} is not a metric available after import"
-                raise ConfigError(msg)
-        effects: dict[str, Decimal | str] = {}
-        for effect_handle, value in spec.effects.items():
-            try:
-                effects[effect_handle] = coerce_metric_value(
-                    metric_specs[effect_handle],
-                    value,
-                    effect_handle,
-                )
-            except (TypeError, ValueError) as exc:
-                msg = f"actions[{spec.label}].effects[{effect_handle}]: {exc}"
-                raise ConfigError(msg) from exc
-        normalized_effects.append((spec, effects))
-        _claim_handle(descriptors, spec.handle, ACTION_HANDLE_PREFIX + spec.slug, f"actions[{spec.label}]")
-
-    if device.location is not None and device.location.is_empty():
-        msg = "contexts.location: an explicit location needs at least one detail"
-        raise ConfigError(msg)
-    if device.patient is not None:
-        try:
-            if device.patient.sex:
-                pm_types.Sex(device.patient.sex)
-            if device.patient.patient_type:
-                pm_types.PatientType(device.patient.patient_type)
-            if device.patient.date_of_birth:
-                DateOfBirthProperty.mk_value_object(device.patient.date_of_birth)
-        except (TypeError, ValueError) as exc:
-            msg = f"contexts.patient: {exc}"
-            raise ConfigError(msg) from exc
-
-    for spec, effects in normalized_effects:
-        spec.effects = effects
-
-
 def apply_to(
     service: ProviderService,
     device: DeviceConfig,
@@ -1114,69 +988,11 @@ def apply_to(
         collisions are rejected during preflight. Operational failures in either mode are
         compensated back to the pre-import graph.
     """
-    _preflight_apply(service, device, replace=replace)
     try:
-        snapshot = service._snapshot_configuration()  # noqa: SLF001 - config owns import rollback
-    except Exception as exc:  # noqa: BLE001 - provider/library failures become profile errors
-        msg = f"profile: could not prepare transactional import: {exc}"
+        return service.import_profile(device, replace=replace)
+    except Exception as exc:
+        msg = str(exc) or type(exc).__name__
         raise ConfigError(msg) from exc
-
-    field = "profile"
-    touched_contexts: set[str] = set()
-    try:
-        if replace:
-            for handle in list(service.list_actions()):
-                field = f"profile.replace.actions[{handle}]"
-                service.remove_action(handle)
-            for handle in list(service.list_alerts()):
-                field = f"profile.replace.alerts[{handle}]"
-                service.remove_alert(handle)
-            for handle in list(service.list_metrics()):
-                field = f"profile.replace.metrics[{handle}]"
-                service.remove_metric(handle)
-            service._remove_empty_sections()  # noqa: SLF001 - replacement owns containment cleanup
-
-        for spec in device.metrics:
-            field = f"metrics[{spec.label}]"
-            service.add_metric(spec)
-        created_alerts = 0
-        for spec in device.alerts:
-            field = f"alerts[{spec.label}]"
-            service.add_alert(spec)
-            created_alerts += 1
-
-        # Actions last of the descriptors: one names the thing it acts on, and a section's
-        # Vmd only exists once a metric has put it there.
-        for action in device.actions:
-            field = f"actions[{action.label}]"
-            service.add_action(action)
-
-        # Contexts last, and only when the file mentions them. A file that says nothing about
-        # a patient leaves the one already attached alone rather than silently detaching them.
-        if device.location is not None:
-            field = "contexts.location"
-            touched_contexts.add(LOCATION_CONTEXT_HANDLE)
-            service.set_location(device.location)
-        if device.patient is not None:
-            field = "contexts.patient"
-            touched_contexts.add(PATIENT_CONTEXT_HANDLE)
-            service.set_patient(device.patient)
-    except Exception as exc:  # noqa: BLE001 - all operational failures need profile context
-        try:
-            if replace:
-                service._restore_configuration(snapshot)  # noqa: SLF001 - paired with snapshot above
-            else:
-                service._restore_appended_configuration(  # noqa: SLF001 - paired with snapshot above
-                    snapshot,
-                    touched_contexts,
-                )
-        except Exception as rollback_exc:  # noqa: BLE001 - preserve both failure causes
-            msg = f"{field}: profile import failed ({exc}); rollback failed: {rollback_exc}"
-            raise ConfigError(msg) from exc
-        msg = f"{field}: profile import failed: {exc}"
-        raise ConfigError(msg) from exc
-
-    return len(device.metrics), created_alerts
 
 
 def load_into(service: ProviderService, path: str | Path, *, replace: bool = True) -> tuple[int, int]:

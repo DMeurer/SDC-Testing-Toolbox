@@ -19,6 +19,7 @@ import time
 from decimal import Decimal
 from itertools import pairwise, permutations
 from pathlib import Path
+from unittest.mock import patch
 
 from lxml import etree
 
@@ -26,6 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from script_support import Report  # noqa: E402
+from sdc11073 import observableproperties  # noqa: E402
 from sdc11073.consumer.consumerimpl import SdcConsumer  # noqa: E402
 from sdc11073.definitions_sdc import SdcV1Definitions  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
@@ -269,12 +271,22 @@ def complete_snapshot(service: ProviderService) -> dict:
 
 
 def semantic_mdib(mdib) -> bytes:  # noqa: ANN001 - provider and consumer MDIBs share this API
-    """Canonical complete graph without transport-maintained version attributes."""
+    """Canonical active graph without transport-maintained history/version attributes."""
     node = mdib.reconstruct_mdib_with_context_states()[0]
+    for element in list(node.iter()):
+        xsi_type = element.get("{http://www.w3.org/2001/XMLSchema-instance}type", "")
+        if xsi_type.endswith("ContextState") and element.get("ContextAssociation") == "Dis":
+            parent = element.getparent()
+            if parent is not None:
+                parent.remove(element)
     for element in node.iter():
         for name in list(element.attrib):
             if name.endswith("Version"):
                 del element.attrib[name]
+        xsi_type = element.get("{http://www.w3.org/2001/XMLSchema-instance}type", "")
+        if xsi_type.endswith("ContextState"):
+            for name in ("Handle", "BindingStartTime", "BindingEndTime"):
+                element.attrib.pop(name, None)
         element.attrib.pop("SafetyClassification", None)
         if element.get("{http://www.w3.org/2001/XMLSchema-instance}type") == "dom:MdsState":
             element.attrib.pop("Lang", None)
@@ -725,9 +737,21 @@ def check_connected_consumer_rollback(report: Report) -> None:  # noqa: PLR0915 
         observed_versions = [original_versions]
         provider_versions = [mdib_versions(service.mdib)]
         replacement_seen = threading.Event()
+        description_reports = []
 
-        def on_description(_report) -> None:  # noqa: ANN001 - observable payload
+        def on_description(description_report) -> None:  # noqa: ANN001 - observable payload
             observed_versions.append(mdib_versions(remote.mdib))
+            description_reports.append(
+                tuple(
+                    (
+                        str(part.ModificationType),
+                        part.ParentDescriptor,
+                        tuple(descriptor.Handle for descriptor in part.Descriptor),
+                        tuple(state.DescriptorHandle for state in part.State),
+                    )
+                    for part in description_report.ReportPart
+                ),
+            )
 
         def on_created(descriptors: dict) -> None:
             if "m.replacement_metric" in descriptors:
@@ -828,6 +852,147 @@ def check_connected_consumer_rollback(report: Report) -> None:  # noqa: PLR0915 
         report.check(
             all(current_state_versions[handle] >= version for handle, version in original_state_versions.items()),
             "restored state and context versions do not rewind",
+        )
+        report_parts = [part for description_report in description_reports for part in description_report]
+        replacement_parts = [part for part in report_parts if "m.replacement_metric" in part[2]]
+        report.check(
+            replacement_parts
+            and replacement_parts[0][1] == "ch.replacement_section"
+            and replacement_parts[0][3] == ("m.replacement_metric",)
+            and all(part[1] is None for part in report_parts if part[0] == "Del"),
+            "wire description reports carry create parent/state and omit delete ParentDescriptor",
+            repr(report_parts),
+        )
+    finally:
+        if remote is not None:
+            remote.close()
+        service.stop()
+
+
+def check_generator_start_rollback(report: Report) -> None:  # noqa: PLR0915 - linear integration check
+    """A post-apply generator start failure compensates before import returns."""
+    service = ProviderService(instance_name="config-generator-rollback")
+    service.start()
+    remote = None
+    try:
+        original = service.add_metric(
+            MetricSpec(
+                label="Original waveform",
+                kind=MetricKind.WAVEFORM,
+                section="Original section",
+            ),
+        )
+        service.add_alert(AlertSpec(label="Original alert", source_handle=original))
+        service.set_samples(original, [Decimal("1"), Decimal("2"), Decimal("3")])
+        service.set_location(LocationInfo(facility="OLD", point_of_care="ICU", bed="8"))
+        service.set_patient(PatientInfo(given_name="Before", family_name="Generator"))
+
+        consumer = SdcConsumer(
+            provider_address=service._provider.get_xaddrs()[0],  # noqa: SLF001 - deterministic loopback fixture
+            sdc_definitions=SdcV1Definitions,
+            ssl_context_container=None,
+        )
+        consumer.start_all()
+        consumer_mdib = ConsumerMdib(consumer)
+        consumer_mdib.init_mdib()
+        remote = RemoteDevice(consumer, consumer_mdib, service.epr.urn)
+
+        before = complete_snapshot(service)
+        before_graph = semantic_mdib(service.mdib)
+        consumer_graph = semantic_mdib(remote.mdib)
+        original_descriptor_version = service.mdib.entities.by_handle(original).descriptor.DescriptorVersion
+        original_state_version = service.mdib.entities.by_handle(original).state.StateVersion
+        provider_versions = [mdib_versions(service.mdib)]
+        consumer_versions = [mdib_versions(remote.mdib)]
+        replacement_seen = threading.Event()
+
+        def on_description(_report) -> None:  # noqa: ANN001 - observable payload
+            consumer_versions.append(mdib_versions(remote.mdib))
+
+        def on_created(descriptors: dict) -> None:
+            if "m.replacement_waveform" in descriptors:
+                replacement_seen.set()
+
+        remote.bind(description_modifications=on_description, new_descriptors_by_handle=on_created)
+        replacement = config.parse(
+            {
+                "metrics": [
+                    {
+                        "handle": "m.replacement_waveform",
+                        "label": "Replacement waveform",
+                        "kind": "waveform",
+                        "section": "Replacement section",
+                    },
+                ],
+                "contexts": {
+                    "location": {"facility": "NEW", "bed": "1"},
+                    "patient": {"given_name": "After"},
+                },
+            },
+        )
+        original_thread_start = threading.Thread.start
+        failed_start = False
+
+        def fail_first_generator_start(thread: threading.Thread) -> None:
+            nonlocal failed_start
+            if thread.name == "samples-config-generator-rollback" and not failed_start:
+                failed_start = True
+                if not replacement_seen.wait(10):
+                    raise RuntimeError("consumer did not observe replacement waveform")
+                provider_versions.append(mdib_versions(service.mdib))
+                raise RuntimeError("forced generator thread start failure")
+            original_thread_start(thread)
+
+        with patch.object(threading.Thread, "start", fail_first_generator_start):
+            try:
+                config.apply_to(service, replacement)
+            except config.ConfigError as exc:
+                report.check(
+                    "profile.generator" in str(exc) and "forced generator thread start failure" in str(exc),
+                    "a replacement waveform's generator start failure reaches the caller",
+                    str(exc),
+                )
+            else:
+                report.check(False, "a replacement waveform's generator start failure reaches the caller")
+
+        provider_versions.append(mdib_versions(service.mdib))
+        consumer_complete = wait_until(lambda: semantic_mdib(remote.mdib) == consumer_graph)
+        after = complete_snapshot(service)
+        versioned = {"mdib", "mdib_versions", "version_lookups", "descriptors", "context_states"}
+        changed = [name for name in before if name not in versioned and before[name] != after[name]]
+        report.check(
+            failed_start
+            and not changed
+            and semantic_mdib(service.mdib) == before_graph
+            and service.get_location() == before["location"]
+            and service.get_patient() == before["patient"]
+            and service.generator_running,
+            "start failure restores the old graph, contexts, location, and generator state",
+            f"changed={changed}, graph={semantic_mdib(service.mdib) == before_graph}, "
+            f"location={service.get_location() == before['location']}, "
+            f"patient={service.get_patient() == before['patient']}, running={service.generator_running}",
+        )
+        report.check(
+            all(
+                all(new_part >= old_part for old_part, new_part in zip(old, new, strict=True))
+                for old, new in pairwise(provider_versions)
+            )
+            and all(
+                all(new_part >= old_part for old_part, new_part in zip(old, new, strict=True))
+                for old, new in pairwise([*consumer_versions, mdib_versions(remote.mdib)])
+            )
+            and service.mdib.entities.by_handle(original).descriptor.DescriptorVersion
+            >= original_descriptor_version
+            and service.mdib.entities.by_handle(original).state.StateVersion >= original_state_version,
+            "generator-start compensation preserves provider and consumer version monotonicity",
+            f"provider={provider_versions}, consumer={consumer_versions}",
+        )
+        report.check(
+            consumer_complete
+            and set(remote.metrics()) == {original}
+            and remote.patient().given_name == "Before",
+            "the connected consumer converges on the original graph and context",
+            f"complete={consumer_complete}, metrics={set(remote.metrics())}, patient={remote.patient().given_name!r}",
         )
     finally:
         if remote is not None:
@@ -965,6 +1130,252 @@ def check_connected_consumer_append_rollback(report: Report) -> None:  # noqa: P
         if remote is not None:
             remote.close()
         service.stop()
+
+
+def check_profile_boundary_semantics(report: Report) -> None:  # noqa: PLR0915 - focused integration matrix
+    """The provider boundary owns history, versions, reports, concurrency, and failure policy."""
+    service = ProviderService(instance_name="config-boundary")
+    service.start()
+    try:
+        transactions = []
+
+        def capture_transaction(result) -> None:  # noqa: ANN001
+            transactions.append(result)
+
+        observableproperties.bind(service.mdib, transaction=capture_transaction)
+        before = mdib_versions(service.mdib)
+        profile = config.parse(
+            {
+                "metrics": [
+                    {
+                        "handle": "m.history",
+                        "label": "History",
+                        "kind": "number",
+                        "section": "Versioned",
+                        "initial_value": "4",
+                    },
+                ],
+            },
+        )
+        config.apply_to(service, profile)
+        after = mdib_versions(service.mdib)
+        description_transactions = sum(
+            bool(result.descr_created or result.descr_updated or result.descr_deleted)
+            for result in transactions
+        )
+        state_transactions = sum(
+            bool(
+                result.descr_created
+                or result.descr_updated
+                or result.descr_deleted
+                or result.metric_updates
+                or result.alert_updates
+                or result.comp_updates
+                or result.ctxt_updates
+                or result.op_updates
+                or result.rt_updates
+            )
+            for result in transactions
+        )
+        report.check(
+            after[0] - before[0] == len(transactions)
+            and after[1] - before[1] == state_transactions
+            and after[2] - before[2] == description_transactions,
+            "profile transactions advance aggregate versions by their exact report counts",
+            f"before={before}, after={after}, transactions={len(transactions)}",
+        )
+
+        created = [descriptor for result in transactions for descriptor in result.descr_created]
+        created_handles = [descriptor.Handle for descriptor in created]
+        report_states = [
+            state
+            for result in transactions
+            for states in (
+                result.metric_updates,
+                result.alert_updates,
+                result.comp_updates,
+                result.op_updates,
+                result.rt_updates,
+            )
+            for state in states
+        ]
+        report.check(
+            created_handles.index("vmd.versioned") < created_handles.index("ch.versioned")
+            < created_handles.index("m.history")
+            and any(state.DescriptorHandle == "m.history" for state in report_states),
+            "create reports are parent-before-child and include the created metric state",
+            str(created_handles),
+        )
+
+        descriptor_version = service.mdib.entities.by_handle("m.history").descriptor.DescriptorVersion
+        state_version = service.mdib.entities.by_handle("m.history").state.StateVersion
+        before_rejected = mdib_versions(service.mdib)
+        incompatible = config.parse(
+            {"metrics": [{"handle": "m.history", "label": "History text", "kind": "text"}]},
+        )
+        try:
+            config.apply_to(service, incompatible)
+        except config.ConfigError as exc:
+            report.check(
+                "previously" in str(exc) and "m.history" in str(exc),
+                "same-sequence handle reuse rejects a different XML datatype",
+                str(exc),
+            )
+        else:
+            report.check(False, "same-sequence handle reuse rejects a different XML datatype", "it was accepted")
+        report.check(
+            mdib_versions(service.mdib) == before_rejected
+            and service.mdib.entities.by_handle("m.history").descriptor.DescriptorVersion == descriptor_version
+            and service.mdib.entities.by_handle("m.history").state.StateVersion == state_version,
+            "datatype rejection leaves aggregate and per-handle versions exact",
+        )
+
+        transactions.clear()
+        replacement = config.parse(
+            {"metrics": [{"handle": "m.other", "label": "Other", "kind": "number"}]},
+        )
+        config.apply_to(service, replacement)
+        deleted = [descriptor for result in transactions for descriptor in result.descr_deleted]
+        report.check(
+            any(descriptor.Handle == "m.history" for descriptor in deleted)
+            and all(descriptor.parent_handle is None for descriptor in deleted),
+            "delete report parts omit ParentDescriptor",
+        )
+        historical_descriptor = service.mdib.descriptions.handle_version_lookup["m.history"]
+        historical_state = service.mdib.states.handle_version_lookup["m.history"]
+        config.apply_to(service, profile)
+        reinserted = service.mdib.entities.by_handle("m.history")
+        report.check(
+            reinserted.descriptor.DescriptorVersion == historical_descriptor + 1
+            and reinserted.state.StateVersion == historical_state + 2,
+            "same-type reinsertion and its initial value advance exact per-handle maxima",
+            f"descriptor={reinserted.descriptor.DescriptorVersion}, state={reinserted.state.StateVersion}",
+        )
+
+        service.set_patient(PatientInfo(given_name="Stable", family_name="Patient"))
+        old_associated = service._associated_context_state(constants.PATIENT_CONTEXT_HANDLE)  # noqa: SLF001
+        failed_handle = [None]
+        original_set_patient = service.set_patient
+
+        def fail_context(info: PatientInfo) -> None:
+            original_set_patient(info)
+            failed_handle[0] = service._associated_context_state(constants.PATIENT_CONTEXT_HANDLE).Handle  # noqa: SLF001
+            raise RuntimeError("injected context rollback probe")
+
+        service.set_patient = fail_context
+        try:
+            context_profile = config.parse({"contexts": {"patient": {"given_name": "Transient"}}})
+            try:
+                config.apply_to(service, context_profile, replace=False)
+            except config.ConfigError:
+                pass
+        finally:
+            service.set_patient = original_set_patient
+        current = service._associated_context_state(constants.PATIENT_CONTEXT_HANDLE)  # noqa: SLF001
+        failed_state = service.mdib.context_states.handle.get_one(failed_handle[0])
+        report.check(
+            current is not None
+            and current.Handle not in {old_associated.Handle, failed_handle[0]}
+            and service.get_patient().given_name == "Stable"
+            and failed_state.ContextAssociation.name == "DISASSOCIATED",
+            "context compensation retains and disassociates the failed association then creates a new valid one",
+        )
+
+        action_metric = service.add_metric(
+            MetricSpec(label="Concurrent action metric", kind=MetricKind.NUMBER, initial_value=Decimal("1")),
+        )
+        action = service.add_action(
+            ActionSpec(label="Concurrent action", target_handle=action_metric, effects={action_metric: Decimal("2")}),
+        )
+        sample_metric = service.add_metric(
+            MetricSpec(label="Concurrent waveform", kind=MetricKind.WAVEFORM),
+        )
+        entered = threading.Event()
+        release = threading.Event()
+        mutation_done = threading.Event()
+        action_done = threading.Event()
+        sample_done = threading.Event()
+        original_add_metric = service.add_metric
+
+        def blocked_add(spec: MetricSpec) -> str:
+            if spec.handle == "m.gated":
+                entered.set()
+                release.wait(10)
+            return original_add_metric(spec)
+
+        service.add_metric = blocked_add
+        gated = config.parse({"metrics": [{"handle": "m.gated", "label": "Gated", "kind": "number"}]})
+        import_thread = threading.Thread(
+            target=lambda: config.apply_to(service, gated, replace=False),
+            daemon=True,
+        )
+        import_thread.start()
+        entered.wait(10)
+
+        def concurrent_mutation() -> None:
+            service.set_location(LocationInfo(facility="AFTER-GATE"))
+            mutation_done.set()
+
+        mutation_thread = threading.Thread(target=concurrent_mutation, daemon=True)
+        action_thread = threading.Thread(
+            target=lambda: (service.run_action(action), action_done.set()),
+            daemon=True,
+        )
+        sample_thread = threading.Thread(
+            target=lambda: (service.set_samples(sample_metric, [Decimal("3")]), sample_done.set()),
+            daemon=True,
+        )
+        mutation_thread.start()
+        action_thread.start()
+        sample_thread.start()
+        time.sleep(0.1)
+        blocked = not mutation_done.is_set() and not action_done.is_set() and not sample_done.is_set()
+        release.set()
+        import_thread.join(10)
+        mutation_thread.join(10)
+        action_thread.join(10)
+        sample_thread.join(10)
+        service.add_metric = original_add_metric
+        report.check(
+            blocked
+            and mutation_done.is_set()
+            and action_done.is_set()
+            and sample_done.is_set()
+            and service.get_location().facility == "AFTER-GATE"
+            and service.get_value(action_metric) == Decimal("2")
+            and service.get_samples(sample_metric) == [Decimal("3")],
+            "one import gate serializes planning through compensation against action, sample, and context updates",
+        )
+    finally:
+        observableproperties.unbind(service.mdib, transaction=capture_transaction)
+        service.stop()
+
+    failed = ProviderService(instance_name="config-fail-closed")
+    failed.start()
+    try:
+        failed.add_metric(MetricSpec(label="Existing", kind=MetricKind.NUMBER))
+        profile = config.parse({"metrics": [{"label": "Replacement", "kind": "number"}]})
+        with (
+            patch.object(failed, "add_metric", side_effect=RuntimeError("injected apply failure")),
+            patch.object(failed, "_restore_configuration", side_effect=RuntimeError("injected rollback failure")),
+        ):
+            try:
+                config.apply_to(failed, profile)
+            except config.ConfigError as exc:
+                report.check(
+                    "rollback failed" in str(exc) and "provider stopped" in str(exc),
+                    "rollback failure is reported and fails the provider closed",
+                    str(exc),
+                )
+            else:
+                report.check(False, "rollback failure is reported and fails the provider closed", "it was accepted")
+        report.check(
+            failed._provider is None and failed._mdib is None,  # noqa: SLF001
+            "a provider with failed compensation is no longer advertised or usable",
+        )
+    finally:
+        if failed._mdib is not None:  # noqa: SLF001
+            failed.stop()
 
 
 def check_replace_section_lifecycle(report: Report, service: ProviderService) -> None:
@@ -1663,7 +2074,10 @@ def run_checks(report: Report, workdir: Path) -> None:
     print("\n6. Connected consumers observe compensating rollback")
     check_connected_consumer_rollback(report)
 
-    print("\n6a. Append failures compensate consumer-observed partial changes")
+    print("\n6a. Generator start failures compensate the applied replacement")
+    check_generator_start_rollback(report)
+
+    print("\n6b. Append failures compensate consumer-observed partial changes")
     check_connected_consumer_append_rollback(report)
 
     print("\n7. Replacement updates section containment")
@@ -1673,6 +2087,9 @@ def run_checks(report: Report, workdir: Path) -> None:
         check_replace_section_lifecycle(report, sections)
     finally:
         sections.stop()
+
+    print("\n7a. Provider import boundary preserves protocol history and serialization")
+    check_profile_boundary_semantics(report)
 
     print("\n8. Action effects follow target metric kinds")
     check_action_effect_types(report)

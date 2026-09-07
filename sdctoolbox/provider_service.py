@@ -24,6 +24,7 @@ from sdc11073.wsdiscovery import WSDiscovery
 from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types import pm_types
 from sdc11073.xml_types.dpws_types import ThisDeviceType, ThisModelType
+from sdc11073.xml_types.xml_structure import DateOfBirthProperty
 
 from . import constants
 from .handlers import apply_metric_value, make_activate_handler, make_set_handler
@@ -45,19 +46,20 @@ from .model import (
     slugify,
 )
 from .sample_generation import DemoSampleGenerator, SampleGeneratorSnapshot, domain_step
+from .sdc11073_v3_adapter import Sdc11073V3Adapter, Sdc11073V3Snapshot
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from sdc11073.provider.sco import AbstractScoOperationsRegistry
 
+    from .config import DeviceConfig
+
 logger = logging.getLogger("sdctoolbox.provider")
 
 
 @dataclass
 class _ConfigurationSnapshot:
-    descriptors: list
-    states: list
     context_states: list
     operations: dict[str, str]
     specs: dict[str, MetricSpec]
@@ -66,8 +68,7 @@ class _ConfigurationSnapshot:
     alert_signals: dict[str, list[str]]
     actions: dict[str, ActionSpec]
     sections: dict[str, str]
-    registered_operations: dict
-    provider_location: SdcLocation
+    library: Sdc11073V3Snapshot
     pending_alert_sources: set[str]
     mds_operating_mode: pm_types.MdsOperatingMode
     mds_mode_before_demo: pm_types.MdsOperatingMode | None
@@ -286,6 +287,9 @@ class ProviderService:
 
             # No waveform provider configured, so the real-time sample loop must stay off.
             self._provider.start_all(start_rtsample_loop=False)
+            if self._sco is not None:
+                self._adapter = Sdc11073V3Adapter(self._mdib)
+                self._adapter.bind(self._provider, self._sco)
             self.set_location(LocationInfo(**constants.DEFAULT_LOCATION))
             self.set_patient(DEFAULT_PATIENT)
 
@@ -330,6 +334,7 @@ class ProviderService:
             self._sco = None
             self._handler = None
             self._activate_handler = None
+            self._adapter = None
             self._operations.clear()
             self._specs.clear()
             self._alerts.clear()
@@ -348,9 +353,9 @@ class ProviderService:
         """Clone all mutable provider state needed to undo a profile import."""
         with self._lock:
             mdib = self.mdib
+            if self._adapter is None:
+                raise RuntimeError("provider adapter is not available")
             return _ConfigurationSnapshot(
-                descriptors=deepcopy(list(mdib.descriptions.objects)),
-                states=deepcopy(list(mdib.states.objects)),
                 context_states=deepcopy(list(mdib.context_states.objects)),
                 operations=dict(self._operations),
                 specs=dict(self._specs),
@@ -359,8 +364,7 @@ class ProviderService:
                 alert_signals={handle: list(signals) for handle, signals in self._alert_signals.items()},
                 actions=dict(self._actions),
                 sections=dict(self._sections),
-                registered_operations=dict(self._sco._registered_operations),  # noqa: SLF001
-                provider_location=deepcopy(self._provider._location),  # noqa: SLF001
+                library=self._adapter.snapshot(),
                 pending_alert_sources=set(self._pending_alert_sources),
                 mds_operating_mode=mdib.entities.by_handle(constants.MDS_HANDLE).state.OperatingMode,
                 mds_mode_before_demo=self._mds_mode_before_demo,
@@ -368,13 +372,16 @@ class ProviderService:
                 generator_running=self.generator_running,
             )
 
-    def _restore_configuration(self, snapshot: _ConfigurationSnapshot) -> None:
+    def _restore_configuration(
+            self,
+            snapshot: _ConfigurationSnapshot,
+            touched_contexts: set[str],
+    ) -> None:
         """Restore a snapshot with compensating reports for connected consumers."""
-        if not snapshot.generator_running:
-            self.stop_generator()
         with self._lock:
             mdib = self.mdib
-            location_changed = self._provider._location != snapshot.provider_location  # noqa: SLF001
+            if self._adapter is None:
+                raise RuntimeError("provider adapter is not available")
             self._operations = snapshot.operations
             self._specs = snapshot.specs
             self._alerts = snapshot.alerts
@@ -385,10 +392,8 @@ class ProviderService:
             self._pending_alert_sources = snapshot.pending_alert_sources
             self._mds_mode_before_demo = snapshot.mds_mode_before_demo
             self._sample_generator.restore(snapshot.sample_generator)
-            self._sco._registered_operations = snapshot.registered_operations  # noqa: SLF001
-            self._provider._location = snapshot.provider_location  # noqa: SLF001
 
-            saved_descriptors = {descriptor.Handle: descriptor for descriptor in snapshot.descriptors}
+            saved_descriptors = {descriptor.Handle: descriptor for descriptor in snapshot.library.descriptors}
             managed_handles = (
                 set(snapshot.specs)
                 | set(snapshot.operations.values())
@@ -403,17 +408,12 @@ class ProviderService:
             )
             while descendants := {
                 descriptor.Handle
-                for descriptor in snapshot.descriptors
+                for descriptor in snapshot.library.descriptors
                 if descriptor.parent_handle in managed_handles and descriptor.Handle not in managed_handles
             }:
                 managed_handles.update(descendants)
-            context_handles = {
-                descriptor.Handle
-                for descriptor in snapshot.descriptors
-                if descriptor.is_context_descriptor
-            }
             current = {handle: entity for handle, entity in mdib.entities.items()}
-            removal_candidates = (set(current) - set(saved_descriptors)) | managed_handles | context_handles
+            removal_candidates = (set(current) - set(saved_descriptors)) | managed_handles
             removal_handles = {
                 handle
                 for handle in removal_candidates
@@ -424,38 +424,15 @@ class ProviderService:
                 for handle in removal_handles:
                     mgr.remove_entity(current[handle])
 
-            states = {state.DescriptorHandle: state for state in snapshot.states}
-            context_states: dict[str, list] = {}
-            for state in snapshot.context_states:
-                context_states.setdefault(state.DescriptorHandle, []).append(state)
-
-            managed_entities = []
-            context_entities = []
-            for handle in managed_handles | context_handles:
+            restore_descriptors = []
+            for handle in managed_handles:
                 saved_descriptor = saved_descriptors[handle]
-                descriptor = deepcopy(saved_descriptor)
-                if descriptor.is_context_descriptor:
-                    saved_states = deepcopy(context_states.get(descriptor.Handle, []))
-                    entity = mdibbase.MultiStateEntity(mdib, descriptor, saved_states)
-                    context_entities.append(entity)
-                else:
-                    entity = mdibbase.Entity(mdib, descriptor, deepcopy(states[descriptor.Handle]))
-                    managed_entities.append(entity)
-
-            with mdib.descriptor_transaction() as mgr:
-                mgr.write_entities(managed_entities)
-            with mdib.descriptor_transaction() as mgr:
-                mgr.write_entities(context_entities)
-
-            for operation in snapshot.registered_operations.values():
-                operation._operation_entity = mdib.entities.by_handle(operation.handle)  # noqa: SLF001
+                restore_descriptors.append(saved_descriptor)
+            self._adapter.recreate_entities(restore_descriptors, snapshot.library.states)
+            self._adapter.restore_registered_operations(snapshot.library.registered_operations)
+            self._compensate_contexts(snapshot, touched_contexts)
             self._coordinate_alert_transition()
             self._set_mds_operating_mode(snapshot.mds_operating_mode)
-
-        if location_changed:
-            self._provider.publish()
-        if snapshot.generator_running:
-            self.start_generator()
 
     def _restore_appended_configuration(
             self,
@@ -463,11 +440,11 @@ class ProviderService:
             touched_contexts: set[str],
     ) -> None:
         """Remove an interrupted append without recreating unchanged live descriptors."""
-        if not snapshot.generator_running:
-            self.stop_generator()
         with self._lock:
             mdib = self.mdib
-            saved_descriptors = {descriptor.Handle: descriptor for descriptor in snapshot.descriptors}
+            if self._adapter is None:
+                raise RuntimeError("provider adapter is not available")
+            saved_descriptors = {descriptor.Handle: descriptor for descriptor in snapshot.library.descriptors}
             added_handles = {handle for handle, _ in mdib.entities.items()} - set(saved_descriptors)
             added_roots = {
                 handle
@@ -485,46 +462,236 @@ class ProviderService:
             self._pending_alert_sources = snapshot.pending_alert_sources
             self._mds_mode_before_demo = snapshot.mds_mode_before_demo
             self._sample_generator.restore(snapshot.sample_generator)
-            self._sco._registered_operations = snapshot.registered_operations  # noqa: SLF001
+            self._adapter.restore_registered_operations(snapshot.library.registered_operations)
 
             if added_roots:
                 with mdib.descriptor_transaction() as mgr:
                     for handle in added_roots:
                         mgr.remove_entity(mdib.entities.by_handle(handle))
 
-            context_states: dict[str, list] = {}
-            for state in snapshot.context_states:
-                context_states.setdefault(state.DescriptorHandle, []).append(state)
-            restored_contexts = []
-            for handle in touched_contexts:
-                current = mdib.entities.by_handle(handle)
-                if current is not None:
-                    with mdib.descriptor_transaction() as mgr:
-                        mgr.remove_entity(current)
-                descriptor = deepcopy(saved_descriptors[handle])
-                restored_contexts.append(
-                    mdibbase.MultiStateEntity(
-                        mdib,
-                        descriptor,
-                        deepcopy(context_states.get(handle, [])),
-                    ),
-                )
-            if restored_contexts:
-                with mdib.descriptor_transaction() as mgr:
-                    mgr.write_entities(restored_contexts)
-
-            location_changed = (
-                constants.LOCATION_CONTEXT_HANDLE in touched_contexts
-                and self._provider._location != snapshot.provider_location  # noqa: SLF001
-            )
-            self._provider._location = snapshot.provider_location  # noqa: SLF001
+            self._compensate_contexts(snapshot, touched_contexts)
             self._coordinate_alert_transition()
             self._set_mds_operating_mode(snapshot.mds_operating_mode)
 
-        if location_changed:
-            self._provider.publish()
-        if snapshot.generator_running:
-            self.start_generator()
+    def _compensate_contexts(self, snapshot: _ConfigurationSnapshot, handles: set[str]) -> None:
+        """Restore context meaning without deleting associated states from history."""
+        if self._adapter is None:
+            raise RuntimeError("provider adapter is not available")
+        associated = {}
+        for state in snapshot.context_states:
+            if state.ContextAssociation == pm_types.ContextAssociation.ASSOCIATED:
+                associated[state.DescriptorHandle] = state
+        for handle in sorted(handles):
+            if handle != constants.LOCATION_CONTEXT_HANDLE:
+                self._adapter.compensate_context(handle, associated.get(handle))
+        if constants.LOCATION_CONTEXT_HANDLE in handles:
+            self._adapter.restore_location(snapshot.library.provider_location)
+
+    def import_profile(self, device: DeviceConfig, *, replace: bool = True) -> tuple[int, int]:
+        """Preflight, apply, and if needed compensate one profile as an indivisible operation."""
+        was_running = self.generator_running
+        if was_running:
+            # The worker takes _lock. Join before taking the import gate to avoid shutdown deadlock.
+            self.stop_generator()
+
+        failure: Exception | None = None
+        rollback_failure: Exception | None = None
+        field = "profile"
+        self._alert_evaluator_lock.acquire()
+        try:
+            with self._lock:
+                self._profile_import_active = True
+                self._generator_start_deferred = False
+                snapshot = None
+                touched_contexts: set[str] = set()
+                try:
+                    self._preflight_profile(device, replace=replace)
+                    snapshot = self._snapshot_configuration()
+                    if replace:
+                        for handle in list(self.list_actions()):
+                            field = f"profile.replace.actions[{handle}]"
+                            self.remove_action(handle)
+                        for handle in list(self.list_alerts()):
+                            field = f"profile.replace.alerts[{handle}]"
+                            self.remove_alert(handle)
+                        for handle in list(self.list_metrics()):
+                            field = f"profile.replace.metrics[{handle}]"
+                            self.remove_metric(handle)
+                        self._remove_empty_sections()
+
+                    for spec in device.metrics:
+                        field = f"metrics[{spec.label}]"
+                        self.add_metric(spec)
+                    for spec in device.alerts:
+                        field = f"alerts[{spec.label}]"
+                        self.add_alert(spec)
+                    for action in device.actions:
+                        field = f"actions[{action.label}]"
+                        self.add_action(action)
+                    if device.location is not None:
+                        field = "contexts.location"
+                        touched_contexts.add(constants.LOCATION_CONTEXT_HANDLE)
+                        self.set_location(device.location)
+                    if device.patient is not None:
+                        field = "contexts.patient"
+                        touched_contexts.add(constants.PATIENT_CONTEXT_HANDLE)
+                        self.set_patient(device.patient)
+                    pending = set(self._pending_alert_sources)
+                    self._pending_alert_sources.clear()
+                    if pending:
+                        _, alert_error = self._apply_alert_updates(pending)
+                        if alert_error is not None:
+                            raise alert_error
+                    if was_running or self._generator_start_deferred:
+                        field = "profile.generator"
+                        self._sample_generator.start()
+                except Exception as exc:  # noqa: BLE001 - all live failures require compensation
+                    failure = exc
+                    if snapshot is not None:
+                        try:
+                            if replace:
+                                self._restore_configuration(snapshot, touched_contexts)
+                            else:
+                                self._restore_appended_configuration(snapshot, touched_contexts)
+                        except Exception as exc2:  # noqa: BLE001 - provider must fail closed
+                            rollback_failure = exc2
+                    if rollback_failure is None and (
+                        was_running or snapshot is not None and snapshot.generator_running
+                    ):
+                        try:
+                            self._sample_generator.start()
+                        except Exception as exc2:  # noqa: BLE001 - provider must fail closed
+                            rollback_failure = exc2
+                finally:
+                    self._profile_import_active = False
+                    self._generator_start_deferred = False
+        finally:
+            self._alert_evaluator_lock.release()
+
+        if rollback_failure is not None:
+            try:
+                self.stop()
+            except Exception:
+                logger.exception("failed to stop provider after profile compensation failure")
+            msg = f"{field}: profile import failed ({failure}); rollback failed: {rollback_failure}; provider stopped"
+            raise RuntimeError(msg) from failure
+        if failure is not None:
+            msg = f"{field}: profile import failed: {failure}"
+            raise RuntimeError(msg) from failure
+        return len(device.metrics), len(device.alerts)
+
+    def _preflight_profile(self, device: DeviceConfig, *, replace: bool) -> None:  # noqa: C901, PLR0912
+        """Validate the prospective graph and historical descriptor datatypes."""
+        if self._adapter is None:
+            raise RuntimeError("provider adapter is not available")
+        descriptors = {handle for handle, _ in self.mdib.entities.items()}
+        metric_specs = self.list_metrics()
+        metrics = set(metric_specs)
+        removed: set[str] = set()
+        if replace:
+            removed = set(self.list_actions()) | set(self.list_alerts()) | set(self.list_metrics())
+            for alert_handle in self.list_alerts():
+                removed.update(self.signal_handles_for(alert_handle))
+            for metric_handle in self.list_metrics():
+                operation_handle = self.operation_handle_for(metric_handle)
+                if operation_handle is not None:
+                    removed.add(operation_handle)
+            removed.update(self._section_descriptor_handles())
+            descriptors.difference_update(removed)
+            metric_specs.clear()
+            metrics.clear()
+
+        section_handles = set()
+        for section in {spec.section for spec in device.metrics if spec.section}:
+            slug = slugify(section)
+            vmd_handle = constants.VMD_HANDLE_PREFIX + slug
+            channel_handle = constants.CHANNEL_HANDLE_PREFIX + slug
+            section_handles.update((vmd_handle, channel_handle))
+            vmd = self.mdib.entities.by_handle(vmd_handle)
+            channel = self.mdib.entities.by_handle(channel_handle)
+            if vmd_handle in removed:
+                vmd = None
+            if channel_handle in removed:
+                channel = None
+            if vmd is not None and (vmd.node_type != pm.VmdDescriptor or vmd.parent_handle != constants.MDS_HANDLE):
+                raise ValueError(
+                    f"sections[{section}]: {vmd_handle!r} must be a VmdDescriptor under {constants.MDS_HANDLE!r}",
+                )
+            if channel is not None and (
+                channel.node_type != pm.ChannelDescriptor or channel.parent_handle != vmd_handle
+            ):
+                raise ValueError(
+                    f"sections[{section}]: {channel_handle!r} must be a ChannelDescriptor under {vmd_handle!r}",
+                )
+            if channel is not None and vmd is None:
+                raise ValueError(f"sections[{section}]: {channel_handle!r} requires live parent {vmd_handle!r}")
+            self._adapter.validate_descriptor_type(vmd_handle, pm.VmdDescriptor)
+            self._adapter.validate_descriptor_type(channel_handle, pm.ChannelDescriptor)
+
+        descriptors.update(section_handles)
+        for spec in device.metrics:
+            if spec.handle is None:
+                raise ValueError(f"metrics[{spec.label}]: metric handle was not resolved during parsing")
+            self._claim_profile_handle(descriptors, spec.handle, f"metrics[{spec.label}]")
+            self._adapter.validate_descriptor_type(spec.handle, spec.kind.descriptor_qname)
+            metrics.add(spec.handle)
+            metric_specs[spec.handle] = spec
+            if spec.controllable:
+                operation = constants.OPERATION_HANDLE_PREFIX + spec.handle.removeprefix(constants.METRIC_HANDLE_PREFIX)
+                operation = self._claim_profile_handle(descriptors, operation, f"metrics[{spec.label}] control")
+                operation_type = spec.kind.operation_class.OP_DESCR_QNAME
+                self._adapter.validate_descriptor_type(operation, operation_type)
+
+        for spec in device.alerts:
+            if spec.source_handle not in metrics:
+                raise ValueError(
+                    f"alerts[{spec.label}]: watches {spec.source_handle!r}, which is not a metric available after import",
+                )
+            if spec.has_limits and metric_specs[spec.source_handle].kind is not MetricKind.NUMBER:
+                raise ValueError(f"alerts[{spec.label}]: a limit alarm requires a numeric scalar source")
+            handle = spec.handle or constants.ALERT_HANDLE_PREFIX + spec.slug
+            handle = self._claim_profile_handle(descriptors, handle, f"alerts[{spec.label}]")
+            alert_type = pm.LimitAlertConditionDescriptor if spec.has_limits else pm.AlertConditionDescriptor
+            self._adapter.validate_descriptor_type(handle, alert_type)
+            for signal in spec.signals:
+                signal_handle = constants.SIGNAL_HANDLE_PREFIX + spec.slug + "." + signal.manifestation.value.lower()
+                signal_handle = self._claim_profile_handle(descriptors, signal_handle, f"alerts[{spec.label}] signal")
+                self._adapter.validate_descriptor_type(signal_handle, pm.AlertSignalDescriptor)
+
+        normalized_effects = []
+        for spec in device.actions:
+            if spec.target_handle not in descriptors:
+                raise ValueError(f"actions[{spec.label}]: target {spec.target_handle!r} is not available after import")
+            effects = {}
+            for effect_handle, value in spec.effects.items():
+                if effect_handle not in metrics:
+                    raise ValueError(
+                        f"actions[{spec.label}].effects: {effect_handle!r} is not a metric available after import",
+                    )
+                effects[effect_handle] = coerce_metric_value(metric_specs[effect_handle], value, effect_handle)
+            normalized_effects.append((spec, effects))
+            handle = spec.handle or constants.ACTION_HANDLE_PREFIX + spec.slug
+            handle = self._claim_profile_handle(descriptors, handle, f"actions[{spec.label}]")
+            self._adapter.validate_descriptor_type(handle, pm.ActivateOperationDescriptor)
+
+        if device.location is not None and device.location.is_empty():
+            raise ValueError("contexts.location: an explicit location needs at least one detail")
+        if device.patient is not None:
+            if device.patient.sex:
+                pm_types.Sex(device.patient.sex)
+            if device.patient.patient_type:
+                pm_types.PatientType(device.patient.patient_type)
+            if device.patient.date_of_birth:
+                DateOfBirthProperty.mk_value_object(device.patient.date_of_birth)
+        for spec, effects in normalized_effects:
+            spec.effects = effects
+
+    @staticmethod
+    def _claim_profile_handle(handles: set[str], handle: str, field: str) -> str:
+        if handle in handles:
+            raise ValueError(f"{field}: handle {handle!r} already exists")
+        handles.add(handle)
+        return handle
 
     def __enter__(self) -> ProviderService:
         self.start()
@@ -1471,6 +1638,9 @@ class ProviderService:
 
     def start_generator(self) -> None:
         """Begin generating samples for every unpinned sample-array metric."""
+        if self._profile_import_active:
+            self._generator_start_deferred = True
+            return
         self._sample_generator.start()
 
     def stop_generator(self) -> None:
