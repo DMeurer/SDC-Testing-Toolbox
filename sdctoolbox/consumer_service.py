@@ -13,6 +13,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from sdc11073 import observableproperties
@@ -142,36 +143,37 @@ def _first_range(ranges: Any) -> tuple[Any, Any]:
 class _PeriodicConsumerMdibMethods(ConsumerMdibMethods):
     """Apply periodic reports because sdc11073's stock MDIB helper only binds episodic ones."""
 
+    _PERIODIC_REPORTS = {
+        "periodic_metric_report": ("PeriodicMetricReport", "process_incoming_metric_states_report"),
+        "periodic_alert_report": ("PeriodicAlertReport", "process_incoming_alert_states_report"),
+        "periodic_component_report": ("PeriodicComponentReport", "process_incoming_component_states_report"),
+        "periodic_operational_state_report": (
+            "PeriodicOperationalStateReport",
+            "process_incoming_operational_states_report",
+        ),
+        "periodic_context_report": ("PeriodicContextReport", "process_incoming_context_states_report"),
+    }
+
     def bind_to_client_observables(self) -> None:
         super().bind_to_client_observables()
-        observableproperties.bind(
-            self._sdc_client,
-            periodic_metric_report=self._on_periodic_metric_report,
-            periodic_alert_report=self._on_periodic_alert_report,
-            periodic_component_report=self._on_periodic_component_report,
-            periodic_operational_state_report=self._on_periodic_operational_state_report,
-            periodic_context_report=self._on_periodic_context_report,
-        )
+        self._periodic_report_callbacks = {
+            observable_name: partial(self._on_periodic_report, parser_name, processor_name)
+            for observable_name, (parser_name, processor_name) in self._PERIODIC_REPORTS.items()
+        }
+        # observableproperties keeps weak references, so the generated partials must live
+        # on this helper for as long as the MDIB does.
+        observableproperties.bind(self._sdc_client, **self._periodic_report_callbacks)
 
-    def _on_periodic_metric_report(self, received_message_data: Any) -> None:
-        report = self._mdib.data_model.msg_types.PeriodicMetricReport.from_node(received_message_data.p_msg.msg_node)
-        self._mdib.process_incoming_metric_states_report(received_message_data.mdib_version_group, report)
-
-    def _on_periodic_alert_report(self, received_message_data: Any) -> None:
-        report = self._mdib.data_model.msg_types.PeriodicAlertReport.from_node(received_message_data.p_msg.msg_node)
-        self._mdib.process_incoming_alert_states_report(received_message_data.mdib_version_group, report)
-
-    def _on_periodic_component_report(self, received_message_data: Any) -> None:
-        report = self._mdib.data_model.msg_types.PeriodicComponentReport.from_node(received_message_data.p_msg.msg_node)
-        self._mdib.process_incoming_component_states_report(received_message_data.mdib_version_group, report)
-
-    def _on_periodic_operational_state_report(self, received_message_data: Any) -> None:
-        report = self._mdib.data_model.msg_types.PeriodicOperationalStateReport.from_node(received_message_data.p_msg.msg_node)
-        self._mdib.process_incoming_operational_states_report(received_message_data.mdib_version_group, report)
-
-    def _on_periodic_context_report(self, received_message_data: Any) -> None:
-        report = self._mdib.data_model.msg_types.PeriodicContextReport.from_node(received_message_data.p_msg.msg_node)
-        self._mdib.process_incoming_context_states_report(received_message_data.mdib_version_group, report)
+    def _on_periodic_report(
+        self,
+        parser_name: str,
+        processor_name: str,
+        received_message_data: Any,
+    ) -> None:
+        parser = getattr(self._mdib.data_model.msg_types, parser_name)
+        report = parser.from_node(received_message_data.p_msg.msg_node)
+        processor = getattr(self._mdib, processor_name)
+        processor(received_message_data.mdib_version_group, report)
 
 
 @dataclass

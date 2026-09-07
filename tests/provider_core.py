@@ -17,6 +17,7 @@ Usage:  .venv/Scripts/python.exe tests/provider_core.py
 
 from __future__ import annotations
 
+import gc
 import logging
 import math
 import sys
@@ -39,7 +40,10 @@ from sdc11073.xml_types import msg_types, pm_types  # noqa: E402
 from sdc11073.xml_types import pm_qnames as pm  # noqa: E402
 
 from sdctoolbox import config, constants  # noqa: E402
-from sdctoolbox.consumer_service import RemoteDevice  # noqa: E402
+from sdctoolbox.consumer_service import (  # noqa: E402
+    RemoteDevice,
+    _PeriodicConsumerMdibMethods,
+)
 from sdctoolbox.model import (  # noqa: E402
     ActionSpec,
     AlertManifestation,
@@ -2024,3 +2028,173 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+    recognized_metrics = {
+        f"metric.equal.{index}": metric_entity(f"metric.equal.{index}", node_type)
+        for index, node_type in enumerate(
+            (
+                pm.NumericMetricDescriptor,
+                pm.StringMetricDescriptor,
+                pm.EnumStringMetricDescriptor,
+                pm.RealTimeSampleArrayMetricDescriptor,
+                pm.DistributionSampleArrayMetricDescriptor,
+            ),
+        )
+    }
+    wrong_metric = "metric.wrong-namespace"
+    recognized_metrics[wrong_metric] = SimpleNamespace(
+        node_type=copied_qname(pm.NumericMetricDescriptor, "urn:not-biceps"),
+        descriptor=SimpleNamespace(),
+        state=SimpleNamespace(),
+        parent_handle=None,
+    )
+    remote, _ = remote_for(recognized_metrics)
+    report.check(
+        len(remote.metrics()) == 5 and wrong_metric not in remote.metrics(),  # noqa: PLR2004
+        "all metric QNames use expanded-name equality and reject a wrong namespace",
+    )
+
+    condition = "alert.condition"
+    limit_condition = "alert.limit"
+    entities = {
+        condition: SimpleNamespace(
+            node_type=copied_qname(pm.AlertConditionDescriptor),
+            descriptor=SimpleNamespace(Priority=pm_types.AlertConditionPriority.LOW, Source=[]),
+            state=SimpleNamespace(
+                ActualPriority=pm_types.AlertConditionPriority.HIGH,
+                Presence=True,
+            ),
+        ),
+        limit_condition: SimpleNamespace(
+            node_type=copied_qname(pm.LimitAlertConditionDescriptor),
+            descriptor=SimpleNamespace(
+                Priority=pm_types.AlertConditionPriority.MEDIUM,
+                Source="metric.source",
+                MaxLimits=SimpleNamespace(Lower=Decimal("0"), Upper=Decimal("100")),
+            ),
+            state=SimpleNamespace(
+                Presence=False,
+                Limits=SimpleNamespace(Lower=Decimal("10"), Upper=Decimal("20")),
+            ),
+        ),
+        "signal.equal": SimpleNamespace(
+            node_type=copied_qname(pm.AlertSignalDescriptor),
+            descriptor=SimpleNamespace(ConditionSignaled=condition, Manifestation=pm_types.AlertSignalManifestation.VIS),
+            state=SimpleNamespace(),
+        ),
+        "signal.wrong": SimpleNamespace(
+            node_type=copied_qname(pm.AlertSignalDescriptor, "urn:not-biceps"),
+            descriptor=SimpleNamespace(ConditionSignaled=condition, Manifestation=pm_types.AlertSignalManifestation.AUD),
+            state=SimpleNamespace(),
+        ),
+    }
+    remote, _ = remote_for(entities)
+    alerts = remote.alerts()
+    report.check(
+        set(alerts) == {condition, limit_condition}
+        and alerts[condition].priority == pm_types.AlertConditionPriority.HIGH.value
+        and alerts[condition].signals == {"signal.equal": pm_types.AlertSignalManifestation.VIS.value}
+        and alerts[limit_condition].source_handles == ("metric.source",)
+        and (alerts[limit_condition].lower_limit, alerts[limit_condition].upper_limit)
+        == (Decimal("10"), Decimal("20"))
+        and (alerts[limit_condition].max_lower_limit, alerts[limit_condition].max_upper_limit)
+        == (Decimal("0"), Decimal("100")),
+        "alert QNames, effective priority, current limits, and maximum limits retain their semantics",
+    )
+
+    wrong_action = "action.wrong-namespace"
+    remote, _ = remote_for(
+        {
+            "action.equal": action_entity(pm_types.OperatingMode.ENABLED),
+            wrong_action: SimpleNamespace(
+                node_type=copied_qname(pm.ActivateOperationDescriptor, "urn:not-biceps"),
+                descriptor=SimpleNamespace(),
+                state=SimpleNamespace(OperatingMode=pm_types.OperatingMode.ENABLED),
+            ),
+        },
+    )
+    report.check(
+        set(remote.actions()) == {"action.equal"} and wrong_action not in remote.actions(),
+        "Activate QName matching uses the complete expanded name",
+    )
+
+
+def check_periodic_consumer_routing(report: Report) -> None:
+    print("\n14. Periodic consumer report routing")
+
+    class Client:
+        waveform_report = observableproperties.ObservableProperty()
+        episodic_metric_report = observableproperties.ObservableProperty()
+        episodic_alert_report = observableproperties.ObservableProperty()
+        episodic_context_report = observableproperties.ObservableProperty()
+        episodic_component_report = observableproperties.ObservableProperty()
+        description_modification_report = observableproperties.ObservableProperty()
+        episodic_operational_state_report = observableproperties.ObservableProperty()
+        periodic_metric_report = observableproperties.ObservableProperty()
+        periodic_alert_report = observableproperties.ObservableProperty()
+        periodic_component_report = observableproperties.ObservableProperty()
+        periodic_operational_state_report = observableproperties.ObservableProperty()
+        periodic_context_report = observableproperties.ObservableProperty()
+
+        def __init__(self) -> None:
+            self.msg_reader = None
+
+    events = []
+    msg_types_fixture = SimpleNamespace()
+
+    def parser_class(parser_name):  # noqa: ANN001, ANN202 - generated model-specific parser
+        class Parser:
+            @classmethod
+            def from_node(cls, node):  # noqa: ANN001, ANN206
+                parsed = (parser_name, node)
+                events.append(("parse", parser_name, node))
+                return parsed
+
+        return Parser
+
+    for parser_name, _processor_name in _PeriodicConsumerMdibMethods._PERIODIC_REPORTS.values():  # noqa: SLF001
+        setattr(msg_types_fixture, parser_name, parser_class(parser_name))
+
+    client = Client()
+    mdib = SimpleNamespace(
+        sdc_client=client,
+        data_model=SimpleNamespace(msg_types=msg_types_fixture),
+    )
+    version_groups = {}
+
+    for observable_name, (parser_name, processor_name) in _PeriodicConsumerMdibMethods._PERIODIC_REPORTS.items():  # noqa: SLF001
+        def processor(version_group, parsed, *, name=processor_name):  # noqa: ANN001
+            events.append(("process", name, version_group, parsed))
+
+        setattr(mdib, processor_name, processor)
+        version_groups[observable_name] = object()
+
+    methods = _PeriodicConsumerMdibMethods(mdib, logging.getLogger("periodic-test"))
+    methods.bind_to_client_observables()
+    gc.collect()
+
+    for observable_name, (parser_name, processor_name) in _PeriodicConsumerMdibMethods._PERIODIC_REPORTS.items():  # noqa: SLF001
+        node = object()
+        version_group = version_groups[observable_name]
+        message = SimpleNamespace(
+            p_msg=SimpleNamespace(msg_node=node),
+            mdib_version_group=version_group,
+        )
+        before = len(events)
+        setattr(client, observable_name, message)
+        routed = events[before:]
+        report.check(
+            len(routed) == 2  # noqa: PLR2004
+            and routed[0] == ("parse", parser_name, node)
+            and routed[1][0:2] == ("process", processor_name)
+            and routed[1][2] is version_group
+            and routed[1][3] == (parser_name, node),
+            f"{observable_name} retains its callback and routes synchronously with the exact version group",
+            str(routed),
+        )
+
+    report.check(
+        len(methods._periodic_report_callbacks) == 5,  # noqa: SLF001, PLR2004
+        "all five periodic families have one strongly retained callback",
+    )
+
+        check_periodic_consumer_routing(report)
