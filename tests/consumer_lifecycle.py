@@ -26,7 +26,7 @@ from PySide6.QtCore import (  # noqa: E402
     Signal,
 )
 from PySide6.QtWidgets import QApplication  # noqa: E402
-from script_support import Report  # noqa: E402
+from script_support import Report, wait_until  # noqa: E402
 from sdc11073.xml_types import msg_types  # noqa: E402
 
 from sdctoolbox.consumer_service import DiscoveredDevice  # noqa: E402
@@ -38,6 +38,7 @@ from sdctoolbox.model import (  # noqa: E402
     RemoteAction,
     RemoteAlert,
     RemoteMetric,
+    RemoteRange,
 )
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
@@ -128,6 +129,10 @@ class EqualResource:
         return self.key == other.key
 
 
+class UnhashableResource:
+    __hash__ = None
+
+
 class CollectableMdib:
     def __init__(self) -> None:
         self.entities: dict[str, object] = {}
@@ -159,20 +164,23 @@ class FakeConsumerService:
 
 
 def pump(app: QApplication, seconds: float = 0.05) -> None:
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        app.processEvents()
-        time.sleep(0.005)
+    wait_until(
+        lambda: False,
+        timeout=seconds,
+        interval=0.005,
+        pump=app.processEvents,
+        check_boundary=False,
+    )
 
 
 def wait_for(app: QApplication, predicate, timeout: float = 2.0) -> bool:  # noqa: ANN001
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        app.processEvents()
-        if predicate():
-            return True
-        time.sleep(0.005)
-    return False
+    return wait_until(
+        predicate,
+        timeout=timeout,
+        interval=0.005,
+        pump=app.processEvents,
+        check_boundary=False,
+    )
 
 
 def check(condition: bool, message: str) -> None:  # noqa: FBT001
@@ -245,6 +253,7 @@ def close_with_queued_connection(app: QApplication, provider: ProviderService) -
     pane.device_list.setCurrentRow(0)
     pane._on_connect()  # noqa: SLF001
     check(service.connect_call.entered.wait(1.0), "connect result is queued for the GUI")
+    # Do not pump Qt here: the test needs the queued completion to remain pending.
     time.sleep(0.02)
     window.close()
     check(remote.close_count == 1, "queued connection closes once during window close")
@@ -279,7 +288,6 @@ def async_resources_retire_once() -> None:
 
 def non_weakrefable_resources_are_rejected() -> None:
     worker = AsyncCall()
-    unmanaged_started = threading.Event()
     call_started = threading.Event()
     active_call = BlockingCall()
     active_resource = EqualResource("valid")
@@ -293,12 +301,6 @@ def non_weakrefable_resources_are_rejected() -> None:
         nonlocal close_count
         close_count += 1
         resource_closed.set()
-
-    check(worker.start(unmanaged_started.set), "an unmanaged call still starts")
-    check(
-        unmanaged_started.wait(1.0) and worker.wait(1.0),
-        "an unmanaged call still finishes without resource validation",
-    )
 
     try:
         worker.start_managed("invalid", object(), call)
@@ -366,6 +368,149 @@ def non_weakrefable_resources_are_rejected() -> None:
         resource_closed.wait(1.0) and close_count == 1,
         "the valid managed resource still retires after its call",
     )
+
+
+def unhashable_keys_and_resources_are_rejected() -> None:
+    worker = AsyncCall()
+    call_started = threading.Event()
+    resource = UnhashableResource()
+
+    try:
+        worker.start_managed([], None, call_started.set)
+    except TypeError as exc:
+        key_error = str(exc)
+    else:
+        key_error = None
+
+    check(
+        key_error == "managed key must be hashable",
+        "an unhashable managed key is rejected synchronously",
+    )
+
+    try:
+        worker.start_managed("unhashable-resource", resource, call_started.set)
+    except TypeError as exc:
+        start_error = str(exc)
+    else:
+        start_error = None
+
+    check(
+        start_error == "managed resource must be hashable",
+        "an unhashable weak-referenceable resource is rejected synchronously",
+    )
+
+    try:
+        worker.retire(resource, lambda: None)
+    except TypeError as exc:
+        retire_error = str(exc)
+    else:
+        retire_error = None
+
+    check(
+        retire_error == "managed resource must be hashable",
+        "retirement rejects an unhashable resource synchronously",
+    )
+    check(
+        not call_started.is_set()
+        and not worker._threads  # noqa: SLF001
+        and not worker._resources  # noqa: SLF001
+        and not worker._retired_resources,  # noqa: SLF001
+        "hashability rejection starts no work and creates no bookkeeping",
+    )
+
+
+def thread_start_failure_restores_bookkeeping() -> None:
+    worker = AsyncCall()
+    original_start = threading.Thread.start
+    new_resource = EqualResource("new")
+
+    def fail_start(_thread: threading.Thread) -> None:
+        raise RuntimeError("forced thread start failure")
+
+    threading.Thread.start = fail_start
+    try:
+        try:
+            worker.start_managed("retry-new", new_resource, lambda: None)
+        except RuntimeError as exc:
+            new_error = str(exc)
+        else:
+            new_error = None
+    finally:
+        threading.Thread.start = original_start
+
+    check(
+        new_error == "forced thread start failure",
+        "a new-resource thread start failure is re-raised unchanged",
+    )
+    check(
+        not worker._threads and not worker._resources,  # noqa: SLF001
+        "a new-resource thread start failure restores empty bookkeeping",
+    )
+    retried_new = threading.Event()
+    check(
+        worker.start_managed("retry-new", new_resource, retried_new.set),
+        "the same key and new resource can be retried after start failure",
+    )
+    check(
+        retried_new.wait(1.0) and worker.wait(1.0),
+        "the new-resource retry completes",
+    )
+    worker.retire(new_resource, lambda: None)
+
+    active_call = BlockingCall()
+    active_resource = EqualResource("shared")
+    equal_resource = EqualResource("shared")
+    check(
+        worker.start_managed("active", active_resource, active_call),
+        "the shared resource has a pre-existing user",
+    )
+    check(active_call.entered.wait(1.0), "the pre-existing resource user starts")
+    active_thread = worker._threads["active"]  # noqa: SLF001
+    active_use = worker._resources[active_resource]  # noqa: SLF001
+
+    threading.Thread.start = fail_start
+    try:
+        try:
+            worker.start_managed("retry-shared", equal_resource, lambda: None)
+        except RuntimeError as exc:
+            shared_error = str(exc)
+        else:
+            shared_error = None
+    finally:
+        threading.Thread.start = original_start
+
+    check(
+        shared_error == "forced thread start failure",
+        "an existing-resource thread start failure is re-raised unchanged",
+    )
+    check(
+        worker._threads == {"active": active_thread}  # noqa: SLF001
+        and len(worker._resources) == 1  # noqa: SLF001
+        and next(iter(worker._resources)) is active_resource  # noqa: SLF001
+        and worker._resources[active_resource] is active_use  # noqa: SLF001
+        and active_use.users == 1,
+        "an existing equal resource retains its exact pre-call bookkeeping",
+    )
+
+    retried_shared = BlockingCall()
+    check(
+        worker.start_managed("retry-shared", equal_resource, retried_shared),
+        "the same key and equal resource can be retried after start failure",
+    )
+    check(retried_shared.entered.wait(1.0), "the existing-resource retry starts")
+    check(
+        active_use.users == 2 and len(worker._resources) == 1,  # noqa: SLF001
+        "the retry shares the existing equal resource entry",
+    )
+    retried_shared.release.set()
+    active_call.release.set()
+    check(worker.wait(1.0), "both shared-resource users finish")
+    check(
+        active_use.users == 0 and len(worker._resources) == 1,  # noqa: SLF001
+        "completed shared-resource calls preserve idle resource bookkeeping",
+    )
+    worker.retire(equal_resource, lambda: None)
+    check(not worker._resources, "the shared resource still retires after retry")  # noqa: SLF001
 
 
 def active_equal_resource_retires_after_release() -> None:
@@ -816,6 +961,200 @@ def metric_reports_are_scoped(app: QApplication, provider: ProviderService) -> N
     check(remote.close_count == 1 and service.stop_count == 1, "metric session resources close once")
 
 
+def refresh_snapshot_and_editor_lookups_are_scoped(
+    app: QApplication,
+    provider: ProviderService,
+) -> None:
+    window, pane, service = new_window(provider)
+    remote = FakeRemote("metric-snapshot")
+    remote.metric_values = {
+        "first": RemoteMetric(
+            handle="first",
+            node_type_name="NumericMetricDescriptor",
+            kind=MetricKind.NUMBER,
+            label="First",
+            value=Decimal(1),
+            operation_handles=("set.first",),
+            controllable_now=True,
+        ),
+        "second": RemoteMetric(
+            handle="second",
+            node_type_name="NumericMetricDescriptor",
+            kind=MetricKind.NUMBER,
+            label="Second",
+            value=Decimal(2),
+        ),
+    }
+
+    attach(pane, remote)
+    check(
+        remote.metrics_requests == [None],
+        "one full metric snapshot supplies the consumer table and board",
+    )
+    first_row = next(
+        row
+        for row in range(pane.table.rowCount())
+        if pane.table.item(row, consumer_module.COL_HANDLE).text() == "first"
+    )
+    check(
+        pane.table.item(first_row, consumer_module.COL_VALUE).text() == "1"
+        and pane.board.card("first").control.edit.text() == "1",
+        "the shared snapshot gives the table and board the same value",
+    )
+
+    pane.select_handle("first")
+    check(
+        remote.metrics_requests[-1] == frozenset({"first"}),
+        "selection requests only the selected metric",
+    )
+    requests_before_apply = len(remote.metrics_requests)
+    remote.set_call.release.set()
+    pane.value_edit.setText("3")
+    pane._on_apply()  # noqa: SLF001
+    check(
+        remote.metrics_requests[requests_before_apply:] == [frozenset({"first"})],
+        "apply requests only the selected metric before invoking",
+    )
+    check(wait_for(app, lambda: not pane._invocation_busy()), "the scoped apply finishes")  # noqa: SLF001
+
+    window.close()
+    check(remote.close_count == 1 and service.stop_count == 1, "snapshot session resources close once")
+
+
+def table_editor_enforces_complete_allowed_domain(
+    app: QApplication,
+    provider: ProviderService,
+) -> None:
+    window, pane, service = new_window(provider)
+    remote = FakeRemote("allowed-domain")
+    remote.metric_values = {
+        "number": RemoteMetric(
+            handle="number",
+            node_type_name="NumericMetricDescriptor",
+            kind=MetricKind.NUMBER,
+            label="Disjoint number",
+            value=Decimal("0"),
+            minimum=Decimal("0"),
+            maximum=Decimal("10"),
+            operation_handles=("set.number",),
+            selected_operation_handle="set.number",
+            controllable_now=True,
+            allowed_ranges=(
+                RemoteRange(Decimal("0"), Decimal("10"), Decimal("2")),
+                RemoteRange(Decimal("20"), Decimal("30"), Decimal("5")),
+            ),
+        ),
+    }
+    remote.set_call.release.set()
+    attach(pane, remote)
+    pane.select_handle("number")
+    check(
+        "0 to 10 (step 2); 20 to 30 (step 5)" in pane.editor_label.text(),
+        "the table editor displays each allowed range without merging the gap",
+    )
+
+    pane.value_edit.setText("25")
+    pane._on_apply()  # noqa: SLF001
+    check(
+        wait_for(app, lambda: pane.invocation_label.text().startswith("accepted")),
+        "the second-range write reports its accepted result",
+    )
+
+    remote.set_call = BlockingCall(msg_types.InvocationState.FINISHED)
+    remote.set_call.release.set()
+    for text in ("15", "3"):
+        pane.value_edit.setText(text)
+        pane._on_apply()  # noqa: SLF001
+        check(
+            "not permitted" in pane.invocation_label.text() and not remote.set_call.entered.is_set(),
+            f"the table editor rejects {text} without invoking the remote",
+        )
+
+    window.close()
+    check(remote.close_count == 1 and service.stop_count == 1, "allowed-domain session resources close once")
+
+
+def choice_controls_use_operation_allowed_values(
+    app: QApplication,
+    provider: ProviderService,
+) -> None:
+    window, pane, service = new_window(provider)
+    remote = FakeRemote("choice-domains")
+    remote.metric_values = {
+        "narrowed": RemoteMetric(
+            handle="narrowed",
+            node_type_name="EnumStringMetricDescriptor",
+            kind=MetricKind.CHOICE,
+            label="Narrowed choice",
+            allowed_values=("IDLE", "RUN", "PAUSE"),
+            operation_allowed_values=("IDLE", "RUN"),
+            value="RUN",
+            operation_handles=("set.narrowed",),
+            selected_operation_handle="set.narrowed",
+            controllable_now=True,
+        ),
+        "different": RemoteMetric(
+            handle="different",
+            node_type_name="EnumStringMetricDescriptor",
+            kind=MetricKind.CHOICE,
+            label="Different choice",
+            allowed_values=("descriptor-a", "descriptor-b"),
+            operation_allowed_values=("operation-a", "operation-b"),
+            value="operation-b",
+            operation_handles=("set.different",),
+            selected_operation_handle="set.different",
+            controllable_now=True,
+        ),
+        "read-only": RemoteMetric(
+            handle="read-only",
+            node_type_name="EnumStringMetricDescriptor",
+            kind=MetricKind.CHOICE,
+            label="Read-only choice",
+            allowed_values=("STANDBY", "ACTIVE"),
+            value="ACTIVE",
+        ),
+    }
+    attach(pane, remote)
+
+    for handle, expected in (
+        ("narrowed", ("IDLE", "RUN")),
+        ("different", ("operation-a", "operation-b")),
+    ):
+        card_box = pane.board.card(handle).control.box
+        card_values = tuple(card_box.itemText(index) for index in range(card_box.count()))
+        pane.select_handle(handle)
+        editor_values = tuple(
+            pane.choice_box.itemText(index) for index in range(pane.choice_box.count())
+        )
+        check(
+            card_values == expected and editor_values == expected,
+            f"the {handle} card and table editor use the operation choice domain",
+        )
+
+    read_only_box = pane.board.card("read-only").control.box
+    pane.select_handle("read-only")
+    read_only_editor_values = tuple(
+        pane.choice_box.itemText(index) for index in range(pane.choice_box.count())
+    )
+    check(
+        tuple(read_only_box.itemText(index) for index in range(read_only_box.count()))
+        == ("STANDBY", "ACTIVE")
+        and read_only_box.currentText() == "ACTIVE"
+        and not read_only_box.isEnabled()
+        and read_only_editor_values == ("STANDBY", "ACTIVE")
+        and not pane.editor_stack.isEnabled(),
+        "read-only card and table controls retain descriptor choices when no operation narrows them",
+    )
+    check(
+        remote.metric_values["different"].allowed_values
+        == ("descriptor-a", "descriptor-b"),
+        "GUI conversion preserves descriptor choices in the remote snapshot",
+    )
+
+    window.close()
+    check(remote.close_count == 1 and service.stop_count == 1, "choice-domain session resources close once")
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     provider = ProviderService(instance_name="consumer-lifecycle")
@@ -831,6 +1170,8 @@ def main() -> int:
         close_during_connect(app, provider)
         close_with_queued_connection(app, provider)
         non_weakrefable_resources_are_rejected()
+        unhashable_keys_and_resources_are_rejected()
+        thread_start_failure_restores_bookkeeping()
         async_resources_retire_once()
         active_equal_resource_retires_after_release()
         retired_remote_graph_is_collectable(app, provider)
@@ -841,6 +1182,9 @@ def main() -> int:
         failed_reconnect_clears_peer_ui(app, provider)
         waveform_reports_are_scoped(app, provider)
         metric_reports_are_scoped(app, provider)
+        refresh_snapshot_and_editor_lookups_are_scoped(app, provider)
+        table_editor_enforces_complete_allowed_domain(app, provider)
+        choice_controls_use_operation_allowed_values(app, provider)
     finally:
         consumer_module.ConsumerService = old_service
         consumer_module.MdibBridge = old_bridge

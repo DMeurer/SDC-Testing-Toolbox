@@ -11,6 +11,7 @@ from script_support import (
     ProcessOutput,
     Report,
     stop_process,
+    wait_until,
     wait_for_ready,
 )
 
@@ -40,9 +41,11 @@ def check_deadline(
     process, output = start_child(output_code)
     try:
         if expect_output:
-            startup_deadline = time.monotonic() + POSITIVE_STARTUP_TIMEOUT
-            while not output.buffered_output and time.monotonic() < startup_deadline:
-                time.sleep(0.01)
+            wait_until(
+                lambda: bool(output.buffered_output),
+                timeout=POSITIVE_STARTUP_TIMEOUT,
+                interval=0.01,
+            )
             report.check(bool(output.buffered_output), f"{description} emits startup output")
 
         started = time.monotonic()

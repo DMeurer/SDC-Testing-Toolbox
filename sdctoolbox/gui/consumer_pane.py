@@ -42,6 +42,13 @@ from ..consumer_service import ConsumerService
 from ..model import MetricKind
 from .async_call import AsyncCall
 from .decimal_input import DecimalInputError, parse_decimal_input
+from .helpers import (
+    NO_VALUE,
+    sample_count_text,
+    select_table_row,
+    selected_table_value,
+    value_text,
+)
 from .no_wheel import NoWheelComboBox
 from .qt_bridge import MdibBridge
 from .styling import (
@@ -57,6 +64,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from ..consumer_service import DiscoveredDevice, RemoteDevice
+    from ..model import RemoteMetric
 
 COLUMNS = ["Handle", "Label", "Kind", "Value", "Range", "Unit", "Writable"]
 COL_HANDLE, COL_LABEL, COL_KIND, COL_VALUE, COL_RANGE, COL_UNIT, COL_WRITABLE = range(len(COLUMNS))
@@ -80,8 +88,6 @@ ACTION_BUTTON_WIDTH = 180
 ACTION_BUTTON_TEXT_WIDTH = ACTION_BUTTON_WIDTH - 24
 _DISPLAY_LINE_BREAKS = re.compile(r"[\r\n\v\f\x1c-\x1e\x85\u2028\u2029]+")
 
-NO_VALUE = "\u2014"
-
 EDITOR_TEXT = 0
 EDITOR_CHOICE = 1
 
@@ -94,8 +100,8 @@ def _displayable(metric) -> object:  # noqa: ANN001 - a RemoteMetric
 def _value_text(metric) -> str:  # noqa: ANN001 - a RemoteMetric
     """What the table's Value cell shows."""
     if metric.is_sample_array:
-        return f"{len(metric.samples)} sample(s)" if metric.samples else NO_VALUE
-    return NO_VALUE if metric.value is None else str(metric.value)
+        return sample_count_text(metric.samples)
+    return value_text(metric.value)
 
 
 def _set_action_button_caption(button: QPushButton, caption: str) -> None:
@@ -444,12 +450,13 @@ class ConsumerPane(QWidget):
 
     def refresh(self) -> None:
         """Rebuild both the tree and the table from whatever the peer currently says."""
+        metrics = {} if self.remote is None else self.remote.metrics()
         self._rebuild_tree()
-        self._rebuild_table()
+        self._rebuild_table(metrics)
         self._rebuild_alerts()
         self._refresh_contexts()
         self.refresh_actions()
-        self._refresh_board()
+        self._refresh_board(metrics)
         self._on_selection_changed()
 
     def _rebuild_tree(self) -> None:
@@ -479,8 +486,7 @@ class ConsumerPane(QWidget):
         self.tree.expandToDepth(2)
         self.tree.resizeColumnToContents(0)
 
-    def _rebuild_table(self) -> None:
-        metrics = {} if self.remote is None else self.remote.metrics()
+    def _rebuild_table(self, metrics: dict[str, RemoteMetric]) -> None:
         selected = self.selected_handle()
 
         self.table.setRowCount(len(metrics))
@@ -568,7 +574,7 @@ class ConsumerPane(QWidget):
             item = self.table.item(row, COL_VALUE)
             if item is not None:
                 samples = blocks_by_handle[handle_item.text()]
-                item.setText(f"{len(samples)} sample(s)" if samples else NO_VALUE)
+                item.setText(sample_count_text(samples))
 
     # -- widgets or table ----------------------------------------------------------
 
@@ -586,12 +592,13 @@ class ConsumerPane(QWidget):
         if enabled:
             self._refresh_board()
 
-    def _refresh_board(self) -> None:
+    def _refresh_board(self, metrics: dict[str, RemoteMetric] | None = None) -> None:
         """Rebuild the controls from what the peer currently publishes."""
         if self.remote is None:
             self.board.clear()
             return
-        metrics = self.remote.metrics()
+        if metrics is None:
+            metrics = self.remote.metrics()
         self.board.set_metrics([from_remote_metric(metric) for _, metric in sorted(metrics.items())])
         self.board.show_values({handle: _displayable(metric) for handle, metric in metrics.items()})
 
@@ -701,37 +708,31 @@ class ConsumerPane(QWidget):
 
     def selected_handle(self) -> str | None:
         """Handle of the selected metric row, or None."""
-        model = self.table.selectionModel()
-        rows = model.selectedRows() if model else []
-        if not rows:
-            return None
-        item = self.table.item(rows[0].row(), COL_HANDLE)
-        return item.text() if item else None
+        return selected_table_value(self.table, COL_HANDLE)
 
     def select_handle(self, handle: str) -> None:
         """Restore the selection to a given handle, if it is still there."""
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, COL_HANDLE)
-            if item is not None and item.text() == handle:
-                self.table.selectRow(row)
-                return
+        select_table_row(self.table, COL_HANDLE, handle)
 
     def _on_selection_changed(self) -> None:
         self.invocation_label.setText("")
         handle = self.selected_handle()
-        metric = None if (handle is None or self.remote is None) else self.remote.metrics().get(handle)
+        metric = (
+            None
+            if handle is None or self.remote is None
+            else self.remote.metrics((handle,)).get(handle)
+        )
 
         if metric is None:
             self.editor_label.setText("Connect to a device to control it")
             self._set_editor_enabled(enabled=False)
             return
 
-        # The editor comes from the *target* descriptor, never from the operation: it is the
-        # metric that says which values are legal.
-        if metric.kind is MetricKind.CHOICE and metric.allowed_values:
+        allowed_values = metric.operation_allowed_values or metric.allowed_values
+        if metric.kind is MetricKind.CHOICE and allowed_values:
             self.editor_stack.setCurrentIndex(EDITOR_CHOICE)
             self.choice_box.clear()
-            self.choice_box.addItems(list(metric.allowed_values))
+            self.choice_box.addItems(list(allowed_values))
             if metric.value is not None:
                 index = self.choice_box.findText(str(metric.value))
                 if index >= 0:
@@ -759,11 +760,12 @@ class ConsumerPane(QWidget):
         handle = self.selected_handle()
         if handle is None or self.remote is None:
             return
-        metric = self.remote.metrics().get(handle)
+        metric = self.remote.metrics((handle,)).get(handle)
         if metric is None:
             return
 
-        if metric.kind is MetricKind.CHOICE and metric.allowed_values:
+        allowed_values = metric.operation_allowed_values or metric.allowed_values
+        if metric.kind is MetricKind.CHOICE and allowed_values:
             value: Decimal | str = self.choice_box.currentText()
         elif metric.kind is MetricKind.NUMBER:
             raw = self.value_edit.text().strip()
@@ -771,8 +773,7 @@ class ConsumerPane(QWidget):
                 value = parse_decimal_input(
                     raw,
                     "value",
-                    minimum=metric.minimum,
-                    maximum=metric.maximum,
+                    allowed_ranges=metric.allowed_ranges,
                 )
             except DecimalInputError as exc:
                 self.invocation_label.setText(str(exc))

@@ -6,13 +6,14 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 TESTS = Path(__file__).resolve().parent
 ROOT = TESTS.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(TESTS))
 
-from script_support import Report, owned_temp_directory
+from script_support import Report
 
 
 def check_script(
@@ -51,7 +52,8 @@ def check_script(
 def main() -> int:
     print("Direct test import bootstrap")
     report = Report()
-    with owned_temp_directory(prefix="sdc-import-shadow-") as temporary:
+    with TemporaryDirectory(prefix="sdc-import-shadow-") as raw_temporary:
+        temporary = Path(raw_temporary)
         shadow = temporary / "shadow"
         fake_tests = shadow / "tests"
         fake_tests.mkdir(parents=True)

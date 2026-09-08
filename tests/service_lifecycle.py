@@ -3,32 +3,22 @@
 from __future__ import annotations
 
 import sys
+from contextlib import ExitStack
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from sdctoolbox import consumer_service as consumer_module
-from sdctoolbox import provider_service as provider_module
-from sdctoolbox.consumer_service import ConsumerService, DiscoveredDevice
-from sdctoolbox.provider_service import ProviderService
-from script_support import Report
+from script_support import Report  # noqa: E402
+
+from sdctoolbox import consumer_service as consumer_module  # noqa: E402
+from sdctoolbox import provider_service as provider_module  # noqa: E402
+from sdctoolbox import sample_generation as sample_module  # noqa: E402
+from sdctoolbox.consumer_service import ConsumerService, DiscoveredDevice  # noqa: E402
+from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 REPORT = Report()
-
-
-class Patch:
-    def __init__(self, target, name: str, value) -> None:
-        self.target = target
-        self.name = name
-        self.value = value
-        self.old_value = getattr(target, name)
-
-    def __enter__(self):
-        setattr(self.target, self.name, self.value)
-
-    def __exit__(self, *_exc_info: object) -> None:
-        setattr(self.target, self.name, self.old_value)
 
 
 class Tracker:
@@ -91,7 +81,15 @@ def assert_provider_reset(service: ProviderService, discovery: Tracker, provider
     check(
         all(
             getattr(service, name) is None
-            for name in ("_discovery", "_provider", "_mdib", "_sco", "_handler", "_activate_handler")
+            for name in (
+                "_discovery",
+                "_provider",
+                "_mdib",
+                "_sco",
+                "_handler",
+                "_activate_handler",
+                "_adapter",
+            )
         ),
         "provider failure resets lifecycle references",
     )
@@ -106,8 +104,6 @@ def assert_provider_reset(service: ProviderService, discovery: Tracker, provider
                 "_pending_alert_sources",
                 "_actions",
                 "_sections",
-                "_waveform_phase",
-                "_pinned_samples",
             )
         ),
         "provider failure resets mutable lifecycle state",
@@ -116,25 +112,20 @@ def assert_provider_reset(service: ProviderService, discovery: Tracker, provider
 
 def provider_dependencies(discovery: Tracker, provider: Tracker | None = None):
     patches = [
-        Patch(provider_module, "WSDiscovery", lambda _ip: discovery),
-        Patch(provider_module, "make_set_handler", lambda *_args, **_kwargs: object()),
-        Patch(provider_module, "make_activate_handler", lambda *_args, **_kwargs: object()),
+        patch.object(provider_module, "WSDiscovery", lambda _ip: discovery),
+        patch.object(provider_module, "make_set_handler", lambda *_args, **_kwargs: object()),
+        patch.object(provider_module, "make_activate_handler", lambda *_args, **_kwargs: object()),
     ]
     if provider is not None:
-        patches.append(Patch(provider_module, "SdcProvider", lambda **_kwargs: provider))
+        patches.append(patch.object(provider_module, "SdcProvider", lambda **_kwargs: provider))
     return patches
 
 
-def run_patched(patches: list[Patch], function) -> None:
-    entered: list[Patch] = []
-    try:
-        for patch in patches:
-            patch.__enter__()
-            entered.append(patch)
+def run_patched(patchers: list, function) -> None:  # noqa: ANN001
+    with ExitStack() as stack:
+        for patcher in patchers:
+            stack.enter_context(patcher)
         function()
-    finally:
-        for patch in reversed(entered):
-            patch.__exit__()
 
 
 def mdib_load_failure() -> None:
@@ -150,7 +141,7 @@ def mdib_load_failure() -> None:
         raises("mdib load failed", service.start)
 
     run_patched(
-        [*provider_dependencies(discovery), Patch(provider_module, "ProviderMdib", FailingProviderMdib)],
+        [*provider_dependencies(discovery), patch.object(provider_module, "ProviderMdib", FailingProviderMdib)],
         exercise,
     )
     check(discovery.stop_count == 1, "MDIB load failure stops discovery exactly once")
@@ -168,7 +159,7 @@ def provider_start_failure() -> None:
     run_patched(
         [
             *provider_dependencies(discovery, provider),
-            Patch(provider_module.ProviderMdib, "from_mdib_file", lambda _path: FakeMdib()),
+            patch.object(provider_module.ProviderMdib, "from_mdib_file", lambda _path: FakeMdib()),
         ],
         exercise,
     )
@@ -201,8 +192,8 @@ def default_context_failure() -> None:
     run_patched(
         [
             *provider_dependencies(discovery, provider),
-            Patch(provider_module.ProviderMdib, "from_mdib_file", lambda _path: FakeMdib()),
-            Patch(service, "_publish_one_block", lambda: None),
+            patch.object(provider_module.ProviderMdib, "from_mdib_file", lambda _path: FakeMdib()),
+            patch.object(service, "_publish_one_block", lambda: None),
         ],
         exercise,
     )
@@ -222,9 +213,9 @@ def generator_start_failure() -> None:
         def start(self) -> None:
             raise RuntimeError("generator start failed")
 
-    with Patch(provider_module.threading, "Thread", FailingThread):
+    with patch.object(sample_module.threading, "Thread", FailingThread):
         raises("generator start failed", service.start_generator)
-    check(service._waveform_thread is None, "generator start failure resets its thread reference")
+    check(service._sample_generator.thread is None, "generator start failure resets its thread reference")  # noqa: SLF001
     check(not service.generator_running, "generator start failure leaves no active generator")
 
 
@@ -253,7 +244,7 @@ def provider_stop_failures() -> None:
 def consumer_discovery_start_failure() -> None:
     service = ConsumerService()
     discovery = Tracker(fail_start="discovery start failed")
-    with Patch(consumer_module, "WSDiscovery", lambda _ip: discovery):
+    with patch.object(consumer_module, "WSDiscovery", lambda _ip: discovery):
         raises("discovery start failed", service.start)
     check(discovery.stop_count == 1, "consumer discovery start failure rolls back exactly once")
     check(not discovery.active and service._discovery is None, "consumer discovery failure resets state")
@@ -282,7 +273,7 @@ def consumer_connection_failure(*, stage: str) -> None:
         "construct": "consumer MDIB construction failed",
         "init": "consumer MDIB init failed",
     }[stage]
-    with Patch(consumer_module, "SdcConsumer", ConsumerFactory), Patch(
+    with patch.object(consumer_module, "SdcConsumer", ConsumerFactory), patch.object(
         consumer_module,
         "ConsumerMdib",
         FakeConsumerMdib,

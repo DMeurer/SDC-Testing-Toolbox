@@ -55,17 +55,6 @@ class MetricKind(enum.Enum):
         """Whether a set operation exists for this kind."""
         return self in _OPERATION_CLASSES
 
-    @property
-    def creatable(self) -> bool:
-        """Whether this build can actually put such a descriptor on the wire."""
-        return self not in MISSING_MANDATORY_FIELDS
-
-    @property
-    def missing_fields(self) -> tuple[str, ...]:
-        """Mandatory descriptor fields this build never fills in, if any."""
-        return MISSING_MANDATORY_FIELDS.get(self, ())
-
-
 _DESCRIPTOR_QNAMES = {
     MetricKind.NUMBER: pm.NumericMetricDescriptor,
     MetricKind.TEXT: pm.StringMetricDescriptor,
@@ -81,13 +70,6 @@ _OPERATION_CLASSES: dict[MetricKind, type[OperationDefinitionBase]] = {
     MetricKind.TEXT: SetStringOperation,
     MetricKind.CHOICE: SetStringOperation,
 }
-
-# Kinds this build cannot put on the wire, and the mandatory descriptor fields it fails to
-# fill in for them. Empty: every kind BICEPS defines can now be created. Kept as the place
-# to record such a gap if one ever reappears, because the failure mode is nasty - BICEPS
-# only notices a missing mandatory field when the descriptor is serialised, which happens
-# after the transaction has already committed it. See ProviderService._create_entities.
-MISSING_MANDATORY_FIELDS: dict[MetricKind, tuple[str, ...]] = {}
 
 # The two sample-array kinds carry many values per state rather than one.
 SAMPLE_ARRAY_KINDS = (MetricKind.WAVEFORM, MetricKind.DISTRIBUTION)
@@ -148,10 +130,6 @@ class DistributionShape(enum.Enum):
 # on one machine are not spending all their time serialising sample arrays.
 DEFAULT_SAMPLE_PERIOD = Decimal("0.1")
 
-# How many samples a waveform card keeps and draws.
-WAVEFORM_HISTORY = 300
-
-
 # The alarm vocabulary is taken straight from BICEPS rather than reinvented, so the values
 # that go on the wire are the standard's own:
 #   AlertKind      PHYSIOLOGICAL=Phy  TECHNICAL=Tec  OTHER=Oth
@@ -161,15 +139,14 @@ AlertKind = pm_types.AlertConditionKind
 AlertPriority = pm_types.AlertConditionPriority
 AlertManifestation = pm_types.AlertSignalManifestation
 
-# How a signal is currently announcing itself.
+# How a signal is currently represented as announcing a condition.
 #   ON=On  OFF=Off  LATCH=Latch  ACK=Ack
-# ACK is the acknowledgement: the user has seen the alarm. The condition stays present, so
-# the fact is not erased - only the way it is being announced changes.
+# ACK is a signal-presence state, not the condition truth. The provider's explicit policy
+# permits a user acknowledgement to move only a generated On signal to Ack.
 AlertSignalPresence = pm_types.AlertSignalPresence
 
-# Where a signal is announced. LOCAL=Loc means here, REMOTE=Rem means another device has
-# taken it over. That hand-over is what BICEPS calls signal delegation, and a signal may
-# only be delegated when its descriptor says SignalDelegationSupported.
+# Where a signal is announced. LOCAL=Loc means here and REMOTE=Rem means remote. Changing
+# this field alone does not perform the normative BICEPS signal-delegation workflow.
 AlertSignalLocation = pm_types.AlertSignalPrimaryLocation
 
 # Default signal definitions preserve the original visual and audible behavior.
@@ -405,10 +382,6 @@ def fixed_point_decimal(value: Decimal, field: str) -> Decimal:
     return _FixedPointDecimal("0") if value.is_zero() else _FixedPointDecimal(value)
 
 
-# MDC_DIM_DIMLESS, for a metric that measures a bare number.
-DIMENSIONLESS = Coding(code=constants.CODE_DIMENSIONLESS, system="mdc", label="")
-
-
 @dataclass(frozen=True)
 class DeviceInfo:
     """Who the device says it is, in DPWS terms.
@@ -429,11 +402,6 @@ class DeviceInfo:
     model_name: str = constants.MODEL_NAME
     model_number: str = constants.MODEL_NUMBER
     firmware_version: str = constants.FIRMWARE_VERSION
-
-    def is_empty(self) -> bool:
-        """Whether this says anything the defaults do not."""
-        return self == DeviceInfo()
-
 
 @dataclass
 class MetricSpec:
@@ -519,11 +487,9 @@ class MetricSpec:
         if self.kind is MetricKind.WAVEFORM:
             if self.sample_period is None:
                 self.sample_period = DEFAULT_SAMPLE_PERIOD
+            self.waveform_cycle_sample_count()
             self.generated_waveform_block_sample_count()
             self.shape = _coerce_enum(WaveformShape, self.shape, "shape")
-            if not isinstance(self.cycle_samples, int) or self.cycle_samples < 2:  # noqa: PLR2004
-                msg = f"cycle_samples must be an integer of at least 2, not {self.cycle_samples!r}"
-                raise ValueError(msg)
         elif self.sample_period is not None:
             msg = f"sample_period is only meaningful for {MetricKind.WAVEFORM.value} metrics"
             raise ValueError(msg)
@@ -679,6 +645,20 @@ class MetricSpec:
             )
             raise ValueError(msg)
         return max(1, round(ratio))
+
+    def waveform_cycle_sample_count(self) -> int:
+        """Validate and return the mutable waveform cycle length."""
+        if self.kind is not MetricKind.WAVEFORM:
+            msg = f"{self.kind.value} metrics do not have waveform cycles"
+            raise ValueError(msg)
+        if (
+            isinstance(self.cycle_samples, bool)
+            or not isinstance(self.cycle_samples, int)
+            or self.cycle_samples < 2  # noqa: PLR2004
+        ):
+            msg = f"cycle_samples must be an integer of at least 2, not {self.cycle_samples!r}"
+            raise ValueError(msg)
+        return self.cycle_samples
 
     def domain_text(self) -> str:
         """The distribution's domain as something readable, e.g. '0 to 100 Hz'."""
@@ -853,8 +833,11 @@ class AlertSpec:
 
     def breached_by(self, value: object) -> bool:
         """Whether a source value puts this condition into the present state."""
-        if not self.has_limits or not isinstance(value, Decimal):
+        if not self.has_limits or value is None:
             return False
+        if not isinstance(value, Decimal):
+            msg = "a limit alarm requires a numeric scalar value"
+            raise TypeError(msg)
         if self.lower_limit is not None and value < self.lower_limit:
             return True
         return self.upper_limit is not None and value > self.upper_limit
@@ -873,12 +856,17 @@ class SignalInfo:
 
     @property
     def acknowledged(self) -> bool:
-        """Whether the user has already acknowledged this signal."""
+        """Whether this signal currently has the Ack presence value."""
         return self.presence == AlertSignalPresence.ACK
 
     @property
-    def delegated(self) -> bool:
-        """Whether another device has taken this signal over."""
+    def acknowledgeable(self) -> bool:
+        """Whether the toolbox acknowledgement policy can change this signal."""
+        return self.presence == AlertSignalPresence.ON
+
+    @property
+    def remote_location(self) -> bool:
+        """Whether this signal currently reports Rem, without implying a handoff."""
         return self.location == AlertSignalLocation.REMOTE
 
     @property
@@ -893,7 +881,7 @@ class SignalInfo:
         a Windows console on cp1252 cannot encode an arrow.
         """
         text = f"{self.manifestation}:{self.presence}"
-        return f"{text}->Rem" if self.delegated else text
+        return f"{text}->Rem" if self.remote_location else text
 
 
 # Patient and location are BICEPS *contexts*: who and where, as opposed to what the device
@@ -1164,10 +1152,15 @@ class RemoteAlert:
     present: bool = False
     activation: str | None = None
     source_handles: tuple[str, ...] = field(default_factory=tuple)
+    # Current limits from AlertConditionState/Limits.
     lower_limit: Decimal | None = None
     upper_limit: Decimal | None = None
     # Handle -> manifestation for the signals that announce this condition.
     signals: dict[str, str] = field(default_factory=dict)
+    # Capability bounds from LimitAlertConditionDescriptor/MaxLimits, kept distinct from
+    # the current limits above. Appended to preserve positional snapshot construction.
+    max_lower_limit: Decimal | None = None
+    max_upper_limit: Decimal | None = None
 
     def limit_text(self) -> str:
         """The monitored limits, or an empty string when there are none."""
@@ -1199,11 +1192,56 @@ class RemoteAction:
     type_code: str | None = None
     target_handle: str | None = None
     enabled: bool = False
+    # The current client supports only argumentless Activate operations. Argument-bearing
+    # operations remain visible in the snapshot but are not marked enabled.
+    argument_count: int = 0
 
     @property
     def caption(self) -> str:
         """What to put on the button."""
         return self.label or self.type_code or self.handle
+
+
+@dataclass(frozen=True)
+class RemoteRange:
+    """One BICEPS Range copied without dropping open bounds or StepWidth."""
+
+    lower: Decimal | None = None
+    upper: Decimal | None = None
+    step_width: Decimal | None = None
+
+    def contains(self, value: Decimal) -> bool:
+        """Whether value is inside this range and aligned to its optional step."""
+        try:
+            if self.lower is not None and value < self.lower:
+                return False
+            if self.upper is not None and value > self.upper:
+                return False
+            if self.step_width is None:
+                return True
+            if self.lower is not None:
+                offset = value - self.lower
+            elif self.upper is not None:
+                offset = self.upper - value
+            else:
+                return True
+            if not self.step_width.is_finite() or self.step_width <= 0:
+                return False
+            return offset % self.step_width == 0
+        except (ArithmeticError, AttributeError, TypeError, ValueError):
+            return False
+
+    def text(self) -> str:
+        """Render this range without discarding its step width."""
+        bounds = format_range(self.lower, self.upper) or "any value"
+        if self.step_width is None:
+            return bounds
+        return f"{bounds} (step {self.step_width})"
+
+
+def numeric_value_in_ranges(value: Decimal, ranges: tuple[RemoteRange, ...]) -> bool:
+    """Apply BICEPS AllowedRange union semantics; no ranges means unrestricted."""
+    return not ranges or any(allowed_range.contains(value) for allowed_range in ranges)
 
 
 @dataclass
@@ -1220,11 +1258,12 @@ class RemoteMetric:
     label: str | None = None
     unit_label: str | None = None
     type_code: str | None = None
+    # EnumStringMetricDescriptor/AllowedValue describes values of the metric itself.
     allowed_values: tuple[str, ...] = ()
     # NumericMetricDescriptor/Resolution, which determines a numeric control's step size.
     resolution: Decimal | None = None
-    # Limits the peer publishes. `minimum`/`maximum` come from the set operation's
-    # AllowedRange when there is one, otherwise from the metric's TechnicalRange.
+    # First range of the selected operation, retained for existing single-range controls.
+    # No TechnicalRange fallback is used: technical capability is not a control limit.
     minimum: Decimal | None = None
     maximum: Decimal | None = None
     # The metric's own TechnicalRange, kept separately because it describes what the device
@@ -1249,6 +1288,13 @@ class RemoteMetric:
     selected_operation_handle: str | None = None
     # True when at least one of those operations currently has OperatingMode == En.
     controllable_now: bool = False
+    # Appended fields preserve positional construction of the original snapshot contract.
+    # SetStringOperationState/AllowedValues independently constrains the selected operation.
+    operation_allowed_values: tuple[str, ...] = ()
+    # Complete range data preserves additional ranges and StepWidth that the legacy display
+    # fields above intentionally cannot represent.
+    allowed_ranges: tuple[RemoteRange, ...] = field(default_factory=tuple)
+    technical_ranges: tuple[RemoteRange, ...] = field(default_factory=tuple)
 
     @property
     def controllable(self) -> bool:
@@ -1268,8 +1314,12 @@ class RemoteMetric:
     @property
     def has_range(self) -> bool:
         """Whether the peer publishes a limit we should respect."""
-        return self.minimum is not None or self.maximum is not None
+        return bool(self.allowed_ranges)
 
     def range_text(self) -> str:
-        """The limits as something readable, or an empty string when unbounded."""
-        return format_range(self.minimum, self.maximum)
+        """Every operation limit as readable text, or empty when unrestricted."""
+        return "; ".join(allowed_range.text() for allowed_range in self.allowed_ranges)
+
+    def numeric_value_allowed(self, value: Decimal) -> bool:
+        """Whether a numeric write satisfies any complete operation range."""
+        return numeric_value_in_ranges(value, self.allowed_ranges)

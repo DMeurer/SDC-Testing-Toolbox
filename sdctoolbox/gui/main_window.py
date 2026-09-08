@@ -338,7 +338,21 @@ class MainWindow(QMainWindow):
                 return False
 
         try:
-            metrics, alarms = config.load_into(self.service, path)
+            device_config = config.load_file(path)
+        except config.ConfigError as exc:
+            QMessageBox.warning(self, "Could not import", str(exc))
+            return False
+
+        return self.apply_config(device_config, path)
+
+    def apply_config(
+        self,
+        device_config: config.DeviceConfig,
+        source: str | Path,
+    ) -> bool:
+        """Rebuild this device from an already parsed, single-use config snapshot."""
+        try:
+            metrics, alarms = config.apply_to(self.service, device_config, replace=True)
         except config.ConfigError as exc:
             QMessageBox.warning(self, "Could not import", str(exc))
             return False
@@ -348,7 +362,8 @@ class MainWindow(QMainWindow):
         self.provider_pane.refresh_actions()
         self.provider_pane.refresh_contexts()
         self.statusBar().showMessage(
-            f"Imported {metrics} data source(s) and {alarms} alarm(s) from {Path(path).name}",
+            f"Imported {metrics} data source(s) and {alarms} alarm(s) "
+            f"from {Path(source).name}",
             8000,
         )
         return True

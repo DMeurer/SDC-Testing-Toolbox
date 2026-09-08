@@ -18,6 +18,7 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from decimal import Decimal
@@ -86,8 +87,8 @@ from sdctoolbox.model import (  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 # This file lives in tests/, so its own directory is on the path.
-from acceptance_provider import PEER_INSTANCE  # noqa: E402
-from script_support import Report, owned_temp_directory  # noqa: E402
+from acceptance_provider import PEER_INSTANCE, UPDATE_CONTEXT_COMMAND  # noqa: E402
+from script_support import Report  # noqa: E402
 
 
 def pump(app: QApplication, seconds: float = 0.4) -> None:
@@ -1314,16 +1315,16 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         )
 
         report.check(
-            pane.delegate_button.isEnabled() and pane.delegate_button.text() == "Delegate",
-            "Delegate is offered for a delegable alarm",
+            pane.delegate_button.isEnabled() and pane.delegate_button.text() == "Remote*",
+            "remote-location simulation is offered for a capable alarm",
             pane.delegate_button.text(),
         )
         pane._on_delegate()  # noqa: SLF001
         pump(app)
-        report.check("->Rem" in signals_cell(), "delegating shows in the cell", signals_cell())
+        report.check("->Rem" in signals_cell(), "the simulated remote location shows in the cell", signals_cell())
         report.check(
-            pane.delegate_button.text() == "Take back",
-            "and the button offers the way back",
+            pane.delegate_button.text() == "Local*",
+            "and the button offers the local simulation",
             pane.delegate_button.text(),
         )
         pane._on_delegate()  # noqa: SLF001
@@ -1650,6 +1651,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             cwd=str(ROOT),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            stdin=subprocess.PIPE,
             text=True,
             bufsize=1,
         )
@@ -1695,6 +1697,9 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                     "peer patient demographics are shown",
                     consumer.context_label.text(),
                 )
+                if peer.stdin is not None:
+                    peer.stdin.write(f"{UPDATE_CONTEXT_COMMAND}\n")
+                    peer.stdin.flush()
                 report.check(
                     wait_for(app, lambda: "Grace Hopper" in consumer.context_label.text(), timeout=30),
                     "peer context reports update the patient display automatically",
@@ -1702,10 +1707,11 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                 )
 
                 remote_cell = lambda h, c: cell_of(consumer.table, h, c)  # noqa: E731
+                zoom_range = remote_cell("m.zoom_level", COL_R_RANGE)
                 report.check(
-                    remote_cell("m.zoom_level", COL_R_RANGE) == "1 to 100",
-                    "the peer's range is shown",
-                    str(remote_cell("m.zoom_level", COL_R_RANGE)),
+                    "1 to 100" in zoom_range and "step 1" in zoom_range,
+                    "the peer's complete allowed range is shown",
+                    str(zoom_range),
                 )
                 report.check(
                     remote_cell("m.zoom_level", COL_R_WRITABLE) == "yes",
@@ -1819,7 +1825,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                 consumer.value_edit.setText("500")
                 consumer._on_apply()  # noqa: SLF001
                 report.check(
-                    "at most 100" in consumer.invocation_label.text(),
+                    "not permitted" in consumer.invocation_label.text(),
                     "an out-of-range remote write gets immediate field feedback",
                     consumer.invocation_label.text(),
                 )
@@ -1836,7 +1842,8 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                 peer.kill()
 
         print("\n10c. Export and import from the File menu")
-        with owned_temp_directory(prefix="sdctoolbox-gui-") as workdir:
+        with tempfile.TemporaryDirectory(prefix="sdctoolbox-gui-") as raw_workdir:
+            workdir = Path(raw_workdir)
             preset = workdir / "preset.json"
 
             # The file dialogs would block with nobody to answer them.
@@ -1992,7 +1999,11 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             for i in range(startup.config_box.count())
             if startup.config_box.itemData(i)
         ]
-        report.check(bool(preset_paths), "presets are offered in the list", f"{len(preset_paths)} entries")
+        report.check(
+            {Path(path).name for path in preset_paths} == constants.SHIPPED_PRESET_FILES,
+            "the exact shipped preset inventory is offered in the list",
+            str(sorted(Path(path).name for path in preset_paths)),
+        )
         report.check(
             all(Path(p).exists() for p in preset_paths),
             "and every one of them exists",

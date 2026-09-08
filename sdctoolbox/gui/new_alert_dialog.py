@@ -30,6 +30,7 @@ from ..model import (
     slugify,
 )
 from .decimal_input import DecimalInputError, parse_decimal_input
+from .helpers import set_form_row_visible
 from .no_wheel import NoWheelComboBox
 from .styling import constrain_dynamic_label, mark_as_error, mute
 
@@ -98,8 +99,8 @@ class NewAlertDialog(QDialog):
 
         self.delegable_box = QCheckBox("Another device may announce this alarm")
         self.delegable_box.setToolTip(
-            "Sets SignalDelegationSupported on every configured signal. Without it a delegation is\n"
-            "refused, because BICEPS only allows one where the descriptor says so.",
+            "Sets SignalDelegationSupported on every configured signal. The toolbox can then\n"
+            "simulate Loc/Rem state, but does not perform a delegation handoff.",
         )
 
         self.signal_boxes: list[tuple[AlertManifestation, QCheckBox, QCheckBox]] = []
@@ -179,10 +180,7 @@ class NewAlertDialog(QDialog):
 
     def _set_row_visible(self, widget: QWidget, *, visible: bool) -> None:
         """Show or hide a form row, label included."""
-        widget.setVisible(visible)
-        label = self.form.labelForField(widget)
-        if label is not None:
-            label.setVisible(visible)
+        set_form_row_visible(self.form, widget, visible=visible)
         # A hidden row still reserves its height until the dialog is asked to shrink.
         self.adjustSize()
 

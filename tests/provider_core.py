@@ -17,15 +17,18 @@ Usage:  .venv/Scripts/python.exe tests/provider_core.py
 
 from __future__ import annotations
 
+import gc
 import logging
 import math
 import sys
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from lxml import etree
 
@@ -34,15 +37,24 @@ sys.path.insert(0, str(ROOT))
 
 from script_support import Report  # noqa: E402
 from sdc11073 import observableproperties  # noqa: E402
+from sdc11073.consumer.consumerimpl import SdcConsumer  # noqa: E402
+from sdc11073.definitions_sdc import SdcV1Definitions  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
+from sdc11073.mdib import ConsumerMdib  # noqa: E402
 from sdc11073.xml_types import msg_types, pm_types  # noqa: E402
 from sdc11073.xml_types import pm_qnames as pm  # noqa: E402
 
 from sdctoolbox import config, constants  # noqa: E402
-from sdctoolbox.consumer_service import RemoteDevice  # noqa: E402
+from sdctoolbox.consumer_service import (  # noqa: E402
+    RemoteDevice,
+    _PeriodicConsumerMdibMethods,
+)
+from sdctoolbox.handlers import make_activate_handler  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
     ActionSpec,
+    AlertKind,
     AlertManifestation,
+    AlertPriority,
     AlertSignalSpec,
     AlertSpec,
     Coding,
@@ -55,9 +67,15 @@ from sdctoolbox.model import (  # noqa: E402
     WaveformShape,
 )
 from sdctoolbox.provider_service import (  # noqa: E402
-    DISTRIBUTION_BINS,
     ProviderService,
-    _distribution_samples,
+    _AlertTransition,
+    _reduce_alert_transition,
+    _SignalTransitionInput,
+)
+from sdctoolbox.sample_generation import (  # noqa: E402
+    DISTRIBUTION_BINS,
+    DemoSampleGenerator,
+    distribution_samples,
 )
 
 
@@ -155,8 +173,118 @@ def check_rollback(report: Report, service: ProviderService) -> None:
 def check_sample_arrays(report: Report, service: ProviderService) -> None:
     print("\n2. Waveforms and distributions")
 
-    for kind in MetricKind:
-        report.check(kind.creatable, f"{kind.value} can be created")
+    mutated_cycle = MetricSpec(
+        label="Mutated cycle",
+        kind=MetricKind.WAVEFORM,
+        handle="m.mutated_cycle",
+        section="Mutated cycle section",
+    )
+    cycle_before_handles = {handle for handle, _ in service.mdib.entities.items()}
+    cycle_before_metrics = service.list_metrics()
+    cycle_before_sections = service.sections()
+    cycle_before_phase = dict(service._sample_generator.phases)  # noqa: SLF001
+    cycle_before_pinned = set(service._sample_generator.pinned)  # noqa: SLF001
+    cycle_before_generator = service.generator_running
+    invalid_cycles = (None, Decimal("40"), True, 1)
+    cycle_rejections = 0
+    for invalid_cycle in invalid_cycles:
+        mutated_cycle.cycle_samples = invalid_cycle
+        try:
+            service.add_metric(mutated_cycle)
+        except ValueError:
+            cycle_rejections += 1
+    report.check(
+        cycle_rejections == len(invalid_cycles)
+        and {handle for handle, _ in service.mdib.entities.items()} == cycle_before_handles
+        and service.list_metrics() == cycle_before_metrics
+        and service.sections() == cycle_before_sections
+        and service._sample_generator.phases == cycle_before_phase  # noqa: SLF001
+        and service._sample_generator.pinned == cycle_before_pinned  # noqa: SLF001
+        and service.generator_running == cycle_before_generator,
+        "mutated invalid cycle lengths fail before descriptor, bookkeeping, or generator mutation",
+        f"{cycle_rejections} rejections",
+    )
+
+    creation_specs = {
+        MetricKind.NUMBER: MetricSpec(
+            label="Creation number",
+            kind=MetricKind.NUMBER,
+            minimum=Decimal("-1.25"),
+            maximum=Decimal("2.50"),
+            resolution=Decimal("0.05"),
+        ),
+        MetricKind.TEXT: MetricSpec(label="Creation text", kind=MetricKind.TEXT),
+        MetricKind.CHOICE: MetricSpec(
+            label="Creation choice",
+            kind=MetricKind.CHOICE,
+            allowed_values=("A", "B"),
+        ),
+        MetricKind.WAVEFORM: MetricSpec(
+            label="Creation waveform",
+            kind=MetricKind.WAVEFORM,
+            minimum=Decimal("-1.25"),
+            maximum=Decimal("2.50"),
+            resolution=Decimal("0.05"),
+            sample_period=Decimal("0.125"),
+        ),
+        MetricKind.DISTRIBUTION: MetricSpec(
+            label="Creation distribution",
+            kind=MetricKind.DISTRIBUTION,
+            minimum=Decimal("-1.25"),
+            maximum=Decimal("2.50"),
+            resolution=Decimal("0.05"),
+            domain_minimum=Decimal("10"),
+            domain_maximum=Decimal("41"),
+        ),
+    }
+    creation_handles = {
+        kind: service.add_metric(spec)
+        for kind, spec in creation_specs.items()
+    }
+    creation_descriptors = {
+        kind: service.mdib.entities.by_handle(handle).descriptor
+        for kind, handle in creation_handles.items()
+    }
+    serialized_mdib = etree.tostring(
+        service.mdib.reconstruct_mdib_with_context_states()[0],
+        encoding="unicode",
+    )
+    numeric_descriptors = [
+        creation_descriptors[kind]
+        for kind in (MetricKind.NUMBER, MetricKind.WAVEFORM, MetricKind.DISTRIBUTION)
+    ]
+    report.check(
+        len(creation_handles) == len(MetricKind)
+        and all(handle in serialized_mdib for handle in creation_handles.values())
+        and all(descriptor.Unit.Code == constants.CODE_DIMENSIONLESS for descriptor in creation_descriptors.values()),
+        "all five metric kinds are created, serialized, and retain dimensionless units",
+    )
+    report.check(
+        all(
+            descriptor.Resolution == Decimal("0.05")
+            and len(descriptor.TechnicalRange) == 1
+            and descriptor.TechnicalRange[0].Lower == Decimal("-1.25")
+            and descriptor.TechnicalRange[0].Upper == Decimal("2.50")
+            and descriptor.TechnicalRange[0].StepWidth == Decimal("0.05")
+            for descriptor in numeric_descriptors
+        )
+        and getattr(creation_descriptors[MetricKind.TEXT], "Resolution", None) is None
+        and getattr(creation_descriptors[MetricKind.CHOICE], "Resolution", None) is None,
+        "numeric and sample-array value resolution and technical ranges share exact Decimal semantics",
+    )
+    creation_waveform = creation_descriptors[MetricKind.WAVEFORM]
+    creation_distribution = creation_descriptors[MetricKind.DISTRIBUTION]
+    report.check(
+        creation_waveform.SamplePeriod == 0.125
+        and creation_distribution.DomainUnit.Code == constants.CODE_DIMENSIONLESS
+        and (creation_distribution.DistributionRange.Lower, creation_distribution.DistributionRange.Upper)
+        == (Decimal("10"), Decimal("41"))
+        and creation_distribution.DistributionRange.StepWidth == Decimal("1.00000")
+        and creation_distribution.DistributionRange.StepWidth != creation_distribution.Resolution,
+        "waveform timing and distribution domain fields remain distinct from sample-value ranges",
+    )
+    for handle in creation_handles.values():
+        service.remove_metric(handle)
 
     wave = service.add_metric(
         MetricSpec(
@@ -236,13 +364,13 @@ def check_sample_arrays(report: Report, service: ProviderService) -> None:
                 ):
                     spec.shape = shape
                     for phase in (0.0, 0.137, 0.91):
-                        service._waveform_phase["m.range_probe"] = phase
+                        service._sample_generator.phases["m.range_probe"] = phase  # noqa: SLF001
                         blocks.append(service._next_block("m.range_probe", spec)[0])
-                service._waveform_phase.pop("m.range_probe", None)
+                service._sample_generator.phases.pop("m.range_probe", None)  # noqa: SLF001
             else:
                 for shape in DistributionShape:
                     spec.distribution_shape = shape
-                    blocks.extend(_distribution_samples(spec, phase) for phase in (0.0, 0.137, 0.91))
+                    blocks.extend(distribution_samples(spec, phase) for phase in (0.0, 0.137, 0.91))
             values = [sample for block in blocks for sample in block]
             bounded = all(low <= sample <= high for sample in values)
             finite = all(sample.is_finite() and math.isfinite(float(sample)) for sample in values)
@@ -386,6 +514,298 @@ def check_sample_arrays(report: Report, service: ProviderService) -> None:
     service.remove_metric(plain)
     service.remove_metric(dist)
     service.remove_metric(wave)
+
+
+def check_demo_mode_lifecycle(report: Report, service: ProviderService) -> None:
+    print("\n2a. Generated sample sources own the MDS demo mode transition")
+
+    service._set_mds_operating_mode(pm_types.MdsOperatingMode.SERVICE)  # noqa: SLF001
+    with patch.object(service, "start_generator", lambda: None):
+        waveform = service.add_metric(
+            MetricSpec(label="Mode waveform", kind=MetricKind.WAVEFORM),
+        )
+        distribution = service.add_metric(
+            MetricSpec(label="Mode distribution", kind=MetricKind.DISTRIBUTION),
+        )
+    service.remove_metric(waveform)
+    report.check(
+        service.mdib.entities.by_handle(constants.MDS_HANDLE).state.OperatingMode
+        is pm_types.MdsOperatingMode.DEMO,
+        "removing one generated sample source keeps Demo mode while another remains",
+    )
+    service.remove_metric(distribution)
+    report.check(
+        service.mdib.entities.by_handle(constants.MDS_HANDLE).state.OperatingMode
+        is pm_types.MdsOperatingMode.SERVICE,
+        "removing the final generated sample source restores the prior non-demo mode",
+    )
+    service._set_mds_operating_mode(pm_types.MdsOperatingMode.NORMAL)  # noqa: SLF001
+
+
+def check_sample_publication_semantics(report: Report, service: ProviderService) -> None:  # noqa: PLR0915
+    print("\n2b. Sample timing, quality, and failure isolation")
+
+    clock = [1_000.0]
+    monotonic = [50.0]
+    generator = DemoSampleGenerator(
+        lambda: service.mdib,
+        lambda: service._specs,  # noqa: SLF001 - exercising the extracted component
+        service._lock,  # noqa: SLF001
+        "deterministic",
+        clock=lambda: clock[0],
+        monotonic=lambda: monotonic[0],
+    )
+    original_generator = service._sample_generator  # noqa: SLF001
+    service._sample_generator = generator  # noqa: SLF001
+    handles = []
+    try:
+        with patch.object(service, "start_generator", lambda: None):
+            fast = service.add_metric(
+                MetricSpec(
+                    label="Fast deterministic waveform",
+                    kind=MetricKind.WAVEFORM,
+                    sample_period=Decimal("0.06"),
+                    shape=WaveformShape.SAWTOOTH,
+                ),
+            )
+            slow = service.add_metric(
+                MetricSpec(
+                    label="Slow deterministic waveform",
+                    kind=MetricKind.WAVEFORM,
+                    sample_period=Decimal("0.1"),
+                    shape=WaveformShape.SAWTOOTH,
+                ),
+            )
+            distribution = service.add_metric(
+                MetricSpec(
+                    label="Deterministic distribution",
+                    kind=MetricKind.DISTRIBUTION,
+                    minimum=Decimal("-10"),
+                    maximum=Decimal("10"),
+                    domain_minimum=Decimal("100"),
+                    domain_maximum=Decimal("410"),
+                ),
+            )
+        handles.extend((fast, slow, distribution))
+
+        descriptors = {
+            handle: service.mdib.entities.by_handle(handle).descriptor
+            for handle in handles
+        }
+        mds = service.mdib.entities.by_handle(constants.MDS_HANDLE)
+        report.check(
+            descriptors[fast].MetricAvailability is pm_types.MetricAvailability.CONTINUOUS
+            and descriptors[slow].DeterminationPeriod == 0.1
+            and descriptors[distribution].MetricAvailability is pm_types.MetricAvailability.INTERMITTENT
+            and descriptors[distribution].DeterminationPeriod == constants.WAVEFORM_BLOCK_SECONDS,
+            "generated waveform and periodic distribution descriptors advertise their distinct cadence",
+        )
+        dist_range = descriptors[distribution].DistributionRange
+        technical_range = descriptors[distribution].TechnicalRange[0]
+        report.check(
+            (technical_range.Lower, technical_range.Upper) == (Decimal("-10"), Decimal("10"))
+            and (dist_range.Lower, dist_range.Upper) == (Decimal("100"), Decimal("410"))
+            and technical_range.StepWidth == descriptors[distribution].Resolution
+            and dist_range.StepWidth != technical_range.StepWidth,
+            "distribution sample-value TechnicalRange remains separate from its domain axis",
+        )
+        report.check(
+            service.mdib.entities.by_handle(constants.MDS_HANDLE).state.OperatingMode
+            is pm_types.MdsOperatingMode.DEMO,
+            "the MDS containing generated demo metrics reports demo operating mode",
+        )
+        mds = service.mdib.entities.by_handle(constants.MDS_HANDLE)
+        mds.state.OperatingMode = pm_types.MdsOperatingMode.NORMAL
+        with service.mdib.component_state_transaction() as manager:
+            manager.write_entity(mds)
+        with patch.object(service, "start_generator", lambda: None):
+            mode_probe = service.add_metric(
+                MetricSpec(label="Demo mode probe", kind=MetricKind.WAVEFORM),
+            )
+        handles.append(mode_probe)
+        report.check(
+            service.mdib.entities.by_handle(constants.MDS_HANDLE).state.OperatingMode
+            is pm_types.MdsOperatingMode.DEMO,
+            "adding a generated metric restores a coherent containing MDS demo mode",
+        )
+
+        transactions = []
+        original_rt = service.mdib.rt_sample_state_transaction
+        original_metric = service.mdib.metric_state_transaction
+
+        @contextmanager
+        def record_rt(*, set_determination_time: bool = False):
+            transactions.append("waveform")
+            with original_rt(set_determination_time=set_determination_time) as manager:
+                yield manager
+
+        @contextmanager
+        def record_metric(*, set_determination_time: bool = True):
+            transactions.append("distribution")
+            with original_metric(set_determination_time=set_determination_time) as manager:
+                yield manager
+
+        with (
+            patch.object(service.mdib, "rt_sample_state_transaction", record_rt),
+            patch.object(service.mdib, "metric_state_transaction", record_metric),
+        ):
+            generator.publish_once()
+        first_times = {
+            handle: service.mdib.entities.by_handle(handle).state.MetricValue.DeterminationTime
+            for handle in handles
+        }
+        first_samples = {
+            handle: tuple(service.get_samples(handle))
+            for handle in (fast, slow)
+        }
+        report.check(
+            transactions == ["waveform", "distribution"],
+            "a mixed generation tick uses one waveform transaction and one metric transaction",
+            str(transactions),
+        )
+        report.check(
+            first_times[fast] == 1_000.0 - 3 * 0.06
+            and first_times[slow] == 1_000.0 - 0.1
+            and first_times[distribution] == 1_000.0,
+            "waveform DeterminationTime identifies the first sample while distribution time identifies its frame",
+            str(first_times),
+        )
+        report.check(
+            all(
+                service.mdib.entities.by_handle(handle).state.MetricValue.MetricQuality.Mode
+                is pm_types.GenerationMode.DEMO
+                for handle in handles
+            ),
+            "automatically generated sample arrays carry Demo quality",
+        )
+
+        clock[0] = 5_000.0
+        monotonic[0] = 51.0
+        generator.publish_once()
+        second_times = {
+            handle: service.mdib.entities.by_handle(handle).state.MetricValue.DeterminationTime
+            for handle in (fast, slow)
+        }
+        second_samples = {
+            handle: tuple(service.get_samples(handle))
+            for handle in (fast, slow)
+        }
+        report.check(
+            second_times[fast] == first_times[fast] + len(first_samples[fast]) * 0.06
+            and second_times[slow] == first_times[slow] + len(first_samples[slow]) * 0.1
+            and all(second_samples.values()),
+            "each waveform clock advances by its own SamplePeriod without wall-clock gaps or overlaps",
+            str(second_times),
+        )
+
+        phase_before = dict(generator.phases)
+        values_before = {handle: tuple(service.get_samples(handle)) for handle in handles}
+
+        @contextmanager
+        def fail_waveform_transaction(**_kwargs):
+            raise RuntimeError("injected waveform transaction failure")
+            yield  # pragma: no cover
+
+        monotonic[0] = 52.0
+        original_publish_waveforms = generator._publisher.publish_waveforms  # noqa: SLF001
+        publication_attempts = [0]
+
+        def fail_waveform_batch(prepared):  # noqa: ANN001, ANN202
+            publication_attempts[0] += 1
+            if publication_attempts[0] == 1:
+                raise RuntimeError("injected waveform batch failure")
+            if prepared[0].handle == fast:
+                raise RuntimeError("injected source transaction failure")
+            return original_publish_waveforms(prepared)
+
+        with patch.object(generator._publisher, "publish_waveforms", fail_waveform_batch):  # noqa: SLF001
+            generator.publish_once()
+        report.check(
+            generator.phases[fast] == phase_before[fast]
+            and generator.phases[slow] != phase_before[slow]
+            and tuple(service.get_samples(fast)) == values_before[fast]
+            and generator.phases[distribution] != phase_before[distribution],
+            "a failed waveform source is isolated while healthy waveform and distribution sources commit",
+        )
+        generator.quarantined.discard(fast)
+
+        state_class = type(service.mdib.entities.by_handle(fast).state)
+        original_serialize = state_class.mk_state_node
+
+        def fail_one_serialization(state, *args, **kwargs):  # noqa: ANN001, ANN202
+            if state.DescriptorHandle == fast:
+                raise ValueError("injected sample serialization failure")
+            return original_serialize(state, *args, **kwargs)
+
+        healthy_phase = generator.phases[slow]
+        monotonic[0] = 52.5
+        with patch.object(state_class, "mk_state_node", fail_one_serialization):
+            generator.publish_once()
+        report.check(
+            fast in generator.quarantined and generator.phases[slow] != healthy_phase,
+            "pre-publication serialization failure quarantines one source without blocking its family",
+        )
+        generator.quarantined.discard(fast)
+
+        bad = fast
+        service._specs[bad].maximum = Decimal("1e400")  # noqa: SLF001 - generation fault injection
+        good_phase = generator.phases[slow]
+        monotonic[0] = 53.0
+        generator.publish_once()
+        report.check(
+            bad in generator.quarantined
+            and bad not in generator.pinned
+            and generator.phases[slow] != good_phase,
+            "generation failure quarantines only its source and does not block a healthy peer",
+        )
+
+        manual_before = tuple(service.get_samples(slow))
+        manual_phase = generator.phases[slow]
+        manual_time = generator.next_waveform_times[slow]
+        manual = [Decimal("4"), Decimal("5")]
+        with patch.object(service.mdib, "rt_sample_state_transaction", fail_waveform_transaction):
+            try:
+                service.set_samples(slow, manual)
+            except RuntimeError:
+                pass
+        report.check(
+            tuple(service.get_samples(slow)) == manual_before
+            and slow not in generator.pinned
+            and generator.phases[slow] == manual_phase
+            and generator.next_waveform_times[slow] == manual_time,
+            "failed manual publication leaves sample state, pin, phase, and source clock unchanged",
+        )
+
+        service._specs[bad].maximum = Decimal("100")  # noqa: SLF001
+        generator.quarantined.discard(bad)
+        phase_before_commit_error = generator.phases[slow]
+
+        @contextmanager
+        def fail_after_commit(**kwargs):
+            with original_rt(**kwargs) as manager:
+                yield manager
+            raise RuntimeError("injected report serialization failure after commit")
+
+        monotonic[0] = 54.0
+        with patch.object(service.mdib, "rt_sample_state_transaction", fail_after_commit):
+            generator.publish_once()
+        report.check(
+            generator.phases[slow] != phase_before_commit_error and slow not in generator.quarantined,
+            "a committed waveform advances despite a later report serialization error",
+        )
+
+        xml = etree.tostring(service.mdib.reconstruct_mdib_with_context_states()[0], encoding="unicode")
+        report.check(
+            'MetricAvailability="Cont"' in xml
+            and 'DeterminationPeriod="PT0.1S"' in xml
+            and 'Mode="Demo"' in xml
+            and 'OperatingMode="Dmo"' in xml,
+            "availability, cadence, Demo quality, and containing MDS mode serialize over the wire",
+        )
+    finally:
+        for handle in handles:
+            service.remove_metric(handle)
+        service._sample_generator = original_generator  # noqa: SLF001
 
 def check_alarm_rollback(report: Report, service: ProviderService) -> None:
     print("\n3. An alarm is written whole or not at all")
@@ -846,6 +1266,284 @@ def check_metric_value_validation(report: Report, service: ProviderService) -> N
         service.remove_metric(handle)
 
 
+def check_action_execution(report: Report, service: ProviderService) -> None:
+    print("\n6a. Shared local and remote action execution")
+
+    first = service.add_metric(
+        MetricSpec(
+            label="Action first",
+            kind=MetricKind.NUMBER,
+            section="Action scope",
+            maximum=Decimal("10"),
+            initial_value=Decimal("1"),
+        ),
+    )
+    second = service.add_metric(
+        MetricSpec(
+            label="Action second",
+            kind=MetricKind.NUMBER,
+            section="Action scope",
+            maximum=Decimal("10"),
+            initial_value=Decimal("2"),
+        ),
+    )
+    channel = service.mdib.entities.by_handle(first).parent_handle
+
+    corrected = service.add_action(
+        ActionSpec(
+            label="Invalid action scope",
+            target_handle=first,
+            effects={second: Decimal("3")},
+        ),
+    )
+    report.check(
+        service.mdib.entities.by_handle(corrected).descriptor.OperationTarget == second
+        and service.list_actions()[corrected].target_handle == second,
+        "an unrelated OperationTarget is normalized to the affected entry",
+    )
+
+    direct = service.add_action(
+        ActionSpec(label="Direct action target", target_handle=first, effects={first: Decimal("4")}),
+    )
+    common = service.add_action(
+        ActionSpec(
+            label="Common action target",
+            target_handle=channel,
+            effects={first: Decimal("5"), second: Decimal("6")},
+        ),
+    )
+    empty = service.add_action(ActionSpec(label="Empty action", target_handle=second))
+    report.check(
+        service.mdib.entities.by_handle(direct).descriptor.OperationTarget == first
+        and service.mdib.entities.by_handle(common).descriptor.OperationTarget == channel,
+        "OperationTarget may be an affected metric or their common containment subtree",
+    )
+
+    original_transaction = service.mdib.metric_state_transaction
+    transactions = 0
+
+    def counted_transaction(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        nonlocal transactions
+        transactions += 1
+        return original_transaction(*args, **kwargs)
+
+    with patch.object(service.mdib, "metric_state_transaction", counted_transaction):
+        service.run_action(common)
+        service.run_action(empty)
+    report.check(
+        transactions == 1
+        and service.get_value(first) == Decimal("5")
+        and service.get_value(second) == Decimal("6"),
+        "multi-effect actions use one metric transaction and empty actions use none",
+        f"{transactions} transaction(s)",
+    )
+
+    bad = service.add_action(
+        ActionSpec(
+            label="Atomic shared action",
+            target_handle=channel,
+            effects={first: Decimal("7"), second: Decimal("999999")},
+        ),
+    )
+    before_values = service.get_value(first), service.get_value(second)
+    before_version = service.mdib.mdib_version
+    try:
+        service.run_action(bad)
+    except ValueError:
+        local_rejected = True
+    else:
+        local_rejected = False
+    report.check(
+        local_rejected
+        and (service.get_value(first), service.get_value(second)) == before_values
+        and service.mdib.mdib_version == before_version,
+        "all effects validate before mutation and a local failure leaves the version unchanged",
+    )
+
+    operation = service._sco._registered_operations[bad]  # noqa: SLF001 - exercise the real remote adapter
+    params = SimpleNamespace(operation_instance=operation, operation_request=SimpleNamespace(argument=None))
+    remote_result = service._activate_handler(params)  # noqa: SLF001
+    report.check(
+        remote_result.invocation_state is msg_types.InvocationState.FAILED
+        and (service.get_value(first), service.get_value(second)) == before_values
+        and service.mdib.mdib_version == before_version,
+        "the same validation failure becomes remote FAILED without mutation",
+    )
+
+    alarm = service.add_alert(
+        AlertSpec(label="Action threshold", source_handle=first, upper_limit=Decimal("8")),
+    )
+    crossing = service.add_action(
+        ActionSpec(label="Cross action threshold", target_handle=first, effects={first: Decimal("9")}),
+    )
+    operation = service._sco._registered_operations[crossing]  # noqa: SLF001
+    params = SimpleNamespace(operation_instance=operation, operation_request=SimpleNamespace(argument=None))
+    versions = []
+
+    def metric_version(_values: dict) -> None:
+        versions.append(("metric", service.mdib.mdib_version))
+
+    def alert_version(_values: dict) -> None:
+        versions.append(("alert", service.mdib.mdib_version))
+
+    observableproperties.bind(
+        service.mdib,
+        metrics_by_handle=metric_version,
+        alert_by_handle=alert_version,
+    )
+
+    def execute_then_unrelated(handle: str):  # noqa: ANN202
+        result = service._execute_action_effects(handle)  # noqa: SLF001
+        service.set_value(second, Decimal("7"))
+        return result
+
+    try:
+        result = make_activate_handler(service.mdib, execute_then_unrelated)(params)
+    finally:
+        observableproperties.unbind(
+            service.mdib,
+            metrics_by_handle=metric_version,
+            alert_by_handle=alert_version,
+        )
+    metric_versions = [version for kind, version in versions if kind == "metric"]
+    alert_versions = [version for kind, version in versions if kind == "alert"]
+    report.check(
+        len(metric_versions) == 2  # noqa: PLR2004 - action then deliberate unrelated update
+        and len(alert_versions) == 1
+        and alert_versions[0] == metric_versions[0] + 1
+        and result.mdib_version_group.mdib_version == alert_versions[0]
+        and service.mdib.mdib_version == metric_versions[1] > alert_versions[0],
+        "remote results retain metric V / alert V+1 despite a later unrelated update",
+        f"events {versions}, result {result.mdib_version_group.mdib_version}",
+    )
+
+    def raise_on_metric_transaction(error: Exception):  # noqa: ANN202
+        def observer(result) -> None:  # noqa: ANN001
+            if result.metric_updates:
+                raise error
+
+        return observer
+
+    @contextmanager
+    def fail_before_metric_commit(*_args, **_kwargs):  # noqa: ANN003, ANN202
+        raise ValueError("pre-commit metric transaction failure")
+        yield  # pragma: no cover - makes this a context manager without permitting commit
+
+    service.set_value(first, Decimal("1"))
+    before_version = service.mdib.mdib_version
+    with patch.object(service.mdib, "metric_state_transaction", fail_before_metric_commit):
+        pre_commit_failure = service._activate_handler(params)  # noqa: SLF001
+    report.check(
+        pre_commit_failure.invocation_state is msg_types.InvocationState.FAILED
+        and service.get_value(first) == Decimal("1")
+        and not service.mdib.entities.by_handle(alarm).state.Presence
+        and service.mdib.mdib_version == before_version,
+        "a transaction failure before commit is remote FAILED without visible effects",
+    )
+
+    service.set_value(first, Decimal("1"))
+    local_metric_failure = ValueError("post-commit metric report failure")
+    before_version = service.mdib.mdib_version
+    local_observer = raise_on_metric_transaction(local_metric_failure)
+    observableproperties.bind(service.mdib, transaction=local_observer)
+    try:
+        try:
+            service.run_action(crossing)
+        except ValueError as exc:
+            local_post_commit_failure = exc is local_metric_failure
+        else:
+            local_post_commit_failure = False
+    finally:
+        observableproperties.unbind(service.mdib, transaction=local_observer)
+    report.check(
+        local_post_commit_failure
+        and service.get_value(first) == Decimal("9")
+        and service.mdib.entities.by_handle(alarm).state.Presence
+        and service.mdib.mdib_version == before_version + 2,  # metric V, alert V+1
+        "local callers receive metric report failures after committed effects and causal alerts",
+    )
+
+    service.set_value(first, Decimal("1"))
+    remote_metric_failure = ValueError("post-commit remote metric report failure")
+    before_version = service.mdib.mdib_version
+    remote_observer = raise_on_metric_transaction(remote_metric_failure)
+    observableproperties.bind(service.mdib, transaction=remote_observer)
+    try:
+        remote_post_commit_failure = service._activate_handler(params)  # noqa: SLF001
+    finally:
+        observableproperties.unbind(service.mdib, transaction=remote_observer)
+    report.check(
+        remote_post_commit_failure.invocation_state is msg_types.InvocationState.FINISHED
+        and remote_post_commit_failure.mdib_version_group.mdib_version == before_version + 2
+        and remote_post_commit_failure.mdib_version_group == service.mdib.mdib_version_group
+        and service.get_value(first) == Decimal("9")
+        and service.mdib.entities.by_handle(alarm).state.Presence,
+        "remote metric report failure stays FINISHED at the exact action version without inviting retry",
+    )
+
+    no_alert_operation = service._sco._registered_operations[corrected]  # noqa: SLF001
+    no_alert_params = SimpleNamespace(
+        operation_instance=no_alert_operation,
+        operation_request=SimpleNamespace(argument=None),
+    )
+    no_alert_failure = ValueError("post-commit report failure without an alert change")
+    before_group = service.mdib.mdib_version_group
+    no_alert_observer = raise_on_metric_transaction(no_alert_failure)
+    observableproperties.bind(service.mdib, transaction=no_alert_observer)
+    try:
+        no_alert_result = service._activate_handler(no_alert_params)  # noqa: SLF001
+    finally:
+        observableproperties.unbind(service.mdib, transaction=no_alert_observer)
+    committed_group = service.mdib.mdib_version_group
+    report.check(
+        no_alert_result.invocation_state is msg_types.InvocationState.FINISHED
+        and committed_group.mdib_version == before_group.mdib_version + 1
+        and no_alert_result.mdib_version_group == committed_group
+        and service.get_value(second) == Decimal("3"),
+        "R0202 uses the exact committed metric version after a no-alert post-commit failure",
+        f"before {before_group.mdib_version}, committed {committed_group.mdib_version}, "
+        f"result {no_alert_result.mdib_version_group.mdib_version}",
+    )
+
+    alert_failure = RuntimeError("post-commit alert failure")
+
+    def fail_alert(_sources: set[str]):
+        return None, alert_failure
+
+    service.set_value(first, Decimal("1"))
+    with patch.object(service, "_apply_alert_updates", fail_alert):
+        before_version = service.mdib.mdib_version
+        try:
+            service.run_action(crossing)
+        except RuntimeError as exc:
+            local_alert_failure = exc is alert_failure
+        else:
+            local_alert_failure = False
+    report.check(
+        local_alert_failure
+        and service.get_value(first) == Decimal("9")
+        and service.mdib.mdib_version == before_version + 1,
+        "local callers receive post-commit alert failures without rolling back visible effects",
+    )
+
+    service.set_value(first, Decimal("1"))
+    with patch.object(service, "_apply_alert_updates", fail_alert):
+        before_version = service.mdib.mdib_version
+        remote_alert_failure = service._activate_handler(params)  # noqa: SLF001
+    report.check(
+        remote_alert_failure.invocation_state is msg_types.InvocationState.FINISHED
+        and remote_alert_failure.mdib_version_group.mdib_version == before_version + 1
+        and service.get_value(first) == Decimal("9"),
+        "remote post-commit alert failure stays FINISHED with the committed metric version",
+    )
+
+    service.remove_alert(alarm)
+    for handle in (corrected, direct, common, empty, bad, crossing):
+        service.remove_action(handle)
+    service.remove_metric(first)
+    service.remove_metric(second)
+
+
 def check_decimal_boundaries(report: Report, service: ProviderService) -> None:
     print("\n7. Decimal wire boundaries")
 
@@ -942,8 +1640,8 @@ def check_decimal_boundaries(report: Report, service: ProviderService) -> None:
     period_before_handles = {handle for handle, _ in service.mdib.entities.items()}
     period_before_metrics = service.list_metrics()
     period_before_sections = service.sections()
-    period_before_phase = dict(service._waveform_phase)
-    period_before_pinned = set(service._pinned_samples)
+    period_before_phase = dict(service._sample_generator.phases)  # noqa: SLF001
+    period_before_pinned = set(service._sample_generator.pinned)  # noqa: SLF001
     period_before_generator = service.generator_running
     try:
         service.add_metric(mutated_period)
@@ -959,8 +1657,8 @@ def check_decimal_boundaries(report: Report, service: ProviderService) -> None:
         == period_before_handles
         and service.list_metrics() == period_before_metrics
         and service.sections() == period_before_sections
-        and service._waveform_phase == period_before_phase
-        and service._pinned_samples == period_before_pinned
+        and service._sample_generator.phases == period_before_phase  # noqa: SLF001
+        and service._sample_generator.pinned == period_before_pinned  # noqa: SLF001
         and service.generator_running == period_before_generator,
         "a mutated unsafe period leaves provider state unchanged",
     )
@@ -1040,8 +1738,8 @@ def check_decimal_boundaries(report: Report, service: ProviderService) -> None:
         and {handle for handle, _ in service.mdib.entities.items()} == before_handles
         and service.list_metrics() == before_metrics
         and service.sections() == before_sections
-        and not service._waveform_phase
-        and not service._pinned_samples
+        and not service._sample_generator.phases  # noqa: SLF001
+        and not service._sample_generator.pinned  # noqa: SLF001
         and not service.generator_running,
         "invalid generated ranges leave no section, MDIB, bookkeeping, or generator mutation",
         f"{add_rejections} rejections",
@@ -1056,7 +1754,7 @@ def check_decimal_boundaries(report: Report, service: ProviderService) -> None:
             if kind is MetricKind.WAVEFORM:
                 block, _ = service._next_block("m.float_edge", spec)
             else:
-                block = _distribution_samples(spec, 0.0)
+                block = distribution_samples(spec, 0.0)
             finite_blocks.append(bool(block) and all(sample.is_finite() and math.isfinite(float(sample)) for sample in block))
     report.check(
         all(finite_blocks),
@@ -1089,8 +1787,10 @@ def check_decimal_boundaries(report: Report, service: ProviderService) -> None:
     finally:
         provider_logger.removeHandler(counter)
     report.check(
-        all(handle in service._pinned_samples for handle in recurring) and len(generation_errors) == 2,
-        "recurring waveform and distribution errors are each logged once and quarantined",
+        all(handle in service._sample_generator.quarantined for handle in recurring)  # noqa: SLF001
+        and not (set(recurring) & service._sample_generator.pinned)  # noqa: SLF001
+        and len(generation_errors) == 2,
+        "recurring waveform and distribution errors are logged once and quarantined separately from pins",
         f"{len(generation_errors)} errors",
     )
     for handle in recurring:
@@ -1194,14 +1894,15 @@ def check_concurrent_alert_evaluation(report: Report, service: ProviderService) 
     first_evaluation_started = threading.Event()
     release_first_evaluation = threading.Event()
     worker_errors: list[Exception] = []
-    original_write = service._write_alert_presence  # noqa: SLF001 - deterministic overlap fixture
+    original_coordinate = service._coordinate_alert_transition  # noqa: SLF001 - deterministic overlap fixture
 
-    def overlapping_write(handle: str, *, present: bool) -> None:  # noqa: FBT001
-        if handle == first_alarm and present and not first_evaluation_started.is_set():
+    def overlapping_coordinate(**kwargs):  # noqa: ANN003, ANN202
+        truths = kwargs.get("condition_truths", {})
+        if truths.get(first_alarm) and not first_evaluation_started.is_set():
             first_evaluation_started.set()
             if not release_first_evaluation.wait(timeout=5.0):
                 raise TimeoutError("concurrent alert test did not release the first evaluation")
-        original_write(handle, present=present)
+        return original_coordinate(**kwargs)
 
     def update_source(handle: str) -> None:
         try:
@@ -1209,7 +1910,7 @@ def check_concurrent_alert_evaluation(report: Report, service: ProviderService) 
         except Exception as exc:  # noqa: BLE001 - report worker failures on the main thread
             worker_errors.append(exc)
 
-    service._write_alert_presence = overlapping_write  # noqa: SLF001 - deterministic overlap fixture
+    service._coordinate_alert_transition = overlapping_coordinate  # noqa: SLF001 - deterministic overlap fixture
     first_worker = threading.Thread(target=update_source, args=(first_source,), name="first-alarm-update")
     second_worker = threading.Thread(target=update_source, args=(second_source,), name="second-alarm-update")
     try:
@@ -1224,7 +1925,7 @@ def check_concurrent_alert_evaluation(report: Report, service: ProviderService) 
         first_worker.join(timeout=5.0)
         if second_worker.ident is not None:
             second_worker.join(timeout=5.0)
-        service._write_alert_presence = original_write  # noqa: SLF001 - restore the service method
+        service._coordinate_alert_transition = original_coordinate  # noqa: SLF001 - restore the service method
 
     report.check(
         second_completed_during_first,
@@ -1242,6 +1943,558 @@ def check_concurrent_alert_evaluation(report: Report, service: ProviderService) 
     service.remove_alert(second_alarm)
     service.remove_metric(first_source)
     service.remove_metric(second_source)
+
+
+def check_alert_transition_reducer(report: Report) -> None:
+    print("\n8a. Pure alert transition reducer")
+
+    on = pm_types.AlertActivation.ON
+    off = pm_types.AlertActivation.OFF
+    paused = pm_types.AlertActivation.PAUSED
+    signal_on = _SignalTransitionInput(on, pm_types.AlertSignalPresence.ON, False)
+    signal_off = _SignalTransitionInput(on, pm_types.AlertSignalPresence.OFF, False)
+    signal_ack = _SignalTransitionInput(on, pm_types.AlertSignalPresence.ACK, False)
+    signal_latching = _SignalTransitionInput(on, pm_types.AlertSignalPresence.ON, True)
+
+    cases = [
+        (
+            "raise",
+            {
+                "condition_truth": True,
+                "current_presence": False,
+                "condition_activation": on,
+                "system_activation": on,
+                "signals": (signal_off, signal_off),
+            },
+            _AlertTransition(True, (pm_types.AlertSignalPresence.ON, pm_types.AlertSignalPresence.ON)),
+        ),
+        (
+            "repeat preserves mixed signal state",
+            {
+                "condition_truth": True,
+                "current_presence": True,
+                "condition_activation": on,
+                "system_activation": on,
+                "signals": (signal_ack, signal_off),
+            },
+            _AlertTransition(True, (pm_types.AlertSignalPresence.ACK, pm_types.AlertSignalPresence.OFF)),
+        ),
+        (
+            "acknowledge only generated signals",
+            {
+                "condition_truth": True,
+                "current_presence": True,
+                "condition_activation": on,
+                "system_activation": on,
+                "signals": (signal_on, signal_off),
+                "acknowledge": True,
+            },
+            _AlertTransition(True, (pm_types.AlertSignalPresence.ACK, pm_types.AlertSignalPresence.OFF)),
+        ),
+        (
+            "clear preserves per-signal latching",
+            {
+                "condition_truth": False,
+                "current_presence": True,
+                "condition_activation": on,
+                "system_activation": on,
+                "signals": (signal_latching, signal_on),
+            },
+            _AlertTransition(False, (pm_types.AlertSignalPresence.LATCH, pm_types.AlertSignalPresence.OFF)),
+        ),
+        (
+            "latch reset",
+            {
+                "condition_truth": False,
+                "current_presence": False,
+                "condition_activation": on,
+                "system_activation": on,
+                "signals": (_SignalTransitionInput(on, pm_types.AlertSignalPresence.LATCH, True),),
+                "stop_latches": True,
+            },
+            _AlertTransition(False, (pm_types.AlertSignalPresence.OFF,)),
+        ),
+        (
+            "recurrence",
+            {
+                "condition_truth": True,
+                "current_presence": False,
+                "condition_activation": on,
+                "system_activation": on,
+                "signals": (_SignalTransitionInput(on, pm_types.AlertSignalPresence.LATCH, True), signal_off),
+            },
+            _AlertTransition(True, (pm_types.AlertSignalPresence.ON, pm_types.AlertSignalPresence.ON)),
+        ),
+        (
+            "inactive condition",
+            {
+                "condition_truth": True,
+                "current_presence": True,
+                "condition_activation": off,
+                "system_activation": on,
+                "signals": (signal_on,),
+            },
+            _AlertTransition(False, (pm_types.AlertSignalPresence.OFF,)),
+        ),
+        (
+            "inactive parent",
+            {
+                "condition_truth": True,
+                "current_presence": True,
+                "condition_activation": on,
+                "system_activation": paused,
+                "signals": (signal_on,),
+            },
+            _AlertTransition(False, (pm_types.AlertSignalPresence.OFF,)),
+        ),
+        (
+            "off and paused signals obey presence predicates",
+            {
+                "condition_truth": True,
+                "current_presence": True,
+                "condition_activation": on,
+                "system_activation": on,
+                "signals": (
+                     _SignalTransitionInput(off, pm_types.AlertSignalPresence.ON, False),
+                     _SignalTransitionInput(paused, pm_types.AlertSignalPresence.ON, False),
+                     _SignalTransitionInput(paused, pm_types.AlertSignalPresence.ACK, False),
+                ),
+            },
+            _AlertTransition(True, (
+                pm_types.AlertSignalPresence.OFF,
+                pm_types.AlertSignalPresence.OFF,
+                pm_types.AlertSignalPresence.ACK,
+            )),
+        ),
+    ]
+    failures = [name for name, arguments, expected in cases if _reduce_alert_transition(**arguments) != expected]
+    report.check(not failures, "the transition matrix separates condition truth and per-signal state", str(failures))
+
+
+def check_alert_transition_coordination(report: Report, service: ProviderService) -> None:  # noqa: PLR0915
+    print("\n8b. Atomic alert transition coordination")
+
+    source = service.add_metric(
+        MetricSpec(label="Transition source", kind=MetricKind.NUMBER, initial_value=Decimal("0")),
+    )
+    physiological = service.add_alert(
+        AlertSpec(
+            label="Physiological transition",
+            source_handle=source,
+            kind=AlertKind.PHYSIOLOGICAL,
+            priority=AlertPriority.HIGH,
+            upper_limit=Decimal("10"),
+            delegable=True,
+            signals=(
+                AlertSignalSpec(AlertManifestation.VIS, latching=True),
+                AlertSignalSpec(AlertManifestation.TAN),
+            ),
+        ),
+    )
+    technical = service.add_alert(
+        AlertSpec(
+            label="Technical transition",
+            source_handle=source,
+            kind=AlertKind.TECHNICAL,
+            priority=AlertPriority.LOW,
+            upper_limit=Decimal("10"),
+        ),
+    )
+    advisory = service.add_alert(
+        AlertSpec(
+            label="Unlisted advisory",
+            source_handle=source,
+            kind=AlertKind.OTHER,
+            priority=AlertPriority.HIGH,
+            upper_limit=Decimal("10"),
+        ),
+    )
+    no_priority = service.add_alert(
+        AlertSpec(
+            label="No priority",
+            source_handle=source,
+            kind=AlertKind.TECHNICAL,
+            priority=AlertPriority.NONE,
+            upper_limit=Decimal("10"),
+        ),
+    )
+    events = []
+    transactions = 0
+    original_transaction = service.mdib.alert_state_transaction
+
+    def record_alert(values: dict) -> None:
+        events.append(set(values))
+
+    def counted_transaction(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        nonlocal transactions
+        transactions += 1
+        return original_transaction(*args, **kwargs)
+
+    observableproperties.bind(service.mdib, alert_by_handle=record_alert)
+    try:
+        with patch.object(service.mdib, "alert_state_transaction", counted_transaction):
+            before = service.mdib.mdib_version
+            service.set_value(source, Decimal("20"))
+            raised_version = service.mdib.mdib_version
+            service.set_value(source, Decimal("25"))
+            repeated_version = service.mdib.mdib_version
+    finally:
+        observableproperties.unbind(service.mdib, alert_by_handle=record_alert)
+
+    parent = service.mdib.entities.by_handle(constants.ALERT_SYSTEM_HANDLE).state
+    expected_report = {
+        constants.ALERT_SYSTEM_HANDLE,
+        physiological,
+        technical,
+        advisory,
+        no_priority,
+        *service.signal_handles_for(physiological),
+        *service.signal_handles_for(technical),
+        *service.signal_handles_for(advisory),
+        *service.signal_handles_for(no_priority),
+    }
+    report.check(
+        transactions == 1 and raised_version == before + 2 and repeated_version == raised_version + 1,
+        "one source update uses one alert transaction and a truth no-op adds no alert version",
+        f"transactions {transactions}, versions {before}/{raised_version}/{repeated_version}",
+    )
+    report.check(
+        len(events) == 1 and events[0] == expected_report,
+        "all affected conditions, signals, and their parent are grouped in one alert report",
+        str(events),
+    )
+    report.check(
+        list(parent.PresentPhysiologicalAlarmConditions or ()) == [physiological]
+        and list(parent.PresentTechnicalAlarmConditions or ()) == [technical],
+        "the parent lists present Lo/Me/Hi physiological and technical conditions only",
+    )
+
+    physiological_entity = service.mdib.entities.by_handle(physiological)
+    technical_entity = service.mdib.entities.by_handle(technical)
+    physiological_entity.state.ActualPriority = AlertPriority.NONE
+    technical_entity.state.ActualPriority = AlertPriority.HIGH
+    with service.mdib.alert_state_transaction() as mgr:
+        mgr.write_entity(physiological_entity)
+        mgr.write_entity(technical_entity)
+    version, _ = service._coordinate_alert_transition()  # noqa: SLF001 - exercise effective aggregation
+    parent = service.mdib.entities.by_handle(constants.ALERT_SYSTEM_HANDLE).state
+    report.check(
+        version is not None
+        and list(parent.PresentPhysiologicalAlarmConditions or ()) == []
+        and list(parent.PresentTechnicalAlarmConditions or ()) == [technical],
+        "parent aggregation uses ActualPriority and excludes effective priority None",
+    )
+
+    first_handle, second_handle = service.signal_handles_for(physiological)
+    first_signal = service.mdib.entities.by_handle(first_handle)
+    first_signal.state.ActivationState = pm_types.AlertActivation.OFF
+    first_signal.state.Presence = pm_types.AlertSignalPresence.OFF
+    with service.mdib.alert_state_transaction() as mgr:
+        mgr.write_entity(first_signal)
+    before = service.mdib.mdib_version
+    acknowledged = service.acknowledge_alert(physiological)
+    first_signal = service.mdib.entities.by_handle(first_handle)
+    second_signal = service.mdib.entities.by_handle(second_handle)
+    report.check(
+        acknowledged == 1
+        and first_signal.state.Presence is pm_types.AlertSignalPresence.OFF
+        and second_signal.state.Presence is pm_types.AlertSignalPresence.ACK
+        and service.mdib.mdib_version == before + 1,
+        "acknowledgement changes On only and leaves an Off mixed signal alone",
+    )
+
+    before = service.mdib.mdib_version
+    service.set_signal_delegated(second_signal.handle, delegated=True)
+    remote_version = service.mdib.mdib_version
+    service.set_signal_delegated(second_signal.handle, delegated=True)
+    report.check(
+        remote_version == before + 1 and service.mdib.mdib_version == remote_version,
+        "location simulation changes once and repeated requests are version no-ops",
+    )
+    before = remote_version
+    service.set_value(source, Decimal("0"))
+    first_signal = service.mdib.entities.by_handle(first_handle)
+    second_signal = service.mdib.entities.by_handle(second_handle)
+    parent = service.mdib.entities.by_handle(constants.ALERT_SYSTEM_HANDLE).state
+    report.check(
+        second_signal.state.Location is pm_types.AlertSignalPrimaryLocation.REMOTE
+        and first_signal.state.Presence is pm_types.AlertSignalPresence.OFF
+        and second_signal.state.Presence is pm_types.AlertSignalPresence.OFF
+        and service.mdib.mdib_version == before + 2,
+        "clearing preserves location and follows signal activation and latching independently",
+    )
+    report.check(
+        all(entry.Manifestation is not AlertManifestation.TAN for entry in parent.SystemSignalActivation),
+        "remote signals are excluded from local SystemSignalActivation",
+    )
+
+    service.set_value(source, Decimal(20))
+    service.set_value(source, Decimal(0))
+    first_signal = service.mdib.entities.by_handle(first_handle)
+    report.check(
+        first_signal.state.Presence is pm_types.AlertSignalPresence.OFF,
+        "an inactive latching signal does not latch on later condition transitions",
+    )
+
+    physiological_entity = service.mdib.entities.by_handle(physiological)
+    physiological_entity.state.ActualPriority = AlertPriority.HIGH
+    physiological_entity.state.ActivationState = pm_types.AlertActivation.OFF
+    with service.mdib.alert_state_transaction() as mgr:
+        mgr.write_entity(physiological_entity)
+    service.set_value(source, Decimal(20))
+    service._coordinate_alert_transition()  # noqa: SLF001 - apply changed activation
+    inactive_presence = service.alert_present(physiological)
+    inactive_parent_conditions = tuple(
+        service.mdib.entities.by_handle(
+            constants.ALERT_SYSTEM_HANDLE,
+        ).state.PresentPhysiologicalAlarmConditions or ()
+    )
+    reactivating = service.mdib.entities.by_handle(physiological)
+    reactivating.state.ActivationState = pm_types.AlertActivation.ON
+    with service.mdib.alert_state_transaction() as mgr:
+        mgr.write_entity(reactivating)
+    service._coordinate_alert_transition()  # noqa: SLF001 - reapply retained truth
+    reactivated = service.mdib.entities.by_handle(physiological)
+    reactivated_parent = service.mdib.entities.by_handle(constants.ALERT_SYSTEM_HANDLE).state
+    report.check(
+        not inactive_presence
+        and physiological not in inactive_parent_conditions
+        and reactivated.state.Presence
+        and physiological in (reactivated_parent.PresentPhysiologicalAlarmConditions or ()),
+        "activation gates presence without discarding the underlying condition truth",
+    )
+
+    try:
+        service.set_alert_presence(physiological, False)
+    except ValueError as exc:
+        report.check("limit alarm" in str(exc), "manual presence is rejected for LimitAlertCondition", str(exc))
+    else:
+        report.check(False, "manual presence is rejected for LimitAlertCondition", "accepted")  # noqa: FBT003
+
+    manual = service.add_alert(AlertSpec(label="Manual transition", source_handle=source))
+    before = service.mdib.mdib_version
+    service.set_alert_presence(manual, False)
+    unchanged = service.mdib.mdib_version
+    service.set_alert_presence(manual, True)
+    raised = service.mdib.mdib_version
+    service.set_alert_presence(manual, True)
+    report.check(
+        unchanged == before and raised == before + 1 and service.mdib.mdib_version == raised,
+        "manual condition no-ops do not advance versions",
+    )
+
+    text_source = service.add_metric(MetricSpec(label="Text alert source", kind=MetricKind.TEXT))
+    before_handles = set(service.list_alerts())
+    try:
+        service.add_alert(AlertSpec(label="Invalid text limit", source_handle=text_source, upper_limit=Decimal("1")))
+    except ValueError as exc:
+        report.check(
+            "numeric scalar" in str(exc) and set(service.list_alerts()) == before_handles,
+            "limit alerts reject nonnumeric scalar sources before mutation",
+            str(exc),
+        )
+    else:
+        report.check(False, "limit alerts reject nonnumeric scalar sources before mutation", "accepted")  # noqa: FBT003
+
+    service.remove_metric(text_source)
+    service.remove_alert(physiological)
+    service.remove_alert(technical)
+    service.remove_alert(advisory)
+    service.remove_alert(no_priority)
+    service.remove_alert(manual)
+    service.remove_metric(source)
+
+
+def check_connected_alert_removal_order(report: Report, service: ProviderService) -> None:
+    print("\n8c. Connected alert-removal report order")
+
+    direct_source = service.add_metric(
+        MetricSpec(label="Direct removal source", kind=MetricKind.NUMBER, initial_value=Decimal(1)),
+    )
+    direct_alert = service.add_alert(
+        AlertSpec(label="Direct present removal", source_handle=direct_source, kind=AlertKind.TECHNICAL),
+    )
+    service.set_alert_presence(direct_alert, True)
+    direct_signals = service.signal_handles_for(direct_alert)
+
+    cascade_source = service.add_metric(
+        MetricSpec(
+            label="Cascade removal source",
+            kind=MetricKind.NUMBER,
+            section="Alert removal cascade",
+            initial_value=Decimal(20),
+        ),
+    )
+    cascade_alert = service.add_alert(
+        AlertSpec(
+            label="Cascade present removal",
+            source_handle=cascade_source,
+            kind=AlertKind.PHYSIOLOGICAL,
+            upper_limit=Decimal(10),
+        ),
+    )
+    cascade_signals = service.signal_handles_for(cascade_alert)
+    cascade_channel = "ch.alert_removal_cascade"
+    cascade_vmd = "vmd.alert_removal_cascade"
+
+    consumer = SdcConsumer(
+        provider_address=service._provider.get_xaddrs()[0],
+        sdc_definitions=SdcV1Definitions,
+        ssl_context_container=None,
+    )
+    consumer.start_all()
+    consumer_mdib = ConsumerMdib(consumer)
+    consumer_mdib.init_mdib()
+    events = []
+
+    def parent_snapshot() -> tuple[set[str], set[str]]:
+        parent = consumer_mdib.entities.by_handle(constants.ALERT_SYSTEM_HANDLE).state
+        references = set(parent.PresentTechnicalAlarmConditions or ())
+        references.update(parent.PresentPhysiologicalAlarmConditions or ())
+        live = {handle for handle, _entity in consumer_mdib.entities.items()}
+        return references, live
+
+    def on_alert(states: dict) -> None:
+        references, live = parent_snapshot()
+        events.append(
+            {
+                "kind": "alert",
+                "version": consumer_mdib.mdib_version,
+                "handles": tuple(states),
+                "states": {
+                    handle: (
+                        getattr(state, "ActivationState", None),
+                        getattr(state, "Presence", None),
+                    )
+                    for handle, state in states.items()
+                },
+                "references": references,
+                "live": live,
+            },
+        )
+
+    def on_description(description_report) -> None:
+        deleted = tuple(
+            descriptor.Handle
+            for part in description_report.ReportPart
+            if part.ModificationType is msg_types.DescriptionModificationType.DELETE
+            for descriptor in part.Descriptor
+        )
+        if not deleted:
+            return
+        references, live = parent_snapshot()
+        events.append(
+            {
+                "kind": "description",
+                "version": consumer_mdib.mdib_version,
+                "deleted": deleted,
+                "references": references,
+                "live": live,
+            },
+        )
+
+    observableproperties.bind(
+        consumer_mdib,
+        alert_by_handle=on_alert,
+        description_modifications=on_description,
+    )
+
+    def observed_removal(start: int, handle: str) -> bool:
+        return any(handle in event.get("deleted", ()) for event in events[start:])
+
+    def removal_events(start: int, handle: str) -> list[dict]:
+        return [
+            event
+            for event in events[start:]
+            if handle in event.get("handles", ()) or handle in event.get("deleted", ())
+        ]
+
+    try:
+        direct_start = len(events)
+        service.remove_alert(direct_alert)
+        direct_complete = wait_until(lambda: observed_removal(direct_start, direct_alert))
+        direct_events = removal_events(direct_start, direct_alert)
+        direct_state = next((event for event in direct_events if event["kind"] == "alert"), None)
+        direct_deletion = next((event for event in direct_events if event["kind"] == "description"), None)
+        report.check(
+            direct_complete
+            and [event["kind"] for event in direct_events] == ["alert", "description"]
+            and direct_state is not None
+            and direct_deletion is not None
+            and direct_deletion["version"] == direct_state["version"] + 1,
+            "direct present-alert removal reaches a consumer as alert V then descriptor V+1",
+            repr(direct_events),
+        )
+        report.check(
+            direct_state is not None
+            and set(direct_state["handles"]) == {direct_alert, *direct_signals, constants.ALERT_SYSTEM_HANDLE}
+            and direct_state["states"][direct_alert] == (pm_types.AlertActivation.OFF, False)
+            and all(
+                direct_state["states"][signal]
+                == (pm_types.AlertActivation.OFF, pm_types.AlertSignalPresence.OFF)
+                for signal in direct_signals
+            )
+            and direct_alert not in direct_state["references"],
+            "direct removal atomically deactivates its condition and signals and clears the parent",
+            repr(direct_state),
+        )
+        report.check(
+            all(event["references"] <= event["live"] for event in direct_events)
+            and direct_deletion is not None
+            and bool(direct_deletion["deleted"])
+            and set(direct_deletion["deleted"][:-1]) == set(direct_signals)
+            and direct_deletion["deleted"][-1] == direct_alert,
+            "direct removal exposes no dangling parent reference and keeps dependents first",
+            repr(direct_events),
+        )
+
+        cascade_start = len(events)
+        service.remove_metric(cascade_source)
+        cascade_complete = wait_until(lambda: observed_removal(cascade_start, cascade_alert))
+        cascade_events = removal_events(cascade_start, cascade_alert)
+        cascade_state = next((event for event in cascade_events if event["kind"] == "alert"), None)
+        cascade_deletion = next((event for event in cascade_events if event["kind"] == "description"), None)
+        deleted = cascade_deletion["deleted"] if cascade_deletion is not None else ()
+        report.check(
+            cascade_complete
+            and [event["kind"] for event in cascade_events] == ["alert", "description"]
+            and cascade_state is not None
+            and cascade_deletion is not None
+            and cascade_deletion["version"] == cascade_state["version"] + 1,
+            "metric cascade reaches a consumer as one alert report then descriptor deletion",
+            repr(cascade_events),
+        )
+        report.check(
+            cascade_state is not None
+            and set(cascade_state["handles"])
+            == {cascade_alert, *cascade_signals, constants.ALERT_SYSTEM_HANDLE}
+            and cascade_state["states"][cascade_alert] == (pm_types.AlertActivation.OFF, False)
+            and all(
+                cascade_state["states"][signal]
+                == (pm_types.AlertActivation.OFF, pm_types.AlertSignalPresence.OFF)
+                for signal in cascade_signals
+            )
+            and cascade_alert not in cascade_state["references"],
+            "metric cascade atomically retires its present alert report state",
+            repr(cascade_state),
+        )
+        report.check(
+            all(event["references"] <= event["live"] for event in cascade_events)
+            and all(deleted.index(signal) < deleted.index(cascade_alert) for signal in cascade_signals)
+            and deleted.index(cascade_source) < deleted.index(cascade_channel) < deleted.index(cascade_vmd),
+            "metric cascade has no dangling parent state and deletes children before parents",
+            repr(cascade_events),
+        )
+    finally:
+        observableproperties.unbind(
+            consumer_mdib,
+            alert_by_handle=on_alert,
+            description_modifications=on_description,
+        )
+        consumer.stop_all()
+        service.remove_alert(direct_alert)
+        service.remove_metric(direct_source)
+        service.remove_metric(cascade_source)
 
 
 def check_signals(report: Report, service: ProviderService) -> None:
@@ -1307,12 +2560,12 @@ def check_signals(report: Report, service: ProviderService) -> None:
     signal = service.signal_handles_for(alarm)[0]
     service.set_signal_delegated(signal, delegated=True)
     report.check(
-        service.signal_states(alarm)[0].delegated,
-        "a delegable signal moves to Rem",
+        service.signal_states(alarm)[0].remote_location,
+        "the location simulation moves a capable signal to Rem",
         summaries()[0],
     )
     service.set_signal_delegated(signal, delegated=False)
-    report.check(not service.signal_states(alarm)[0].delegated, "and back to Loc")
+    report.check(not service.signal_states(alarm)[0].remote_location, "and back to Loc")
 
     plain = service.add_alert(AlertSpec(label="Plain", source_handle="m.pressure"))
     try:
@@ -1678,14 +2931,28 @@ def check_foreign_consumer_operations(report: Report) -> None:
             self.calls.append(("activate", handle, arguments))
             return self._future(self.activate_results.get(handle, msg_types.InvocationState.FINISHED))
 
-    def metric_entity(handle, node_type, *, lower="0", upper="100", resolution=None):
+    def copied_qname(qname, namespace=None):  # noqa: ANN001, ANN202 - test QName helper
+        return etree.QName(namespace or qname.namespace, qname.localname)
+
+    def metric_entity(handle, node_type, *, lower="0", upper="100", resolution=None, allowed=()):
         descriptor = SimpleNamespace(
-            AllowedValue=[],
-            TechnicalRange=[SimpleNamespace(Lower=Decimal(lower), Upper=Decimal(upper))],
+            AllowedValue=[SimpleNamespace(Value=value) for value in allowed],
+            TechnicalRange=[
+                SimpleNamespace(
+                    Lower=Decimal(lower),
+                    Upper=Decimal(upper),
+                    StepWidth=Decimal("0.25"),
+                ),
+            ],
             Resolution=resolution,
         )
         state = SimpleNamespace(MetricValue=SimpleNamespace(Value=None))
-        return SimpleNamespace(node_type=node_type, descriptor=descriptor, state=state, parent_handle=None)
+        return SimpleNamespace(
+            node_type=copied_qname(node_type),
+            descriptor=descriptor,
+            state=state,
+            parent_handle=None,
+        )
 
     def operation_entity(
         target,
@@ -1693,14 +2960,27 @@ def check_foreign_consumer_operations(report: Report) -> None:
         lower,
         upper,
         mode=pm_types.OperatingMode.ENABLED,
+        allowed_values=(),
     ):
         state = SimpleNamespace(
-            AllowedRange=[SimpleNamespace(Lower=Decimal(lower), Upper=Decimal(upper))],
+            AllowedRange=[
+                SimpleNamespace(
+                    Lower=Decimal(lower),
+                    Upper=Decimal(upper),
+                    StepWidth=Decimal("0.5"),
+                ),
+                SimpleNamespace(
+                    Lower=Decimal("100"),
+                    Upper=Decimal("200"),
+                    StepWidth=Decimal("1"),
+                ),
+            ],
+            AllowedValues=SimpleNamespace(Value=list(allowed_values)),
         )
         if mode is not None:
             state.OperatingMode = mode
         return SimpleNamespace(
-            node_type=node_type,
+            node_type=copied_qname(node_type),
             descriptor=SimpleNamespace(OperationTarget=target),
             state=state,
         )
@@ -1765,6 +3045,8 @@ def check_foreign_consumer_operations(report: Report) -> None:
                 and metric.selected_operation_handle == enabled_handle
                 and metric.controllable_now
                 and (metric.minimum, metric.maximum) == (Decimal("10"), Decimal("20"))
+                and len(metric.allowed_ranges) == 2  # noqa: PLR2004
+                and metric.allowed_ranges[0].step_width == Decimal("0.5")
             )
             value = Decimal("15") if kind is MetricKind.NUMBER else "value"
             remote.set_value(metric_handle, value)
@@ -1798,37 +3080,81 @@ def check_foreign_consumer_operations(report: Report) -> None:
         metric = remote.metrics()[metric_handle]
         remote_resolutions.append(
             metric.resolution == resolution
-            and metric.minimum == Decimal("0")
-            and metric.maximum == Decimal("1")
+            and metric.minimum is None
+            and metric.maximum is None
+            and metric.technical_minimum == Decimal("0")
+            and metric.technical_maximum == Decimal("1")
+            and metric.technical_ranges[0].step_width == Decimal("0.25")
         )
     report.check(
         all(remote_resolutions),
-        "foreign numeric descriptor resolutions remain exact in metric snapshots",
+        "technical ranges stay exact and are not substituted for operation limits",
         str(remote_resolutions),
+    )
+
+    choice_handle = "metric.choice.values"
+    choice_operation = "operation.choice.values"
+    remote, choice_client = remote_for(
+        {
+            choice_handle: metric_entity(
+                choice_handle,
+                pm.EnumStringMetricDescriptor,
+                allowed=("descriptor-a", "descriptor-b"),
+            ),
+            choice_operation: operation_entity(
+                choice_handle,
+                pm.SetStringOperationDescriptor,
+                "1",
+                "2",
+                allowed_values=("operation-a", "operation-b"),
+            ),
+        },
+    )
+    choice = remote.metrics()[choice_handle]
+    report.check(
+        choice.allowed_values == ("descriptor-a", "descriptor-b")
+        and choice.operation_allowed_values == ("operation-a", "operation-b"),
+        "descriptor AllowedValue and operation AllowedValues remain distinct",
+    )
+    rejected_choice = remote.set_value(choice_handle, "descriptor-a")
+    accepted_choice = remote.set_value(choice_handle, "operation-a")
+    report.check(
+        rejected_choice is msg_types.InvocationState.FAILED
+        and accepted_choice is msg_types.InvocationState.FINISHED
+        and choice_client.calls == [("string", choice_operation, "operation-a")],
+        "operation AllowedValues gate SetString transport independently of descriptor values",
     )
 
     absent_metric = "metric.absent-mode"
     absent_set = "operation.absent-mode"
+    enabled_metric = "metric.enabled-mode"
+    enabled_set = "operation.enabled-mode"
     disabled_action = "action.disabled"
     enabled_action = "action.enabled"
     absent_action = "action.absent-mode"
+    malformed_action = "action.malformed-mode"
+    argument_action = "action.with-argument"
 
-    def action_entity(mode):
+    def action_entity(mode, arguments=()):
         state = SimpleNamespace()
         if mode is not None:
             state.OperatingMode = mode
         return SimpleNamespace(
-            node_type=pm.ActivateOperationDescriptor,
-            descriptor=SimpleNamespace(OperationTarget="mds"),
+            node_type=copied_qname(pm.ActivateOperationDescriptor),
+            descriptor=SimpleNamespace(OperationTarget="mds", Argument=list(arguments)),
             state=state,
         )
 
     entities = {
         absent_metric: metric_entity(absent_metric, pm.NumericMetricDescriptor),
         absent_set: operation_entity(absent_metric, pm.SetValueOperationDescriptor, "30", "40", mode=None),
+        enabled_metric: metric_entity(enabled_metric, pm.NumericMetricDescriptor),
+        enabled_set: operation_entity(enabled_metric, pm.SetValueOperationDescriptor, "30", "40"),
         disabled_action: action_entity(pm_types.OperatingMode.DISABLED),
         enabled_action: action_entity(pm_types.OperatingMode.ENABLED),
         absent_action: action_entity(None),
+        malformed_action: action_entity(SimpleNamespace(value="En")),
+        argument_action: action_entity(pm_types.OperatingMode.ENABLED, arguments=(object(),)),
     }
     remote, client = remote_for(entities)
     metric = remote.metrics()[absent_metric]
@@ -1837,32 +3163,34 @@ def check_foreign_consumer_operations(report: Report) -> None:
         enabled_action: msg_types.InvocationState.FINISHED_MOD,
         absent_action: msg_types.InvocationState.CANCELLED,
     }
-    remote.set_value(absent_metric, Decimal("35"))
+    absent_set_result = remote.set_value(absent_metric, Decimal("35"))
     disabled_result = remote.run_action(disabled_action)
     enabled_result = remote.run_action(enabled_action)
     absent_result = remote.run_action(absent_action)
     report.check(
-        metric.controllable_now
-        and metric.selected_operation_handle == absent_set
-        and (metric.minimum, metric.maximum) == (Decimal("30"), Decimal("40"))
+        not metric.controllable_now
+        and metric.selected_operation_handle is None
+        and (metric.minimum, metric.maximum) == (None, None)
         and not actions[disabled_action].enabled
         and actions[enabled_action].enabled
-        and actions[absent_action].enabled,
-        "absent OperatingMode defaults to enabled for set and activate operations",
+        and not actions[absent_action].enabled
+        and not actions[malformed_action].enabled
+        and not actions[argument_action].enabled
+        and actions[argument_action].argument_count == 1,
+        "missing or malformed modes and argument-bearing Activate operations fail closed",
     )
     report.check(
         client.calls == [
-            ("number", absent_set, Decimal("35")),
             ("activate", enabled_action, None),
-            ("activate", absent_action, None),
         ],
-        "disabled actions do not reach transport while enabled and default-enabled actions do",
+        "only explicitly enabled supported operations reach the transport",
         str(client.calls),
     )
     report.check(
-        disabled_result is msg_types.InvocationState.FAILED
+        absent_set_result is msg_types.InvocationState.FAILED
+        and disabled_result is msg_types.InvocationState.FAILED
         and enabled_result is msg_types.InvocationState.FINISHED_MOD
-        and absent_result is msg_types.InvocationState.CANCELLED,
+        and absent_result is msg_types.InvocationState.FAILED,
         "action invocation returns local rejection or the enabled transport result",
         f"{disabled_result}, {enabled_result}, {absent_result}",
     )
@@ -1871,12 +3199,181 @@ def check_foreign_consumer_operations(report: Report) -> None:
     remote_write_rejections = 0
     for value in (Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")):
         try:
-            remote.set_value(absent_metric, value)
+            remote.set_value(enabled_metric, value)
         except ValueError:
             remote_write_rejections += 1
     report.check(
         remote_write_rejections == 3 and client.calls == calls_before,  # noqa: PLR2004
         "non-finite outbound numeric writes are rejected before transport",
+    )
+
+    recognized_metrics = {
+        f"metric.equal.{index}": metric_entity(f"metric.equal.{index}", node_type)
+        for index, node_type in enumerate(
+            (
+                pm.NumericMetricDescriptor,
+                pm.StringMetricDescriptor,
+                pm.EnumStringMetricDescriptor,
+                pm.RealTimeSampleArrayMetricDescriptor,
+                pm.DistributionSampleArrayMetricDescriptor,
+            ),
+        )
+    }
+    wrong_metric = "metric.wrong-namespace"
+    recognized_metrics[wrong_metric] = SimpleNamespace(
+        node_type=copied_qname(pm.NumericMetricDescriptor, "urn:not-biceps"),
+        descriptor=SimpleNamespace(),
+        state=SimpleNamespace(),
+        parent_handle=None,
+    )
+    remote, _ = remote_for(recognized_metrics)
+    report.check(
+        len(remote.metrics()) == 5 and wrong_metric not in remote.metrics(),  # noqa: PLR2004
+        "all metric QNames use expanded-name equality and reject a wrong namespace",
+    )
+
+    condition = "alert.condition"
+    limit_condition = "alert.limit"
+    entities = {
+        condition: SimpleNamespace(
+            node_type=copied_qname(pm.AlertConditionDescriptor),
+            descriptor=SimpleNamespace(Priority=pm_types.AlertConditionPriority.LOW, Source=[]),
+            state=SimpleNamespace(
+                ActualPriority=pm_types.AlertConditionPriority.HIGH,
+                Presence=True,
+            ),
+        ),
+        limit_condition: SimpleNamespace(
+            node_type=copied_qname(pm.LimitAlertConditionDescriptor),
+            descriptor=SimpleNamespace(
+                Priority=pm_types.AlertConditionPriority.MEDIUM,
+                Source="metric.source",
+                MaxLimits=SimpleNamespace(Lower=Decimal("0"), Upper=Decimal("100")),
+            ),
+            state=SimpleNamespace(
+                Presence=False,
+                Limits=SimpleNamespace(Lower=Decimal("10"), Upper=Decimal("20")),
+            ),
+        ),
+        "signal.equal": SimpleNamespace(
+            node_type=copied_qname(pm.AlertSignalDescriptor),
+            descriptor=SimpleNamespace(ConditionSignaled=condition, Manifestation=pm_types.AlertSignalManifestation.VIS),
+            state=SimpleNamespace(),
+        ),
+        "signal.wrong": SimpleNamespace(
+            node_type=copied_qname(pm.AlertSignalDescriptor, "urn:not-biceps"),
+            descriptor=SimpleNamespace(ConditionSignaled=condition, Manifestation=pm_types.AlertSignalManifestation.AUD),
+            state=SimpleNamespace(),
+        ),
+    }
+    remote, _ = remote_for(entities)
+    alerts = remote.alerts()
+    report.check(
+        set(alerts) == {condition, limit_condition}
+        and alerts[condition].priority == pm_types.AlertConditionPriority.HIGH.value
+        and alerts[condition].signals == {"signal.equal": pm_types.AlertSignalManifestation.VIS.value}
+        and alerts[limit_condition].source_handles == ("metric.source",)
+        and (alerts[limit_condition].lower_limit, alerts[limit_condition].upper_limit)
+        == (Decimal("10"), Decimal("20"))
+        and (alerts[limit_condition].max_lower_limit, alerts[limit_condition].max_upper_limit)
+        == (Decimal("0"), Decimal("100")),
+        "alert QNames, effective priority, current limits, and maximum limits retain their semantics",
+    )
+
+    wrong_action = "action.wrong-namespace"
+    remote, _ = remote_for(
+        {
+            "action.equal": action_entity(pm_types.OperatingMode.ENABLED),
+            wrong_action: SimpleNamespace(
+                node_type=copied_qname(pm.ActivateOperationDescriptor, "urn:not-biceps"),
+                descriptor=SimpleNamespace(),
+                state=SimpleNamespace(OperatingMode=pm_types.OperatingMode.ENABLED),
+            ),
+        },
+    )
+    report.check(
+        set(remote.actions()) == {"action.equal"} and wrong_action not in remote.actions(),
+        "Activate QName matching uses the complete expanded name",
+    )
+
+
+def check_periodic_consumer_routing(report: Report) -> None:
+    print("\n14. Periodic consumer report routing")
+
+    class Client:
+        waveform_report = observableproperties.ObservableProperty()
+        episodic_metric_report = observableproperties.ObservableProperty()
+        episodic_alert_report = observableproperties.ObservableProperty()
+        episodic_context_report = observableproperties.ObservableProperty()
+        episodic_component_report = observableproperties.ObservableProperty()
+        description_modification_report = observableproperties.ObservableProperty()
+        episodic_operational_state_report = observableproperties.ObservableProperty()
+        periodic_metric_report = observableproperties.ObservableProperty()
+        periodic_alert_report = observableproperties.ObservableProperty()
+        periodic_component_report = observableproperties.ObservableProperty()
+        periodic_operational_state_report = observableproperties.ObservableProperty()
+        periodic_context_report = observableproperties.ObservableProperty()
+
+        def __init__(self) -> None:
+            self.msg_reader = None
+
+    events = []
+    msg_types_fixture = SimpleNamespace()
+
+    def parser_class(parser_name):  # noqa: ANN001, ANN202 - generated model-specific parser
+        class Parser:
+            @classmethod
+            def from_node(cls, node):  # noqa: ANN001, ANN206
+                parsed = (parser_name, node)
+                events.append(("parse", parser_name, node))
+                return parsed
+
+        return Parser
+
+    for parser_name, _processor_name in _PeriodicConsumerMdibMethods._PERIODIC_REPORTS.values():  # noqa: SLF001
+        setattr(msg_types_fixture, parser_name, parser_class(parser_name))
+
+    client = Client()
+    mdib = SimpleNamespace(
+        sdc_client=client,
+        data_model=SimpleNamespace(msg_types=msg_types_fixture),
+    )
+    version_groups = {}
+
+    for observable_name, (parser_name, processor_name) in _PeriodicConsumerMdibMethods._PERIODIC_REPORTS.items():  # noqa: SLF001
+        def processor(version_group, parsed, *, name=processor_name):  # noqa: ANN001
+            events.append(("process", name, version_group, parsed))
+
+        setattr(mdib, processor_name, processor)
+        version_groups[observable_name] = object()
+
+    methods = _PeriodicConsumerMdibMethods(mdib, logging.getLogger("periodic-test"))
+    methods.bind_to_client_observables()
+    gc.collect()
+
+    for observable_name, (parser_name, processor_name) in _PeriodicConsumerMdibMethods._PERIODIC_REPORTS.items():  # noqa: SLF001
+        node = object()
+        version_group = version_groups[observable_name]
+        message = SimpleNamespace(
+            p_msg=SimpleNamespace(msg_node=node),
+            mdib_version_group=version_group,
+        )
+        before = len(events)
+        setattr(client, observable_name, message)
+        routed = events[before:]
+        report.check(
+            len(routed) == 2  # noqa: PLR2004
+            and routed[0] == ("parse", parser_name, node)
+            and routed[1][0:2] == ("process", processor_name)
+            and routed[1][2] is version_group
+            and routed[1][3] == (parser_name, node),
+            f"{observable_name} retains its callback and routes synchronously with the exact version group",
+            str(routed),
+        )
+
+    report.check(
+        len(methods._periodic_report_callbacks) == 5,  # noqa: SLF001, PLR2004
+        "all five periodic families have one strongly retained callback",
     )
 
 
@@ -1893,18 +3390,25 @@ def main() -> int:
     try:
         check_rollback(report, service)
         check_sample_arrays(report, service)
+        check_demo_mode_lifecycle(report, service)
+        check_sample_publication_semantics(report, service)
         check_alarm_rollback(report, service)
         check_metric_removal_dependencies(report, service)
         check_section_removal(report, service)
         check_section_handle_types(report, service)
         check_metric_value_validation(report, service)
+        check_action_execution(report, service)
         check_decimal_boundaries(report, service)
         check_concurrent_alert_evaluation(report, service)
+        check_alert_transition_reducer(report)
+        check_alert_transition_coordination(report, service)
+        check_connected_alert_removal_order(report, service)
         check_signals(report, service)
         check_latching_signals(report, service)
         check_contexts(report, service)
         check_presets(report)
         check_foreign_consumer_operations(report)
+        check_periodic_consumer_routing(report)
     finally:
         service.stop()
 
