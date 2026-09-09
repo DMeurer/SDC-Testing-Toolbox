@@ -28,6 +28,8 @@ jobs:
             script: tests/diagnostic_behavior.py
           - name: TLS configuration
             script: tests/security.py
+          - name: TLS helper
+            script: tests/tls_helper.py
           - name: Application defaults
             script: tests/application_defaults.py
           - name: Direct test import bootstrap
@@ -89,6 +91,10 @@ jobs:
           - name: TLS configuration
             script: tests/security.py
             artifact: tls-configuration
+            console-encoding: false
+          - name: TLS helper
+            script: tests/tls_helper.py
+            artifact: tls-helper
             console-encoding: false
           - name: Provider core
             script: tests/provider_core.py

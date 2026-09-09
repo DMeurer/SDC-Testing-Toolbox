@@ -538,6 +538,18 @@ the other participant's trusted CA bundle. Self-signed does not mean accepting a
 certificates: trust must remain explicit. Use `--tls-peer-fingerprint` to additionally pin
 one expected SHA-256 leaf certificate.
 
+Generate a self-contained local test CA plus provider and consumer identities with:
+
+```powershell
+.venv\Scripts\python.exe helpers\tls\generate_certificates.py
+```
+
+It writes ignored material under `helpers\tls\generated\`, protects private keys with a
+prompted password by default, and creates a `README.txt` with the two exact startup commands.
+Use `--ip <LAN-address>` when testing beyond loopback so the certificate IP SAN matches the
+selected interface. See [`helpers/tls/README.md`](helpers/tls/README.md) for options and safety
+rules.
+
 The Network pane identifies discovered `HTTP` and `HTTPS` endpoints. Once connected over TLS,
 it displays the peer subject, issuer and SHA-256 fingerprint; the core retains its serial
 number, validity dates, SANs and EKUs for diagnostics. TLS mode is CA/certificate-based
