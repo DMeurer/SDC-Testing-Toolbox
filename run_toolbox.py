@@ -27,6 +27,7 @@ from sdctoolbox.gui.main_window import MainWindow
 from sdctoolbox.gui.startup_dialog import StartupDialog, StartupSettings
 from sdctoolbox.network import normalize_ipv4
 from sdctoolbox.provider_service import ProviderService
+from sdctoolbox.security import TlsConfig, TlsConfigError
 
 
 def ipv4_argument(value: str) -> str:
@@ -48,13 +49,39 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--name", default=constants.DEFAULT_INSTANCE_NAME, help="instance name, decides the EPR")
     parser.add_argument("--config", help="config file to load on startup")
     parser.add_argument("--verbose", action="store_true", help="show sdc11073 logging")
+    parser.add_argument("--tls-cert", help="local PEM certificate or certificate chain")
+    parser.add_argument("--tls-key", help="local PEM private key")
+    parser.add_argument("--tls-ca", help="trusted PEM CA certificate bundle")
+    parser.add_argument("--tls-peer-fingerprint", help="optional SHA-256 pin for connected peers")
+    parser.add_argument("--tls-server-name", help="optional DNS name in the peer certificate SAN")
     parser.add_argument("--smoke-test", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
 def settings_from_args(args: argparse.Namespace) -> StartupSettings:
     """Turn parsed arguments into the same shape the dialog produces."""
-    return StartupSettings(name=args.name, ip=args.ip, config_path=args.config, verbose=args.verbose)
+    tls_values = (args.tls_cert, args.tls_key, args.tls_ca)
+    tls_options = (args.tls_peer_fingerprint, args.tls_server_name)
+    if any(tls_values):
+        tls_config = TlsConfig.from_paths(
+            args.tls_cert,
+            args.tls_key,
+            args.tls_ca,
+            private_key_password=None,
+            peer_fingerprint=args.tls_peer_fingerprint,
+            server_name=args.tls_server_name,
+        )
+    elif any(tls_options):
+        raise TlsConfigError("TLS peer options require --tls-cert, --tls-key, and --tls-ca")
+    else:
+        tls_config = None
+    return StartupSettings(
+        name=args.name,
+        ip=args.ip,
+        config_path=args.config,
+        verbose=args.verbose,
+        tls_config=tls_config,
+    )
 
 
 def ask_how_to_start(args: argparse.Namespace) -> StartupSettings | None:
@@ -76,14 +103,20 @@ def main(argv: list[str] | None = None) -> int:
     # argument at all means this was started deliberately and must not stop for a dialog.
     interactive = not argv
 
-    app = QApplication(sys.argv)
-
     if interactive:
+        app = QApplication(sys.argv)
         settings = ask_how_to_start(args)
         if settings is None:
             return 0
     else:
-        settings = settings_from_args(args)
+        try:
+            settings = settings_from_args(args)
+            if settings.tls_config is not None:
+                settings.tls_config.create_contexts()
+        except TlsConfigError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        app = QApplication(sys.argv)
 
     basic_logging_setup(level=logging.INFO if settings.verbose else logging.WARNING)
 
@@ -99,7 +132,12 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     device = device_config.device if device_config is not None else None
-    service = ProviderService(ip=settings.ip, instance_name=settings.name, device=device)
+    service = ProviderService(
+        ip=settings.ip,
+        instance_name=settings.name,
+        device=device,
+        tls_config=settings.tls_config,
+    )
     try:
         service.start()
         window = MainWindow(service)

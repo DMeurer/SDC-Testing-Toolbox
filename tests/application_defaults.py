@@ -61,6 +61,24 @@ def check_ip_arguments() -> None:
         )
 
 
+def check_tls_arguments() -> None:
+    code, stderr = parse_failure(["--tls-peer-fingerprint", "AA" * 32])
+    check(
+        code is None and not stderr,
+        "TLS peer arguments parse before their required TLS files are checked",
+    )
+    try:
+        run_toolbox.settings_from_args(run_toolbox.parse_args(["--tls-peer-fingerprint", "AA" * 32]))
+    except Exception as exc:  # noqa: BLE001 - the command boundary must report any validation problem
+        error = str(exc)
+    else:
+        error = ""
+    check(
+        error == "TLS peer options require --tls-cert, --tls-key, and --tls-ca",
+        "TLS peer policy requires a complete local mTLS identity",
+    )
+
+
 def check_invalid_ip_precedes_construction() -> None:
     constructions: list[str] = []
 
@@ -194,7 +212,7 @@ def check_gui_startup_reuses_profile(*, interactive: bool) -> None:
     )
     check(
         provider_arguments
-        == [{"ip": "127.0.0.1", "instance_name": authority, "device": device}],
+        == [{"ip": "127.0.0.1", "instance_name": authority, "device": device, "tls_config": None}],
         f"{mode} GUI startup uses snapshot metadata without overriding its instance name",
     )
     check(
@@ -535,6 +553,7 @@ def main() -> int:
         "the acceptance peer remains distinct from applications using defaults",
     )
     check_ip_arguments()
+    check_tls_arguments()
     check_invalid_ip_precedes_construction()
     check_startup_dialog_retains_profile()
     check_gui_startup_reuses_profile(interactive=False)

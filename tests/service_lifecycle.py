@@ -250,12 +250,15 @@ def consumer_discovery_start_failure() -> None:
     check(not discovery.active and service._discovery is None, "consumer discovery failure resets state")
 
 
-def consumer_connection_failure(*, stage: str) -> None:
-    service = ConsumerService()
+def consumer_connection_failure(*, stage: str, tls: bool = False) -> None:
+    service = ConsumerService(tls_config=object() if tls else None)
     consumer = Tracker(fail_start="consumer start failed" if stage == "start" else None)
     device = DiscoveredDevice("peer", (), (), service=object())
 
     class ConsumerFactory:
+        def __new__(cls, *_args, **_kwargs) -> Tracker:
+            return consumer
+
         @staticmethod
         def from_wsd_service(*_args, **_kwargs) -> Tracker:
             return consumer
@@ -273,12 +276,18 @@ def consumer_connection_failure(*, stage: str) -> None:
         "construct": "consumer MDIB construction failed",
         "init": "consumer MDIB init failed",
     }[stage]
-    with patch.object(consumer_module, "SdcConsumer", ConsumerFactory), patch.object(
+    patchers = [patch.object(consumer_module, "SdcConsumer", ConsumerFactory)]
+    if tls:
+        patchers.append(patch.object(service.tls_config, "create_contexts", lambda: object()))
+    with ExitStack() as stack:
+        for patcher in patchers:
+            stack.enter_context(patcher)
+        with patch.object(
         consumer_module,
         "ConsumerMdib",
         FakeConsumerMdib,
-    ):
-        raises(message, lambda: service.connect(device))
+        ):
+            raises(message, lambda: service.connect(device))
     check(consumer.stop_count == 1, f"consumer {stage} failure closes the consumer exactly once")
     check(not consumer.active, f"consumer {stage} failure leaves no active consumer")
 
