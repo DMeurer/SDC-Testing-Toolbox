@@ -14,52 +14,10 @@ permissions:
 
 jobs:
   deterministic-tests:
-    name: ${{ matrix.name }}
+    name: Deterministic and policy tests (Linux)
     if: github.event_name != 'schedule'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: API compatibility
-            script: diagnostics/check_api.py
-          - name: Workflow security
-            script: tests/workflow_security.py
-          - name: Diagnostic behavior
-            script: tests/diagnostic_behavior.py
-          - name: TLS configuration
-            script: tests/security.py
-          - name: TLS helper
-            script: tests/tls_helper.py
-          - name: Application defaults
-            script: tests/application_defaults.py
-          - name: Direct test import bootstrap
-            script: tests/import_bootstrap.py
-          - name: Licensing and notices
-            script: tests/licensing.py
-          - name: Provider core
-            script: tests/provider_core.py
-          - name: Presets
-            script: tests/presets.py
-          - name: Config round trip
-            script: tests/config_roundtrip.py
-          - name: Widget controls
-            script: tests/widget_controls.py
-          - name: GUI dialogs
-            script: tests/gui_dialogs.py
-          - name: GUI cards and plots
-            script: tests/gui_cards_plots.py
-          - name: GUI layout
-            script: tests/gui_layout.py
-          - name: GUI provider structure
-            script: tests/gui_provider_structure.py
-          - name: Service lifecycle
-            script: tests/service_lifecycle.py
-          - name: Consumer window lifecycle
-            script: tests/consumer_lifecycle.py
-          - name: Acceptance readiness timeout
-            script: tests/acceptance_readiness.py
     runs-on: ubuntu-22.04
-    timeout-minutes: 10
+    timeout-minutes: 30
     env:
       QT_QPA_PLATFORM: offscreen
 
@@ -71,49 +29,20 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      - name: Install Qt runtime library
+        run: sudo apt-get update && sudo apt-get install -y libegl1
+
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
-      - name: Run ${{ matrix.name }}
-        run: python ${{ matrix.script }}
+      - name: Run deterministic and policy suites
+        run: python tests/run_suites.py --role deterministic --role policy
 
   windows-deterministic-tests:
-    name: ${{ matrix.name }} (Windows)
+    name: Deterministic and policy tests (Windows)
     if: github.event_name != 'schedule'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Application defaults
-            script: tests/application_defaults.py
-            artifact: application-defaults
-            console-encoding: false
-          - name: TLS configuration
-            script: tests/security.py
-            artifact: tls-configuration
-            console-encoding: false
-          - name: TLS helper
-            script: tests/tls_helper.py
-            artifact: tls-helper
-            console-encoding: false
-          - name: Provider core
-            script: tests/provider_core.py
-            artifact: provider-core
-            console-encoding: false
-          - name: Consumer window lifecycle
-            script: tests/consumer_lifecycle.py
-            artifact: consumer-lifecycle
-            console-encoding: false
-          - name: Acceptance readiness timeout
-            script: tests/acceptance_readiness.py
-            artifact: acceptance-readiness
-            console-encoding: false
-          - name: Console encoding
-            script: ""
-            artifact: console-encoding
-            console-encoding: true
     runs-on: windows-2022
-    timeout-minutes: 10
+    timeout-minutes: 30
     env:
       QT_QPA_PLATFORM: offscreen
 
@@ -128,29 +57,28 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
-      - name: Run ${{ matrix.name }}
-        if: matrix.console-encoding == false
+      - name: Run deterministic and policy suites
         shell: pwsh
         run: |
-          $log = "windows-${{ matrix.artifact }}.log"
-          python ${{ matrix.script }} 2>&1 | Tee-Object -FilePath $log
+          python tests/run_suites.py --role deterministic --role policy 2>&1 | Tee-Object -FilePath windows-test-suites.log
           $testExitCode = $LASTEXITCODE
           exit $testExitCode
 
       - name: Check strict Windows console encoding
-        if: matrix.console-encoding == true
         shell: pwsh
         run: |
           python -c "import sys; from sdctoolbox.model import AlertSignalLocation, SignalInfo; sys.stdout.reconfigure(encoding='cp1252', errors='strict'); print(SignalInfo('signal', 'Vis', 'On', AlertSignalLocation.REMOTE, True).summary())" 2>&1 | Tee-Object -FilePath windows-console-encoding.log
           $testExitCode = $LASTEXITCODE
           exit $testExitCode
 
-      - name: Publish ${{ matrix.name }} output on failure
+      - name: Publish Windows test output on failure
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: windows-deterministic-${{ matrix.artifact }}-output
-          path: windows-${{ matrix.artifact }}.log
+          name: windows-deterministic-output
+          path: |
+            windows-test-suites.log
+            windows-console-encoding.log
           if-no-files-found: warn
 
   network-acceptance:

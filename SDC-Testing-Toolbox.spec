@@ -1,14 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import platform
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files
 
-from legal_payload import filter_binaries, generate_payload
-
-
 root = Path(SPECPATH)
+# PyInstaller evaluates a spec in its own import context. Add the project root before
+# importing build helpers so local modules work consistently on both hosted runners.
+sys.path.insert(0, str(root))
+
+from legal_payload import filter_binaries, generate_payload
 datas = [
     (str(root / "sdctoolbox" / "mdib_bootstrap.xml"), "sdctoolbox"),
     (str(root / "presets"), "presets"),

@@ -468,8 +468,9 @@ This is a focused SDC learning fixture, not an IEEE 11073 conformance claim. IEE
 
 ## Tests
 
-The pull-request workflow runs all 17 deterministic suites as separately reported Linux jobs
-with `QT_QPA_PLATFORM=offscreen`:
+The pull-request workflow runs the manifest-selected deterministic and policy suites once on
+Linux and once on Windows through `tests/run_suites.py`. Qt jobs use
+`QT_QPA_PLATFORM=offscreen`; Linux installs `libegl1` before importing PySide6:
 
 | Suite | Covers |
 |-------|--------|
@@ -477,6 +478,7 @@ with `QT_QPA_PLATFORM=offscreen`:
 | `tests/workflow_security.py` | full-SHA action pins, release comments and Dependabot policy |
 | `tests/diagnostic_behavior.py` | diagnostic signature and update-result reporting |
 | `tests/security.py` | TLS policy, PEM validation, certificate metadata and fingerprint pins |
+| `tests/tls_helper.py` | self-signed local CA generation, additive participant identities and overwrite protection |
 | `tests/application_defaults.py` | shared application defaults and distinct acceptance identity |
 | `tests/import_bootstrap.py` | direct test imports under unrelated package shadowing |
 | `tests/licensing.py` | project licensing, notices and build legal-payload sources |
@@ -492,12 +494,10 @@ with `QT_QPA_PLATFORM=offscreen`:
 | `tests/consumer_lifecycle.py` | window-close races, stale work and natural real-window shutdown |
 | `tests/acceptance_readiness.py` | bounded provider readiness waits and subprocess cleanup |
 
-The platform-sensitive `application_defaults.py`, `provider_core.py`,
-`consumer_lifecycle.py`, and `acceptance_readiness.py` suites also run on Windows with Python
-3.12. These Windows jobs use offscreen Qt and upload their captured subprocess, Qt, and test
-output when they fail. A separate Windows job checks the console-rendered signal summary under
-a strict `cp1252` encoding. The other deterministic suites and the network acceptance suite
-are Linux-only; the native packaging smoke tests still cover both Windows and Linux artifacts.
+The manifest selects platform-appropriate suites, including TLS configuration and helper checks
+on both systems. A separate Windows step checks the console-rendered signal summary under strict
+`cp1252` encoding. Linux-only suites remain limited by their OS-specific test design; the native
+packaging smoke tests cover both Windows and Linux artifacts.
 
 Run any deterministic suite with the project interpreter, for example:
 
@@ -508,6 +508,12 @@ $env:QT_QPA_PLATFORM = "offscreen"
 .venv\Scripts\python.exe tests\gui_layout.py
 .venv\Scripts\python.exe tests\gui_provider_structure.py
 .venv\Scripts\python.exe tests\consumer_lifecycle.py
+```
+
+Run the same default set that continuous integration runs locally with:
+
+```powershell
+.venv\Scripts\python.exe tests\run_suites.py
 ```
 
 `tests/acceptance_core.py` and `tests/tls_acceptance.py` are Linux-only network acceptance suites. CI runs each in an isolated job on every pull request, version tag, manual workflow dispatch and weekly schedule. The TLS suite generates a temporary self-signed test CA and participant certificates, then verifies HTTPS discovery, mutual authentication, MDIB retrieval and remote control without storing credentials in the repository. These checks exercise this implementation; they are not interoperability testing against an independent SDC stack or product.

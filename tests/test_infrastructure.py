@@ -143,23 +143,11 @@ def manifest_checks(report: Report) -> None:
     workflow = (ROOT / ".github" / "workflows" / "build-app.yml").read_text(
         encoding="utf-8",
     )
-    workflow_scripts = {
-        line.split("script:", 1)[1].strip()
-        for line in workflow.splitlines()
-        if "script: tests/" in line or "script: diagnostics/" in line
-    }
-    workflow_scripts.update({"tests/acceptance_core.py", "tests/tls_acceptance.py"})
-    manifested_ci_scripts = {
-        suite["argv"][0]
-        for suite in suites
-        if suite["events"] and suite["role"] not in {"manual", "fixture"}
-    }
-    expected_additions = {"tests/test_infrastructure.py"}
     report.check(
-        manifested_ci_scripts == workflow_scripts | expected_additions,
-        "manifest CI inventory matches the legacy workflow plus the new harness test",
-        f"manifest-only {sorted(manifested_ci_scripts - workflow_scripts)}, "
-        f"workflow-only {sorted(workflow_scripts - manifested_ci_scripts)}",
+        workflow.count("python tests/run_suites.py --role deterministic --role policy") == 2
+        and "python tests/acceptance_core.py" in workflow
+        and "python tests/tls_acceptance.py" in workflow,
+        "CI runs one manifest-driven deterministic action per platform and isolated network acceptance suites",
     )
 
 
