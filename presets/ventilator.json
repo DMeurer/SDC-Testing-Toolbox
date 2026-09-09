@@ -24,7 +24,7 @@
         "label": "mL/cmH2O"
       },
       "type": {
-        "code": "MDC_RESP_COMP_STATIC",
+        "code": "151696",
         "system": "mdc"
       },
       "resolution": "0.1",
@@ -39,12 +39,12 @@
       "controllable": true,
       "section": "Settings",
       "unit": {
-        "code": "MDC_DIM_PERCENT",
+        "code": "262688",
         "system": "mdc",
         "label": "%"
       },
       "type": {
-        "code": "MDC_CONC_AWAY_O2_INSP",
+        "code": "152196",
         "system": "mdc"
       },
       "resolution": "1",
@@ -59,12 +59,12 @@
       "controllable": false,
       "section": "Waveforms",
       "unit": {
-        "code": "MDC_DIM_L_PER_MIN",
+        "code": "265216",
         "system": "mdc",
         "label": "L/min"
       },
       "type": {
-        "code": "MDC_FLOW_AWAY",
+        "code": "151764",
         "system": "mdc"
       },
       "resolution": "0.1",
@@ -81,13 +81,13 @@
       "controllable": true,
       "section": "Settings",
       "unit": {
-        "code": "MDC_DIM_CM_H2O",
+        "code": "266048",
         "system": "mdc",
         "label": "cmH2O"
       },
       "type": {
-        "code": "vent_insp_pressure_set",
-        "system": "private"
+        "code": "16929188",
+        "system": "mdc"
       },
       "resolution": "1",
       "minimum": "5",
@@ -101,12 +101,12 @@
       "controllable": false,
       "section": "Measured",
       "unit": {
-        "code": "MDC_DIM_L_PER_MIN",
+        "code": "265216",
         "system": "mdc",
         "label": "L/min"
       },
       "type": {
-        "code": "MDC_VOL_MINUTE_AWAY",
+        "code": "151880",
         "system": "mdc"
       },
       "resolution": "0.1",
@@ -121,12 +121,12 @@
       "controllable": false,
       "section": "Waveforms",
       "unit": {
-        "code": "MDC_DIM_CM_H2O",
+        "code": "266048",
         "system": "mdc",
         "label": "cmH2O"
       },
       "type": {
-        "code": "MDC_PRESS_AWAY",
+        "code": "151792",
         "system": "mdc"
       },
       "resolution": "0.1",
@@ -143,12 +143,12 @@
       "controllable": false,
       "section": "Measured",
       "unit": {
-        "code": "MDC_DIM_CM_H2O",
+        "code": "266048",
         "system": "mdc",
         "label": "cmH2O"
       },
       "type": {
-        "code": "MDC_PRESS_AWAY_INSP_PEAK",
+        "code": "151817",
         "system": "mdc"
       },
       "resolution": "1",
@@ -163,12 +163,12 @@
       "controllable": true,
       "section": "Settings",
       "unit": {
-        "code": "MDC_DIM_CM_H2O",
+        "code": "266048",
         "system": "mdc",
         "label": "cmH2O"
       },
       "type": {
-        "code": "MDC_PRESS_AWAY_END_EXP_POS",
+        "code": "151804",
         "system": "mdc"
       },
       "resolution": "1",
@@ -183,12 +183,12 @@
       "controllable": true,
       "section": "Settings",
       "unit": {
-        "code": "MDC_DIM_RESP_PER_MIN",
+        "code": "264928",
         "system": "mdc",
         "label": "1/min"
       },
       "type": {
-        "code": "MDC_VENT_RESP_RATE_SET",
+        "code": "16928802",
         "system": "mdc"
       },
       "resolution": "1",
@@ -203,12 +203,12 @@
       "controllable": false,
       "section": "Measured",
       "unit": {
-        "code": "MDC_DIM_MILLI_L",
+        "code": "263762",
         "system": "mdc",
         "label": "mL"
       },
       "type": {
-        "code": "MDC_VOL_AWAY_TIDAL",
+        "code": "151868",
         "system": "mdc"
       },
       "resolution": "1",
@@ -223,8 +223,8 @@
       "controllable": true,
       "section": "Settings",
       "type": {
-        "code": "vent_mode",
-        "system": "private"
+        "code": "184352",
+        "system": "mdc"
       },
       "allowed_values": [
         "VC_CMV",
@@ -243,12 +243,12 @@
       "controllable": false,
       "section": "Waveforms",
       "unit": {
-        "code": "MDC_DIM_MILLI_L",
+        "code": "263762",
         "system": "mdc",
         "label": "mL"
       },
       "type": {
-        "code": "MDC_VOL_AWAY",
+        "code": "152708",
         "system": "mdc"
       },
       "resolution": "1",

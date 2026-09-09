@@ -25,7 +25,7 @@ from script_support import Report  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 
 from sdctoolbox import config, constants  # noqa: E402
-from sdctoolbox.model import CODING_SYSTEMS  # noqa: E402
+from sdctoolbox.model import CODING_SYSTEMS, MetricKind  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 
@@ -160,12 +160,18 @@ def check_nomenclature(report: Report, paths: list[Path]) -> None:
     print("\nNomenclature across all presets")
 
     totals: dict[str, dict[str, int]] = {}
+    non_numeric_mdc: list[str] = []
     for path in paths:
         device = config.load_file(path)
         counts = {"mdc": 0, "private": 0}
         for spec in device.metrics:
-            for coding in (spec.effective_type(), spec.effective_unit()):
+            codings = [spec.effective_type(), spec.effective_unit()]
+            if spec.kind is MetricKind.DISTRIBUTION:
+                codings.append(spec.effective_domain_unit())
+            for coding in codings:
                 counts[coding.system] = counts.get(coding.system, 0) + 1
+                if coding.system == "mdc" and not coding.code.isdecimal():
+                    non_numeric_mdc.append(f"{path.stem}:{spec.handle}:{coding.code}")
         totals[path.stem] = counts
 
     for name, counts in sorted(totals.items()):
@@ -189,6 +195,11 @@ def check_nomenclature(report: Report, paths: list[Path]) -> None:
         systems <= set(CODING_SYSTEMS),
         "no preset invents a coding system",
         str(sorted(systems)),
+    )
+    report.check(
+        not non_numeric_mdc,
+        "every MDC coding uses a decimal context-free code",
+        str(non_numeric_mdc),
     )
 
 

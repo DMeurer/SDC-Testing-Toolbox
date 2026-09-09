@@ -19,7 +19,7 @@
       "controllable": true,
       "section": "Motion",
       "unit": {
-        "code": "MDC_DIM_DEGREE",
+        "code": "262880",
         "system": "mdc",
         "label": "\u00b0"
       },
@@ -39,7 +39,7 @@
       "controllable": true,
       "section": "Motion",
       "unit": {
-        "code": "MDC_DIM_DEGREE",
+        "code": "262880",
         "system": "mdc",
         "label": "\u00b0"
       },
@@ -59,7 +59,7 @@
       "controllable": true,
       "section": "Motion",
       "unit": {
-        "code": "MDC_DIM_MILLI_M",
+        "code": "263442",
         "system": "mdc",
         "label": "mm"
       },
@@ -79,7 +79,7 @@
       "controllable": true,
       "section": "Motion",
       "unit": {
-        "code": "MDC_DIM_MILLI_M",
+        "code": "263442",
         "system": "mdc",
         "label": "mm"
       },
@@ -99,7 +99,7 @@
       "controllable": true,
       "section": "Motion",
       "unit": {
-        "code": "MDC_DIM_DEGREE",
+        "code": "262880",
         "system": "mdc",
         "label": "\u00b0"
       },
@@ -119,7 +119,7 @@
       "controllable": true,
       "section": "Motion",
       "unit": {
-        "code": "MDC_DIM_MILLI_M",
+        "code": "263442",
         "system": "mdc",
         "label": "mm"
       },
@@ -139,7 +139,7 @@
       "controllable": false,
       "section": "Motion",
       "unit": {
-        "code": "MDC_DIM_NEWTON",
+        "code": "265920",
         "system": "mdc",
         "label": "N"
       },
@@ -175,7 +175,7 @@
       "controllable": true,
       "section": "Optics",
       "unit": {
-        "code": "MDC_DIM_MILLI_M",
+        "code": "263442",
         "system": "mdc",
         "label": "mm"
       },
@@ -195,7 +195,7 @@
       "controllable": true,
       "section": "Imaging",
       "unit": {
-        "code": "MDC_DIM_PERCENT",
+        "code": "262688",
         "system": "mdc",
         "label": "%"
       },
@@ -227,8 +227,8 @@
       "minimum": "0",
       "maximum": "100",
       "domain_unit": {
-        "code": "MDC_DIM_NANO_M",
-        "system": "mdc",
+        "code": "wavelength_nm",
+        "system": "private",
         "label": "nm"
       },
       "domain_minimum": "400",
@@ -308,7 +308,7 @@
       "controllable": false,
       "section": "Optics",
       "unit": {
-        "code": "MDC_DIM_MILLI_M",
+        "code": "263442",
         "system": "mdc",
         "label": "mm"
       },

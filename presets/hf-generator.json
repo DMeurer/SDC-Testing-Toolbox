@@ -55,7 +55,7 @@
       "controllable": true,
       "section": "Generator",
       "unit": {
-        "code": "MDC_DIM_WATT",
+        "code": "266176",
         "system": "mdc",
         "label": "W"
       },
@@ -75,7 +75,7 @@
       "controllable": true,
       "section": "Generator",
       "unit": {
-        "code": "MDC_DIM_WATT",
+        "code": "266176",
         "system": "mdc",
         "label": "W"
       },
@@ -95,7 +95,7 @@
       "controllable": false,
       "section": "Generator",
       "unit": {
-        "code": "MDC_DIM_WATT",
+        "code": "266176",
         "system": "mdc",
         "label": "W"
       },
@@ -115,7 +115,7 @@
       "controllable": false,
       "section": "Tissue",
       "unit": {
-        "code": "MDC_DIM_DECIBEL",
+        "code": "268576",
         "system": "mdc",
         "label": "dB"
       },
@@ -127,7 +127,7 @@
       "minimum": "0",
       "maximum": "60",
       "domain_unit": {
-        "code": "MDC_DIM_KILO_HZ",
+        "code": "264643",
         "system": "mdc",
         "label": "kHz"
       },
@@ -142,7 +142,7 @@
       "controllable": false,
       "section": "Tissue",
       "unit": {
-        "code": "MDC_DIM_OHM",
+        "code": "266432",
         "system": "mdc",
         "label": "\u03a9"
       },
@@ -176,7 +176,7 @@
       "controllable": false,
       "section": "Safety",
       "unit": {
-        "code": "MDC_DIM_PERCENT",
+        "code": "262688",
         "system": "mdc",
         "label": "%"
       },
@@ -196,7 +196,7 @@
       "controllable": false,
       "section": "Tissue",
       "unit": {
-        "code": "MDC_DIM_OHM",
+        "code": "266432",
         "system": "mdc",
         "label": "\u03a9"
       },

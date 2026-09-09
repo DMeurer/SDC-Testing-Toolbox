@@ -19,7 +19,7 @@
       "controllable": true,
       "section": "Gas",
       "unit": {
-        "code": "MDC_DIM_L_PER_MIN",
+        "code": "265216",
         "system": "mdc",
         "label": "L/min"
       },
@@ -39,7 +39,7 @@
       "controllable": false,
       "section": "Pressure",
       "unit": {
-        "code": "MDC_DIM_DECIBEL",
+        "code": "268576",
         "system": "mdc",
         "label": "dB"
       },
@@ -51,7 +51,7 @@
       "minimum": "0",
       "maximum": "40",
       "domain_unit": {
-        "code": "MDC_DIM_HZ",
+        "code": "264640",
         "system": "mdc",
         "label": "Hz"
       },
@@ -83,7 +83,7 @@
       "controllable": false,
       "section": "Gas",
       "unit": {
-        "code": "MDC_DIM_L",
+        "code": "263744",
         "system": "mdc",
         "label": "L"
       },
@@ -103,7 +103,7 @@
       "controllable": false,
       "section": "Pressure",
       "unit": {
-        "code": "MDC_DIM_MMHG",
+        "code": "266016",
         "system": "mdc",
         "label": "mmHg"
       },
@@ -151,7 +151,7 @@
       "controllable": false,
       "section": "Pressure",
       "unit": {
-        "code": "MDC_DIM_MMHG",
+        "code": "266016",
         "system": "mdc",
         "label": "mmHg"
       },
@@ -173,7 +173,7 @@
       "controllable": true,
       "section": "Pressure",
       "unit": {
-        "code": "MDC_DIM_MMHG",
+        "code": "266016",
         "system": "mdc",
         "label": "mmHg"
       },

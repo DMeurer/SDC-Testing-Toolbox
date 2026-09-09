@@ -19,12 +19,12 @@
       "controllable": false,
       "section": "Haemodynamics",
       "unit": {
-        "code": "MDC_DIM_MMHG",
+        "code": "266016",
         "system": "mdc",
         "label": "mmHg"
       },
       "type": {
-        "code": "MDC_PRESS_BLD_ART_ABP",
+        "code": "150032",
         "system": "mdc"
       },
       "resolution": "1",
@@ -70,12 +70,12 @@
       "controllable": false,
       "section": "ECG",
       "unit": {
-        "code": "MDC_DIM_MILLI_VOLT",
+        "code": "266418",
         "system": "mdc",
         "label": "mV"
       },
       "type": {
-        "code": "MDC_ECG_ELEC_POTL_II",
+        "code": "131330",
         "system": "mdc"
       },
       "resolution": "0.01",
@@ -92,12 +92,12 @@
       "controllable": false,
       "section": "ECG",
       "unit": {
-        "code": "MDC_DIM_BEAT_PER_MIN",
+        "code": "264864",
         "system": "mdc",
         "label": "bpm"
       },
       "type": {
-        "code": "MDC_ECG_HEART_RATE",
+        "code": "147842",
         "system": "mdc"
       },
       "resolution": "1",
@@ -112,12 +112,12 @@
       "controllable": false,
       "section": "Haemodynamics",
       "unit": {
-        "code": "MDC_DIM_MMHG",
+        "code": "266016",
         "system": "mdc",
         "label": "mmHg"
       },
       "type": {
-        "code": "MDC_PRESS_BLD_NONINV_DIA",
+        "code": "150022",
         "system": "mdc"
       },
       "resolution": "1",
@@ -132,12 +132,12 @@
       "controllable": false,
       "section": "Haemodynamics",
       "unit": {
-        "code": "MDC_DIM_MMHG",
+        "code": "266016",
         "system": "mdc",
         "label": "mmHg"
       },
       "type": {
-        "code": "MDC_PRESS_BLD_NONINV_MEAN",
+        "code": "150023",
         "system": "mdc"
       },
       "resolution": "1",
@@ -152,12 +152,12 @@
       "controllable": false,
       "section": "Haemodynamics",
       "unit": {
-        "code": "MDC_DIM_MMHG",
+        "code": "266016",
         "system": "mdc",
         "label": "mmHg"
       },
       "type": {
-        "code": "MDC_PRESS_BLD_NONINV_SYS",
+        "code": "150021",
         "system": "mdc"
       },
       "resolution": "1",
@@ -172,12 +172,12 @@
       "controllable": false,
       "section": "Oximetry",
       "unit": {
-        "code": "MDC_DIM_PERCENT",
+        "code": "262688",
         "system": "mdc",
         "label": "%"
       },
       "type": {
-        "code": "MDC_PULS_OXIM_PLETH",
+        "code": "150452",
         "system": "mdc"
       },
       "resolution": "0.1",
@@ -194,12 +194,12 @@
       "controllable": false,
       "section": "Oximetry",
       "unit": {
-        "code": "MDC_DIM_BEAT_PER_MIN",
+        "code": "264864",
         "system": "mdc",
         "label": "bpm"
       },
       "type": {
-        "code": "MDC_PULS_OXIM_PULS_RATE",
+        "code": "149530",
         "system": "mdc"
       },
       "resolution": "1",
@@ -214,12 +214,12 @@
       "controllable": false,
       "section": "Respiration",
       "unit": {
-        "code": "MDC_DIM_RESP_PER_MIN",
+        "code": "264928",
         "system": "mdc",
         "label": "1/min"
       },
       "type": {
-        "code": "MDC_RESP_RATE",
+        "code": "151554",
         "system": "mdc"
       },
       "resolution": "1",
@@ -234,12 +234,12 @@
       "controllable": false,
       "section": "Oximetry",
       "unit": {
-        "code": "MDC_DIM_PERCENT",
+        "code": "262688",
         "system": "mdc",
         "label": "%"
       },
       "type": {
-        "code": "MDC_PULS_OXIM_SAT_O2",
+        "code": "150456",
         "system": "mdc"
       },
       "resolution": "1",
@@ -254,12 +254,12 @@
       "controllable": false,
       "section": "Temperature",
       "unit": {
-        "code": "MDC_DIM_DEGC",
+        "code": "268192",
         "system": "mdc",
         "label": "\u00b0C"
       },
       "type": {
-        "code": "MDC_TEMP_BODY",
+        "code": "150364",
         "system": "mdc"
       },
       "resolution": "0.1",

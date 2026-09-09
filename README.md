@@ -5,7 +5,7 @@ A desktop tool for understanding **IEEE 11073 SDC**: create data sources with a 
 Built on [sdc11073](https://github.com/Draegerwerk/sdc11073) and PySide6.
 
 > [!WARNING]
-> Learning tool, not a medical device. By its own notice `sdc11073` is not intended for
+> Learning tool, not a medical device. By its own notice the python library `sdc11073` is not intended for
 > clinical trials, clinical studies or clinical routine use, and was not developed according
 > to ISO 9001.
 
@@ -280,21 +280,21 @@ Which is which is the interesting part, and `tests/presets.py` counts it:
 
 ```
 patient-monitor         24 mdc,   2 private  (92% standard)
-ventilator              21 mdc,   3 private  (88% standard)
-infusion-pump           11 mdc,   5 private  (69% standard)
-insufflator              9 mdc,   9 private  (50% standard)
-hf-generator            10 mdc,  10 private  (50% standard)
-surgical-microscope     15 mdc,  19 private  (44% standard)
-endoscopic-camera        9 mdc,  13 private  (41% standard)
+ventilator              23 mdc,   1 private  (96% standard)
+infusion-pump           13 mdc,   3 private  (81% standard)
+insufflator             10 mdc,   9 private  (53% standard)
+hf-generator            11 mdc,  10 private  (52% standard)
+surgical-microscope     15 mdc,  20 private  (43% standard)
+endoscopic-camera        9 mdc,  15 private  (38% standard)
 ```
 
 A patient monitor is almost entirely expressible in the standard's own vocabulary.
 A surgical microscope is not, and neither is an electrosurgery generator — for those, the parts with standard terms are mostly the *units* (mm, degrees, watts), while what the device actually does has no agreed term at all.
 That is not a shortcut taken here; it is the gap that work on extending the 1010X nomenclature exists to close, and marking it beats inventing codes that look official.
 
-> [!WARNING]
-> The codes in these presets are the standard's **reference IDs** (`MDC_PULS_OXIM_SAT_O2`), not its numeric CF codes, because IEEE 11073-10101 was not available to check them against.
-Anything meant to interoperate for real has to substitute the numbers.
+The `mdc` entries use the decimal context-free numeric codes defined by IEEE 11073-10101:2020
+and its published amendments. Concepts and units for which those sources provide no direct
+match remain explicitly `private`; the presets do not derive or invent MDC codes.
 
 ## Actions
 
@@ -455,7 +455,6 @@ This is a focused SDC learning fixture, not an IEEE 11073 conformance claim. IEE
 | Severity                 | Not supported or partial                                                                                                                                                                                                                                                                                | Practical consequence                                                                                                                                                                                                   |
 |--------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **Will cause problems**  | Secure SDC deployment: there is no TLS, certificate handling, mutual authentication or authorization.                                                                                                                                                                                                   | SDC service and event traffic uses plain HTTP; WS-Discovery is also unsecured UDP multicast. Do not use it outside an isolated, trusted lab network.                                                                    |
-| **Will cause problems**  | The preset `mdc` values are IEEE 11073-10101 reference-ID strings, not verified numeric CF codes.                                                                                                                                                                                                       | A peer that needs wire-level nomenclature codes cannot reliably interpret those claimed standard terms. See the warning in [What the presets are actually demonstrating](#what-the-presets-are-actually-demonstrating). |
 | **Will cause problems**  | Remote control covers `SetValueOperation`, `SetStringOperation`, and argumentless `ActivateOperation` only. The toolbox does not publish or drive `SetContextState`, `SetAlertState`, `SetMetricState` or `SetComponentState` operations.                                                               | Valid state-changing workflows, actions requiring arguments, remote context association, and remote alert handling cannot be exercised end to end.                                                                      |
 | **Might cause problems** | Contexts cover patient and location only. The Network panel shows associated peer patients read-only, but ensemble, workflow, means and operator contexts are not modelled or shown.                                                                                                                      | Tests involving care-team, workflow or multi-device context coordination need another fixture or direct access to the raw MDIB.                                                                                         |
 | **Might cause problems** | The locally published alert model has one source metric per condition, local acknowledgement/delegation, and automatic limits only for decimal scalar values. Signals can use every standard manifestation and latching option. The consumer still displays peer source handles and signal manifestations. | Remote alert control, interoperable delegation, and limit conditions on text or choice sources cannot be exercised correctly.                                                                                 |

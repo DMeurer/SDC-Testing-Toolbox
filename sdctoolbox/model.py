@@ -217,10 +217,9 @@ class Coding:
 
     ``system`` is either a key of CODING_SYSTEMS or an explicit coding-system URI:
 
-    * ``mdc`` — IEEE 11073-10101. Use it only where a term genuinely exists. The codes this
-      project ships are the standard's *reference IDs* (``MDC_PULS_OXIM_SAT_O2``), not its
-      numeric CF codes, because 11073-10101 itself was not available to check them against.
-      Anything claiming to interoperate for real has to substitute the numbers.
+    * ``mdc`` — IEEE 11073-10101. Use it only where a term genuinely exists. Shipped presets
+      use the standard's decimal context-free numeric codes, including terms added by its
+      published amendments.
     * ``private`` — ``urn:sdc-testing-toolbox:private``. Everything with no standard term,
       which for surgical devices is most of it. Marked rather than disguised: that gap is
       real and is the subject of active work on extending the nomenclature.

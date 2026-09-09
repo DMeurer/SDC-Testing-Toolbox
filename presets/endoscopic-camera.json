@@ -19,7 +19,7 @@
       "controllable": false,
       "section": "Camera",
       "unit": {
-        "code": "MDC_DIM_PERCENT",
+        "code": "262688",
         "system": "mdc",
         "label": "%"
       },
@@ -86,7 +86,7 @@
       "controllable": true,
       "section": "Camera",
       "unit": {
-        "code": "MDC_DIM_MILLI_SEC",
+        "code": "264338",
         "system": "mdc",
         "label": "ms"
       },
@@ -106,7 +106,7 @@
       "controllable": true,
       "section": "Camera",
       "unit": {
-        "code": "MDC_DIM_DECIBEL",
+        "code": "268576",
         "system": "mdc",
         "label": "dB"
       },
@@ -145,7 +145,7 @@
       "controllable": false,
       "section": "Light source",
       "unit": {
-        "code": "MDC_DIM_HR",
+        "code": "264384",
         "system": "mdc",
         "label": "h"
       },
@@ -165,7 +165,7 @@
       "controllable": true,
       "section": "Light source",
       "unit": {
-        "code": "MDC_DIM_PERCENT",
+        "code": "262688",
         "system": "mdc",
         "label": "%"
       },
@@ -197,8 +197,8 @@
       "minimum": "0",
       "maximum": "100",
       "domain_unit": {
-        "code": "MDC_DIM_NANO_M",
-        "system": "mdc",
+        "code": "wavelength_nm",
+        "system": "private",
         "label": "nm"
       },
       "domain_minimum": "380",
@@ -229,7 +229,7 @@
       "controllable": true,
       "section": "Camera",
       "unit": {
-        "code": "MDC_DIM_KELVIN",
+        "code": "266528",
         "system": "mdc",
         "label": "K"
       },

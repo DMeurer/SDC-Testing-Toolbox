@@ -19,12 +19,12 @@
       "controllable": false,
       "section": "Status",
       "unit": {
-        "code": "MDC_DIM_PERCENT",
+        "code": "262688",
         "system": "mdc",
         "label": "%"
       },
       "type": {
-        "code": "MDC_ATTR_VMS_MDS_BATT_CHARGE",
+        "code": "68024",
         "system": "mdc"
       },
       "resolution": "1",
@@ -51,13 +51,13 @@
       "controllable": false,
       "section": "Line",
       "unit": {
-        "code": "MDC_DIM_MMHG",
+        "code": "266016",
         "system": "mdc",
         "label": "mmHg"
       },
       "type": {
-        "code": "pump_line_pressure",
-        "system": "private"
+        "code": "158120",
+        "system": "mdc"
       },
       "resolution": "1",
       "minimum": "0",
@@ -73,7 +73,7 @@
       "controllable": true,
       "section": "Line",
       "unit": {
-        "code": "MDC_DIM_MMHG",
+        "code": "266016",
         "system": "mdc",
         "label": "mmHg"
       },
@@ -111,12 +111,12 @@
       "controllable": true,
       "section": "Infusion",
       "unit": {
-        "code": "MDC_DIM_MILLI_L_PER_HR",
+        "code": "265266",
         "system": "mdc",
         "label": "mL/h"
       },
       "type": {
-        "code": "MDC_FLOW_FLUID_PUMP",
+        "code": "157784",
         "system": "mdc"
       },
       "resolution": "0.1",
@@ -131,12 +131,12 @@
       "controllable": false,
       "section": "Infusion",
       "unit": {
-        "code": "MDC_DIM_MILLI_L",
+        "code": "263762",
         "system": "mdc",
         "label": "mL"
       },
       "type": {
-        "code": "MDC_VOL_FLUID_DELIV_TOTAL",
+        "code": "157993",
         "system": "mdc"
       },
       "resolution": "1",
@@ -151,13 +151,13 @@
       "controllable": true,
       "section": "Infusion",
       "unit": {
-        "code": "MDC_DIM_MILLI_L",
+        "code": "263762",
         "system": "mdc",
         "label": "mL"
       },
       "type": {
-        "code": "pump_volume_to_be_infused",
-        "system": "private"
+        "code": "157884",
+        "system": "mdc"
       },
       "resolution": "1",
       "minimum": "0",

@@ -1,0 +1,3 @@
+# Generated IEEE 11073 table exports can be large and are reproducible.
+*
+!.gitignore
