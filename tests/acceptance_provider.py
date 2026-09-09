@@ -3,22 +3,25 @@
 Started as a subprocess by acceptance_core.py; not useful on its own, though it can be run
 by hand to have a device on the network to poke at.
 
-Creates four data sources up front, disables remote control on one of them, and after a
-delay adds a fifth one - that late arrival is what proves runtime descriptor creation is
-visible to an already-connected consumer.
+Creates four data sources up front and disables remote control on one of them. Its stdin
+commands add a fifth source, update patient context, and remove generated sample sources
+after a consumer has subscribed.
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import queue
 import sys
+import threading
 import time
 from decimal import Decimal
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from script_support import ACCEPTANCE_PROVIDER_READY  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 
 from sdctoolbox import constants  # noqa: E402
@@ -49,29 +52,61 @@ SAW = "m.saw"
 # 100 rises by exactly 100/40 each time. acceptance_core relies on that being exact.
 SAW_CYCLE = 40
 HOME_ACTION = "act.home_axes"
+INVALID_CHOICE_ACTION = "act.invalid_choice"
+INVALID_EFFECT_ACTION = "act.invalid_effect"
+MISSING_EFFECT_ACTION = "act.missing_effect"
 LIMIT_ALARM = "al.zoom_out_of_range"
 MANUAL_ALARM = "al.service_due"
 
-# Not "alpha": that is run_toolbox.py's default, and EPRs are derived from the name, so a
-# toolbox window left open would publish the same EPR as this process and a test could
-# connect to whichever answered first.
+# Deliberately different from DEFAULT_INSTANCE_NAME: EPRs are derived from the name, so an
+# application left open with defaults must not publish the same EPR as this test peer.
 PEER_INSTANCE = "acceptance-peer"
 UPDATED_PATIENT = "Grace Hopper"
+ADD_LATE_COMMAND = "add-late"
+UPDATE_CONTEXT_COMMAND = "update-context"
+REMOVE_SAMPLES_COMMAND = "remove-samples"
+STOP_COMMAND = "stop"
+COMMAND_DONE_PREFIX = "[provider] COMMAND DONE:"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ip", default=constants.DEFAULT_IP)
     parser.add_argument("--instance", default=PEER_INSTANCE)
-    parser.add_argument("--late-after", type=float, default=8.0, help="seconds before adding the late metric")
-    parser.add_argument(
-        "--context-update-after",
-        type=float,
-        default=20.0,
-        help="seconds before replacing the patient context",
-    )
     parser.add_argument("--seconds", type=float, default=70.0, help="total run time")
     return parser.parse_args()
+
+
+def add_late_metric(service: ProviderService) -> None:
+    service.add_metric(
+        MetricSpec(
+            label="Late arrival",
+            kind=MetricKind.NUMBER,
+            unit_label="units",
+            resolution=Decimal("1"),
+            controllable=True,
+            handle=LATE,
+            initial_value=Decimal("42"),
+        ),
+    )
+
+
+def update_patient_context(service: ProviderService) -> None:
+    service.set_patient(
+        PatientInfo(
+            given_name="Grace",
+            family_name="Hopper",
+            height=PatientMeasurement(
+                value=Decimal("1E-7"),
+                unit=Coding(code="demo-m", system="private", label="m"),
+            ),
+            race=Coding(
+                code="updated-race",
+                system="urn:example:race",
+                label="Updated race",
+            ),
+        ),
+    )
 
 
 def main() -> int:
@@ -193,9 +228,33 @@ def main() -> int:
         ActionSpec(
             label="Home axes",
             target_handle=constants.MDS_HANDLE,
-            effects={ZOOM: Decimal("1"), MODE: "IDLE"},
+            effects={ZOOM: "1", MODE: "IDLE", NOTE: "001"},
             handle=HOME_ACTION,
             note="Return the device to its reference state",
+        ),
+    )
+    service.add_action(
+        ActionSpec(
+            label="Invalid effect",
+            target_handle=constants.MDS_HANDLE,
+            effects={MODE: "PAUSE", ZOOM: "101"},
+            handle=INVALID_EFFECT_ACTION,
+        ),
+    )
+    service.add_action(
+        ActionSpec(
+            label="Invalid choice",
+            target_handle=constants.MDS_HANDLE,
+            effects={ZOOM: "5", MODE: "INVALID"},
+            handle=INVALID_CHOICE_ACTION,
+        ),
+    )
+    service.add_action(
+        ActionSpec(
+            label="Missing effect",
+            target_handle=constants.MDS_HANDLE,
+            effects={MODE: "PAUSE", "m.missing_effect": "1"},
+            handle=MISSING_EFFECT_ACTION,
         ),
     )
     # A distribution has nothing driving it, so it gets one block and keeps it.
@@ -224,47 +283,40 @@ def main() -> int:
 
     print(f"[provider] initial metrics: {sorted(service.list_metrics())}", flush=True)
     print(f"[provider] alarms: {sorted(service.list_alerts())}", flush=True)
-    print("[provider] READY", flush=True)
+    print(ACCEPTANCE_PROVIDER_READY, flush=True)
 
-    started = time.monotonic()
+    commands: queue.Queue[str] = queue.Queue()
+
+    def read_commands() -> None:
+        for line in sys.stdin:
+            commands.put(line.strip())
+
+    threading.Thread(target=read_commands, name="acceptance-command-reader", daemon=True).start()
+    deadline = time.monotonic() + args.seconds
     late_added = False
     context_updated = False
-    deadline = started + args.seconds
-
-    while time.monotonic() < deadline:
-        if not late_added and time.monotonic() - started >= args.late_after:
-            service.add_metric(
-                MetricSpec(
-                    label="Late arrival",
-                    kind=MetricKind.NUMBER,
-                    unit_label="units",
-                    resolution=Decimal("1"),
-                    controllable=True,
-                    handle=LATE,
-                    initial_value=Decimal("42"),
-                ),
-            )
+    samples_removed = False
+    while (remaining := deadline - time.monotonic()) > 0:
+        try:
+            command = commands.get(timeout=remaining)
+        except queue.Empty:
+            break
+        if command == STOP_COMMAND:
+            break
+        if command == ADD_LATE_COMMAND and not late_added:
+            add_late_metric(service)
             late_added = True
-            print(f"[provider] added {LATE} at runtime", flush=True)
-        if not context_updated and time.monotonic() - started >= args.context_update_after:
-            service.set_patient(
-                PatientInfo(
-                    given_name="Grace",
-                    family_name="Hopper",
-                    height=PatientMeasurement(
-                        value=Decimal("1E-7"),
-                        unit=Coding(code="demo-m", system="private", label="m"),
-                    ),
-                    race=Coding(
-                        code="updated-race",
-                        system="urn:example:race",
-                        label="Updated race",
-                    ),
-                ),
-            )
+        elif command == UPDATE_CONTEXT_COMMAND and not context_updated:
+            update_patient_context(service)
             context_updated = True
-            print(f"[provider] patient changed to {UPDATED_PATIENT}", flush=True)
-        time.sleep(0.5)
+        elif command == REMOVE_SAMPLES_COMMAND and not samples_removed:
+            for handle in (WAVE, DIST, SAW):
+                service.remove_metric(handle)
+            samples_removed = True
+        elif command not in {ADD_LATE_COMMAND, UPDATE_CONTEXT_COMMAND, REMOVE_SAMPLES_COMMAND}:
+            print(f"[provider] unknown command: {command}", flush=True)
+            continue
+        print(f"{COMMAND_DONE_PREFIX} {command}", flush=True)
 
     service.stop()
     print("[provider] stopped", flush=True)

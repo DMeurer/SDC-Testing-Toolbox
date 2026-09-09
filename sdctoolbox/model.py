@@ -8,13 +8,18 @@ takes a sample array as its argument.
 from __future__ import annotations
 
 import enum
+import math
 import re
-from urllib.parse import urlsplit
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, localcontext
 from typing import Any
+from urllib.parse import urlsplit
 
-from sdc11073.provider.operations import OperationDefinitionBase, SetStringOperation, SetValueOperation
+from sdc11073.provider.operations import (
+    OperationDefinitionBase,
+    SetStringOperation,
+    SetValueOperation,
+)
 from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types import pm_types
 from sdc11073.xml_types.dataconverters import DecimalConverter
@@ -50,17 +55,6 @@ class MetricKind(enum.Enum):
         """Whether a set operation exists for this kind."""
         return self in _OPERATION_CLASSES
 
-    @property
-    def creatable(self) -> bool:
-        """Whether this build can actually put such a descriptor on the wire."""
-        return self not in MISSING_MANDATORY_FIELDS
-
-    @property
-    def missing_fields(self) -> tuple[str, ...]:
-        """Mandatory descriptor fields this build never fills in, if any."""
-        return MISSING_MANDATORY_FIELDS.get(self, ())
-
-
 _DESCRIPTOR_QNAMES = {
     MetricKind.NUMBER: pm.NumericMetricDescriptor,
     MetricKind.TEXT: pm.StringMetricDescriptor,
@@ -76,13 +70,6 @@ _OPERATION_CLASSES: dict[MetricKind, type[OperationDefinitionBase]] = {
     MetricKind.TEXT: SetStringOperation,
     MetricKind.CHOICE: SetStringOperation,
 }
-
-# Kinds this build cannot put on the wire, and the mandatory descriptor fields it fails to
-# fill in for them. Empty: every kind BICEPS defines can now be created. Kept as the place
-# to record such a gap if one ever reappears, because the failure mode is nasty - BICEPS
-# only notices a missing mandatory field when the descriptor is serialised, which happens
-# after the transaction has already committed it. See ProviderService._create_entities.
-MISSING_MANDATORY_FIELDS: dict[MetricKind, tuple[str, ...]] = {}
 
 # The two sample-array kinds carry many values per state rather than one.
 SAMPLE_ARRAY_KINDS = (MetricKind.WAVEFORM, MetricKind.DISTRIBUTION)
@@ -143,10 +130,6 @@ class DistributionShape(enum.Enum):
 # on one machine are not spending all their time serialising sample arrays.
 DEFAULT_SAMPLE_PERIOD = Decimal("0.1")
 
-# How many samples a waveform card keeps and draws.
-WAVEFORM_HISTORY = 300
-
-
 # The alarm vocabulary is taken straight from BICEPS rather than reinvented, so the values
 # that go on the wire are the standard's own:
 #   AlertKind      PHYSIOLOGICAL=Phy  TECHNICAL=Tec  OTHER=Oth
@@ -156,15 +139,14 @@ AlertKind = pm_types.AlertConditionKind
 AlertPriority = pm_types.AlertConditionPriority
 AlertManifestation = pm_types.AlertSignalManifestation
 
-# How a signal is currently announcing itself.
+# How a signal is currently represented as announcing a condition.
 #   ON=On  OFF=Off  LATCH=Latch  ACK=Ack
-# ACK is the acknowledgement: the user has seen the alarm. The condition stays present, so
-# the fact is not erased - only the way it is being announced changes.
+# ACK is a signal-presence state, not the condition truth. The provider's explicit policy
+# permits a user acknowledgement to move only a generated On signal to Ack.
 AlertSignalPresence = pm_types.AlertSignalPresence
 
-# Where a signal is announced. LOCAL=Loc means here, REMOTE=Rem means another device has
-# taken it over. That hand-over is what BICEPS calls signal delegation, and a signal may
-# only be delegated when its descriptor says SignalDelegationSupported.
+# Where a signal is announced. LOCAL=Loc means here and REMOTE=Rem means remote. Changing
+# this field alone does not perform the normative BICEPS signal-delegation workflow.
 AlertSignalLocation = pm_types.AlertSignalPrimaryLocation
 
 # Default signal definitions preserve the original visual and audible behavior.
@@ -235,10 +217,9 @@ class Coding:
 
     ``system`` is either a key of CODING_SYSTEMS or an explicit coding-system URI:
 
-    * ``mdc`` — IEEE 11073-10101. Use it only where a term genuinely exists. The codes this
-      project ships are the standard's *reference IDs* (``MDC_PULS_OXIM_SAT_O2``), not its
-      numeric CF codes, because 11073-10101 itself was not available to check them against.
-      Anything claiming to interoperate for real has to substitute the numbers.
+    * ``mdc`` — IEEE 11073-10101. Use it only where a term genuinely exists. Shipped presets
+      use the standard's decimal context-free numeric codes, including terms added by its
+      published amendments.
     * ``private`` — ``urn:sdc-testing-toolbox:private``. Everything with no standard term,
       which for surgical devices is most of it. Marked rather than disguised: that gap is
       real and is the subject of active work on extending the nomenclature.
@@ -314,7 +295,7 @@ class Coding:
 
 # Bound expansion before fixed-point formatting: Decimal('1E+999999') is legal in Python but
 # is not practical to materialize or send as an xsd:decimal attribute.
-MAX_PATIENT_MEASUREMENT_WIRE_CHARS = 1024
+MAX_DECIMAL_WIRE_CHARS = 1024
 
 
 class _FixedPointDecimal(Decimal):
@@ -344,14 +325,9 @@ def patient_measurement_wire_value(value: Decimal) -> Decimal:
     formatting, reject unbounded expansions, and verify the library will not truncate the
     value before it is allowed into a context state.
     """
-    if not isinstance(value, Decimal):
-        msg = "patient measurement value must be a Decimal, never a float"
-        raise TypeError(msg)
-    if not value.is_finite():
-        msg = "patient measurement value must be finite"
-        raise ValueError(msg)
-    if _fixed_point_length(value) > MAX_PATIENT_MEASUREMENT_WIRE_CHARS:
-        msg = f"patient measurement value exceeds {MAX_PATIENT_MEASUREMENT_WIRE_CHARS} wire characters"
+    validate_decimal(value, "patient measurement value")
+    if _fixed_point_length(value) > MAX_DECIMAL_WIRE_CHARS:
+        msg = f"patient measurement value exceeds {MAX_DECIMAL_WIRE_CHARS} wire characters"
         raise ValueError(msg)
     wire_value = _FixedPointDecimal("0") if value.is_zero() else _FixedPointDecimal(value)
     serialized = DecimalConverter.to_xml(wire_value)
@@ -365,8 +341,44 @@ def patient_measurement_wire_value(value: Decimal) -> Decimal:
     return wire_value
 
 
-# MDC_DIM_DIMLESS, for a metric that measures a bare number.
-DIMENSIONLESS = Coding(code=constants.CODE_DIMENSIONLESS, system="mdc", label="")
+def validate_decimal(
+    value: object,
+    field: str,
+    *,
+    positive: bool = False,
+    float_representable: bool = False,
+) -> Decimal:
+    """Validate a Decimal before it is serialized or used in numeric logic."""
+    if not isinstance(value, Decimal):
+        msg = f"{field} must be a Decimal, never a float"
+        raise TypeError(msg)
+    if not value.is_finite():
+        msg = f"{field} must be finite"
+        raise ValueError(msg)
+    if positive and value <= 0:
+        msg = f"{field} must be positive, not {value}"
+        raise ValueError(msg)
+    if float_representable:
+        try:
+            float_value = float(value)
+        except (OverflowError, ValueError) as exc:
+            qualifier = "finite positive" if positive else "finite"
+            msg = f"{field} must be representable as a {qualifier} float"
+            raise ValueError(msg) from exc
+        if not math.isfinite(float_value) or positive and float_value <= 0:
+            qualifier = "finite positive" if positive else "finite"
+            msg = f"{field} must be representable as a {qualifier} float, not {value}"
+            raise ValueError(msg)
+    return value
+
+
+def fixed_point_decimal(value: Decimal, field: str) -> Decimal:
+    """Return a bounded Decimal whose string form is safe for xsd:decimal."""
+    validate_decimal(value, field)
+    if _fixed_point_length(value) > MAX_DECIMAL_WIRE_CHARS:
+        msg = f"{field} exceeds {MAX_DECIMAL_WIRE_CHARS} wire characters"
+        raise ValueError(msg)
+    return _FixedPointDecimal("0") if value.is_zero() else _FixedPointDecimal(value)
 
 
 @dataclass(frozen=True)
@@ -389,11 +401,6 @@ class DeviceInfo:
     model_name: str = constants.MODEL_NAME
     model_number: str = constants.MODEL_NUMBER
     firmware_version: str = constants.FIRMWARE_VERSION
-
-    def is_empty(self) -> bool:
-        """Whether this says anything the defaults do not."""
-        return self == DeviceInfo()
-
 
 @dataclass
 class MetricSpec:
@@ -472,20 +479,16 @@ class MetricSpec:
         if self.resolution is not None and not isinstance(self.resolution, Decimal):
             msg = "resolution must be a Decimal, never a float"
             raise TypeError(msg)
+        if self.resolution is not None:
+            validate_decimal(self.resolution, "resolution", positive=True)
+            fixed_point_decimal(self.resolution, "resolution")
 
         if self.kind is MetricKind.WAVEFORM:
             if self.sample_period is None:
                 self.sample_period = DEFAULT_SAMPLE_PERIOD
-            if not isinstance(self.sample_period, Decimal):
-                msg = "sample_period must be a Decimal, never a float"
-                raise TypeError(msg)
-            if self.sample_period <= 0:
-                msg = f"sample_period must be positive, not {self.sample_period}"
-                raise ValueError(msg)
+            self.waveform_cycle_sample_count()
+            self.generated_waveform_block_sample_count()
             self.shape = _coerce_enum(WaveformShape, self.shape, "shape")
-            if not isinstance(self.cycle_samples, int) or self.cycle_samples < 2:  # noqa: PLR2004
-                msg = f"cycle_samples must be an integer of at least 2, not {self.cycle_samples!r}"
-                raise ValueError(msg)
         elif self.sample_period is not None:
             msg = f"sample_period is only meaningful for {MetricKind.WAVEFORM.value} metrics"
             raise ValueError(msg)
@@ -507,6 +510,7 @@ class MetricSpec:
             if not isinstance(limit, Decimal):
                 msg = f"{name} must be a Decimal, never a float"
                 raise TypeError(msg)
+            fixed_point_decimal(limit, name)
             if self.kind is not MetricKind.DISTRIBUTION:
                 msg = f"{name} is only meaningful for {MetricKind.DISTRIBUTION.value} metrics"
                 raise ValueError(msg)
@@ -528,6 +532,7 @@ class MetricSpec:
             if not isinstance(limit, Decimal):
                 msg = f"{name} must be a Decimal, never a float"
                 raise TypeError(msg)
+            fixed_point_decimal(limit, name)
             # A sample array's TechnicalRange describes its samples, so limits mean the
             # same thing there as on a number. Only text and choice have no use for them.
             if self.kind is MetricKind.TEXT or self.kind is MetricKind.CHOICE:
@@ -536,23 +541,13 @@ class MetricSpec:
         if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
             msg = f"minimum {self.minimum} is greater than maximum {self.maximum}"
             raise ValueError(msg)
-        if isinstance(self.initial_value, float):
-            msg = "initial_value must be a Decimal or str, never a float"
-            raise TypeError(msg)
+        if self.kind in SAMPLE_ARRAY_KINDS:
+            self.generated_sample_range()
         if self.kind in SAMPLE_ARRAY_KINDS and self.initial_value is not None:
             msg = f"initial_value is not meaningful for {self.kind.value} metrics; use samples instead"
             raise ValueError(msg)
-        if self.kind is MetricKind.NUMBER and isinstance(self.initial_value, Decimal):
-            if self.minimum is not None and self.initial_value < self.minimum:
-                msg = f"initial_value {self.initial_value} is below minimum {self.minimum}"
-                raise ValueError(msg)
-            if self.maximum is not None and self.initial_value > self.maximum:
-                msg = f"initial_value {self.initial_value} is above maximum {self.maximum}"
-                raise ValueError(msg)
-        if self.kind is MetricKind.CHOICE and self.initial_value is not None:
-            if self.initial_value not in self.allowed_values:
-                msg = f"initial_value {self.initial_value!r} is not among allowed_values"
-                raise ValueError(msg)
+        if self.initial_value is not None:
+            self.initial_value = coerce_metric_value(self, self.initial_value)
 
     @property
     def slug(self) -> str:
@@ -566,6 +561,7 @@ class MetricSpec:
         metric nobody has given a term to does not have one.
         """
         return self.type_coding or Coding(code=self.slug, system="private", label=self.label)
+
 
     def effective_unit(self) -> Coding:
         """What this metric's values are in, as a code."""
@@ -589,6 +585,80 @@ class MetricSpec:
         """Whether one state of this metric carries many values rather than one."""
         return self.kind in SAMPLE_ARRAY_KINDS
 
+    def generated_sample_range(self) -> tuple[Decimal, Decimal]:
+        """Return the finite Decimal range used by sample generation."""
+        if not self.is_sample_array:
+            msg = f"{self.kind.value} metrics do not have a generated sample range"
+            raise ValueError(msg)
+        validate_decimal(self.resolution, "resolution", positive=True)
+        fixed_point_decimal(self.resolution, "resolution")
+
+        with localcontext() as context:
+            context.prec = MAX_DECIMAL_WIRE_CHARS + 10
+            if self.minimum is None and self.maximum is None:
+                low, high = Decimal(0), Decimal(100)
+            elif self.minimum is None:
+                high = self.maximum
+                low = high - Decimal(100)
+            elif self.maximum is None:
+                low = self.minimum
+                high = low + Decimal(100)
+            else:
+                low, high = self.minimum, self.maximum
+            span = high - low
+
+        validate_decimal(low, "minimum used for sample generation", float_representable=True)
+        validate_decimal(high, "maximum used for sample generation", float_representable=True)
+        if span < 0:
+            msg = f"minimum {low} is greater than maximum {high}"
+            raise ValueError(msg)
+        if not math.isfinite(float(span)):
+            msg = f"generated sample range {low} to {high} must have a finite float span"
+            raise ValueError(msg)
+        return low, high
+
+    def generated_waveform_block_sample_count(self) -> int:
+        """Validate the sample period and return one generated block's bounded size."""
+        if self.kind is not MetricKind.WAVEFORM:
+            msg = f"{self.kind.value} metrics do not generate waveform blocks"
+            raise ValueError(msg)
+        period_value = validate_decimal(
+            self.sample_period,
+            "sample_period",
+            positive=True,
+            float_representable=True,
+        )
+        if period_value < constants.MIN_GENERATED_WAVEFORM_SAMPLE_PERIOD:
+            msg = (
+                f"sample_period must be at least {constants.MIN_GENERATED_WAVEFORM_SAMPLE_PERIOD} "
+                f"seconds so a generated block has at most "
+                f"{constants.MAX_GENERATED_WAVEFORM_BLOCK_SAMPLES} samples"
+            )
+            raise ValueError(msg)
+
+        ratio = constants.WAVEFORM_BLOCK_SECONDS / float(period_value)
+        if not math.isfinite(ratio) or ratio > constants.MAX_GENERATED_WAVEFORM_BLOCK_SAMPLES:
+            msg = (
+                "sample_period produces a non-finite or oversized generated waveform block "
+                f"(maximum {constants.MAX_GENERATED_WAVEFORM_BLOCK_SAMPLES} samples)"
+            )
+            raise ValueError(msg)
+        return max(1, round(ratio))
+
+    def waveform_cycle_sample_count(self) -> int:
+        """Validate and return the mutable waveform cycle length."""
+        if self.kind is not MetricKind.WAVEFORM:
+            msg = f"{self.kind.value} metrics do not have waveform cycles"
+            raise ValueError(msg)
+        if (
+            isinstance(self.cycle_samples, bool)
+            or not isinstance(self.cycle_samples, int)
+            or self.cycle_samples < 2  # noqa: PLR2004
+        ):
+            msg = f"cycle_samples must be an integer of at least 2, not {self.cycle_samples!r}"
+            raise ValueError(msg)
+        return self.cycle_samples
+
     def domain_text(self) -> str:
         """The distribution's domain as something readable, e.g. '0 to 100 Hz'."""
         if self.kind is not MetricKind.DISTRIBUTION:
@@ -599,6 +669,47 @@ class MetricSpec:
     def range_text(self) -> str:
         """The limits as something readable, or an empty string when unbounded."""
         return format_range(self.minimum, self.maximum)
+
+
+def coerce_metric_value(spec: MetricSpec, value: object, handle: str | None = None) -> Decimal | str:
+    """Normalize and validate one scalar metric value.
+
+    Numbers accept ``Decimal`` values and decimal strings and are returned as ``Decimal``;
+    text and choice values are returned as strings. Floats are always rejected. Numeric
+    bounds and choice membership come from the target metric specification.
+    """
+    target = handle or spec.handle or spec.label
+    if isinstance(value, float):
+        msg = f"value for {target!r} must be a Decimal or str, never a float"
+        raise TypeError(msg)
+
+    if spec.kind is MetricKind.NUMBER:
+        try:
+            normalized: Decimal | str = value if isinstance(value, Decimal) else Decimal(str(value))
+        except (InvalidOperation, ValueError) as exc:
+            msg = f"{value!r} is not a number for {target!r}"
+            raise ValueError(msg) from exc
+        validate_decimal(normalized, f"value for {target!r}")
+        if spec.minimum is not None and normalized < spec.minimum:
+            msg = f"{normalized} is below the minimum {spec.minimum} of {target!r}"
+            raise ValueError(msg)
+        if spec.maximum is not None and normalized > spec.maximum:
+            msg = f"{normalized} is above the maximum {spec.maximum} of {target!r}"
+            raise ValueError(msg)
+        return fixed_point_decimal(normalized, f"value for {target!r}")
+
+    if spec.kind is MetricKind.TEXT:
+        return str(value)
+
+    if spec.kind is MetricKind.CHOICE:
+        normalized = str(value)
+        if normalized not in spec.allowed_values:
+            msg = f"{normalized!r} is not among the allowed values {list(spec.allowed_values)} of {target!r}"
+            raise ValueError(msg)
+        return normalized
+
+    msg = f"{spec.kind.value} metrics do not hold one scalar value"
+    raise ValueError(msg)
 
 
 def _coerce_enum(enum_cls: Any, value: Any, field_name: str) -> Any:
@@ -686,6 +797,8 @@ class AlertSpec:
             if limit is not None and not isinstance(limit, Decimal):
                 msg = f"{name} must be a Decimal, never a float"
                 raise TypeError(msg)
+            if limit is not None:
+                fixed_point_decimal(limit, name)
         if (
             self.lower_limit is not None
             and self.upper_limit is not None
@@ -719,8 +832,11 @@ class AlertSpec:
 
     def breached_by(self, value: object) -> bool:
         """Whether a source value puts this condition into the present state."""
-        if not self.has_limits or not isinstance(value, Decimal):
+        if not self.has_limits or value is None:
             return False
+        if not isinstance(value, Decimal):
+            msg = "a limit alarm requires a numeric scalar value"
+            raise TypeError(msg)
         if self.lower_limit is not None and value < self.lower_limit:
             return True
         return self.upper_limit is not None and value > self.upper_limit
@@ -739,12 +855,17 @@ class SignalInfo:
 
     @property
     def acknowledged(self) -> bool:
-        """Whether the user has already acknowledged this signal."""
+        """Whether this signal currently has the Ack presence value."""
         return self.presence == AlertSignalPresence.ACK
 
     @property
-    def delegated(self) -> bool:
-        """Whether another device has taken this signal over."""
+    def acknowledgeable(self) -> bool:
+        """Whether the toolbox acknowledgement policy can change this signal."""
+        return self.presence == AlertSignalPresence.ON
+
+    @property
+    def remote_location(self) -> bool:
+        """Whether this signal currently reports Rem, without implying a handoff."""
         return self.location == AlertSignalLocation.REMOTE
 
     @property
@@ -759,7 +880,7 @@ class SignalInfo:
         a Windows console on cp1252 cannot encode an arrow.
         """
         text = f"{self.manifestation}:{self.presence}"
-        return f"{text}->Rem" if self.delegated else text
+        return f"{text}->Rem" if self.remote_location else text
 
 
 # Patient and location are BICEPS *contexts*: who and where, as opposed to what the device
@@ -808,12 +929,7 @@ class PatientMeasurement:
     unit: Coding
 
     def __post_init__(self) -> None:
-        if not isinstance(self.value, Decimal):
-            msg = "patient measurement value must be a Decimal, never a float"
-            raise TypeError(msg)
-        if not self.value.is_finite():
-            msg = "patient measurement value must be finite"
-            raise ValueError(msg)
+        validate_decimal(self.value, "patient measurement value")
         if not isinstance(self.unit, Coding):
             msg = "patient measurement unit must be a Coding"
             raise TypeError(msg)
@@ -1000,6 +1116,8 @@ class ActionSpec:
             if isinstance(value, float):
                 msg = f"action {self.label!r}: effect on {handle} must be a Decimal or str, never a float"
                 raise TypeError(msg)
+            if isinstance(value, Decimal):
+                fixed_point_decimal(value, f"action {self.label!r}: effect on {handle}")
 
     @property
     def slug(self) -> str:
@@ -1033,10 +1151,15 @@ class RemoteAlert:
     present: bool = False
     activation: str | None = None
     source_handles: tuple[str, ...] = field(default_factory=tuple)
+    # Current limits from AlertConditionState/Limits.
     lower_limit: Decimal | None = None
     upper_limit: Decimal | None = None
     # Handle -> manifestation for the signals that announce this condition.
     signals: dict[str, str] = field(default_factory=dict)
+    # Capability bounds from LimitAlertConditionDescriptor/MaxLimits, kept distinct from
+    # the current limits above. Appended to preserve positional snapshot construction.
+    max_lower_limit: Decimal | None = None
+    max_upper_limit: Decimal | None = None
 
     def limit_text(self) -> str:
         """The monitored limits, or an empty string when there are none."""
@@ -1068,11 +1191,56 @@ class RemoteAction:
     type_code: str | None = None
     target_handle: str | None = None
     enabled: bool = False
+    # The current client supports only argumentless Activate operations. Argument-bearing
+    # operations remain visible in the snapshot but are not marked enabled.
+    argument_count: int = 0
 
     @property
     def caption(self) -> str:
         """What to put on the button."""
         return self.label or self.type_code or self.handle
+
+
+@dataclass(frozen=True)
+class RemoteRange:
+    """One BICEPS Range copied without dropping open bounds or StepWidth."""
+
+    lower: Decimal | None = None
+    upper: Decimal | None = None
+    step_width: Decimal | None = None
+
+    def contains(self, value: Decimal) -> bool:
+        """Whether value is inside this range and aligned to its optional step."""
+        try:
+            if self.lower is not None and value < self.lower:
+                return False
+            if self.upper is not None and value > self.upper:
+                return False
+            if self.step_width is None:
+                return True
+            if self.lower is not None:
+                offset = value - self.lower
+            elif self.upper is not None:
+                offset = self.upper - value
+            else:
+                return True
+            if not self.step_width.is_finite() or self.step_width <= 0:
+                return False
+            return offset % self.step_width == 0
+        except (ArithmeticError, AttributeError, TypeError, ValueError):
+            return False
+
+    def text(self) -> str:
+        """Render this range without discarding its step width."""
+        bounds = format_range(self.lower, self.upper) or "any value"
+        if self.step_width is None:
+            return bounds
+        return f"{bounds} (step {self.step_width})"
+
+
+def numeric_value_in_ranges(value: Decimal, ranges: tuple[RemoteRange, ...]) -> bool:
+    """Apply BICEPS AllowedRange union semantics; no ranges means unrestricted."""
+    return not ranges or any(allowed_range.contains(value) for allowed_range in ranges)
 
 
 @dataclass
@@ -1089,9 +1257,12 @@ class RemoteMetric:
     label: str | None = None
     unit_label: str | None = None
     type_code: str | None = None
+    # EnumStringMetricDescriptor/AllowedValue describes values of the metric itself.
     allowed_values: tuple[str, ...] = ()
-    # Limits the peer publishes. `minimum`/`maximum` come from the set operation's
-    # AllowedRange when there is one, otherwise from the metric's TechnicalRange.
+    # NumericMetricDescriptor/Resolution, which determines a numeric control's step size.
+    resolution: Decimal | None = None
+    # First range of the selected operation, retained for existing single-range controls.
+    # No TechnicalRange fallback is used: technical capability is not a control limit.
     minimum: Decimal | None = None
     maximum: Decimal | None = None
     # The metric's own TechnicalRange, kept separately because it describes what the device
@@ -1110,10 +1281,19 @@ class RemoteMetric:
     domain_minimum: Decimal | None = None
     domain_maximum: Decimal | None = None
     parent_handle: str | None = None
-    # Handles of set operations whose OperationTarget is this metric.
+    # Handles of kind-compatible set operations whose OperationTarget is this metric.
     operation_handles: tuple[str, ...] = field(default_factory=tuple)
+    # The enabled, kind-compatible operation whose range is shown and which writes invoke.
+    selected_operation_handle: str | None = None
     # True when at least one of those operations currently has OperatingMode == En.
     controllable_now: bool = False
+    # Appended fields preserve positional construction of the original snapshot contract.
+    # SetStringOperationState/AllowedValues independently constrains the selected operation.
+    operation_allowed_values: tuple[str, ...] = ()
+    # Complete range data preserves additional ranges and StepWidth that the legacy display
+    # fields above intentionally cannot represent.
+    allowed_ranges: tuple[RemoteRange, ...] = field(default_factory=tuple)
+    technical_ranges: tuple[RemoteRange, ...] = field(default_factory=tuple)
 
     @property
     def controllable(self) -> bool:
@@ -1133,8 +1313,12 @@ class RemoteMetric:
     @property
     def has_range(self) -> bool:
         """Whether the peer publishes a limit we should respect."""
-        return self.minimum is not None or self.maximum is not None
+        return bool(self.allowed_ranges)
 
     def range_text(self) -> str:
-        """The limits as something readable, or an empty string when unbounded."""
-        return format_range(self.minimum, self.maximum)
+        """Every operation limit as readable text, or empty when unrestricted."""
+        return "; ".join(allowed_range.text() for allowed_range in self.allowed_ranges)
+
+    def numeric_value_allowed(self, value: Decimal) -> bool:
+        """Whether a numeric write satisfies any complete operation range."""
+        return numeric_value_in_ranges(value, self.allowed_ranges)

@@ -13,8 +13,9 @@ The obvious-looking shortcuts do not work:
 
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QAbstractItemView, QWidget
+from PySide6.QtWidgets import QAbstractItemView, QLabel, QSizePolicy, QWidget
 
 # How far to blend foreground towards background for de-emphasised text, in percent.
 # High enough to read comfortably, low enough to look secondary.
@@ -68,6 +69,22 @@ def mark_as_error(widget: QWidget) -> None:
     for group in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive):
         palette.setColor(group, QPalette.ColorRole.WindowText, colour)
     widget.setPalette(palette)
+
+
+def constrain_dynamic_label(
+    label: QLabel,
+    *,
+    max_lines: int = 1,
+    max_width: int | None = None,
+) -> None:
+    """Render variable content literally without letting it dictate layout dimensions."""
+    label.setTextFormat(Qt.PlainText)
+    horizontal = QSizePolicy.Ignored if max_width is None else QSizePolicy.Preferred
+    label.setSizePolicy(horizontal, QSizePolicy.Preferred)
+    label.setWordWrap(max_lines > 1)
+    label.setMaximumHeight(label.fontMetrics().lineSpacing() * max_lines + 2)
+    if max_width is not None:
+        label.setMaximumWidth(max_width)
 
 
 # Draws the selection as one flat band across the row.

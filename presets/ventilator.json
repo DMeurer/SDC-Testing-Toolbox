@@ -1,39 +1,72 @@
 {
-  "version": 1,
+  "version": 3,
   "name": "Ventilator",
   "description": "Three synchronised waveforms and the settings behind them. The waveform-heaviest preset here, and the one that shows what a stream of sample arrays costs.",
   "device": {
     "instance_name": "ventilator",
     "friendly_name": "Ventilator",
     "manufacturer": "SDC Testing Toolbox",
+    "manufacturer_url": "https://d-meurer.com",
     "model_name": "Aeris 700",
     "model_number": "700",
     "firmware_version": "4.1.2"
   },
   "metrics": [
     {
-      "handle": "m.paw",
-      "label": "Airway pressure",
-      "kind": "waveform",
-      "section": "Waveforms",
+      "handle": "m.compliance",
+      "label": "Compliance",
+      "kind": "number",
       "controllable": false,
-      "unit": {"label": "cmH2O", "code": "MDC_DIM_CM_H2O", "system": "mdc"},
-      "type": {"code": "MDC_PRESS_AWAY", "system": "mdc"},
+      "section": "Measured",
+      "unit": {
+        "code": "vent_compliance_unit",
+        "system": "private",
+        "label": "mL/cmH2O"
+      },
+      "type": {
+        "code": "151696",
+        "system": "mdc"
+      },
       "resolution": "0.1",
       "minimum": "0",
-      "maximum": "40",
-      "sample_period": "0.02",
-      "shape": "respiration",
-      "cycle_samples": 200
+      "maximum": "150",
+      "initial_value": "42"
+    },
+    {
+      "handle": "m.fio2",
+      "label": "FiO2",
+      "kind": "number",
+      "controllable": true,
+      "section": "Settings",
+      "unit": {
+        "code": "262688",
+        "system": "mdc",
+        "label": "%"
+      },
+      "type": {
+        "code": "152196",
+        "system": "mdc"
+      },
+      "resolution": "1",
+      "minimum": "21",
+      "maximum": "100",
+      "initial_value": "40"
     },
     {
       "handle": "m.flow",
       "label": "Airway flow",
       "kind": "waveform",
-      "section": "Waveforms",
       "controllable": false,
-      "unit": {"label": "L/min", "code": "MDC_DIM_L_PER_MIN", "system": "mdc"},
-      "type": {"code": "MDC_FLOW_AWAY", "system": "mdc"},
+      "section": "Waveforms",
+      "unit": {
+        "code": "265216",
+        "system": "mdc",
+        "label": "L/min"
+      },
+      "type": {
+        "code": "151764",
+        "system": "mdc"
+      },
       "resolution": "0.1",
       "minimum": "-60",
       "maximum": "60",
@@ -42,144 +75,208 @@
       "cycle_samples": 200
     },
     {
-      "handle": "m.volume",
-      "label": "Airway volume",
-      "kind": "waveform",
-      "section": "Waveforms",
-      "controllable": false,
-      "unit": {"label": "mL", "code": "MDC_DIM_MILLI_L", "system": "mdc"},
-      "type": {"code": "MDC_VOL_AWAY", "system": "mdc"},
-      "resolution": "1",
-      "minimum": "0",
-      "maximum": "800",
-      "sample_period": "0.02",
-      "shape": "respiration",
-      "cycle_samples": 200
-    },
-    {
-      "handle": "m.vent_mode",
-      "label": "Ventilation mode",
-      "kind": "choice",
-      "section": "Settings",
-      "controllable": true,
-      "allowed_values": ["VC_CMV", "PC_CMV", "SIMV", "CPAP", "PSV", "STANDBY"],
-      "initial_value": "PC_CMV",
-      "type": {"code": "vent_mode", "system": "private"}
-    },
-    {
-      "handle": "m.peep",
-      "label": "PEEP",
-      "kind": "number",
-      "section": "Settings",
-      "controllable": true,
-      "unit": {"label": "cmH2O", "code": "MDC_DIM_CM_H2O", "system": "mdc"},
-      "type": {"code": "MDC_PRESS_AWAY_END_EXP_POS", "system": "mdc"},
-      "resolution": "1",
-      "minimum": "0",
-      "maximum": "25",
-      "initial_value": "5"
-    },
-    {
-      "handle": "m.fio2",
-      "label": "FiO2",
-      "kind": "number",
-      "section": "Settings",
-      "controllable": true,
-      "unit": {"label": "%", "code": "MDC_DIM_PERCENT", "system": "mdc"},
-      "type": {"code": "MDC_CONC_AWAY_O2_INSP", "system": "mdc"},
-      "resolution": "1",
-      "minimum": "21",
-      "maximum": "100",
-      "initial_value": "40"
-    },
-    {
-      "handle": "m.resp_rate_set",
-      "label": "Set rate",
-      "kind": "number",
-      "section": "Settings",
-      "controllable": true,
-      "unit": {"label": "1/min", "code": "MDC_DIM_RESP_PER_MIN", "system": "mdc"},
-      "type": {"code": "MDC_VENT_RESP_RATE_SET", "system": "mdc"},
-      "resolution": "1",
-      "minimum": "4",
-      "maximum": "60",
-      "initial_value": "14"
-    },
-    {
       "handle": "m.insp_pressure",
       "label": "Inspiratory pressure",
       "kind": "number",
-      "section": "Settings",
       "controllable": true,
-      "unit": {"label": "cmH2O", "code": "MDC_DIM_CM_H2O", "system": "mdc"},
-      "type": {"code": "vent_insp_pressure_set", "system": "private"},
+      "section": "Settings",
+      "unit": {
+        "code": "266048",
+        "system": "mdc",
+        "label": "cmH2O"
+      },
+      "type": {
+        "code": "16929188",
+        "system": "mdc"
+      },
       "resolution": "1",
       "minimum": "5",
       "maximum": "50",
       "initial_value": "18"
     },
     {
-      "handle": "m.tidal_volume",
-      "label": "Tidal volume",
-      "kind": "number",
-      "section": "Measured",
-      "controllable": false,
-      "unit": {"label": "mL", "code": "MDC_DIM_MILLI_L", "system": "mdc"},
-      "type": {"code": "MDC_VOL_AWAY_TIDAL", "system": "mdc"},
-      "resolution": "1",
-      "minimum": "0",
-      "maximum": "1500",
-      "initial_value": "480"
-    },
-    {
       "handle": "m.minute_volume",
       "label": "Minute volume",
       "kind": "number",
-      "section": "Measured",
       "controllable": false,
-      "unit": {"label": "L/min", "code": "MDC_DIM_L_PER_MIN", "system": "mdc"},
-      "type": {"code": "MDC_VOL_MINUTE_AWAY", "system": "mdc"},
+      "section": "Measured",
+      "unit": {
+        "code": "265216",
+        "system": "mdc",
+        "label": "L/min"
+      },
+      "type": {
+        "code": "151880",
+        "system": "mdc"
+      },
       "resolution": "0.1",
       "minimum": "0",
       "maximum": "30",
       "initial_value": "6.7"
     },
     {
+      "handle": "m.paw",
+      "label": "Airway pressure",
+      "kind": "waveform",
+      "controllable": false,
+      "section": "Waveforms",
+      "unit": {
+        "code": "266048",
+        "system": "mdc",
+        "label": "cmH2O"
+      },
+      "type": {
+        "code": "151792",
+        "system": "mdc"
+      },
+      "resolution": "0.1",
+      "minimum": "0",
+      "maximum": "40",
+      "sample_period": "0.02",
+      "shape": "respiration",
+      "cycle_samples": 200
+    },
+    {
       "handle": "m.peak_pressure",
       "label": "Peak pressure",
       "kind": "number",
-      "section": "Measured",
       "controllable": false,
-      "unit": {"label": "cmH2O", "code": "MDC_DIM_CM_H2O", "system": "mdc"},
-      "type": {"code": "MDC_PRESS_AWAY_INSP_PEAK", "system": "mdc"},
+      "section": "Measured",
+      "unit": {
+        "code": "266048",
+        "system": "mdc",
+        "label": "cmH2O"
+      },
+      "type": {
+        "code": "151817",
+        "system": "mdc"
+      },
       "resolution": "1",
       "minimum": "0",
       "maximum": "60",
       "initial_value": "23"
     },
     {
-      "handle": "m.compliance",
-      "label": "Compliance",
+      "handle": "m.peep",
+      "label": "PEEP",
       "kind": "number",
-      "section": "Measured",
-      "controllable": false,
-      "unit": {"label": "mL/cmH2O", "code": "vent_compliance_unit", "system": "private"},
-      "type": {"code": "MDC_RESP_COMP_STATIC", "system": "mdc"},
-      "resolution": "0.1",
+      "controllable": true,
+      "section": "Settings",
+      "unit": {
+        "code": "266048",
+        "system": "mdc",
+        "label": "cmH2O"
+      },
+      "type": {
+        "code": "151804",
+        "system": "mdc"
+      },
+      "resolution": "1",
       "minimum": "0",
-      "maximum": "150",
-      "initial_value": "42"
+      "maximum": "25",
+      "initial_value": "5"
+    },
+    {
+      "handle": "m.resp_rate_set",
+      "label": "Set rate",
+      "kind": "number",
+      "controllable": true,
+      "section": "Settings",
+      "unit": {
+        "code": "264928",
+        "system": "mdc",
+        "label": "1/min"
+      },
+      "type": {
+        "code": "16928802",
+        "system": "mdc"
+      },
+      "resolution": "1",
+      "minimum": "4",
+      "maximum": "60",
+      "initial_value": "14"
+    },
+    {
+      "handle": "m.tidal_volume",
+      "label": "Tidal volume",
+      "kind": "number",
+      "controllable": false,
+      "section": "Measured",
+      "unit": {
+        "code": "263762",
+        "system": "mdc",
+        "label": "mL"
+      },
+      "type": {
+        "code": "151868",
+        "system": "mdc"
+      },
+      "resolution": "1",
+      "minimum": "0",
+      "maximum": "1500",
+      "initial_value": "480"
+    },
+    {
+      "handle": "m.vent_mode",
+      "label": "Ventilation mode",
+      "kind": "choice",
+      "controllable": true,
+      "section": "Settings",
+      "type": {
+        "code": "184352",
+        "system": "mdc"
+      },
+      "allowed_values": [
+        "VC_CMV",
+        "PC_CMV",
+        "SIMV",
+        "CPAP",
+        "PSV",
+        "STANDBY"
+      ],
+      "initial_value": "PC_CMV"
+    },
+    {
+      "handle": "m.volume",
+      "label": "Airway volume",
+      "kind": "waveform",
+      "controllable": false,
+      "section": "Waveforms",
+      "unit": {
+        "code": "263762",
+        "system": "mdc",
+        "label": "mL"
+      },
+      "type": {
+        "code": "152708",
+        "system": "mdc"
+      },
+      "resolution": "1",
+      "minimum": "0",
+      "maximum": "800",
+      "sample_period": "0.02",
+      "shape": "respiration",
+      "cycle_samples": 200
     }
   ],
   "alerts": [
     {
-      "handle": "al.pressure_high",
-      "label": "Airway pressure high",
+      "handle": "al.disconnection",
+      "label": "Patient disconnected",
       "watches": "m.peak_pressure",
-      "kind": "Phy",
+      "kind": "Tec",
       "priority": "Hi",
-      "upper_limit": "35",
-      "delegable": true
+      "signals": [
+        {
+          "manifestation": "Vis",
+          "latching": false
+        },
+        {
+          "manifestation": "Aud",
+          "latching": false
+        }
+      ],
+      "lower_limit": "3"
     },
     {
       "handle": "al.minute_volume_low",
@@ -187,7 +284,36 @@
       "watches": "m.minute_volume",
       "kind": "Phy",
       "priority": "Hi",
+      "signals": [
+        {
+          "manifestation": "Vis",
+          "latching": false
+        },
+        {
+          "manifestation": "Aud",
+          "latching": false
+        }
+      ],
       "lower_limit": "3",
+      "delegable": true
+    },
+    {
+      "handle": "al.pressure_high",
+      "label": "Airway pressure high",
+      "watches": "m.peak_pressure",
+      "kind": "Phy",
+      "priority": "Hi",
+      "signals": [
+        {
+          "manifestation": "Vis",
+          "latching": false
+        },
+        {
+          "manifestation": "Aud",
+          "latching": false
+        }
+      ],
+      "upper_limit": "35",
       "delegable": true
     },
     {
@@ -196,16 +322,18 @@
       "watches": "m.tidal_volume",
       "kind": "Phy",
       "priority": "Me",
+      "signals": [
+        {
+          "manifestation": "Vis",
+          "latching": false
+        },
+        {
+          "manifestation": "Aud",
+          "latching": false
+        }
+      ],
       "lower_limit": "250",
       "upper_limit": "750"
-    },
-    {
-      "handle": "al.disconnection",
-      "label": "Patient disconnected",
-      "watches": "m.peak_pressure",
-      "kind": "Tec",
-      "priority": "Hi",
-      "lower_limit": "3"
     }
   ],
   "actions": [
@@ -214,28 +342,40 @@
       "label": "Inspiratory hold",
       "target": "vmd.waveforms",
       "note": "Hold at end of inspiration to measure plateau pressure and static compliance",
-      "effects": {"m.compliance": "44.5", "m.peak_pressure": "21"}
-    },
-    {
-      "handle": "act.recruitment",
-      "label": "Recruitment manoeuvre",
-      "target": "mds0",
-      "note": "A sustained inflation. There is no value to set: it is a procedure the device performs",
-      "effects": {"m.peak_pressure": "38", "m.tidal_volume": "620"}
+      "effects": {
+        "m.compliance": "44.5",
+        "m.peak_pressure": "21"
+      }
     },
     {
       "handle": "act.o2_flush",
       "label": "100% O2 for 2 minutes",
       "target": "vmd.settings",
       "note": "Pre-oxygenation before suctioning",
-      "effects": {"m.fio2": "100"}
+      "effects": {
+        "m.fio2": "100"
+      }
+    },
+    {
+      "handle": "act.recruitment",
+      "label": "Recruitment manoeuvre",
+      "target": "mds0",
+      "note": "A sustained inflation. There is no value to set: it is a procedure the device performs",
+      "effects": {
+        "m.peak_pressure": "38",
+        "m.tidal_volume": "620"
+      }
     },
     {
       "handle": "act.standby",
       "label": "Standby",
       "target": "mds0",
       "note": "Stop ventilating without powering down",
-      "effects": {"m.vent_mode": "STANDBY", "m.minute_volume": "0", "m.peak_pressure": "0"}
+      "effects": {
+        "m.minute_volume": "0",
+        "m.peak_pressure": "0",
+        "m.vent_mode": "STANDBY"
+      }
     }
   ]
 }

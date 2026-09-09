@@ -7,9 +7,21 @@ __pycache__/
 # Virtual environment
 .venv/
 
+# Application builds
+/build/
+/dist/
+/*.sdcprofile.json
+smoke-test-error.txt
+
 # Diagnostic runtime artifacts
 diagnostics/*.log
 diagnostics/*.log.err
+
+# TLS material is local runtime configuration, never source material.
+*.pem
+*.key
+*.pfx
+*.p12
 
 # Tooling
 .vscode/
@@ -18,3 +30,4 @@ diagnostics/*.log.err
 # Notes
 INSTRUCTIONS.md
 PLANNING.md
+*-FINDINGS.md

@@ -1,0 +1,266 @@
+name: Build application
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [develop]
+  push:
+    tags: ["v*"]
+  schedule:
+    - cron: "17 3 * * 2"
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic-tests:
+    name: Deterministic and policy tests (Linux)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Qt runtime library
+        run: sudo apt-get update && sudo apt-get install -y libegl1
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run deterministic and policy suites
+        run: python tests/run_suites.py --role deterministic --role policy
+
+  windows-deterministic-tests:
+    name: Deterministic and policy tests (Windows)
+    if: github.event_name != 'schedule'
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run deterministic and policy suites
+        shell: pwsh
+        run: |
+          python tests/run_suites.py --role deterministic --role policy 2>&1 | Tee-Object -FilePath windows-test-suites.log
+          $testExitCode = $LASTEXITCODE
+          exit $testExitCode
+
+      - name: Check strict Windows console encoding
+        shell: pwsh
+        run: |
+          python -c "import sys; from sdctoolbox.model import AlertSignalLocation, SignalInfo; sys.stdout.reconfigure(encoding='cp1252', errors='strict'); print(SignalInfo('signal', 'Vis', 'On', AlertSignalLocation.REMOTE, True).summary())" 2>&1 | Tee-Object -FilePath windows-console-encoding.log
+          $testExitCode = $LASTEXITCODE
+          exit $testExitCode
+
+      - name: Publish Windows test output on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-deterministic-output
+          path: |
+            windows-test-suites.log
+            windows-console-encoding.log
+          if-no-files-found: warn
+
+  network-acceptance:
+    name: Network acceptance
+    runs-on: ubuntu-22.04
+    timeout-minutes: 8
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run isolated provider/consumer acceptance
+        run: |
+          set -o pipefail
+          python tests/acceptance_core.py 2>&1 | tee network-acceptance.log
+
+      - name: Publish provider and consumer output on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: network-acceptance-output
+          path: network-acceptance.log
+          if-no-files-found: warn
+
+  tls-acceptance:
+    name: TLS acceptance
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run TLS provider/consumer acceptance
+        run: |
+          set -o pipefail
+          python tests/tls_acceptance.py 2>&1 | tee tls-acceptance.log
+
+      - name: Publish TLS acceptance output on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tls-acceptance-output
+          path: tls-acceptance.log
+          if-no-files-found: warn
+
+  build:
+    name: ${{ matrix.name }}
+    if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows executable
+            os: windows-2022
+          - name: Linux bundle
+            os: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Linux build libraries
+        if: runner.os == 'Linux'
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          binutils libbrotli1 libdbus-1-3 libegl1 libfontconfig1 libfreetype6
+          libgl1 libglib2.0-0 libgtk-3-0 libx11-xcb1 libxcb-cursor0
+          libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0
+          libxcb-render-util0 libxcb-render0 libxcb-shape0 libxcb-shm0
+          libxcb-sync1 libxcb-xfixes0 libxcb-xkb1 libxkbcommon-x11-0
+          libxkbcommon0
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt -r requirements-build.txt
+
+      - name: Build application
+        timeout-minutes: 15
+        run: pyinstaller --clean --noconfirm SDC-Testing-Toolbox.spec
+
+      - name: Smoke-test Windows executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 3
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          Remove-Item smoke-test-error.txt -ErrorAction SilentlyContinue
+          .\dist\SDC-Testing-Toolbox\SDC-Testing-Toolbox.exe --name packaged-smoke --ip 127.0.0.1 --smoke-test
+          if ($LASTEXITCODE -ne 0) {
+            if (Test-Path smoke-test-error.txt) { Get-Content smoke-test-error.txt }
+            exit $LASTEXITCODE
+          }
+
+      - name: Smoke-test Linux bundle
+        if: runner.os == 'Linux'
+        timeout-minutes: 3
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ./dist/SDC-Testing-Toolbox/SDC-Testing-Toolbox --name packaged-smoke --ip 127.0.0.1 --smoke-test
+
+      - name: Archive Windows bundle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/SDC-Testing-Toolbox -DestinationPath dist/SDC-Testing-Toolbox-windows-x86_64.zip
+
+      - name: Archive Linux bundle
+        if: runner.os == 'Linux'
+        run: tar -C dist -czf dist/SDC-Testing-Toolbox-linux-x86_64.tar.gz SDC-Testing-Toolbox
+
+      - name: Open final artifact and validate legal payload
+        shell: pwsh
+        run: |
+          $archive = if ($IsWindows) {
+            "dist/SDC-Testing-Toolbox-windows-x86_64.zip"
+          } else {
+            "dist/SDC-Testing-Toolbox-linux-x86_64.tar.gz"
+          }
+          python tests/licensing.py --artifact $archive
+
+      - name: Upload Windows bundle
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: SDC-Testing-Toolbox-windows-x86_64
+          path: dist/SDC-Testing-Toolbox-windows-x86_64.zip
+          if-no-files-found: error
+
+      - name: Upload Linux bundle
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: SDC-Testing-Toolbox-linux-x86_64
+          path: dist/SDC-Testing-Toolbox-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  inspect-artifacts:
+    name: Inspect Windows and Linux legal payloads
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: SDC-Testing-Toolbox-windows-x86_64
+          path: artifacts/windows
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: SDC-Testing-Toolbox-linux-x86_64
+          path: artifacts/linux
+
+      - name: Open both uploaded artifacts and validate legal payloads
+        run: |
+          python tests/licensing.py --artifact artifacts/windows/SDC-Testing-Toolbox-windows-x86_64.zip
+          python tests/licensing.py --artifact artifacts/linux/SDC-Testing-Toolbox-linux-x86_64.tar.gz

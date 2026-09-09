@@ -2,10 +2,10 @@
 
 A desktop tool for understanding **IEEE 11073 SDC**: create data sources with a few clicks, publish them on the network, discover other SDC devices, subscribe to their data sources and remote-control them.
 
-Built on [sdc11073](https://github.com/Draegerwerk/sdc11073) (Draeger, MIT) and PySide6.
+Built on [sdc11073](https://github.com/Draegerwerk/sdc11073) and PySide6.
 
 > [!WARNING]
-> Learning tool, not a medical device. By its own notice `sdc11073` is not intended for
+> Learning tool, not a medical device. By its own notice the python library `sdc11073` is not intended for
 > clinical trials, clinical studies or clinical routine use, and was not developed according
 > to ISO 9001.
 
@@ -16,20 +16,88 @@ py -3.12 -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Python 3.12 is deliberate: `python` on a typical Windows box may point at a newer release, and an explicit `py -3.12` keeps the environment reproducible. Both dependencies also work on 3.13 and 3.14 if you prefer.
+Python 3.12 is the project's tested interpreter and is selected explicitly on Windows and in
+CI. The pinned runtime dependencies declare support for Python 3.10 through 3.14, so Ubuntu
+22.04's default Python 3.10 is also suitable. `requirements.txt` and
+`requirements-build.txt` pin direct dependencies only; pip still resolves transitive
+dependencies at install time, so they are not a complete reproducible lock.
+
+## Application builds
+
+PyInstaller produces a standalone Windows executable and a standalone Linux application
+bundle. Builds are platform-specific: build Windows on Windows and Linux on Linux rather than
+trying to cross-compile either artifact.
+
+Install the pinned build tooling alongside the runtime dependencies, then run the tracked
+specification:
+
+```powershell
+.venv\Scripts\python.exe -m pip install -r requirements-build.txt
+.venv\Scripts\python.exe -m PyInstaller --clean --noconfirm SDC-Testing-Toolbox.spec
+```
+
+The Windows result is the `dist\SDC-Testing-Toolbox` directory. Keep that
+directory intact: it contains replaceable shared libraries, `LICENSE`,
+`THIRD_PARTY_NOTICES.md`, an artifact-specific `DEPENDENCY_INVENTORY.json`,
+source/relinking instructions, and collected license texts. The inventory is
+generated from installed distributions and PyInstaller analysis for each
+native build; it is not a static lock file.
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  python3 python3-venv binutils libbrotli1 libdbus-1-3 libegl1 \
+  libfontconfig1 libfreetype6 libgl1 \
+  libglib2.0-0 libgtk-3-0 libx11-xcb1 libxcb-cursor0 libxcb-icccm4 \
+  libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+  libxcb-render0 libxcb-shape0 libxcb-shm0 libxcb-sync1 libxcb-xfixes0 \
+  libxcb-xkb1 libxkbcommon-x11-0 libxkbcommon0
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt -r requirements-build.txt
+.venv/bin/python -m PyInstaller --clean --noconfirm SDC-Testing-Toolbox.spec
+tar -C dist -czf dist/SDC-Testing-Toolbox-linux-x86_64.tar.gz SDC-Testing-Toolbox
+```
+
+The workflow's Linux archive targets x86-64 desktop distributions with glibc 2.35 or newer
+because it is built on Ubuntu 22.04. A local build inherits its build host's glibc baseline.
+The archive contains application-specific shared libraries as separate files, while normal desktop system
+libraries remain host dependencies. Keep the bundle together after extracting it; the
+executable is `SDC-Testing-Toolbox/SDC-Testing-Toolbox`.
+
+The `Build application` GitHub Actions workflow performs both native builds, smoke-tests the
+actual packaged applications, validates the final archives' legal payloads, and uploads Windows
+and Linux archives as release candidates. Run it
+manually when an artifact is needed; it also runs for pull requests to `develop` and version
+tags.
+
+## License
+
+SDC Testing Toolbox is free software licensed under the
+[GNU General Public License version 3 only](LICENSE) (`GPL-3.0-only`). This is
+the toolbox's license, not the license of its dependencies.
+
+Dependencies retain their own terms. In particular, `sdc11073` 3.0.0 is MIT
+licensed, `cryptography` is Apache-2.0 OR BSD-3-Clause, while PySide6 and Qt are available under applicable LGPLv3, GPL, or
+commercial terms depending on the components and license option. Packaged
+builds also contain Python and files produced or embedded by PyInstaller. See
+[Third-Party Notices](THIRD_PARTY_NOTICES.md) for attribution, authoritative
+links, and distribution considerations. Review the generated inventory and
+bundled texts for the exact artifact. Public binary releases must also publish
+the exact corresponding-source payload defined in `legal/SOURCE_OFFER.md`;
+these materials are operational guidance, not legal advice or a guarantee of
+compliance.
 
 ## Milestones
 
-- [x] **0 — Groundwork.** Pinned environment, sdc11073 API verified, networking settled.
+- [x] **0 — Groundwork.** Direct dependencies pinned, sdc11073 API verified, networking settled.
 - [x] **1 — Core.** Create data sources at runtime, publish them, remote-control them. Headless, with a console front end and an acceptance test.
 - [x] **2 — Provider UI.** Metric list with live values, "New data source" dialog.
 - [x] **3 — Consumer UI.** Discovery, MDIB browser, editors for controllable metrics. Accepts foreign MDIBs defensively; detailed metric and operation views cover the supported subset.
 - [x] **4a — Alarms and presets.** Alert conditions with their signals, and configs you can export, import and load at startup.
 - [x] **4b — Contexts and signal handling.** Editable patient and location, acknowledgement and delegation, a preset picker.
 - [x] **4c — Waveforms and distributions.** Both sample-array kinds, a generator for both, and a plot to watch them on.
-- [x] **4d — Realistic presets.** Coded values, device identity, subsystem structure, and actions. Seven virtual device profiles, each built by tests.
-- [ ] **4e — TLS.**
-- [x] **5 - Device presets.** Provide virtual device profiles, so a consumer can be tested without physical hardware being present.
+- [x] **4d — Device presets.** Seven realistic virtual device profiles with coded values, device identity, subsystem structure, and actions, each built by tests.
+- [x] **4e — TLS.** Strict TLS 1.2+ mutual authentication, certificate inspection and CA-based participant authorization.
 
 ## Try it
 
@@ -158,21 +226,22 @@ provider> where HOSP/Surgery/2/OR1/1/Table
 provider> patient Ada Lovelace F Ad 1815-12-10
   Ada Lovelace (F, Ad, 1815-12-10)
 provider> presets
-  Insufflator        6 data source(s), 3 alarm(s)
-      Six data sources and three alarms, roughly what a laparoscopic insufflator publishes.
+  Insufflator        9 data source(s), 3 alarm(s)
+      Laparoscopic insufflator: nine metrics for gas flow, pressure control, and related alarms. One metric larger than the infusion pump, and the first preset this project had.
 ```
 
 ## Presets
 
 *File → Export config* writes device metadata, data-source definitions and scalar current values, alarm and action definitions, and currently associated patient/location contexts to a JSON file.
 It is not a full live-device snapshot: sample blocks, alert/signal state, control mode, generator state and context history are not exported.
-*File → Import config* validates descriptor references before removing tracked metrics, alarms and actions, then rebuilds them.
-It is neither a whole-MDIB replacement nor transactional: existing sections and contexts omitted by the file remain, and an operational error after validation can still leave a device partly rebuilt.
-Export before experimenting with imports.
+*File → Import config* validates descriptor references and generated section containment before changing the provider. Replacement removes tracked metrics, alarms and actions before rebuilding them; `replace=False` appends the profile while retaining the existing graph.
+It is not a whole-MDIB replacement. In either mode, omitting `device` metadata leaves the running identity unchanged, while supplied metadata also cannot change an already running provider. Omitting `contexts.patient` or `contexts.location` leaves that currently associated context unchanged. An explicit patient block is associated, including an empty block to detach the current patient; an explicit empty location is rejected because a published location needs at least one detail.
+Both `replace=True` replacement and `replace=False` append are transactional for operational failures: the provider restores its prior managed metrics, alarms, actions, sections and associated contexts, publishing compensating transactions so connected consumers can recover the same graph. Append compensation removes only appended descriptors and restores contexts the failed import touched; it does not recreate unchanged pre-existing descriptors. This is recovery, not external atomicity: a subscribed consumer can observe temporary changes before the compensation, and a rollback failure is reported together with the import failure rather than hidden. Successful compensation keeps provider and consumer MDIB, descriptor, state and context-state versions monotonic; it advances versions instead of rewinding them.
 
 *File → Load preset* lists the ready-made devices in `presets/`, so the ones that ship with the tool need no file dialog.
-The same list appears in the startup window. Preset discovery skips files that raise JSON or configuration errors.
-Its validation is not exhaustive: a malformed field type can still interrupt preset-list construction; use *Import config* to inspect ordinary validation errors.
+The same list appears in the startup window. Loading a profile with malformed field types or other schema errors raises `ConfigError`; `list_presets` catches those strict validation failures, invalid JSON and unreadable files and skips those entries, so one malformed preset does not interrupt discovery.
+Explicit profile versions must be JSON integers from 1 through the current format version, 3; preset discovery skips files outside that range. Profiles without a version predate versioning and are intentionally read with legacy version 1 semantics.
+The seven shipped presets are canonical current-schema profiles, not legacy compatibility fixtures. They are kept at profile format version 3 with explicit alert signal definitions. Tests for older readable formats use synthetic profile data instead of holding a shipped preset back on an earlier schema.
 
 Any of them can also be loaded at startup:
 
@@ -181,9 +250,8 @@ Any of them can also be loaded at startup:
 .venv\Scripts\python.exe examples\console.py provider --config presets\ventilator.json
 ```
 
-Load it at startup rather than importing it afterwards if you want the device to announce that model:
-DPWS metadata is fixed when the provider is built, so a preset imported into a running toolbox brings its metrics but keeps the metadata it started with.
-The profile is parsed before startup where possible, but applied after the provider starts; an error found during application can leave that provider partially configured.
+Load it at startup rather than importing it afterwards if you want the device to announce that model.
+DPWS `ThisModel` and `ThisDevice` metadata is fixed when the provider is constructed. Startup loading reads the profile's `device` block before construction and then applies its live graph after startup; importing into an already running provider applies the graph but cannot change that provider's manufacturer, model, firmware, friendly name or other construction-time device metadata.
 The startup name still decides the EPR and serial number; a saved `device.instance_name` does not override it.
 
 For a profile that imports successfully, recorded handles make its defined metrics, alerts and actions addressable under stable names. They do not reproduce an identical live MDIB or provider identity.
@@ -198,7 +266,7 @@ For a profile that imports successfully, recorded handles make its defined metri
 | `hf-generator`        | Electrosurgery                        | A bimodal impedance spectrum, and a *Stop output* action                                                            |
 | `surgical-microscope` | Robotic scope, after an Aesculap Aeos | Six axes, fixpoint and free modes, ICG fluorescence, and *Home axes* — none of which is a value you write           |
 | `endoscopic-camera`   | Camera and light source               | Image profiles, and a *White balance now* action with nothing to type                                               |
-| `insufflator`         | Laparoscopic insufflator              | The first preset this project had                                                                                   |
+| `insufflator`         | Laparoscopic insufflator              | Nine metrics, one more than the infusion pump; the first preset this project had                                    |
 
 ### What the presets are actually demonstrating
 
@@ -212,20 +280,21 @@ Which is which is the interesting part, and `tests/presets.py` counts it:
 
 ```
 patient-monitor         24 mdc,   2 private  (92% standard)
-ventilator              21 mdc,   3 private  (88% standard)
-infusion-pump           11 mdc,   5 private  (69% standard)
-hf-generator            10 mdc,  10 private  (50% standard)
-surgical-microscope     15 mdc,  19 private  (44% standard)
-endoscopic-camera        9 mdc,  13 private  (41% standard)
+ventilator              23 mdc,   1 private  (96% standard)
+infusion-pump           13 mdc,   3 private  (81% standard)
+insufflator             10 mdc,   9 private  (53% standard)
+hf-generator            11 mdc,  10 private  (52% standard)
+surgical-microscope     15 mdc,  20 private  (43% standard)
+endoscopic-camera        9 mdc,  15 private  (38% standard)
 ```
 
 A patient monitor is almost entirely expressible in the standard's own vocabulary.
 A surgical microscope is not, and neither is an electrosurgery generator — for those, the parts with standard terms are mostly the *units* (mm, degrees, watts), while what the device actually does has no agreed term at all.
 That is not a shortcut taken here; it is the gap that work on extending the 1010X nomenclature exists to close, and marking it beats inventing codes that look official.
 
-> [!WARNING]
-> The codes in these presets are the standard's **reference IDs** (`MDC_PULS_OXIM_SAT_O2`), not its numeric CF codes, because IEEE 11073-10101 was not available to check them against.
-Anything meant to interoperate for real has to substitute the numbers.
+The `mdc` entries use the decimal context-free numeric codes defined by IEEE 11073-10101:2020
+and its published amendments. Concepts and units for which those sources provide no direct
+match remain explicitly `private`; the presets do not derive or invent MDC codes.
 
 ## Actions
 
@@ -385,8 +454,7 @@ This is a focused SDC learning fixture, not an IEEE 11073 conformance claim. IEE
 
 | Severity                 | Not supported or partial                                                                                                                                                                                                                                                                                | Practical consequence                                                                                                                                                                                                   |
 |--------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **Will cause problems**  | Secure SDC deployment: there is no TLS, certificate handling, mutual authentication or authorization.                                                                                                                                                                                                   | SDC service and event traffic uses plain HTTP; WS-Discovery is also unsecured UDP multicast. Do not use it outside an isolated, trusted lab network.                                                                    |
-| **Will cause problems**  | The preset `mdc` values are IEEE 11073-10101 reference-ID strings, not verified numeric CF codes.                                                                                                                                                                                                       | A peer that needs wire-level nomenclature codes cannot reliably interpret those claimed standard terms. See the warning in [What the presets are actually demonstrating](#what-the-presets-are-actually-demonstrating). |
+| **Might cause problems** | Per-certificate, per-operation authorization and known-invoker audit identity are unavailable.                                                                                                                                                                                                           | TLS can admit or reject a participant by its trusted CA/certificate, but the current sdc11073 operation handler cannot apply distinct permissions or report the client certificate identity for each operation. |
 | **Will cause problems**  | Remote control covers `SetValueOperation`, `SetStringOperation`, and argumentless `ActivateOperation` only. The toolbox does not publish or drive `SetContextState`, `SetAlertState`, `SetMetricState` or `SetComponentState` operations.                                                               | Valid state-changing workflows, actions requiring arguments, remote context association, and remote alert handling cannot be exercised end to end.                                                                      |
 | **Might cause problems** | Contexts cover patient and location only. The Network panel shows associated peer patients read-only, but ensemble, workflow, means and operator contexts are not modelled or shown.                                                                                                                      | Tests involving care-team, workflow or multi-device context coordination need another fixture or direct access to the raw MDIB.                                                                                         |
 | **Might cause problems** | The locally published alert model has one source metric per condition, local acknowledgement/delegation, and automatic limits only for decimal scalar values. Signals can use every standard manifestation and latching option. The consumer still displays peer source handles and signal manifestations. | Remote alert control, interoperable delegation, and limit conditions on text or choice sources cannot be exercised correctly.                                                                                 |
@@ -400,35 +468,107 @@ This is a focused SDC learning fixture, not an IEEE 11073 conformance claim. IEE
 
 ## Tests
 
-Six suites, all runnable from a terminal, all printing PASS/FAIL per check.
+The pull-request workflow runs the manifest-selected deterministic and policy suites once on
+Linux and once on Windows through `tests/run_suites.py`. Qt jobs use
+`QT_QPA_PLATFORM=offscreen`; Linux installs `libegl1` before importing PySide6:
 
-| Suite                       | Checks | Covers                                                                                |
-|-----------------------------|--------|---------------------------------------------------------------------------------------|
-| `tests/acceptance_core.py`  | 80     | two processes: discovery, context updates, control, rejections, runtime descriptors, alarms, waveforms |
-| `tests/gui_smoke.py`        | 278    | the real window offscreen, including live peer patient demographics                  |
-| `tests/widget_controls.py`  | 67     | which control for which metric, then controls driven for real                         |
-| `tests/provider_core.py`    | 99     | descriptor rollback, sample arrays, signal handling, demographics, contexts, presets  |
-| `tests/presets.py`          | 74     | every shipped preset builds into a working device                                     |
-| `tests/config_roundtrip.py` | 38     | versioned export/reimport, demographics, broken files refused                         |
+| Suite | Covers |
+|-------|--------|
+| `diagnostics/check_api.py` | required sdc11073 API surface |
+| `tests/workflow_security.py` | full-SHA action pins, release comments and Dependabot policy |
+| `tests/diagnostic_behavior.py` | diagnostic signature and update-result reporting |
+| `tests/security.py` | TLS policy, PEM validation, certificate metadata and fingerprint pins |
+| `tests/tls_helper.py` | self-signed local CA generation, additive participant identities and overwrite protection |
+| `tests/application_defaults.py` | shared application defaults and distinct acceptance identity |
+| `tests/import_bootstrap.py` | direct test imports under unrelated package shadowing |
+| `tests/licensing.py` | project licensing, notices and build legal-payload sources |
+| `tests/provider_core.py` | provider descriptors, values, alarms, contexts and rollback |
+| `tests/presets.py` | every shipped preset built as a working device |
+| `tests/config_roundtrip.py` | versioned export/import, validation and transactional replacement/append |
+| `tests/widget_controls.py` | widget selection and real control interactions |
+| `tests/gui_dialogs.py` | metric, alarm, context and startup validation |
+| `tests/gui_cards_plots.py` | card construction and waveform/distribution rendering |
+| `tests/gui_layout.py` | split/tab modes and responsive card reflow |
+| `tests/gui_provider_structure.py` | provider action, alarm and operation structural refreshes |
+| `tests/service_lifecycle.py` | provider and consumer startup fault cleanup |
+| `tests/consumer_lifecycle.py` | window-close races, stale work and natural real-window shutdown |
+| `tests/acceptance_readiness.py` | bounded provider readiness waits and subprocess cleanup |
+
+The manifest selects platform-appropriate suites, including TLS configuration and helper checks
+on both systems. A separate Windows step checks the console-rendered signal summary under strict
+`cp1252` encoding. Linux-only suites remain limited by their OS-specific test design; the native
+packaging smoke tests cover both Windows and Linux artifacts.
+
+Run any deterministic suite with the project interpreter, for example:
 
 ```powershell
-.venv\Scripts\python.exe tests\acceptance_core.py
-.venv\Scripts\python.exe tests\gui_smoke.py
-.venv\Scripts\python.exe tests\widget_controls.py
-.venv\Scripts\python.exe tests\provider_core.py
-.venv\Scripts\python.exe tests\presets.py
-.venv\Scripts\python.exe tests\config_roundtrip.py
+$env:QT_QPA_PLATFORM = "offscreen"
+.venv\Scripts\python.exe tests\gui_dialogs.py
+.venv\Scripts\python.exe tests\gui_cards_plots.py
+.venv\Scripts\python.exe tests\gui_layout.py
+.venv\Scripts\python.exe tests\gui_provider_structure.py
+.venv\Scripts\python.exe tests\consumer_lifecycle.py
 ```
 
-The acceptance test runs a provider in one process and checks it from a consumer in another. The GUI suite builds the real window on Qt's offscreen backend and drives the actual widgets, including a live connection to a provider in another process — no display needed. All end-to-end suites use providers bundled with this repository; they test this implementation across processes, not interoperability with an independent SDC stack or product.
+Run the same default set that continuous integration runs locally with:
+
+```powershell
+.venv\Scripts\python.exe tests\run_suites.py
+```
+
+`tests/acceptance_core.py` and `tests/tls_acceptance.py` are Linux-only network acceptance suites. CI runs each in an isolated job on every pull request, version tag, manual workflow dispatch and weekly schedule. The TLS suite generates a temporary self-signed test CA and participant certificates, then verifies HTTPS discovery, mutual authentication, MDIB retrieval and remote control without storing credentials in the repository. These checks exercise this implementation; they are not interoperability testing against an independent SDC stack or product.
+
+`tests/gui_smoke.py` remains a manual broad regression script because it is intentionally long and duplicates the focused GUI suites while also starting a live peer. Run it when changing interactions that cross several GUI areas; it uses the offscreen backend and needs no display.
+
+The packaging jobs separately launch each built Windows and Linux application with `--smoke-test`. `tests/acceptance_provider.py` is a subprocess fixture used by acceptance scripts, not a standalone suite.
 
 `provider_core.py` is the odd one out: it is about what the MDIB must never be left in. Its first section deliberately writes a descriptor BICEPS cannot serialise *without* the rollback, watches the orphan appear, and only then checks that the guarded path leaves nothing behind — so a passing run means the check is still capable of failing.
 
 ## Security
 
-SDC service and event traffic runs over plain `http://`; WS-Discovery uses unsecured UDP multicast. Neither `ProviderService` nor `ConsumerService` passes an `ssl_context_container`, so there is no TLS, no certificates, no authentication and no authorization — treat it as a lab tool on an isolated network you trust.
+The default remains plain `http://` for the smallest possible lab demonstration. Select
+**Require TLS with client certificates** at startup, or give all of `--tls-cert`, `--tls-key`
+and `--tls-ca`, to run SDC services and event callbacks with strict mutual TLS. Both
+participants require their own PEM certificate/key and trust the CA bundle that issued the
+other participant's certificate. TLS requires version 1.2 or newer, verifies the server
+hostname/IP SAN, requires client certificates on both receiving endpoints, and refuses the
+library's normal TLS-to-HTTP fallback.
 
-The log line `Using SSL is enabled. TLS 1.3 Support = True` is a capability message from sdc11073, not a statement about the connection.
+For unattended use, an encrypted private key reads its password from
+`SDC_TOOLBOX_TLS_KEY_PASSWORD`; the password is never accepted as a command-line argument or
+written to a profile. The GUI prompts in its masked password field instead.
+
+One self-signed test CA issuing a certificate for each toolbox process is the recommended
+offline test setup. A directly self-signed participant certificate also works if it is put in
+the other participant's trusted CA bundle. Self-signed does not mean accepting arbitrary
+certificates: trust must remain explicit. Use `--tls-peer-fingerprint` to additionally pin
+one expected SHA-256 leaf certificate.
+
+Generate a self-contained local test CA plus provider and consumer identities with:
+
+```powershell
+.venv\Scripts\python.exe helpers\tls\generate_certificates.py
+```
+
+It writes ignored material under `helpers\tls\generated\`, protects private keys with a
+prompted password by default, and creates a `README.txt` with the two exact startup commands.
+Use `--ip <LAN-address>` when testing beyond loopback so the certificate IP SAN matches the
+selected interface. See [`helpers/tls/README.md`](helpers/tls/README.md) for options and safety
+rules.
+
+The Network pane identifies discovered `HTTP` and `HTTPS` endpoints. Once connected over TLS,
+it displays the peer subject, issuer and SHA-256 fingerprint; the core retains its serial
+number, validity dates, SANs and EKUs for diagnostics. TLS mode is CA/certificate-based
+**participant authorization**: a peer not accepted by the configured trust store cannot read,
+subscribe or invoke operations.
+
+WS-Discovery remains unsecured UDP multicast, so discovery data is not identity proof. The
+HTTPS handshake and optional certificate pin are the trust decision.
+
+The current `sdc11073` operation handler does not retain the inbound client's certificate
+identity. The toolbox therefore cannot provide distinct per-certificate, per-operation
+permissions or standards-conformant known-invoker audit reports. This is the upstream
+unimplemented GLUE R0078 feature: [sdc11073 issue #490](https://github.com/Draegerwerk/sdc11073/issues/490).
 
 ## Using the core
 

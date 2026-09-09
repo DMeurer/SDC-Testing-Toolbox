@@ -6,7 +6,7 @@ specific control gets the chance to claim a metric before a more general one.
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any
 
 from PySide6.QtCore import Qt
@@ -19,8 +19,10 @@ from PySide6.QtWidgets import (
 )
 
 from ...model import SAMPLE_ARRAY_KINDS, MetricKind
+from ..decimal_input import DecimalInputError, parse_decimal_input
+from ..helpers import NO_VALUE, value_text
 from ..no_wheel import NoWheelComboBox, NoWheelSlider
-from ..styling import mute
+from ..styling import constrain_dynamic_label, mark_as_error, mute
 from .base import MetricWidget, WidgetSpec
 from .plot import SamplePlot
 
@@ -31,9 +33,6 @@ MAX_SLIDER_STEPS = 100_000
 # How much the stepper's buttons move the value.
 STEP_SMALL = Decimal("1")
 STEP_LARGE = Decimal("10")
-
-NO_VALUE = "\u2014"
-
 
 def _trim(value: Decimal) -> str:
     """Render a Decimal without a trailing '.0' but keep genuine decimals."""
@@ -158,26 +157,42 @@ class SliderWidget(MetricWidget):
 
     @classmethod
     def matches(cls, spec: WidgetSpec) -> bool:
-        if spec.kind is not MetricKind.NUMBER or not spec.bounded:
+        ranges = spec.control_ranges
+        if (
+            spec.kind is not MetricKind.NUMBER
+            or len(ranges) != 1
+            or ranges[0].lower is None
+            or ranges[0].upper is None
+        ):
             return False
         return cls._steps(spec) is not None
 
     @staticmethod
     def _steps(spec: WidgetSpec) -> int | None:
         """How many slider positions the range needs, or None if that is unreasonable."""
-        span = spec.maximum - spec.minimum
+        allowed_range = spec.control_ranges[0]
+        span = allowed_range.upper - allowed_range.lower
         if span <= 0:
             return None
-        resolution = spec.resolution or Decimal("1")
-        if resolution <= 0:
-            resolution = Decimal("1")
-        steps = int(span / resolution)
+        resolution = allowed_range.step_width or spec.resolution or Decimal("1")
+        if not resolution.is_finite() or resolution <= 0:
+            return None
+        span_numerator, span_denominator = span.as_integer_ratio()
+        resolution_numerator, resolution_denominator = resolution.as_integer_ratio()
+        numerator = span_numerator * resolution_denominator
+        denominator = span_denominator * resolution_numerator
+        if allowed_range.step_width is None:
+            steps = (numerator + denominator - 1) // denominator
+        else:
+            steps = numerator // denominator
         if steps < 1 or steps > MAX_SLIDER_STEPS:
             return None
         return steps
 
     def build(self) -> None:
-        self._resolution = self.spec.resolution or Decimal("1")
+        self._range = self.spec.control_ranges[0]
+        self._resolution = self._range.step_width or self.spec.resolution or Decimal("1")
+        self._include_upper = self._range.step_width is None
         self._steps = self._steps(self.spec) or 1
 
         self.slider = NoWheelSlider(Qt.Horizontal)
@@ -189,13 +204,17 @@ class SliderWidget(MetricWidget):
         self.slider.sliderReleased.connect(self._on_released)
 
         self.readout = QLabel(NO_VALUE)
+        constrain_dynamic_label(self.readout)
         self.readout.setAlignment(Qt.AlignCenter)
         self.readout.setMinimumWidth(70)
 
-        low = QLabel(_trim(self.spec.minimum))
-        high = QLabel(_trim(self.spec.maximum))
+        low = QLabel(_trim(self._range.lower))
+        high = QLabel(_trim(self._position_to_value(self._steps)))
         for end in (low, high):
+            constrain_dynamic_label(end, max_width=90)
             mute(end)
+        self.low_label = low
+        self.high_label = high
 
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
@@ -209,11 +228,17 @@ class SliderWidget(MetricWidget):
         layout.addLayout(row)
 
     def _position_to_value(self, position: int) -> Decimal:
-        value = self.spec.minimum + Decimal(position) * self._resolution
-        return min(value, self.spec.maximum)
+        if self._include_upper and position >= self._steps:
+            return self._range.upper
+        value = self._range.lower + Decimal(position) * self._resolution
+        return min(value, self._range.upper)
 
     def _value_to_position(self, value: Decimal) -> int:
-        offset = (value - self.spec.minimum) / self._resolution
+        if value <= self._range.lower:
+            return 0
+        if value >= self._range.upper:
+            return self._steps
+        offset = (value - self._range.lower) / self._resolution
         return max(0, min(self._steps, int(offset)))
 
     def _on_moved(self, position: int) -> None:
@@ -268,9 +293,15 @@ class StepperWidget(MetricWidget):
         for delta in (STEP_SMALL, STEP_LARGE):
             row.addWidget(self._make_button(delta))
 
+        self.error_label = QLabel("")
+        constrain_dynamic_label(self.error_label, max_lines=3)
+        mark_as_error(self.error_label)
+        self.error_label.hide()
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(row)
+        layout.addWidget(self.error_label)
 
     def _make_button(self, delta: Decimal) -> QPushButton:
         caption = f"+{_trim(delta)}" if delta > 0 else _trim(delta)
@@ -280,34 +311,64 @@ class StepperWidget(MetricWidget):
         self.buttons.append(button)
         return button
 
-    def _current(self) -> Decimal | None:
-        try:
-            return Decimal(self.edit.text().strip())
-        except (InvalidOperation, ValueError):
-            return None
+    def _current(self, *, validate_domain: bool = False) -> Decimal:
+        return parse_decimal_input(
+            self.edit.text(),
+            "value",
+            allowed_ranges=self.spec.control_ranges if validate_domain else None,
+        )
+
+    def _show_error(self, message: str) -> None:
+        self.error_label.setText(message)
+        self.error_label.show()
+
+    def _clear_error(self) -> None:
+        self.error_label.hide()
+        self.error_label.setText("")
 
     def _step(self, delta: Decimal) -> None:
-        base = self._current()
-        if base is None:
-            # Nothing there yet: stepping up from nothing starts at the delta itself, which
-            # is more useful than refusing.
-            base = Decimal("0")
-        target = base + delta
-        if self.spec.minimum is not None:
-            target = max(target, self.spec.minimum)
-        if self.spec.maximum is not None:
-            target = min(target, self.spec.maximum)
+        text = self.edit.text().strip()
+        try:
+            base = self._current() if text else Decimal("0")
+        except DecimalInputError as exc:
+            self._show_error(str(exc))
+            return
+        try:
+            target = base + delta
+            ranges = self.spec.control_ranges
+            if len(ranges) == 1:
+                if ranges[0].lower is not None:
+                    target = max(target, ranges[0].lower)
+                if ranges[0].upper is not None:
+                    target = min(target, ranges[0].upper)
+            target = parse_decimal_input(
+                str(target),
+                "value",
+                allowed_ranges=ranges,
+            )
+        except DecimalInputError as exc:
+            self._show_error(str(exc))
+            return
+        except (ArithmeticError, TypeError, ValueError):
+            self._show_error("The value could not be adjusted as a finite number.")
+            return
+        self._clear_error()
         self.edit.setText(_trim(target))
         self.request(target)
 
     def _on_typed(self) -> None:
-        value = self._current()
-        if value is not None:
-            self.request(value)
+        try:
+            value = self._current(validate_domain=True)
+        except DecimalInputError as exc:
+            self._show_error(str(exc))
+            return
+        self._clear_error()
+        self.request(value)
 
     def show_value(self, value: Any) -> None:
         if value is None or self.busy_editing():
             return
+        self._clear_error()
         self.edit.setText(_trim(value) if isinstance(value, Decimal) else str(value))
 
     def set_editable(self, editable: bool) -> None:  # noqa: FBT001
@@ -371,6 +432,7 @@ class ReadoutWidget(MetricWidget):
 
     def build(self) -> None:
         self.readout = QLabel(NO_VALUE)
+        constrain_dynamic_label(self.readout, max_lines=3)
         self.readout.setAlignment(Qt.AlignCenter)
         self.readout.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
@@ -379,7 +441,7 @@ class ReadoutWidget(MetricWidget):
         layout.addWidget(self.readout)
 
     def show_value(self, value: Any) -> None:
-        self.readout.setText(NO_VALUE if value is None else str(value))
+        self.readout.setText(value_text(value))
 
     def set_editable(self, editable: bool) -> None:  # noqa: FBT001, ARG002
         # Nothing to enable; this control never writes.

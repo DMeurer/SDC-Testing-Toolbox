@@ -10,6 +10,7 @@ first time and half an hour of confusion.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -28,8 +30,10 @@ from PySide6.QtWidgets import (
 )
 
 from .. import config, constants
+from ..network import normalize_ipv4
+from ..security import TlsConfig, TlsConfigError
 from .no_wheel import NoWheelComboBox
-from .styling import mark_as_error, mute
+from .styling import constrain_dynamic_label, mark_as_error, mute
 
 CONFIG_FILE_FILTER = "SDC toolbox config (*.json);;All files (*)"
 
@@ -39,12 +43,14 @@ LINK_LOCAL_PREFIX = "169.254."
 
 @dataclass(frozen=True)
 class StartupSettings:
-    """What the user chose. Mirrors the command line arguments exactly."""
+    """What the user chose, plus the validated config snapshot when present."""
 
     name: str
     ip: str
     config_path: str | None
     verbose: bool
+    device_config: config.DeviceConfig | None = None
+    tls_config: TlsConfig | None = None
 
 
 def available_ipv4() -> list[tuple[str, str]]:
@@ -96,7 +102,8 @@ class StartupDialog(QDialog):
         self._select_ip(ip)
         self.ip_box.setToolTip(
             "Discovery binds to one address only. Loopback lets two instances on this\n"
-            "machine talk without involving the network.",
+            "machine talk without involving the network. You may also type any valid\n"
+            "IPv4 address, even if it is not listed for this machine.",
         )
 
         self.config_box = NoWheelComboBox()
@@ -125,6 +132,36 @@ class StartupDialog(QDialog):
         self.verbose_box = QCheckBox("Verbose logging")
         self.verbose_box.setToolTip("Show what sdc11073 is doing. Useful when discovery misbehaves.")
 
+        self.tls_box = QCheckBox("Require TLS with client certificates")
+        self.tls_box.setToolTip(
+            "Use HTTPS with mutual TLS for SDC services and event callbacks. "
+            "Discovery remains unsecured UDP multicast.",
+        )
+        self.tls_cert_edit = QLineEdit()
+        self.tls_key_edit = QLineEdit()
+        self.tls_ca_edit = QLineEdit()
+        self.tls_password_edit = QLineEdit()
+        self.tls_password_edit.setEchoMode(QLineEdit.Password)
+        self.tls_fingerprint_edit = QLineEdit()
+        self.tls_server_name_edit = QLineEdit()
+        self.tls_fingerprint_edit.setPlaceholderText("optional SHA-256 pin")
+        self.tls_server_name_edit.setPlaceholderText("optional local DNS name")
+
+        tls_form = QFormLayout()
+        tls_form.addRow("Certificate", self._path_picker(self.tls_cert_edit, "Choose TLS certificate"))
+        tls_form.addRow("Private key", self._path_picker(self.tls_key_edit, "Choose TLS private key"))
+        tls_form.addRow("Trusted CA bundle", self._path_picker(self.tls_ca_edit, "Choose trusted CA bundle"))
+        tls_form.addRow("Private-key password", self.tls_password_edit)
+        tls_form.addRow("Expected peer fingerprint", self.tls_fingerprint_edit)
+        tls_form.addRow("Advertised DNS name", self.tls_server_name_edit)
+        self.tls_group = QGroupBox("Transport security")
+        self.tls_group.setCheckable(False)
+        tls_layout = QVBoxLayout(self.tls_group)
+        tls_layout.addWidget(self.tls_box)
+        tls_layout.addLayout(tls_form)
+        self.tls_box.toggled.connect(self._update_tls_fields)
+        self._update_tls_fields(False)
+
         self.hint = QLabel(
             "Start a second copy with a different name to have two devices find each other.",
         )
@@ -132,7 +169,7 @@ class StartupDialog(QDialog):
         mute(self.hint)
 
         self.error_label = QLabel("")
-        self.error_label.setWordWrap(True)
+        constrain_dynamic_label(self.error_label, max_lines=3)
         mark_as_error(self.error_label)
         self.error_label.hide()
 
@@ -149,6 +186,7 @@ class StartupDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
+        layout.addWidget(self.tls_group)
         layout.addWidget(self.hint)
         layout.addWidget(self.error_label)
         layout.addWidget(self.buttons)
@@ -169,12 +207,12 @@ class StartupDialog(QDialog):
         self.ip_box.setCurrentText(ip)
 
     def chosen_ip(self) -> str:
-        """The address, without the adapter name the list shows beside it."""
+        """The listed address data or stripped text entered manually."""
         index = self.ip_box.currentIndex()
         # An index only matches when the text was not edited by hand.
         if index >= 0 and self.ip_box.currentText() == self.ip_box.itemText(index):
             return self.ip_box.itemData(index)
-        return self.ip_box.currentText().split("\u2014")[0].strip()
+        return self.ip_box.currentText().strip()
 
     def chosen_config(self) -> str | None:
         """The config file path, or None when the user picked nothing.
@@ -192,6 +230,33 @@ class StartupDialog(QDialog):
         if filename:
             self.config_box.setCurrentText(filename)
 
+    def _path_picker(self, field: QLineEdit, title: str) -> QWidget:
+        browse = QPushButton("Browse\u2026")
+        browse.clicked.connect(lambda: self._browse_path(field, title))
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(field, 1)
+        layout.addWidget(browse)
+        container = QWidget()
+        container.setLayout(layout)
+        return container
+
+    def _browse_path(self, field: QLineEdit, title: str) -> None:
+        filename, _ = QFileDialog.getOpenFileName(self, title, "", "PEM files (*.pem);;All files (*)")
+        if filename:
+            field.setText(filename)
+
+    def _update_tls_fields(self, enabled: bool) -> None:
+        for field in (
+            self.tls_cert_edit,
+            self.tls_key_edit,
+            self.tls_ca_edit,
+            self.tls_password_edit,
+            self.tls_fingerprint_edit,
+            self.tls_server_name_edit,
+        ):
+            field.setEnabled(enabled)
+
     def _fail(self, message: str) -> None:
         self.error_label.setText(message)
         self.error_label.show()
@@ -204,20 +269,39 @@ class StartupDialog(QDialog):
             self._fail("Give the device a name. It decides the EPR other devices see.")
             return
 
-        ip = self.chosen_ip()
-        if not ip:
-            self._fail("Choose an address to bind discovery to.")
+        try:
+            ip = normalize_ipv4(self.chosen_ip())
+        except ValueError:
+            self._fail("Enter a valid IPv4 address to bind discovery to.")
             return
 
         config_path = self.chosen_config()
+        device_config = None
         if config_path is not None:
             # Check it now rather than after a window has appeared and half a device exists.
             if not Path(config_path).exists():
                 self._fail(f"No such file: {config_path}")
                 return
             try:
-                config.load_file(config_path)
+                device_config = config.load_file(config_path)
             except config.ConfigError as exc:
+                self._fail(str(exc))
+                return
+
+        tls_config = None
+        tls_box = getattr(self, "tls_box", None)
+        if tls_box is not None and tls_box.isChecked():
+            try:
+                tls_config = TlsConfig.from_paths(
+                    self.tls_cert_edit.text(),
+                    self.tls_key_edit.text(),
+                    self.tls_ca_edit.text(),
+                    private_key_password=self.tls_password_edit.text() or os.getenv("SDC_TOOLBOX_TLS_KEY_PASSWORD"),
+                    peer_fingerprint=self.tls_fingerprint_edit.text() or None,
+                    server_name=self.tls_server_name_edit.text() or None,
+                )
+                tls_config.create_contexts()
+            except TlsConfigError as exc:
                 self._fail(str(exc))
                 return
 
@@ -226,5 +310,7 @@ class StartupDialog(QDialog):
             ip=ip,
             config_path=config_path,
             verbose=self.verbose_box.isChecked(),
+            device_config=device_config,
+            tls_config=tls_config,
         )
         self.accept()

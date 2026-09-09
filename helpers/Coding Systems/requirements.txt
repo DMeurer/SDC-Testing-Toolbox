@@ -1,0 +1,4 @@
+# Dependencies for helpers/export_11073_tables.py only. They are intentionally
+# separate from the application's runtime requirements.
+PyMuPDF==1.26.5
+openpyxl==3.1.5

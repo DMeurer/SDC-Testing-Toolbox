@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QWidget
 
-from ...model import MetricKind
+from ...model import MetricKind, RemoteRange
 
 if TYPE_CHECKING:
     from ...model import MetricSpec, RemoteMetric
@@ -46,6 +46,7 @@ class WidgetSpec:
     # period to say how fast a waveform is arriving.
     sample_period: Decimal | None = None
     domain: str = ""
+    allowed_ranges: tuple[RemoteRange, ...] = ()
 
     @property
     def caption(self) -> str:
@@ -56,6 +57,15 @@ class WidgetSpec:
     def bounded(self) -> bool:
         """Whether both ends of the range are known."""
         return self.minimum is not None and self.maximum is not None
+
+    @property
+    def control_ranges(self) -> tuple[RemoteRange, ...]:
+        """The complete control domain, including legacy local WidgetSpec bounds."""
+        if self.allowed_ranges:
+            return self.allowed_ranges
+        if self.minimum is not None or self.maximum is not None:
+            return (RemoteRange(lower=self.minimum, upper=self.maximum),)
+        return ()
 
 
 def from_spec(handle: str, spec: MetricSpec, *, editable: bool, note: str = "") -> WidgetSpec:
@@ -98,9 +108,11 @@ def from_remote_metric(metric: RemoteMetric) -> WidgetSpec:
         label=metric.label or "",
         kind=metric.kind,
         unit=metric.unit_label or "",
-        allowed_values=metric.allowed_values,
+        allowed_values=metric.operation_allowed_values or metric.allowed_values,
         minimum=metric.minimum,
         maximum=metric.maximum,
+        resolution=metric.resolution,
+        allowed_ranges=metric.allowed_ranges,
         editable=metric.controllable_now,
         note=note,
         sample_period=metric.sample_period,

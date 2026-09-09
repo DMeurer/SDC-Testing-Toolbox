@@ -1,82 +1,64 @@
 {
-  "version": 1,
+  "version": 3,
   "name": "Infusion pump",
   "description": "Volumetric pump: rate, volume to be infused, line pressure and the alarms that make a pump a pump. Small on purpose, and the easiest of these to read end to end.",
   "device": {
     "instance_name": "pump",
     "friendly_name": "Infusion Pump",
     "manufacturer": "SDC Testing Toolbox",
+    "manufacturer_url": "https://d-meurer.com",
     "model_name": "Fluvia 1",
     "model_number": "1",
     "firmware_version": "2.3.0"
   },
   "metrics": [
     {
-      "handle": "m.rate",
-      "label": "Infusion rate",
+      "handle": "m.battery",
+      "label": "Battery",
       "kind": "number",
-      "section": "Infusion",
-      "controllable": true,
-      "unit": {"label": "mL/h", "code": "MDC_DIM_MILLI_L_PER_HR", "system": "mdc"},
-      "type": {"code": "MDC_FLOW_FLUID_PUMP", "system": "mdc"},
-      "resolution": "0.1",
-      "minimum": "0",
-      "maximum": "1200",
-      "initial_value": "125"
-    },
-    {
-      "handle": "m.vtbi",
-      "label": "Volume to be infused",
-      "kind": "number",
-      "section": "Infusion",
-      "controllable": true,
-      "unit": {"label": "mL", "code": "MDC_DIM_MILLI_L", "system": "mdc"},
-      "type": {"code": "pump_volume_to_be_infused", "system": "private"},
-      "resolution": "1",
-      "minimum": "0",
-      "maximum": "2000",
-      "initial_value": "500"
-    },
-    {
-      "handle": "m.volume_infused",
-      "label": "Volume infused",
-      "kind": "number",
-      "section": "Infusion",
       "controllable": false,
-      "unit": {"label": "mL", "code": "MDC_DIM_MILLI_L", "system": "mdc"},
-      "type": {"code": "MDC_VOL_FLUID_DELIV_TOTAL", "system": "mdc"},
+      "section": "Status",
+      "unit": {
+        "code": "262688",
+        "system": "mdc",
+        "label": "%"
+      },
+      "type": {
+        "code": "68024",
+        "system": "mdc"
+      },
       "resolution": "1",
       "minimum": "0",
-      "maximum": "2000",
-      "initial_value": "0"
-    },
-    {
-      "handle": "m.pump_state",
-      "label": "Pump state",
-      "kind": "choice",
-      "section": "Infusion",
-      "controllable": true,
-      "allowed_values": ["STOPPED", "RUNNING", "PAUSED", "KVO"],
-      "initial_value": "RUNNING",
-      "type": {"code": "pump_state", "system": "private"}
+      "maximum": "100",
+      "initial_value": "84"
     },
     {
       "handle": "m.drug",
       "label": "Drug",
       "kind": "text",
-      "section": "Infusion",
       "controllable": true,
-      "type": {"code": "pump_drug_name", "system": "private"},
+      "section": "Infusion",
+      "type": {
+        "code": "pump_drug_name",
+        "system": "private"
+      },
       "initial_value": "Ringer's lactate"
     },
     {
       "handle": "m.line_pressure",
       "label": "Line pressure",
       "kind": "waveform",
-      "section": "Line",
       "controllable": false,
-      "unit": {"label": "mmHg", "code": "MDC_DIM_MMHG", "system": "mdc"},
-      "type": {"code": "pump_line_pressure", "system": "private"},
+      "section": "Line",
+      "unit": {
+        "code": "266016",
+        "system": "mdc",
+        "label": "mmHg"
+      },
+      "type": {
+        "code": "158120",
+        "system": "mdc"
+      },
       "resolution": "1",
       "minimum": "0",
       "maximum": "600",
@@ -88,45 +70,118 @@
       "handle": "m.occlusion_pressure",
       "label": "Occlusion limit",
       "kind": "number",
-      "section": "Line",
       "controllable": true,
-      "unit": {"label": "mmHg", "code": "MDC_DIM_MMHG", "system": "mdc"},
-      "type": {"code": "pump_occlusion_limit", "system": "private"},
+      "section": "Line",
+      "unit": {
+        "code": "266016",
+        "system": "mdc",
+        "label": "mmHg"
+      },
+      "type": {
+        "code": "pump_occlusion_limit",
+        "system": "private"
+      },
       "resolution": "10",
       "minimum": "100",
       "maximum": "900",
       "initial_value": "500"
     },
     {
-      "handle": "m.battery",
-      "label": "Battery",
+      "handle": "m.pump_state",
+      "label": "Pump state",
+      "kind": "choice",
+      "controllable": true,
+      "section": "Infusion",
+      "type": {
+        "code": "pump_state",
+        "system": "private"
+      },
+      "allowed_values": [
+        "STOPPED",
+        "RUNNING",
+        "PAUSED",
+        "KVO"
+      ],
+      "initial_value": "RUNNING"
+    },
+    {
+      "handle": "m.rate",
+      "label": "Infusion rate",
       "kind": "number",
-      "section": "Status",
+      "controllable": true,
+      "section": "Infusion",
+      "unit": {
+        "code": "265266",
+        "system": "mdc",
+        "label": "mL/h"
+      },
+      "type": {
+        "code": "157784",
+        "system": "mdc"
+      },
+      "resolution": "0.1",
+      "minimum": "0",
+      "maximum": "1200",
+      "initial_value": "125"
+    },
+    {
+      "handle": "m.volume_infused",
+      "label": "Volume infused",
+      "kind": "number",
       "controllable": false,
-      "unit": {"label": "%", "code": "MDC_DIM_PERCENT", "system": "mdc"},
-      "type": {"code": "MDC_ATTR_VMS_MDS_BATT_CHARGE", "system": "mdc"},
+      "section": "Infusion",
+      "unit": {
+        "code": "263762",
+        "system": "mdc",
+        "label": "mL"
+      },
+      "type": {
+        "code": "157993",
+        "system": "mdc"
+      },
       "resolution": "1",
       "minimum": "0",
-      "maximum": "100",
-      "initial_value": "84"
+      "maximum": "2000",
+      "initial_value": "0"
+    },
+    {
+      "handle": "m.vtbi",
+      "label": "Volume to be infused",
+      "kind": "number",
+      "controllable": true,
+      "section": "Infusion",
+      "unit": {
+        "code": "263762",
+        "system": "mdc",
+        "label": "mL"
+      },
+      "type": {
+        "code": "157884",
+        "system": "mdc"
+      },
+      "resolution": "1",
+      "minimum": "0",
+      "maximum": "2000",
+      "initial_value": "500"
     }
   ],
   "alerts": [
-    {
-      "handle": "al.occlusion",
-      "label": "Downstream occlusion",
-      "watches": "m.line_pressure",
-      "kind": "Tec",
-      "priority": "Hi",
-      "upper_limit": "500",
-      "delegable": true
-    },
     {
       "handle": "al.battery_low",
       "label": "Battery low",
       "watches": "m.battery",
       "kind": "Tec",
       "priority": "Me",
+      "signals": [
+        {
+          "manifestation": "Vis",
+          "latching": false
+        },
+        {
+          "manifestation": "Aud",
+          "latching": false
+        }
+      ],
       "lower_limit": "20"
     },
     {
@@ -134,34 +189,72 @@
       "label": "Infusion complete",
       "watches": "m.volume_infused",
       "kind": "Tec",
-      "priority": "Lo"
+      "priority": "Lo",
+      "signals": [
+        {
+          "manifestation": "Vis",
+          "latching": false
+        },
+        {
+          "manifestation": "Aud",
+          "latching": false
+        }
+      ]
+    },
+    {
+      "handle": "al.occlusion",
+      "label": "Downstream occlusion",
+      "watches": "m.line_pressure",
+      "kind": "Tec",
+      "priority": "Hi",
+      "signals": [
+        {
+          "manifestation": "Vis",
+          "latching": false
+        },
+        {
+          "manifestation": "Aud",
+          "latching": false
+        }
+      ],
+      "delegable": true
     }
   ],
   "actions": [
-    {
-      "handle": "act.start_infusion",
-      "label": "Start",
-      "target": "vmd.infusion",
-      "effects": {"m.pump_state": "RUNNING"}
-    },
-    {
-      "handle": "act.stop_infusion",
-      "label": "Stop",
-      "target": "vmd.infusion",
-      "effects": {"m.pump_state": "STOPPED", "m.rate": "0"}
-    },
     {
       "handle": "act.bolus",
       "label": "Give bolus",
       "target": "vmd.infusion",
       "note": "A fixed extra volume at a higher rate. One press, no value to type, which is what makes it an action",
-      "effects": {"m.rate": "600", "m.pump_state": "RUNNING"}
+      "effects": {
+        "m.pump_state": "RUNNING",
+        "m.rate": "600"
+      }
     },
     {
       "handle": "act.clear_volume",
       "label": "Clear infused volume",
       "target": "vmd.infusion",
-      "effects": {"m.volume_infused": "0"}
+      "effects": {
+        "m.volume_infused": "0"
+      }
+    },
+    {
+      "handle": "act.start_infusion",
+      "label": "Start",
+      "target": "vmd.infusion",
+      "effects": {
+        "m.pump_state": "RUNNING"
+      }
+    },
+    {
+      "handle": "act.stop_infusion",
+      "label": "Stop",
+      "target": "vmd.infusion",
+      "effects": {
+        "m.pump_state": "STOPPED",
+        "m.rate": "0"
+      }
     }
   ]
 }

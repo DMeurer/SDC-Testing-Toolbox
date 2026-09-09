@@ -293,7 +293,7 @@ class ProviderShell(Cmd):
             print(f"rejected: {exc}")
 
     def do_remove(self, line: str) -> None:
-        """remove <handle>  -  delete a data source and its operation."""
+        """remove <handle>  -  delete a data source and its dependencies."""
         handle = line.strip()
         if not handle:
             print("usage: remove <handle>")
@@ -827,20 +827,21 @@ class ConsumerShell(Cmd):
 def run_provider(args: argparse.Namespace) -> int:
     # Before the provider exists: a preset says which machine it is, and sdc11073 fixes
     # ThisModel and ThisDevice at construction.
-    device = None
+    device_config = None
     if args.config:
         try:
-            device = config.load_file(args.config).device
+            device_config = config.load_file(args.config)
         except config.ConfigError as exc:
             print(f"error: {exc}")
             return 2
 
+    device = device_config.device if device_config is not None else None
     service = ProviderService(ip=args.ip, instance_name=args.name, device=device)
     service.start()
     try:
-        if args.config:
+        if args.config and device_config is not None:
             try:
-                metrics, alarms = config.load_into(service, args.config)
+                metrics, alarms = config.apply_to(service, device_config, replace=True)
             except config.ConfigError as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 return 2
@@ -863,14 +864,22 @@ def run_consumer(args: argparse.Namespace) -> int:
     return 0
 
 
-def main() -> int:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("mode", choices=("provider", "consumer"))
     parser.add_argument("--ip", default=constants.DEFAULT_IP, help="interface to bind discovery to")
-    parser.add_argument("--name", default="alpha", help="provider instance name, decides the EPR")
+    parser.add_argument(
+        "--name",
+        default=constants.DEFAULT_INSTANCE_NAME,
+        help="provider instance name, decides the EPR",
+    )
     parser.add_argument("--config", help="config file to load on startup (provider mode)")
     parser.add_argument("--verbose", action="store_true", help="show sdc11073 logging")
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def main() -> int:
+    args = parse_args()
 
     basic_logging_setup(level=logging.INFO if args.verbose else logging.WARNING)
 

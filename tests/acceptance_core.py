@@ -26,90 +26,116 @@ import argparse
 import logging
 import subprocess
 import sys
-import threading
-import time
 from decimal import Decimal
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from sdc11073.loghelper import basic_logging_setup  # noqa: E402
-from sdc11073.xml_types import msg_types  # noqa: E402
-
-from sdctoolbox import constants  # noqa: E402
-from sdctoolbox.consumer_service import ConsumerService  # noqa: E402
-from sdctoolbox.model import MetricKind  # noqa: E402
-
 from acceptance_provider import (  # noqa: E402
+    ADD_LATE_COMMAND,
+    COMMAND_DONE_PREFIX,
     DIST,
     HOME_ACTION,
+    INVALID_CHOICE_ACTION,
+    INVALID_EFFECT_ACTION,
     LATE,
     LIMIT_ALARM,
     LOCKED,
     MANUAL_ALARM,
+    MISSING_EFFECT_ACTION,
     MODE,
     NOTE,
     PEER_INSTANCE,
+    REMOVE_SAMPLES_COMMAND,
     SAW,
     SAW_CYCLE,
     UPDATED_PATIENT,
+    UPDATE_CONTEXT_COMMAND,
     WAVE,
     ZOOM,
 )
+from sdc11073 import observableproperties  # noqa: E402
+from sdc11073.loghelper import basic_logging_setup  # noqa: E402
+from sdc11073.xml_types import msg_types  # noqa: E402
+
+from script_support import (  # noqa: E402
+    CallbackRecorder,
+    ProcessOutput,
+    Report,
+    stop_process,
+    wait_for_output_line,
+    wait_for_ready,
+)
+
+from sdctoolbox import constants  # noqa: E402
+from sdctoolbox.consumer_service import ConsumerService  # noqa: E402
+from sdctoolbox.model import MetricKind, patient_info_from_biceps  # noqa: E402
 
 FINISHED = (msg_types.InvocationState.FINISHED, msg_types.InvocationState.FINISHED_MOD)
+REPORT_TIMEOUT = 20.0
 
 
-class Report:
-    """Collects pass/fail results and prints them as they happen."""
-
-    def __init__(self) -> None:
-        self.failures = 0
-        self.checks = 0
-
-    def check(self, ok: bool, description: str, detail: str = "") -> bool:  # noqa: FBT001
-        self.checks += 1
-        if not ok:
-            self.failures += 1
-        status = "PASS" if ok else "FAIL"
-        suffix = f"  [{detail}]" if detail else ""
-        print(f"  {status}  {description}{suffix}", flush=True)
-        return ok
-
-    def summary(self) -> int:
-        print("-" * 74)
-        if self.failures:
-            print(f"RESULT: {self.failures} of {self.checks} checks FAILED")
-            return 1
-        print(f"RESULT: all {self.checks} checks passed")
-        return 0
+def copy_metric_values(values: object) -> dict[str, object]:
+    return {
+        handle: getattr(getattr(state, "MetricValue", None), "Value", None)
+        for handle, state in dict(values).items()
+    }
 
 
-def wait_for_ready(process: subprocess.Popen, timeout: float) -> bool:
-    """Block until the provider prints READY, echoing its output meanwhile."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        line = process.stdout.readline()
-        if not line:
-            if process.poll() is not None:
-                return False
-            continue
-        print(f"    {line.rstrip()}", flush=True)
-        if "READY" in line:
-            return True
-    return False
+def copy_waveform_blocks(values: object) -> dict[str, tuple[Decimal, ...]]:
+    return {
+        handle: tuple(getattr(getattr(state, "MetricValue", None), "Samples", None) or ())
+        for handle, state in dict(values).items()
+    }
 
 
-def drain(process: subprocess.Popen) -> None:
-    """Keep echoing provider output in the background so it never blocks on a full pipe."""
+def copy_descriptor_types(values: object) -> dict[str, str]:
+    return {
+        handle: getattr(getattr(descriptor, "NODETYPE", None), "localname", "")
+        for handle, descriptor in dict(values).items()
+    }
 
-    def pump() -> None:
-        for line in process.stdout:
-            print(f"    {line.rstrip()}", flush=True)
 
-    thread = threading.Thread(target=pump, daemon=True)
-    thread.start()
+def copy_operation_modes(values: object) -> dict[str, str]:
+    return {
+        handle: str(getattr(state, "OperatingMode", ""))
+        for handle, state in dict(values).items()
+    }
+
+
+def copy_component_modes(values: object) -> dict[str, str]:
+    return {
+        handle: str(getattr(state, "OperatingMode", ""))
+        for handle, state in dict(values).items()
+    }
+
+
+def copy_contexts(values: object) -> dict[str, object]:
+    return {
+        handle: patient_info_from_biceps(getattr(state, "CoreData", None))
+        for handle, state in dict(values).items()
+        if getattr(state, "CoreData", None) is not None
+    }
+
+
+def copy_alert_states(values: object) -> dict[str, dict[str, object]]:
+    copied = {}
+    for handle, state in dict(values).items():
+        copied[handle] = {
+            "type": getattr(getattr(state, "NODETYPE", None), "localname", ""),
+            "presence": str(getattr(state, "Presence", "")),
+            "technical": tuple(getattr(state, "PresentTechnicalAlarmConditions", None) or ()),
+            "physiological": tuple(getattr(state, "PresentPhysiologicalAlarmConditions", None) or ()),
+        }
+    return copied
+
+
+def send_provider_command(process: subprocess.Popen[str], command: str) -> None:
+    if process.stdin is None or process.poll() is not None:
+        raise RuntimeError(f"provider unavailable while sending {command!r}")
+    process.stdin.write(f"{command}\n")
+    process.stdin.flush()
 
 
 def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one piece
@@ -130,29 +156,31 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
         cwd=str(ROOT),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        stdin=subprocess.PIPE,
         text=True,
         bufsize=1,
     )
+    output = ProcessOutput(process)
 
     try:
-        if not wait_for_ready(process, timeout=45):
+        if not wait_for_ready(output, timeout=45):
             print("FAIL: provider never reported READY")
             return 1
-        drain(process)
 
         # ---------------------------------------------------------------- discovery
         print("\n1. Discovery and connection", flush=True)
         with ConsumerService(ip=args.ip) as consumer_service:
             expected_epr = constants.epr_for(PEER_INSTANCE).urn
-            deadline = time.monotonic() + 25.0
             devices = []
             device = None
-            while device is None and time.monotonic() < deadline:
+            for _attempt in range(5):
                 devices = consumer_service.scan(
-                    timeout=min(5.0, deadline - time.monotonic()),
+                    timeout=5.0,
                     expected=99,
                 )
                 device = next((candidate for candidate in devices if candidate.epr == expected_epr), None)
+                if device is not None:
+                    break
             if not report.check(bool(devices), "provider discovered"):
                 return report.summary()
             if not report.check(device is not None, "the acceptance provider is selected", expected_epr):
@@ -182,31 +210,22 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
                 patient.summary(),
             )
 
-            # Record runtime descriptor arrivals before the late metric is created.
-            new_descriptor_events: list[str] = []
-            seen = threading.Event()
-
-            def on_new_descriptors(descriptors_by_handle: dict) -> None:
-                for handle in descriptors_by_handle:
-                    new_descriptor_events.append(handle)
-                    if handle == LATE:
-                        seen.set()
-
-            value_events: list[str] = []
-            context_events: list[str] = []
-            context_changed = threading.Event()
-
-            def on_metrics(metrics_by_handle: dict) -> None:
-                value_events.extend(metrics_by_handle)
-
-            def on_contexts(context_by_handle: dict) -> None:
-                context_events.extend(context_by_handle)
-                context_changed.set()
+            metric_reports = CallbackRecorder(copy_metric_values)
+            descriptor_reports = CallbackRecorder(copy_descriptor_types)
+            operation_reports = CallbackRecorder(copy_operation_modes)
+            component_reports = CallbackRecorder(copy_component_modes)
+            context_reports = CallbackRecorder(copy_contexts)
+            alert_reports = CallbackRecorder(copy_alert_states)
+            waveform_reports = CallbackRecorder(copy_waveform_blocks)
 
             remote.bind(
-                new_descriptors_by_handle=on_new_descriptors,
-                metrics_by_handle=on_metrics,
-                context_by_handle=on_contexts,
+                new_descriptors_by_handle=descriptor_reports,
+                metrics_by_handle=metric_reports,
+                operation_by_handle=operation_reports,
+                component_by_handle=component_reports,
+                context_by_handle=context_reports,
+                alert_by_handle=alert_reports,
+                waveform_by_handle=waveform_reports,
             )
 
             # ------------------------------------------------------ initial metrics
@@ -267,55 +286,100 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
 
             # ------------------------------------------------------- remote control
             print("\n3. Remote control", flush=True)
-            state = remote.set_value(ZOOM, Decimal("7"))
-            report.check(state in FINISHED, "setting a numeric value finishes", str(state))
-            time.sleep(1.5)
+            cursor = metric_reports.cursor()
+            state = remote.set_value(ZOOM, "7")
+            report.check(state in FINISHED, "setting a numeric string finishes", str(state))
+            metric_event = metric_reports.wait_for(
+                lambda payload: payload.get(ZOOM) == Decimal("7"),
+                after=cursor,
+                timeout=REPORT_TIMEOUT,
+            )
             report.check(
-                remote.metrics()[ZOOM].value == Decimal("7"),
-                "new numeric value observed back on the consumer",
-                str(remote.metrics()[ZOOM].value),
+                metric_event is not None,
+                "the numeric value arrives in a metric report",
+                str(metric_reports.history()),
             )
 
+            cursor = metric_reports.cursor()
             state = remote.set_value(MODE, "RUN")
             report.check(state in FINISHED, "setting a choice value finishes", str(state))
-            time.sleep(1.5)
+            metric_event = metric_reports.wait_for(
+                lambda payload: payload.get(MODE) == "RUN",
+                after=cursor,
+                timeout=REPORT_TIMEOUT,
+            )
             report.check(
-                remote.metrics()[MODE].value == "RUN",
-                "new choice value observed back on the consumer",
-                str(remote.metrics()[MODE].value),
+                metric_event is not None,
+                "the choice value arrives in a metric report",
+                str(metric_reports.history()),
             )
 
+            cursor = metric_reports.cursor()
             state = remote.set_value(NOTE, "checked at 10:00")
             report.check(state in FINISHED, "setting a text value finishes", str(state))
+            report.check(
+                metric_reports.wait_for(
+                    lambda payload: payload.get(NOTE) == "checked at 10:00",
+                    after=cursor,
+                    timeout=REPORT_TIMEOUT,
+                )
+                is not None,
+                "the text value arrives in a metric report",
+                str(metric_reports.history()),
+            )
 
             # ------------------------------------------------------------ rejections
             print("\n4. Rejections", flush=True)
+            cursor = metric_reports.cursor()
             state = remote.set_value(MODE, "NOT_A_MODE")
             report.check(
                 state is msg_types.InvocationState.FAILED,
                 "value outside AllowedValue is rejected",
                 str(state),
             )
-            time.sleep(1.0)
+            barrier = metric_reports.cursor()
+            barrier_state = remote.set_value(NOTE, "barrier-invalid-mode")
+            barrier_event = metric_reports.wait_for(
+                lambda payload: payload.get(NOTE) == "barrier-invalid-mode",
+                after=barrier,
+                timeout=REPORT_TIMEOUT,
+            )
             report.check(
-                remote.metrics()[MODE].value == "RUN",
-                "rejected write left the value untouched",
-                str(remote.metrics()[MODE].value),
+                barrier_state in FINISHED and barrier_event is not None,
+                "a later known-good metric report forms the rejection barrier",
+                str(metric_reports.history()),
+            )
+            report.check(
+                not any(event.payload.get(MODE) == "NOT_A_MODE" for event in metric_reports.events_after(cursor)),
+                "rejected write delivered no prohibited choice value",
+                str(metric_reports.events_after(cursor)),
             )
 
+            cursor = metric_reports.cursor()
             state = remote.set_value(LOCKED, Decimal("9"))
             report.check(
                 state is msg_types.InvocationState.FAILED,
                 "write to a disabled control is rejected",
                 str(state),
             )
-            time.sleep(1.0)
+            barrier = metric_reports.cursor()
+            barrier_state = remote.set_value(NOTE, "barrier-disabled")
+            barrier_event = metric_reports.wait_for(
+                lambda payload: payload.get(NOTE) == "barrier-disabled",
+                after=barrier,
+                timeout=REPORT_TIMEOUT,
+            )
             report.check(
-                remote.metrics()[LOCKED].value == Decimal("5"),
-                "disabled control left the value untouched",
-                str(remote.metrics()[LOCKED].value),
+                barrier_state in FINISHED and barrier_event is not None,
+                "a later report forms the disabled-control barrier",
+            )
+            report.check(
+                not any(event.payload.get(LOCKED) == Decimal("9") for event in metric_reports.events_after(cursor)),
+                "disabled control delivered no prohibited value",
+                str(metric_reports.events_after(cursor)),
             )
 
+            cursor = metric_reports.cursor()
             state = remote.set_value(ZOOM, Decimal("500"))
             report.check(
                 state is msg_types.InvocationState.FAILED,
@@ -328,27 +392,115 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
                 "a value below the minimum is rejected",
                 str(state),
             )
-            time.sleep(1.0)
-            report.check(
-                remote.metrics()[ZOOM].value == Decimal("7"),
-                "out-of-range writes left the value untouched",
-                str(remote.metrics()[ZOOM].value),
+            barrier = metric_reports.cursor()
+            barrier_state = remote.set_value(NOTE, "barrier-range")
+            barrier_event = metric_reports.wait_for(
+                lambda payload: payload.get(NOTE) == "barrier-range",
+                after=barrier,
+                timeout=REPORT_TIMEOUT,
             )
+            report.check(
+                barrier_state in FINISHED and barrier_event is not None,
+                "a later report forms the out-of-range barrier",
+            )
+            report.check(
+                not any(
+                    event.payload.get(ZOOM) in {Decimal("500"), Decimal("0")}
+                    for event in metric_reports.events_after(cursor)
+                ),
+                "out-of-range writes delivered no prohibited value",
+                str(metric_reports.events_after(cursor)),
+            )
+            metric_cursor = metric_reports.cursor()
+            alert_cursor = alert_reports.cursor()
             state = remote.set_value(ZOOM, Decimal("100"))
             report.check(
                 state in FINISHED,
                 "the maximum itself is accepted",
                 str(state),
             )
+            report.check(
+                metric_reports.wait_for(
+                    lambda payload: payload.get(ZOOM) == Decimal("100"),
+                    after=metric_cursor,
+                    timeout=REPORT_TIMEOUT,
+                )
+                is not None,
+                "the accepted boundary value arrives in a metric report",
+                str(metric_reports.history()),
+            )
+            raised_alert_event = alert_reports.wait_for(
+                lambda payload: payload.get(LIMIT_ALARM, {}).get("presence") == "True"
+                and payload.get("sig.zoom_out_of_range.vis", {}).get("presence") == "On"
+                and payload.get("sig.zoom_out_of_range.aud", {}).get("presence") == "On"
+                and payload.get(constants.ALERT_SYSTEM_HANDLE, {}).get("technical") == (LIMIT_ALARM,),
+                after=alert_cursor,
+                timeout=REPORT_TIMEOUT,
+            )
+            report.check(
+                raised_alert_event is not None,
+                "the condition, both signals, and parent list are synchronized in one report",
+                str(alert_reports.history()),
+            )
 
             # ------------------------------------------- runtime descriptor creation
             print("\n5. Data source created at runtime", flush=True)
-            report.check(
-                seen.wait(timeout=30),
-                "new_descriptors_by_handle fired for the late metric",
-                f"events: {new_descriptor_events}",
+            descriptor_cursor = descriptor_reports.cursor()
+            metric_cursor = metric_reports.cursor()
+            operation_cursor = operation_reports.cursor()
+            send_provider_command(process, ADD_LATE_COMMAND)
+            late_operation = constants.OPERATION_HANDLE_PREFIX + LATE.removeprefix(
+                constants.METRIC_HANDLE_PREFIX,
             )
-            time.sleep(2.0)
+            descriptor_event = descriptor_reports.wait_for(
+                lambda payload: LATE in payload,
+                after=descriptor_cursor,
+                timeout=REPORT_TIMEOUT,
+            )
+            report.check(
+                descriptor_event is not None,
+                "new_descriptors_by_handle fired for the late metric",
+                str(descriptor_reports.history()),
+            )
+            report.check(
+                descriptor_reports.wait_for(
+                    lambda payload: late_operation in payload,
+                    after=descriptor_cursor,
+                    timeout=REPORT_TIMEOUT,
+                )
+                is not None,
+                "the late metric's set operation arrives by descriptor report",
+                str(descriptor_reports.history()),
+            )
+            report.check(
+                metric_reports.wait_for(
+                    lambda payload: payload.get(LATE) == Decimal("42"),
+                    after=metric_cursor,
+                    timeout=REPORT_TIMEOUT,
+                )
+                is not None,
+                "the late metric's initial state arrives by metric report",
+                str(metric_reports.history()),
+            )
+            report.check(
+                operation_reports.wait_for(
+                    lambda payload: late_operation in payload,
+                    after=operation_cursor,
+                    timeout=REPORT_TIMEOUT,
+                )
+                is not None,
+                "the late metric's operation state arrives by operation report",
+                str(operation_reports.history()),
+            )
+            report.check(
+                wait_for_output_line(
+                    output,
+                    f"{COMMAND_DONE_PREFIX} {ADD_LATE_COMMAND}",
+                    REPORT_TIMEOUT,
+                ),
+                "the provider confirms completion of the late-metric command",
+                output.buffered_output,
+            )
             metrics = remote.metrics()
             late_metric = metrics.get(LATE)
             report.check(late_metric is not None, f"{LATE} appeared in the consumer MDIB")
@@ -358,34 +510,62 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
                     late_metric.controllable_now,
                     f"{LATE} is controllable without reconnecting",
                 )
+                cursor = metric_reports.cursor()
                 state = remote.set_value(LATE, Decimal("99"))
                 report.check(
                     state in FINISHED,
                     "controlling the runtime-created metric finishes",
                     str(state),
                 )
-                time.sleep(1.5)
                 report.check(
-                    remote.metrics()[LATE].value == Decimal("99"),
-                    "runtime-created metric reflects the new value",
-                    str(remote.metrics()[LATE].value),
+                    metric_reports.wait_for(
+                        lambda payload: payload.get(LATE) == Decimal("99"),
+                        after=cursor,
+                        timeout=REPORT_TIMEOUT,
+                    )
+                    is not None,
+                    "runtime-created metric reports the new value",
+                    str(metric_reports.history()),
                 )
 
-            report.check(bool(value_events), "metrics_by_handle fired at least once")
-            report.check(
-                context_changed.wait(timeout=30),
-                "context_by_handle fires when the peer replaces its patient",
-                str(context_events),
+            context_cursor = context_reports.cursor()
+            send_provider_command(process, UPDATE_CONTEXT_COMMAND)
+            context_event = context_reports.wait_for(
+                lambda payload: any(patient.summary().startswith(UPDATED_PATIENT) for patient in payload.values()),
+                after=context_cursor,
+                timeout=REPORT_TIMEOUT,
             )
-            updated_patient = remote.patient()
             report.check(
-                updated_patient.summary().startswith(UPDATED_PATIENT)
+                context_event is not None,
+                "context_by_handle fires when the peer replaces its patient",
+                str(context_reports.history()),
+            )
+            report.check(
+                wait_for_output_line(
+                    output,
+                    f"{COMMAND_DONE_PREFIX} {UPDATE_CONTEXT_COMMAND}",
+                    REPORT_TIMEOUT,
+                ),
+                "the provider confirms completion of the context command",
+                output.buffered_output,
+            )
+            updated_patient = next(
+                (
+                    patient
+                    for patient in (context_event.payload.values() if context_event is not None else ())
+                    if patient.summary().startswith(UPDATED_PATIENT)
+                ),
+                None,
+            )
+            report.check(
+                updated_patient is not None
+                and updated_patient.summary().startswith(UPDATED_PATIENT)
                 and updated_patient.height is not None
                 and updated_patient.height.value == Decimal("1E-7")
                 and updated_patient.race is not None
                 and updated_patient.race.system == "urn:example:race",
                 "a changed patient context arrives without reconnecting",
-                updated_patient.summary(),
+                updated_patient.summary() if updated_patient is not None else "no matching context report",
             )
 
             # ------------------------------------------------------------ sample arrays
@@ -401,27 +581,43 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
                 )
                 # A waveform arrives as a WaveformStream rather than an EpisodicMetricReport,
                 # so this also proves that path is wired up at both ends.
-                deadline = time.monotonic() + 30.0
-                while not remote.metrics()[WAVE].samples and time.monotonic() < deadline:
-                    time.sleep(0.5)
-                samples = remote.metrics()[WAVE].samples
+                waveform_cursor = waveform_reports.cursor()
+                first_wave_event = waveform_reports.wait_for(
+                    lambda payload: bool(payload.get(WAVE)),
+                    after=waveform_cursor,
+                    timeout=30.0,
+                )
+                samples = first_wave_event.payload.get(WAVE, ()) if first_wave_event is not None else ()
                 report.check(bool(samples), "blocks of samples arrive", f"{len(samples)} samples")
                 report.check(
                     all(Decimal("0") <= s <= Decimal("100") for s in samples),
                     "inside the range the peer declared",
                     f"{min(samples)} to {max(samples)}" if samples else "none",
                 )
-                first = list(samples)
-                deadline = time.monotonic() + 30.0
-                while remote.metrics()[WAVE].samples == tuple(first) and time.monotonic() < deadline:
-                    time.sleep(0.5)
+                next_wave_event = waveform_reports.wait_for(
+                    lambda payload: bool(payload.get(WAVE)) and payload[WAVE] != samples,
+                    after=first_wave_event.sequence if first_wave_event is not None else waveform_cursor,
+                    timeout=30.0,
+                )
                 report.check(
-                    remote.metrics()[WAVE].samples != tuple(first),
+                    next_wave_event is not None,
                     "and keep arriving, so the stream is live",
+                    str(waveform_reports.history()),
                 )
                 report.check(
                     not wave.controllable,
                     "no operation targets it: BICEPS has none that writes a sample array",
+                )
+                wave_entity = remote.mdib.entities.by_handle(WAVE)
+                wave_value = wave_entity.state.MetricValue
+                mds = remote.mdib.entities.by_handle(constants.MDS_HANDLE)
+                report.check(
+                    wave_entity.descriptor.MetricAvailability == "Cont"
+                    and Decimal(str(wave_entity.descriptor.DeterminationPeriod)) == Decimal("0.1")
+                    and wave_value.MetricQuality.Mode == "Demo"
+                    and wave_value.DeterminationTime is not None
+                    and mds.state.OperatingMode == "Dmo",
+                    "waveform cadence, Demo quality, timestamp, and containing MDS mode arrive over the wire",
                 )
 
                 # The blocks have to join up. A sawtooth is used at the far end precisely
@@ -430,22 +626,24 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
                 # reordered block shows up as a delta that is neither.
                 print("\n5c. The stream joins up", flush=True)
                 received: list[Decimal] = []
-                seen_blocks: list[tuple] = []
-
-                def collect_blocks(states_by_handle: dict) -> None:
-                    state = states_by_handle.get(SAW)
-                    value = getattr(state, "MetricValue", None) if state is not None else None
-                    block = tuple(getattr(value, "Samples", None) or ())
-                    if block:
-                        seen_blocks.append(block)
-
-                remote.bind(waveform_by_handle=collect_blocks)
-                deadline = time.monotonic() + 25.0
-                while len(seen_blocks) < 6 and time.monotonic() < deadline:  # noqa: PLR2004
-                    time.sleep(0.5)
+                waveform_cursor = waveform_reports.cursor()
+                sixth_block = waveform_reports.wait_for(
+                    lambda _payload: sum(
+                        bool(event.payload.get(SAW))
+                        for event in waveform_reports.events_after(waveform_cursor)
+                    )
+                    >= 6,  # noqa: PLR2004
+                    after=waveform_cursor,
+                    timeout=25.0,
+                )
+                seen_blocks = [
+                    event.payload[SAW]
+                    for event in waveform_reports.events_after(waveform_cursor)
+                    if event.payload.get(SAW)
+                ]
 
                 report.check(
-                    len(seen_blocks) >= 3,  # noqa: PLR2004
+                    sixth_block is not None and len(seen_blocks) >= 3,  # noqa: PLR2004
                     "several blocks arrive",
                     f"{len(seen_blocks)} blocks",
                 )
@@ -489,6 +687,47 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
                     "and so does DistributionRange",
                     dist.domain_text(),
                 )
+                dist_entity = remote.mdib.entities.by_handle(DIST)
+                dist_value = dist_entity.state.MetricValue
+                technical = dist_entity.descriptor.TechnicalRange[0]
+                domain = dist_entity.descriptor.DistributionRange
+                report.check(
+                    dist_entity.descriptor.MetricAvailability == "Intr"
+                    and Decimal(str(dist_entity.descriptor.DeterminationPeriod))
+                    == Decimal(str(constants.WAVEFORM_BLOCK_SECONDS))
+                    and dist_value.MetricQuality.Mode == "Demo"
+                    and dist_value.DeterminationTime is not None,
+                    "periodic distribution cadence and Demo quality arrive over the metric report path",
+                )
+                report.check(
+                    (technical.Lower, technical.Upper) == (Decimal("0"), Decimal("100"))
+                    and (domain.Lower, domain.Upper) == (Decimal("0"), Decimal("500"))
+                    and technical.StepWidth != domain.StepWidth,
+                    "over-wire TechnicalRange remains independent of the distribution domain",
+                )
+
+            component_cursor = component_reports.cursor()
+            send_provider_command(process, REMOVE_SAMPLES_COMMAND)
+            restored_mode = component_reports.wait_for(
+                lambda payload: payload.get(constants.MDS_HANDLE) == "Nml",
+                after=component_cursor,
+                timeout=REPORT_TIMEOUT,
+            )
+            report.check(
+                restored_mode is not None
+                and remote.mdib.entities.by_handle(constants.MDS_HANDLE).state.OperatingMode == "Nml",
+                "removing the final generated sample source restores MDS mode over the wire",
+                str(component_reports.events_after(component_cursor)),
+            )
+            report.check(
+                wait_for_output_line(
+                    output,
+                    f"{COMMAND_DONE_PREFIX} {REMOVE_SAMPLES_COMMAND}",
+                    REPORT_TIMEOUT,
+                ),
+                "the provider confirms completion of sample-source removal",
+                output.buffered_output,
+            )
 
             # ------------------------------------------------------------- alarms
             print("\n6. Alarms", flush=True)
@@ -536,22 +775,33 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
                     manual_alarm.node_type_name,
                 )
 
-            # The zoom metric currently sits at 100, which is above the alarm limit of 90,
-            # so the alarm should already have fired from the earlier boundary write.
-            state = remote.set_value(ZOOM, Decimal("95"))
-            report.check(state in FINISHED, "raise the source above the limit", str(state))
-            time.sleep(2.0)
-            report.check(
-                remote.alerts()[LIMIT_ALARM].present,
-                "a remote write raises the alarm on the provider",
-            )
-
+            # Cross the threshold in each direction so every check has a causal transition.
+            metric_cursor = metric_reports.cursor()
+            alert_cursor = alert_reports.cursor()
             state = remote.set_value(ZOOM, Decimal("20"))
             report.check(state in FINISHED, "bring the source back into range", str(state))
-            time.sleep(2.0)
             report.check(
-                not remote.alerts()[LIMIT_ALARM].present,
-                "and clears it again",
+                metric_reports.wait_for(
+                    lambda payload: payload.get(ZOOM) == Decimal("20"),
+                    after=metric_cursor,
+                    timeout=REPORT_TIMEOUT,
+                )
+                is not None,
+                "the in-range value arrives independently in a metric report",
+                str(metric_reports.history()),
+            )
+            cleared_event = alert_reports.wait_for(
+                lambda payload: payload.get(LIMIT_ALARM, {}).get("presence") == "False"
+                and payload.get("sig.zoom_out_of_range.vis", {}).get("presence") == "Off"
+                and payload.get("sig.zoom_out_of_range.aud", {}).get("presence") == "Off"
+                and payload.get(constants.ALERT_SYSTEM_HANDLE, {}).get("technical") == (),
+                after=alert_cursor,
+                timeout=REPORT_TIMEOUT,
+            )
+            report.check(
+                cleared_event is not None,
+                "the condition, both signals, and parent list clear in one report",
+                str(alert_reports.history()),
             )
 
             # --------------------------------------------------------------- actions
@@ -574,22 +824,192 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
 
                 # An action is not a set: nothing here says what value anything takes. The
                 # device decides, and the proof is in the metrics it moves.
-                remote.set_value(ZOOM, Decimal("42"))
-                remote.set_value(MODE, "RUN")
-                time.sleep(1.5)
-                state = remote.run_action(HOME_ACTION)
+                setup_cursor = metric_reports.cursor()
+                setup_alert_cursor = alert_reports.cursor()
+                setup_zoom = remote.set_value(ZOOM, Decimal("95"))
+                setup_mode = remote.set_value(MODE, "RUN")
+                setup_event = metric_reports.wait_for(
+                    lambda _payload: any(
+                        event.payload.get(ZOOM) == Decimal("95")
+                        for event in metric_reports.events_after(setup_cursor)
+                    )
+                    and any(
+                        event.payload.get(MODE) == "RUN"
+                        for event in metric_reports.events_after(setup_cursor)
+                    ),
+                    after=setup_cursor,
+                    timeout=REPORT_TIMEOUT,
+                )
+                report.check(
+                    setup_zoom in FINISHED and setup_mode in FINISHED and setup_event is not None,
+                    "action preconditions arrive by metric report",
+                    str(metric_reports.events_after(setup_cursor)),
+                )
+                setup_alert = alert_reports.wait_for(
+                    lambda payload: payload.get(LIMIT_ALARM, {}).get("presence") == "True",
+                    after=setup_alert_cursor,
+                    timeout=REPORT_TIMEOUT,
+                )
+                report.check(setup_alert is not None, "the action precondition raises its limit alert")
+
+                action_metric_versions = CallbackRecorder(
+                    lambda values: (remote.mdib.mdib_version, copy_metric_values(values)),
+                )
+                action_alert_versions = CallbackRecorder(
+                    lambda values: (remote.mdib.mdib_version, copy_alert_states(values)),
+                )
+
+                def copy_invocation(message: object) -> tuple[int, tuple[tuple[int, str, str | None, str], ...]]:
+                    invoked = msg_types.OperationInvokedReport.from_node(message.p_msg.msg_node)
+                    return (
+                        message.mdib_version_group.mdib_version,
+                        tuple(
+                            (
+                                part.InvocationInfo.TransactionId,
+                                str(part.InvocationInfo.InvocationState),
+                                part.OperationTarget,
+                                part.OperationHandleRef,
+                            )
+                            for part in invoked.ReportPart
+                        ),
+                    )
+
+                invocation_reports = CallbackRecorder(copy_invocation)
+                remote.bind(
+                    metrics_by_handle=action_metric_versions,
+                    alert_by_handle=action_alert_versions,
+                )
+                observableproperties.bind(
+                    remote._consumer,  # noqa: SLF001 - raw reports carry invocation versions and IDs
+                    operation_invoked_report=invocation_reports,
+                )
+                action_cursor = metric_reports.cursor()
+                invocation_cursor = invocation_reports.cursor()
+                try:
+                    state = remote.run_action(HOME_ACTION)
+                finally:
+                    observableproperties.unbind(
+                        remote._consumer,  # noqa: SLF001
+                        operation_invoked_report=invocation_reports,
+                    )
+                    observableproperties.unbind(
+                        remote.mdib,
+                        metrics_by_handle=action_metric_versions,
+                        alert_by_handle=action_alert_versions,
+                    )
                 report.check(state in FINISHED, "invoking it finishes", str(state))
-                time.sleep(2.0)
+                action_event = metric_reports.wait_for(
+                    lambda payload: payload.get(ZOOM) == Decimal("1")
+                    and payload.get(MODE) == "IDLE"
+                    and payload.get(NOTE) == "001",
+                    after=action_cursor,
+                    timeout=REPORT_TIMEOUT,
+                )
                 report.check(
-                    remote.metrics()[ZOOM].value == Decimal("1"),
+                    action_event is not None,
                     "and the device did what the action means, without being told a value",
-                    str(remote.metrics()[ZOOM].value),
+                    str(metric_reports.events_after(action_cursor)),
                 )
                 report.check(
-                    remote.metrics()[MODE].value == "IDLE",
+                    action_event is not None and action_event.payload.get(MODE) == "IDLE",
                     "including on a metric of a different kind",
-                    str(remote.metrics()[MODE].value),
+                    str(action_event.payload if action_event is not None else None),
                 )
+                report.check(
+                    action_event is not None and action_event.payload.get(NOTE) == "001",
+                    "and numeric-looking text remains text",
+                    repr(action_event.payload.get(NOTE) if action_event is not None else None),
+                )
+                invocation_parts = [
+                    (version, *part)
+                    for event in invocation_reports.events_after(invocation_cursor)
+                    for version, parts in (event.payload,)
+                    for part in parts
+                    if part[3] == HOME_ACTION
+                ]
+                states = [part[2] for part in invocation_parts]
+                transaction_ids = {part[1] for part in invocation_parts}
+                action_metric_event = action_metric_versions.wait_for(
+                    lambda payload: payload[1].get(ZOOM) == Decimal("1")
+                    and payload[1].get(MODE) == "IDLE",
+                    after=0,
+                    timeout=REPORT_TIMEOUT,
+                )
+                action_alert_event = action_alert_versions.wait_for(
+                    lambda payload: payload[1].get(LIMIT_ALARM, {}).get("presence") == "False",
+                    after=0,
+                    timeout=REPORT_TIMEOUT,
+                )
+                final_version = invocation_parts[-1][0] if invocation_parts else None
+                report.check(
+                    states == ["Wait", "Start", "Fin"]
+                    and len(transaction_ids) == 1
+                    and invocation_parts[-1][3] == constants.MDS_HANDLE,
+                    "sdc11073 retains WAIT, START, final state, and one transaction ID",
+                    str(invocation_parts),
+                )
+                report.check(
+                    action_metric_event is not None
+                    and action_alert_event is not None
+                    and action_alert_event.payload[0] == action_metric_event.payload[0] + 1
+                    and final_version == action_alert_event.payload[0],
+                    "threshold action reports metric V, alert V+1, and exact final invocation V+1",
+                    f"metric {action_metric_event}, alert {action_alert_event}, invocation {final_version}",
+                )
+
+                for invalid_action, description in (
+                    (INVALID_EFFECT_ACTION, "out-of-range"),
+                    (INVALID_CHOICE_ACTION, "invalid-choice"),
+                    (MISSING_EFFECT_ACTION, "missing-target"),
+                ):
+                    setup_cursor = metric_reports.cursor()
+                    setup_zoom = remote.set_value(ZOOM, Decimal("42"))
+                    setup_mode = remote.set_value(MODE, "RUN")
+                    setup_event = metric_reports.wait_for(
+                        lambda _payload: any(
+                            event.payload.get(ZOOM) == Decimal("42")
+                            for event in metric_reports.events_after(setup_cursor)
+                        )
+                        and any(
+                            event.payload.get(MODE) == "RUN"
+                            for event in metric_reports.events_after(setup_cursor)
+                        ),
+                        after=setup_cursor,
+                        timeout=REPORT_TIMEOUT,
+                    )
+                    report.check(
+                        setup_zoom in FINISHED and setup_mode in FINISHED and setup_event is not None,
+                        f"the {description} action preconditions arrive",
+                        str(metric_reports.events_after(setup_cursor)),
+                    )
+                    action_cursor = metric_reports.cursor()
+                    state = remote.run_action(invalid_action)
+                    report.check(
+                        state is msg_types.InvocationState.FAILED,
+                        f"a remote {description} action fails",
+                        str(state),
+                    )
+                    barrier_cursor = metric_reports.cursor()
+                    barrier_state = remote.set_value(NOTE, f"barrier-{description}")
+                    barrier_event = metric_reports.wait_for(
+                        lambda payload: payload.get(NOTE) == f"barrier-{description}",
+                        after=barrier_cursor,
+                        timeout=REPORT_TIMEOUT,
+                    )
+                    report.check(
+                        barrier_state in FINISHED and barrier_event is not None,
+                        f"a later report forms the {description} action barrier",
+                    )
+                    action_events = metric_reports.events_after(action_cursor)
+                    report.check(
+                        not any(
+                            event.payload.get(ZOOM) not in {None, Decimal("42")}
+                            or event.payload.get(MODE) not in {None, "RUN"}
+                            for event in action_events
+                        ),
+                        f"a remote {description} action is all-or-nothing",
+                        str(action_events),
+                    )
 
             report.check(
                 remote.run_action("act.no_such_thing") is msg_types.InvocationState.FAILED,
@@ -599,11 +1019,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test script reads better in one p
             remote.close()
 
     finally:
-        process.terminate()
-        try:
-            process.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            process.kill()
+        stop_process(process, output)
 
     print()
     return report.summary()

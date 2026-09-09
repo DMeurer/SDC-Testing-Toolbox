@@ -8,7 +8,8 @@ By default the two sit in panels either side of a movable divider, so you can wa
 react to the other. View > Split view turns that off and stacks them as tabs instead, which
 is easier on a narrow screen.
 
-The menu bar stays hidden until Alt is pressed, the way Thunderbird and Firefox do it.
+The menu bar is visible and pinned by default. View > Always show menu bar can unpin it so
+that it hides when unused and Alt reveals it again.
 """
 
 from __future__ import annotations
@@ -93,7 +94,12 @@ class MainWindow(QMainWindow):
         self.resize(1100, 560)
 
         self.provider_pane = ProviderPane(service, self)
-        self.network_pane = ConsumerPane(service.ip, self, own_epr=service.epr.urn)
+        self.network_pane = ConsumerPane(
+            service.ip,
+            self,
+            own_epr=service.epr.urn,
+            tls_config=service.tls_config,
+        )
 
         self.provider_panel = TitledPanel(PROVIDER_TITLE, self.provider_pane)
         self.network_panel = TitledPanel(NETWORK_TITLE, self.network_pane)
@@ -337,7 +343,21 @@ class MainWindow(QMainWindow):
                 return False
 
         try:
-            metrics, alarms = config.load_into(self.service, path)
+            device_config = config.load_file(path)
+        except config.ConfigError as exc:
+            QMessageBox.warning(self, "Could not import", str(exc))
+            return False
+
+        return self.apply_config(device_config, path)
+
+    def apply_config(
+        self,
+        device_config: config.DeviceConfig,
+        source: str | Path,
+    ) -> bool:
+        """Rebuild this device from an already parsed, single-use config snapshot."""
+        try:
+            metrics, alarms = config.apply_to(self.service, device_config, replace=True)
         except config.ConfigError as exc:
             QMessageBox.warning(self, "Could not import", str(exc))
             return False
@@ -347,7 +367,8 @@ class MainWindow(QMainWindow):
         self.provider_pane.refresh_actions()
         self.provider_pane.refresh_contexts()
         self.statusBar().showMessage(
-            f"Imported {metrics} data source(s) and {alarms} alarm(s) from {Path(path).name}",
+            f"Imported {metrics} data source(s) and {alarms} alarm(s) "
+            f"from {Path(source).name}",
             8000,
         )
         return True

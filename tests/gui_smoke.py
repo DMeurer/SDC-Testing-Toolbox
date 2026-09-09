@@ -35,6 +35,7 @@ from PySide6.QtCore import QPoint, QPointF, Qt  # noqa: E402
 from PySide6.QtGui import QColor, QPalette, QWheelEvent  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
+    QDialog,
     QFileDialog,
     QHeaderView,
     QLabel,
@@ -69,6 +70,7 @@ from sdctoolbox.gui.provider_pane import (  # noqa: E402
 )
 from sdctoolbox.gui.startup_dialog import LINK_LOCAL_PREFIX, StartupDialog  # noqa: E402
 from sdctoolbox.gui.styling import mute  # noqa: E402
+from sdctoolbox.gui.widgets import WidgetSpec  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
     AlertKind,
     AlertManifestation,
@@ -85,31 +87,8 @@ from sdctoolbox.model import (  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 # This file lives in tests/, so its own directory is on the path.
-from acceptance_provider import PEER_INSTANCE  # noqa: E402
-
-
-class Report:
-    """Collects pass/fail results and prints them as they happen."""
-
-    def __init__(self) -> None:
-        self.failures = 0
-        self.checks = 0
-
-    def check(self, ok: bool, description: str, detail: str = "") -> bool:  # noqa: FBT001
-        self.checks += 1
-        if not ok:
-            self.failures += 1
-        suffix = f"  [{detail}]" if detail else ""
-        print(f"  {'PASS' if ok else 'FAIL'}  {description}{suffix}", flush=True)
-        return ok
-
-    def summary(self) -> int:
-        print("-" * 74)
-        if self.failures:
-            print(f"RESULT: {self.failures} of {self.checks} checks FAILED")
-            return 1
-        print(f"RESULT: all {self.checks} checks passed")
-        return 0
+from acceptance_provider import PEER_INSTANCE, UPDATE_CONTEXT_COMMAND  # noqa: E402
+from script_support import Report  # noqa: E402
 
 
 def pump(app: QApplication, seconds: float = 0.4) -> None:
@@ -469,6 +448,29 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             f"{spec.minimum} to {spec.maximum}" if spec else "-",
         )
 
+        non_finite_text = ("NaN", "sNaN", "Infinity", "-Infinity")
+        metric_decimal_fields = (
+            (MetricKind.NUMBER, "resolution_edit", "resolution"),
+            (MetricKind.NUMBER, "minimum_edit", "minimum"),
+            (MetricKind.NUMBER, "maximum_edit", "maximum"),
+            (MetricKind.WAVEFORM, "sample_period_edit", "sample period"),
+            (MetricKind.DISTRIBUTION, "domain_min_edit", "domain minimum"),
+            (MetricKind.DISTRIBUTION, "domain_max_edit", "domain maximum"),
+        )
+        for kind, edit_name, field in metric_decimal_fields:
+            for invalid in non_finite_text:
+                invalid_dialog = NewMetricDialog()
+                fill_dialog(invalid_dialog, kind=kind, label="Invalid numeric input")
+                getattr(invalid_dialog, edit_name).setText(invalid)
+                invalid_dialog._on_accept()  # noqa: SLF001
+                message = invalid_dialog.error_label.text()
+                report.check(
+                    invalid_dialog.spec() is None and field in message and "finite number" in message,
+                    f"{field} rejects {invalid} with a field-level message",
+                    message,
+                )
+                invalid_dialog.deleteLater()
+
         print("\n2b. Inapplicable inputs are hidden, not greyed out")
         for index in range(dialog.kind_box.count()):
             if dialog.kind_box.itemText(index) == "Choice":
@@ -559,6 +561,19 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             "and a limit typed before switching is not smuggled through",
             str(alert_dialog2.spec().upper_limit) if alert_dialog2.spec() else "-",
         )
+        for edit_name, field in (("lower_edit", "lower limit"), ("upper_edit", "upper limit")):
+            for invalid in non_finite_text:
+                invalid_alert = NewAlertDialog(alert_metrics)
+                invalid_alert.label_edit.setText("Invalid limit")
+                getattr(invalid_alert, edit_name).setText(invalid)
+                invalid_alert._on_accept()  # noqa: SLF001
+                message = invalid_alert.error_label.text()
+                report.check(
+                    invalid_alert.spec() is None and field in message and "finite number" in message,
+                    f"{field} rejects {invalid} with a field-level message",
+                    message,
+                )
+                invalid_alert.deleteLater()
         alert_dialog.deleteLater()
         alert_dialog2.deleteLater()
 
@@ -1244,6 +1259,20 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             "the boundary value itself is accepted",
             str(service.get_value(zoom)),
         )
+        shown_warnings.clear()
+        current = service.get_value(zoom)
+        for invalid in non_finite_text:
+            pane.value_edit.setText(invalid)
+            pane._on_apply()  # noqa: SLF001
+            title, message = shown_warnings[-1] if shown_warnings else ("", "")
+            report.check(
+                service.get_value(zoom) == current
+                and title == "Invalid value"
+                and "value" in message
+                and "finite number" in message,
+                f"the local numeric editor rejects {invalid} without writing",
+                f"{title}: {message}",
+            )
 
         print("\n8c. Alarm signals and contexts in the pane")
         acked = service.add_alert(
@@ -1286,16 +1315,16 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         )
 
         report.check(
-            pane.delegate_button.isEnabled() and pane.delegate_button.text() == "Delegate",
-            "Delegate is offered for a delegable alarm",
+            pane.delegate_button.isEnabled() and pane.delegate_button.text() == "Remote*",
+            "remote-location simulation is offered for a capable alarm",
             pane.delegate_button.text(),
         )
         pane._on_delegate()  # noqa: SLF001
         pump(app)
-        report.check("->Rem" in signals_cell(), "delegating shows in the cell", signals_cell())
+        report.check("->Rem" in signals_cell(), "the simulated remote location shows in the cell", signals_cell())
         report.check(
-            pane.delegate_button.text() == "Take back",
-            "and the button offers the way back",
+            pane.delegate_button.text() == "Local*",
+            "and the button offers the local simulation",
             pane.delegate_button.text(),
         )
         pane._on_delegate()  # noqa: SLF001
@@ -1388,6 +1417,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         # Peer labels are untrusted text. The Network pane must show markup-looking content
         # literally and must not let it dictate the splitter's minimum width.
         consumer = window.network_pane
+        consumer_minimum_before = consumer.minimumSizeHint().width()
         consumer.remote = SimpleNamespace(
             patient_contexts=lambda: {
                 "PC.foreign": PatientInfo(
@@ -1413,7 +1443,90 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             consumer.context_label.sizePolicy().horizontalPolicy() == QSizePolicy.Ignored,
             "peer demographic text cannot force the network pane wider",
         )
+
+        hostile_dimension = "<img src=not-found width=10000 height=10000>"
+        hostile_handle = f"handle {hostile_dimension}"
+        hostile_label = f"<b>peer label</b> {hostile_dimension}"
+        hostile_unit = f"unit {hostile_dimension}"
+        hostile_domain = f"domain {hostile_dimension}"
+        hostile_note = f"note {hostile_dimension}"
+        hostile_value = f"<i>peer value</i> {hostile_dimension}"
+        consumer.board.set_metrics(
+            [
+                WidgetSpec(
+                    hostile_handle,
+                    hostile_label,
+                    None,
+                    unit=hostile_unit,
+                    domain=hostile_domain,
+                    note=hostile_note,
+                ),
+                WidgetSpec("hostile.error", "Error source", MetricKind.NUMBER),
+            ],
+        )
+        consumer.board.show_values({hostile_handle: hostile_value})
+        hostile_card = consumer.board.card(hostile_handle)
+        error_card = consumer.board.card("hostile.error")
+        error_message = f"failed for {hostile_dimension}"
+        error_card.control._show_error(error_message)  # noqa: SLF001
+        pump(app)
+
+        hostile_labels = (
+            hostile_card.heading,
+            hostile_card.footer,
+            hostile_card.control.readout,
+            error_card.control.error_label,
+        )
+        report.check(
+            all(label.textFormat() == Qt.PlainText for label in hostile_labels)
+            and hostile_card.heading.text() == hostile_label
+            and all(
+                text in hostile_card.footer.text()
+                for text in (hostile_handle, hostile_unit, hostile_domain, hostile_note)
+            )
+            and hostile_card.control.readout.text() == hostile_value
+            and error_card.control.error_label.text() == error_message,
+            "peer metric labels, handles, units, domains, values, notes and errors "
+            "stay literal",
+        )
+        report.check(
+            all(
+                label.sizePolicy().horizontalPolicy() == QSizePolicy.Ignored
+                and label.maximumHeight() <= label.fontMetrics().lineSpacing() * 3 + 2
+                for label in hostile_labels
+            )
+            and hostile_card.minimumSizeHint().width() <= 260,
+            "hostile metric markup and long metadata cannot expand a card",
+            f"card minimum={hostile_card.minimumSizeHint().width()}",
+        )
+
+        consumer._set_status(error_message)  # noqa: SLF001
+        consumer.editor_label.setText(hostile_label)
+        consumer._on_set_failed(error_message)  # noqa: SLF001
+        report.check(
+            all(
+                label.textFormat() == Qt.PlainText
+                for label in (
+                    consumer.status_label,
+                    consumer.editor_label,
+                    consumer.invocation_label,
+                )
+            )
+            and consumer.status_label.sizePolicy().horizontalPolicy()
+            == QSizePolicy.Ignored
+            and consumer.editor_label.maximumWidth() <= 240
+            and consumer.invocation_label.maximumWidth() <= 240
+            and consumer.status_label.text() == error_message
+            and consumer.editor_label.text() == hostile_label
+            and hostile_dimension in consumer.invocation_label.text()
+            and consumer.minimumSizeHint().width() <= consumer_minimum_before,
+            "peer status, editor text and invocation errors are literal without "
+            "expanding the pane",
+            f"pane minimum={consumer.minimumSizeHint().width()}",
+        )
         consumer.remote = None
+        consumer._reset_remote_ui()  # noqa: SLF001 - restore the disconnected state
+        consumer._set_status("Not connected")  # noqa: SLF001
         consumer._refresh_contexts()  # noqa: SLF001 - restore the disconnected state
 
         print("\n9. Column sizing, all four tables")
@@ -1538,6 +1651,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             cwd=str(ROOT),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            stdin=subprocess.PIPE,
             text=True,
             bufsize=1,
         )
@@ -1583,6 +1697,9 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                     "peer patient demographics are shown",
                     consumer.context_label.text(),
                 )
+                if peer.stdin is not None:
+                    peer.stdin.write(f"{UPDATE_CONTEXT_COMMAND}\n")
+                    peer.stdin.flush()
                 report.check(
                     wait_for(app, lambda: "Grace Hopper" in consumer.context_label.text(), timeout=30),
                     "peer context reports update the patient display automatically",
@@ -1590,10 +1707,11 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                 )
 
                 remote_cell = lambda h, c: cell_of(consumer.table, h, c)  # noqa: E731
+                zoom_range = remote_cell("m.zoom_level", COL_R_RANGE)
                 report.check(
-                    remote_cell("m.zoom_level", COL_R_RANGE) == "1 to 100",
-                    "the peer's range is shown",
-                    str(remote_cell("m.zoom_level", COL_R_RANGE)),
+                    "1 to 100" in zoom_range and "step 1" in zoom_range,
+                    "the peer's complete allowed range is shown",
+                    str(zoom_range),
                 )
                 report.check(
                     remote_cell("m.zoom_level", COL_R_WRITABLE) == "yes",
@@ -1694,14 +1812,23 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                     str(remote_cell("m.zoom_level", COL_R_VALUE)),
                 )
 
+                for invalid in non_finite_text:
+                    consumer.value_edit.setText(invalid)
+                    consumer._on_apply()  # noqa: SLF001
+                    message = consumer.invocation_label.text()
+                    report.check(
+                        "value" in message and "finite number" in message,
+                        f"the remote numeric editor rejects {invalid} before invocation",
+                        message,
+                    )
+
                 consumer.value_edit.setText("500")
                 consumer._on_apply()  # noqa: SLF001
-                refused = wait_for(
-                    app,
-                    lambda: "refused" in consumer.invocation_label.text(),
-                    timeout=30,
+                report.check(
+                    "not permitted" in consumer.invocation_label.text(),
+                    "an out-of-range remote write gets immediate field feedback",
+                    consumer.invocation_label.text(),
                 )
-                report.check(refused, "an out-of-range write is refused", consumer.invocation_label.text())
 
                 consumer._on_disconnect()  # noqa: SLF001
                 pump(app)
@@ -1715,54 +1842,56 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                 peer.kill()
 
         print("\n10c. Export and import from the File menu")
-        workdir = Path(tempfile.mkdtemp(prefix="sdctoolbox-gui-"))
-        preset = workdir / "preset.json"
+        with tempfile.TemporaryDirectory(prefix="sdctoolbox-gui-") as raw_workdir:
+            workdir = Path(raw_workdir)
+            preset = workdir / "preset.json"
 
-        # The file dialogs would block with nobody to answer them.
-        QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (str(preset), ""))  # noqa: ARG005
-        QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (str(preset), ""))  # noqa: ARG005
+            # The file dialogs would block with nobody to answer them.
+            QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (str(preset), ""))  # noqa: ARG005
+            QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (str(preset), ""))  # noqa: ARG005
 
-        before_metrics = sorted(service.list_metrics())
-        before_alerts = sorted(service.list_alerts())
-        report.check(bool(before_metrics), "there is something to export", str(before_metrics))
+            before_metrics = sorted(service.list_metrics())
+            before_alerts = sorted(service.list_alerts())
+            report.check(bool(before_metrics), "there is something to export", str(before_metrics))
 
-        written = window.export_config()
-        report.check(written is not None and written.exists(), "export writes the file")
+            written = window.export_config()
+            report.check(written is not None and written.exists(), "export writes the file")
 
-        service.remove_metric(before_metrics[0])
-        pane.refresh()
-        pump(app)
-        report.check(
-            sorted(service.list_metrics()) != before_metrics,
-            "the device is changed after exporting",
-        )
+            service.remove_metric(before_metrics[0])
+            pane.refresh()
+            pump(app)
+            report.check(
+                sorted(service.list_metrics()) != before_metrics,
+                "the device is changed after exporting",
+            )
 
-        report.check(window.import_config(), "import reports success")
-        pump(app)
-        report.check(
-            sorted(service.list_metrics()) == before_metrics,
-            "the data sources are back",
-            str(sorted(service.list_metrics())),
-        )
-        report.check(
-            sorted(service.list_alerts()) == before_alerts,
-            "and so are the alarms",
-            str(sorted(service.list_alerts())),
-        )
-        report.check(
-            pane.table.rowCount() == len(before_metrics),
-            "the table was refreshed by the import",
-            str(pane.table.rowCount()),
-        )
+            report.check(window.import_config(), "import reports success")
+            pump(app)
+            report.check(
+                sorted(service.list_metrics()) == before_metrics,
+                "the data sources are back",
+                str(sorted(service.list_metrics())),
+            )
+            report.check(
+                sorted(service.list_alerts()) == before_alerts,
+                "and so are the alarms",
+                str(sorted(service.list_alerts())),
+            )
+            report.check(
+                pane.table.rowCount() == len(before_metrics),
+                "the table was refreshed by the import",
+                str(pane.table.rowCount()),
+            )
 
-        preset.write_text('{"metrics": [{"label": "broken"}]}', encoding="utf-8")
-        shown_warnings.clear()
-        report.check(not window.import_config(), "a broken file is refused")
-        report.check(
-            len(shown_warnings) == 1,
-            "and the user is told why",
-            shown_warnings[0][1][:60] if shown_warnings else "no message",
-        )
+            preset.write_text('{"metrics": [{"label": "broken"}]}', encoding="utf-8")
+            shown_warnings.clear()
+            report.check(not window.import_config(), "a broken file is refused")
+            report.check(
+                len(shown_warnings) == 1,
+                "and the user is told why",
+                shown_warnings[0][1][:60] if shown_warnings else "no message",
+            )
+        report.check(not workdir.exists(), "the GUI import/export directory is removed after use")
 
         print("\n10d. The startup window")
         startup = StartupDialog()
@@ -1803,6 +1932,56 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             startup.chosen_ip(),
         )
 
+        listed_startup = StartupDialog(name="listed")
+        listed_startup.ip_box.setCurrentIndex(0)
+        listed_ip = listed_startup.ip_box.itemData(0)
+        listed_startup._on_accept()
+        report.check(
+            listed_startup.settings() is not None and listed_startup.settings().ip == listed_ip,
+            "a listed IPv4 address is accepted",
+            listed_ip,
+        )
+        listed_startup.deleteLater()
+
+        manual_ip = "192.0.2.123"
+        report.check(manual_ip not in addresses, "the manual test address is not listed")
+        manual_startup = StartupDialog(name="manual")
+        manual_startup.ip_box.setCurrentText(f"  {manual_ip}  ")
+        manual_startup._on_accept()
+        report.check(
+            manual_startup.settings() is not None and manual_startup.settings().ip == manual_ip,
+            "an unlisted manual IPv4 address is normalized and accepted",
+            manual_startup.settings().ip if manual_startup.settings() else "not accepted",
+        )
+        manual_startup.deleteLater()
+
+        invalid_addresses = {
+            "whitespace-only": "   ",
+            "hostname": "localhost",
+            "IPv6": "::1",
+            "malformed": "999.1.2.3",
+            "address with a suffix": "192.0.2.1  \u2014  adapter",
+        }
+        for description, invalid_ip in invalid_addresses.items():
+            invalid_startup = StartupDialog(name="invalid")
+            invalid_startup.ip_box.setCurrentText(invalid_ip)
+            invalid_startup.show()
+            pump(app)
+            invalid_startup._on_accept()
+            report.check(
+                invalid_startup.isVisible()
+                and invalid_startup.result() != QDialog.Accepted
+                and invalid_startup.settings() is None,
+                f"a {description} bind address keeps the startup dialog open",
+            )
+            report.check(
+                not invalid_startup.error_label.isHidden()
+                and "IPv4 address" in invalid_startup.error_label.text(),
+                f"a {description} bind address gets a field-specific error",
+                invalid_startup.error_label.text(),
+            )
+            invalid_startup.deleteLater()
+
         startup.name_edit.setText("   ")
         startup._on_accept()  # noqa: SLF001
         report.check(startup.settings() is None, "a blank name is refused")
@@ -1820,7 +1999,11 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             for i in range(startup.config_box.count())
             if startup.config_box.itemData(i)
         ]
-        report.check(bool(preset_paths), "presets are offered in the list", f"{len(preset_paths)} entries")
+        report.check(
+            {Path(path).name for path in preset_paths} == constants.SHIPPED_PRESET_FILES,
+            "the exact shipped preset inventory is offered in the list",
+            str(sorted(Path(path).name for path in preset_paths)),
+        )
         report.check(
             all(Path(p).exists() for p in preset_paths),
             "and every one of them exists",

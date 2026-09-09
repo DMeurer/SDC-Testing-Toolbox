@@ -14,7 +14,6 @@ from __future__ import annotations
 import logging
 import os
 import sys
-import time
 from decimal import Decimal
 from pathlib import Path
 
@@ -23,66 +22,55 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
-
+from script_support import Report, wait_until  # noqa: E402
+from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
+from PySide6.QtWidgets import QApplication, QMessageBox, QSizePolicy  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 
 from sdctoolbox.gui.main_window import MainWindow  # noqa: E402
-from sdctoolbox.gui.widgets import WidgetSpec, build_widget  # noqa: E402
 from sdctoolbox.gui.new_metric_dialog import (  # noqa: E402
     OFFERED_DISTRIBUTIONS,
     OFFERED_SHAPES,
     NewMetricDialog,
 )
-from sdctoolbox.gui.widgets.controls import (
-    SampleArrayWidget,  # noqa: E402
+from sdctoolbox.gui.widgets import (  # noqa: E402
+    WidgetSpec,
+    build_widget,
+    from_remote_metric,
+)
+from sdctoolbox.gui.widgets.controls import (  # noqa: E402
     MAX_SLIDER_STEPS,
+    STEP_SMALL,
     ChoiceWidget,
     ReadoutWidget,
+    SampleArrayWidget,
     SliderWidget,
     StepperWidget,
     TextWidget,
 )
 from sdctoolbox.gui.widgets.factory import CONTROLS, pick_control  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
+    ActionSpec,
     AlertSpec,
     DistributionShape,
     MetricKind,
     MetricSpec,
+    RemoteMetric,
+    RemoteRange,
     WaveformShape,
 )
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 
-class Report:
-    """Collects pass/fail results and prints them as they happen."""
-
-    def __init__(self) -> None:
-        self.failures = 0
-        self.checks = 0
-
-    def check(self, ok: bool, description: str, detail: str = "") -> bool:  # noqa: FBT001
-        self.checks += 1
-        if not ok:
-            self.failures += 1
-        suffix = f"  [{detail}]" if detail else ""
-        print(f"  {'PASS' if ok else 'FAIL'}  {description}{suffix}", flush=True)
-        return ok
-
-    def summary(self) -> int:
-        print("-" * 74)
-        if self.failures:
-            print(f"RESULT: {self.failures} of {self.checks} checks FAILED")
-            return 1
-        print(f"RESULT: all {self.checks} checks passed")
-        return 0
-
-
 def pump(app: QApplication, seconds: float = 0.3) -> None:
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        app.processEvents()
-        time.sleep(0.02)
+    wait_until(
+        lambda: False,
+        timeout=seconds,
+        interval=0.02,
+        pump=app.processEvents,
+        check_boundary=False,
+    )
 
 
 def number(**kwargs) -> WidgetSpec:  # noqa: ANN003
@@ -139,6 +127,18 @@ CHOICES = [
     (
         "a zero-width range gets a stepper",
         number(minimum=Decimal("5"), maximum=Decimal("5")),
+        StepperWidget,
+    ),
+    (
+        "multiple allowed ranges get a stepper rather than a misleading slider",
+        number(
+            minimum=Decimal("0"),
+            maximum=Decimal("10"),
+            allowed_ranges=(
+                RemoteRange(Decimal("0"), Decimal("10"), Decimal("2")),
+                RemoteRange(Decimal("20"), Decimal("30"), Decimal("5")),
+            ),
+        ),
         StepperWidget,
     ),
     (
@@ -240,6 +240,11 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         "the catch-all is asked last, so nothing is ever dropped",
         CONTROLS[-1].__name__,
     )
+    unknown = WidgetSpec("m.unknown", "Unknown", None)
+    report.check(
+        [control for control in CONTROLS if control.matches(unknown)] == [ReadoutWidget],
+        "exactly one universal fallback exists and it is the final registry entry",
+    )
     report.check(
         [c.priority for c in CONTROLS] == sorted(c.priority for c in CONTROLS),
         "the registry is in priority order",
@@ -263,6 +268,136 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
     fine = build_widget(number(minimum=Decimal("0"), maximum=Decimal("40"), resolution=Decimal("0.1")))
     fine.show_value(Decimal("12.5"))
     report.check(fine.readout.text() == "12.5", "a fractional value survives the slider", fine.readout.text())
+
+    report.check(
+        slider.readout.textFormat() == Qt.PlainText
+        and slider.readout.sizePolicy().horizontalPolicy() == QSizePolicy.Ignored
+        and all(
+            label.textFormat() == Qt.PlainText and label.maximumWidth() <= 90
+            for label in (slider.low_label, slider.high_label)
+        ),
+        "slider values and range endpoints use bounded plain-text labels",
+    )
+
+    print("\nRemote fractional sliders")
+    for resolution, expected_values in (
+        (Decimal("0.1"), tuple(Decimal(index) / Decimal("10") for index in range(11))),
+        (
+            Decimal("0.3"),
+            (Decimal("0"), Decimal("0.3"), Decimal("0.6"), Decimal("0.9"), Decimal("1")),
+        ),
+    ):
+        remote = RemoteMetric(
+            handle=f"remote.{resolution}",
+            node_type_name="NumericMetricDescriptor",
+            kind=MetricKind.NUMBER,
+            minimum=Decimal("0"),
+            maximum=Decimal("1"),
+            resolution=resolution,
+            operation_handles=("operation",),
+            selected_operation_handle="operation",
+            controllable_now=True,
+        )
+        spec = from_remote_metric(remote)
+        control = build_widget(spec)
+        values = tuple(  # noqa: SLF001
+            control._position_to_value(position) for position in range(control.slider.maximum() + 1)
+        )
+        report.check(spec.resolution == resolution, f"remote resolution {resolution} reaches the widget exactly")
+        report.check(values == expected_values, f"resolution {resolution} exposes truthful positions", str(values))
+
+        emitted = []
+        control.value_requested.connect(lambda _h, value, values=emitted: values.append(value))
+        for endpoint, position in ((Decimal("0"), 0), (Decimal("1"), control.slider.maximum())):
+            control.show_value(endpoint)
+            report.check(
+                control.slider.value() == position and control.readout.text() == str(endpoint),
+                f"resolution {resolution} displays endpoint {endpoint} at its endpoint position",
+                f"position={control.slider.value()}, readout={control.readout.text()}",
+            )
+            control._on_released()  # noqa: SLF001
+            report.check(emitted[-1] == endpoint, f"releasing endpoint {endpoint} emits it exactly")
+
+        keyboard_values = []
+        control.value_requested.connect(lambda _h, value, values=keyboard_values: values.append(value))
+        control.show()
+        control.slider.setFocus()
+        pump(app, seconds=0.1)
+        control.show_value(expected_values[-2])
+        QTest.keyClick(control.slider, Qt.Key_Right)
+        QTest.keyClick(control.slider, Qt.Key_Left)
+        report.check(
+            keyboard_values == [expected_values[-1], expected_values[-2]],
+            f"resolution {resolution} keyboard steps emit exact final-position values",
+            str(keyboard_values),
+        )
+        report.check(
+            control.slider.value() == control.slider.maximum() - 1
+            and control.readout.text() == str(expected_values[-2]),
+            f"resolution {resolution} keyboard position and readout stay synchronized",
+            f"position={control.slider.value()}, readout={control.readout.text()}",
+        )
+        control.hide()
+
+    print("\nRemote choice domains")
+    for description, descriptor_values, operation_values, expected_values in (
+        (
+            "an operation can narrow the descriptor choices",
+            ("IDLE", "RUN", "PAUSE"),
+            ("IDLE", "RUN"),
+            ("IDLE", "RUN"),
+        ),
+        (
+            "an operation-only value is offered even when the descriptor differs",
+            ("descriptor-a", "descriptor-b"),
+            ("operation-a", "operation-b"),
+            ("operation-a", "operation-b"),
+        ),
+    ):
+        remote = RemoteMetric(
+            handle="remote.choice",
+            node_type_name="EnumStringMetricDescriptor",
+            kind=MetricKind.CHOICE,
+            allowed_values=descriptor_values,
+            operation_allowed_values=operation_values,
+            operation_handles=("operation",),
+            selected_operation_handle="operation",
+            controllable_now=True,
+        )
+        spec = from_remote_metric(remote)
+        control = build_widget(spec)
+        offered = tuple(control.box.itemText(index) for index in range(control.box.count()))
+        report.check(
+            spec.allowed_values == expected_values and offered == expected_values,
+            description,
+            f"spec={spec.allowed_values}, offered={offered}",
+        )
+        report.check(
+            remote.allowed_values == descriptor_values,
+            f"{description}, without replacing descriptor metadata",
+            str(remote.allowed_values),
+        )
+
+    read_only_remote = RemoteMetric(
+        handle="remote.read-only-choice",
+        node_type_name="EnumStringMetricDescriptor",
+        kind=MetricKind.CHOICE,
+        allowed_values=("STANDBY", "ACTIVE"),
+        value="ACTIVE",
+    )
+    read_only_choice = build_widget(from_remote_metric(read_only_remote))
+    read_only_choice.show_value(read_only_remote.value)
+    report.check(
+        isinstance(read_only_choice, ChoiceWidget)
+        and tuple(
+            read_only_choice.box.itemText(index)
+            for index in range(read_only_choice.box.count())
+        )
+        == read_only_remote.allowed_values
+        and read_only_choice.box.currentText() == "ACTIVE"
+        and not read_only_choice.box.isEnabled(),
+        "a read-only metric still displays its descriptor choices",
+    )
 
     stepper = build_widget(number(editable=True))
     sent.clear()
@@ -290,6 +425,131 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         sent == [("m.n", Decimal("0"))],
         "the stepper respects a one-sided limit",
         str(sent),
+    )
+
+    print("\nFinite numeric entry")
+    for invalid in ("NaN", "sNaN", "Infinity", "-Infinity"):
+        for action, invoke in (
+            ("typed", bounded_stepper._on_typed),  # noqa: SLF001
+            ("stepped", lambda: bounded_stepper._step(STEP_SMALL)),  # noqa: SLF001
+        ):
+            sent.clear()
+            bounded_stepper.edit.setText(invalid)
+            invoke()
+            message = bounded_stepper.error_label.text()
+            report.check(
+                not sent and "value" in message and "finite number" in message,
+                f"the numeric widget rejects {invalid} when {action}",
+                message,
+            )
+    report.check(
+        bounded_stepper.error_label.textFormat() == Qt.PlainText
+        and bounded_stepper.error_label.sizePolicy().horizontalPolicy()
+        == QSizePolicy.Ignored,
+        "numeric errors use a bounded plain-text label",
+    )
+
+    print("\nAllowedRange numeric domains")
+    ranged = build_widget(
+        number(
+            editable=True,
+            allowed_ranges=(
+                RemoteRange(Decimal("0"), Decimal("10"), Decimal("2")),
+                RemoteRange(Decimal("20"), Decimal("30"), Decimal("5")),
+            ),
+        ),
+    )
+    ranged_values = []
+    ranged.value_requested.connect(lambda _h, value: ranged_values.append(value))
+    for text, accepted, description in (
+        ("25", True, "a value in the second allowed range is accepted"),
+        ("15", False, "a value in the gap between ranges is rejected"),
+        ("3", False, "a value off the range StepWidth is rejected"),
+    ):
+        ranged.edit.setText(text)
+        ranged._on_typed()  # noqa: SLF001
+        report.check(
+            (ranged_values[-1:] == [Decimal(text)]) == accepted,
+            description,
+            ranged.error_label.text(),
+        )
+        if not accepted:
+            report.check(ranged_values == [Decimal("25")], f"{description} without emitting a write")
+
+    for spec, text, accepted, description in (
+        (
+            number(allowed_ranges=(RemoteRange(None, Decimal("0"), Decimal("0.5")),)),
+            "-0.3",
+            False,
+            "an upper-only range rejects values off the Upper-based StepWidth",
+        ),
+        (
+            number(allowed_ranges=(RemoteRange(None, Decimal("0"), Decimal("0.5")),)),
+            "-0.5",
+            True,
+            "an upper-only range accepts values aligned to its Upper-based StepWidth",
+        ),
+        (
+            number(allowed_ranges=(RemoteRange(Decimal("10"), None, Decimal("2")),)),
+            "14",
+            True,
+            "a lower-only range accepts aligned values above its open end",
+        ),
+        (
+            number(allowed_ranges=(RemoteRange(Decimal("10"), None, Decimal("2")),)),
+            "15",
+            False,
+            "a lower-only range still enforces StepWidth",
+        ),
+        (
+            number(),
+            "123.456",
+            True,
+            "no allowed ranges leaves numeric input unrestricted",
+        ),
+        (
+            number(allowed_ranges=(RemoteRange(None, None, Decimal("0.5")),)),
+            "123.456",
+            True,
+            "an unbounded range cannot apply StepWidth without an anchor",
+        ),
+    ):
+        control = build_widget(spec)
+        values = []
+        control.value_requested.connect(lambda _h, value, target=values: target.append(value))
+        control.edit.setText(text)
+        control._on_typed()  # noqa: SLF001
+        report.check(bool(values) == accepted, description, control.error_label.text())
+
+    stepped_slider = build_widget(
+        number(
+            allowed_ranges=(
+                RemoteRange(Decimal("0"), Decimal("1"), Decimal("0.3")),
+            ),
+        ),
+    )
+    stepped_values = tuple(
+        stepped_slider._position_to_value(position)  # noqa: SLF001
+        for position in range(stepped_slider.slider.maximum() + 1)
+    )
+    report.check(
+        stepped_values
+        == (Decimal("0"), Decimal("0.3"), Decimal("0.6"), Decimal("0.9"))
+        and stepped_slider.high_label.text() == "0.9",
+        "a single stepped range slider exposes only aligned values",
+        str(stepped_values),
+    )
+
+    hostile_value = "<img src=not-found width=10000 height=10000>"
+    fallback = build_widget(WidgetSpec("m.hostile", "Hostile", None))
+    fallback.show_value(hostile_value)
+    report.check(
+        fallback.readout.textFormat() == Qt.PlainText
+        and fallback.readout.text() == hostile_value
+        and fallback.readout.sizePolicy().horizontalPolicy() == QSizePolicy.Ignored
+        and fallback.minimumSizeHint().width() < 260,
+        "fallback values render literally without expanding their control",
+        f"minimum={fallback.minimumSizeHint().width()}",
     )
 
     choice = build_widget(
@@ -425,8 +685,10 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         service.add_alert(
             AlertSpec(label="Doomed too high", source_handle=doomed, upper_limit=Decimal("5")),
         )
+        doomed_action = service.add_action(ActionSpec(label="Reset doomed", target_handle=doomed))
         pane.refresh()
         pane.refresh_alerts()
+        pane.refresh_actions()
         pump(app)
 
         card = pane.board.card(doomed)
@@ -449,8 +711,13 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             str(sorted(service.list_alerts())),
         )
         report.check(
-            bool(asked) and "alarms watch it" in asked[-1][1],
-            "and the user was warned that would happen",
+            doomed_action not in service.list_actions() and doomed_action not in pane.action_buttons,
+            "a dependent action is removed from the service and window too",
+            str(sorted(service.list_actions())),
+        )
+        report.check(
+            bool(asked) and "alarms watch it" in asked[-1][1] and "actions depend on it" in asked[-1][1],
+            "and the user was warned about both dependencies",
             asked[-1][1].replace("\n", " ")[:70] if asked else "nothing asked",
         )
 

@@ -9,34 +9,47 @@ over the network. Both arrive through the MdibBridge, so the table looks the sam
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QSplitter,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
-    QSizePolicy,
+    QSplitter,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
+from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types import pm_types
 
 from ..model import MetricKind
 from .context_dialog import ContextDialog
+from .decimal_input import DecimalInputError, parse_decimal_input
+from .helpers import (
+    NO_VALUE,
+    sample_count_text,
+    select_table_row,
+    selected_table_value,
+    value_text,
+)
 from .new_alert_dialog import NewAlertDialog
 from .new_metric_dialog import NewMetricDialog
 from .no_wheel import NoWheelComboBox
 from .qt_bridge import MdibBridge
-from .styling import apply_row_selection_style, mute, muted_colour
+from .styling import (
+    apply_row_selection_style,
+    constrain_dynamic_label,
+    mute,
+    muted_colour,
+)
 from .table_columns import TableColumns
 from .widgets import WidgetBoard, from_spec
 
@@ -45,8 +58,6 @@ if TYPE_CHECKING:
 
 COLUMNS = ["Handle", "Label", "Kind", "Value", "Range", "Unit", "Remote control"]
 COL_HANDLE, COL_LABEL, COL_KIND, COL_VALUE, COL_RANGE, COL_UNIT, COL_CONTROL = range(len(COLUMNS))
-
-NO_VALUE = "\u2014"  # em dash
 
 ALERT_COLUMNS = ["Handle", "Label", "Watches", "Raise when", "Kind", "Priority", "State", "Signals"]
 (
@@ -63,6 +74,21 @@ ALERT_COLUMNS = ["Handle", "Label", "Watches", "Raise when", "Kind", "Priority",
 EDITOR_TEXT = 0
 EDITOR_CHOICE = 1
 
+METRIC_DESCRIPTOR_TYPES = frozenset(kind.descriptor_qname for kind in MetricKind)
+SET_OPERATION_DESCRIPTOR_TYPES = frozenset(
+    {
+        pm.SetValueOperationDescriptor,
+        pm.SetStringOperationDescriptor,
+    },
+)
+ALERT_DESCRIPTOR_TYPES = frozenset(
+    {
+        pm.AlertConditionDescriptor,
+        pm.LimitAlertConditionDescriptor,
+        pm.AlertSignalDescriptor,
+    },
+)
+
 
 class ProviderPane(QWidget):
     """Everything the user does to the device they are publishing."""
@@ -77,9 +103,13 @@ class ProviderPane(QWidget):
 
         self.bridge = MdibBridge(service.mdib, self)
         self.bridge.metrics_changed.connect(self._on_values_changed)
-        self.bridge.descriptors_added.connect(lambda _: self.refresh())
-        self.bridge.descriptors_deleted.connect(lambda _: self.refresh())
-        self.bridge.operations_changed.connect(lambda _: self.refresh())
+        # Structural observables fire while the provider is leaving its transaction. Queue
+        # the view work so service bookkeeping is complete and no GUI code runs in that
+        # callback stack.
+        self.bridge.descriptors_added.connect(self._on_descriptors_changed, Qt.QueuedConnection)
+        self.bridge.descriptors_updated.connect(self._on_descriptors_changed, Qt.QueuedConnection)
+        self.bridge.descriptors_deleted.connect(self._on_descriptors_changed, Qt.QueuedConnection)
+        self.bridge.operations_changed.connect(self._on_operations_changed, Qt.QueuedConnection)
         self.bridge.alerts_changed.connect(lambda _: self.refresh_alerts())
         self.bridge.contexts_changed.connect(lambda _: self.refresh_contexts())
         # Waveforms travel as a WaveformStream, not an EpisodicMetricReport, so they
@@ -122,11 +152,12 @@ class ProviderPane(QWidget):
         self.context_button = QPushButton("Patient and location\u2026")
         self.context_button.clicked.connect(self._on_edit_contexts)
         self.context_label = QLabel("")
-        self.context_label.setWordWrap(True)
-        self.context_label.setTextFormat(Qt.PlainText)
+        constrain_dynamic_label(self.context_label, max_lines=3)
         self.context_label.setTextInteractionFlags(Qt.NoTextInteraction)
-        self.context_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         mute(self.context_label)
+        transport = "Transport: TLS with client certificates" if self.service.tls_enabled else "Transport: HTTP (lab only)"
+        self.transport_label = QLabel(transport)
+        mute(self.transport_label)
 
         buttons = QHBoxLayout()
         buttons.addWidget(self.new_button)
@@ -166,7 +197,7 @@ class ProviderPane(QWidget):
         self.acknowledge_button.clicked.connect(self._on_acknowledge)
         self.stop_latched_button = QPushButton("Stop latched")
         self.stop_latched_button.clicked.connect(self._on_stop_latched)
-        self.delegate_button = QPushButton("Delegate")
+        self.delegate_button = QPushButton("Remote*")
         self.delegate_button.clicked.connect(self._on_delegate)
 
         alert_buttons = QHBoxLayout()
@@ -186,6 +217,7 @@ class ProviderPane(QWidget):
         alert_layout.addWidget(self.alert_table)
 
         self.editor_label = QLabel("Select a data source to change its value")
+        constrain_dynamic_label(self.editor_label, max_lines=2, max_width=240)
         self.value_edit = QLineEdit()
         self.value_edit.returnPressed.connect(self._on_apply)
         self.choice_box = NoWheelComboBox()
@@ -218,6 +250,7 @@ class ProviderPane(QWidget):
         # two panels disagreed by 9px at the top and the bottom.
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(buttons)
+        layout.addWidget(self.transport_label)
         layout.addWidget(self.context_label)
         layout.addWidget(self.views, 1)
         layout.addWidget(self.actions_widget)
@@ -335,10 +368,8 @@ class ProviderPane(QWidget):
         would be useless, so the cell says how many arrived instead. The card draws them.
         """
         if spec.is_sample_array:
-            count = len(self.service.get_samples(handle))
-            return f"{count} sample(s)" if count else NO_VALUE
-        value = self.service.get_value(handle)
-        return NO_VALUE if value is None else str(value)
+            return sample_count_text(self.service.get_samples(handle))
+        return value_text(self.service.get_value(handle))
 
     def _refresh_sample_cells(self, handles) -> None:  # noqa: ANN001 - any iterable
         """Update the count in the Value column for the metrics named."""
@@ -393,6 +424,34 @@ class ProviderPane(QWidget):
         finally:
             self._refreshing = False
 
+    def _on_descriptors_changed(self, descriptors_by_handle: dict) -> None:
+        """Refresh only the views affected by a structural MDIB change."""
+        node_types = {
+            getattr(descriptor, "NODETYPE", None)
+            for descriptor in descriptors_by_handle.values()
+        }
+        if node_types & (METRIC_DESCRIPTOR_TYPES | SET_OPERATION_DESCRIPTOR_TYPES):
+            self.refresh()
+        if node_types & ALERT_DESCRIPTOR_TYPES:
+            self.refresh_alerts()
+        if pm.ActivateOperationDescriptor in node_types:
+            self.refresh_actions()
+
+    def _on_operations_changed(self, states_by_handle: dict) -> None:
+        """Follow operation modes in metric controls and local action availability."""
+        changed_handles = set(states_by_handle)
+        action_handles = set(self.service.list_actions())
+        if changed_handles & action_handles:
+            self.refresh_actions()
+
+        metric_operation_handles = {
+            operation_handle
+            for metric_handle in self.service.list_metrics()
+            if (operation_handle := self.service.operation_handle_for(metric_handle)) is not None
+        }
+        if changed_handles & metric_operation_handles:
+            self.refresh()
+
     # -- alarms --------------------------------------------------------------------
 
     def refresh_alerts(self) -> None:
@@ -423,8 +482,8 @@ class ProviderPane(QWidget):
                 if column == ACOL_SIGNALS:
                     item.setToolTip(
                         "How each signal is announcing the condition. Ack means it has been\n"
-                        "acknowledged; the condition itself is still present. ->Rem means it\n"
-                        "has been delegated to another device. Latch means a latching signal\n"
+                        "acknowledged; the condition itself is still present. ->Rem is a\n"
+                        "simulated remote location, not a delegation handoff. Latch means a signal\n"
                         "continues to announce a cleared condition until stopped.",
                     )
                     if not present:
@@ -438,20 +497,11 @@ class ProviderPane(QWidget):
 
     def selected_alert_handle(self) -> str | None:
         """Handle of the selected alarm row, or None."""
-        model = self.alert_table.selectionModel()
-        rows = model.selectedRows() if model else []
-        if not rows:
-            return None
-        item = self.alert_table.item(rows[0].row(), ACOL_HANDLE)
-        return item.text() if item else None
+        return selected_table_value(self.alert_table, ACOL_HANDLE)
 
     def select_alert_handle(self, handle: str) -> None:
         """Restore the alarm selection, if that alarm still exists."""
-        for row in range(self.alert_table.rowCount()):
-            item = self.alert_table.item(row, ACOL_HANDLE)
-            if item is not None and item.text() == handle:
-                self.alert_table.selectRow(row)
-                return
+        select_table_row(self.alert_table, ACOL_HANDLE, handle)
 
     def _on_alert_selection_changed(self) -> None:
         handle = self.selected_alert_handle()
@@ -476,13 +526,13 @@ class ProviderPane(QWidget):
         self._update_signal_buttons(handle, spec)
 
     def _update_signal_buttons(self, handle: str | None, spec: object | None) -> None:
-        """Acknowledge and Delegate follow the selected alarm's signals."""
+        """Signal controls follow the selected alarm's current state and capabilities."""
         signals = self.service.signal_states(handle) if handle and spec is not None else []
         present = bool(handle) and spec is not None and self.service.alert_present(handle)
 
         # Acknowledging a condition that is not raised is meaningless, and the provider
         # refuses it, so do not offer it either.
-        unacknowledged = [signal for signal in signals if not signal.acknowledged]
+        unacknowledged = [signal for signal in signals if signal.acknowledgeable]
         self.acknowledge_button.setEnabled(present and bool(unacknowledged))
         if spec is None:
             self.acknowledge_button.setToolTip("")
@@ -504,8 +554,8 @@ class ProviderPane(QWidget):
 
         delegable = [signal for signal in signals if signal.delegable]
         self.delegate_button.setEnabled(bool(delegable))
-        anywhere_delegated = any(signal.delegated for signal in delegable)
-        self.delegate_button.setText("Take back" if anywhere_delegated else "Delegate")
+        anywhere_remote = any(signal.remote_location for signal in delegable)
+        self.delegate_button.setText("Local*" if anywhere_remote else "Remote*")
         if spec is None:
             self.delegate_button.setToolTip("")
         elif not delegable:
@@ -515,8 +565,8 @@ class ProviderPane(QWidget):
             )
         else:
             self.delegate_button.setToolTip(
-                "Record that another device announces these signals, by moving their\n"
-                "Location from Loc to Rem.",
+                "Demonstrate Loc/Rem state only. This does not perform the normative\n"
+                "signal-delegation handoff with another device.",
             )
 
     def _on_new_alert(self) -> None:
@@ -595,10 +645,10 @@ class ProviderPane(QWidget):
         if not delegable:
             return
         # One button for the whole condition, so the target is whatever the majority is not.
-        delegate = not any(signal.delegated for signal in delegable)
+        remote = not any(signal.remote_location for signal in delegable)
         try:
             for signal in delegable:
-                self.service.set_signal_delegated(signal.handle, delegated=delegate)
+                self.service.set_signal_delegated(signal.handle, delegated=remote)
         except (KeyError, ValueError) as exc:
             QMessageBox.warning(self, "Could not delegate", str(exc))
         self.refresh_alerts()
@@ -623,6 +673,8 @@ class ProviderPane(QWidget):
                 # as actions come and go.
                 self.actions_row.insertWidget(self.actions_row.count() - 1, button)
                 self.action_buttons[handle] = button
+            button.setText(spec.label)
+            button.setEnabled(self._operation_enabled(handle))
             button.setToolTip(f"{spec.note}\n{handle}: {spec.summary()}".strip())
 
         # A device with no actions should not show an empty toolbar saying "Actions".
@@ -665,19 +717,11 @@ class ProviderPane(QWidget):
 
     def selected_handle(self) -> str | None:
         """Handle of the selected row, or None."""
-        rows = self.table.selectionModel().selectedRows() if self.table.selectionModel() else []
-        if not rows:
-            return None
-        item = self.table.item(rows[0].row(), COL_HANDLE)
-        return item.text() if item else None
+        return selected_table_value(self.table, COL_HANDLE)
 
     def select_handle(self, handle: str) -> None:
         """Restore the selection to a given handle, if it still exists."""
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, COL_HANDLE)
-            if item is not None and item.text() == handle:
-                self.table.selectRow(row)
-                return
+        select_table_row(self.table, COL_HANDLE, handle)
 
     def _on_selection_changed(self) -> None:
         handle = self.selected_handle()
@@ -746,24 +790,28 @@ class ProviderPane(QWidget):
             for alert_handle, alert in self.service.list_alerts().items()
             if alert.source_handle == handle
         ]
+        dependent_actions = [
+            action_handle
+            for action_handle, action in self.service.list_actions().items()
+            if action.target_handle == handle or handle in action.effects
+        ]
 
         question = f"Remove {name}?\n\nConnected consumers will see it disappear."
         if watching:
-            # Removing the metric would leave these pointing at nothing, so say so before
-            # rather than after.
             question += f"\n\nThese alarms watch it and will be removed too:\n  {', '.join(watching)}"
+        if dependent_actions:
+            question += f"\n\nThese actions depend on it and will be removed too:\n  {', '.join(dependent_actions)}"
 
         if QMessageBox.question(self, "Remove data source", question) != QMessageBox.Yes:
             return
 
         try:
-            for alert_handle in watching:
-                self.service.remove_alert(alert_handle)
             self.service.remove_metric(handle)
         except KeyError as exc:
             QMessageBox.warning(self, "Could not remove", str(exc))
         self.refresh()
         self.refresh_alerts()
+        self.refresh_actions()
 
     def _on_apply(self) -> None:
         handle = self.selected_handle()
@@ -778,9 +826,9 @@ class ProviderPane(QWidget):
         elif spec.kind is MetricKind.NUMBER:
             raw = self.value_edit.text().strip()
             try:
-                value = Decimal(raw)
-            except InvalidOperation:
-                QMessageBox.warning(self, "Not a number", f"{raw!r} is not a valid number.")
+                value = parse_decimal_input(raw, "value", minimum=spec.minimum, maximum=spec.maximum)
+            except DecimalInputError as exc:
+                QMessageBox.warning(self, "Invalid value", str(exc))
                 return
         else:
             value = self.value_edit.text()
@@ -817,7 +865,12 @@ class ProviderPane(QWidget):
         operation_handle = self.service.operation_handle_for(handle)
         if operation_handle is None:
             return False
-        entity = self.service.mdib.entities.by_handle(operation_handle)
+        return self._operation_enabled(operation_handle)
+
+    def _operation_enabled(self, handle: str) -> bool:
+        """Whether an operation is currently available, including its BICEPS default."""
+        entity = self.service.mdib.entities.by_handle(handle)
         if entity is None:
             return False
-        return getattr(entity.state, "OperatingMode", None) == pm_types.OperatingMode.ENABLED
+        mode = getattr(entity.state, "OperatingMode", None)
+        return mode is None or mode == pm_types.OperatingMode.ENABLED

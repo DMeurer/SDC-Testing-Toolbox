@@ -14,41 +14,19 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from script_support import Report  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 
-from sdctoolbox import config  # noqa: E402
+from sdctoolbox import config, constants  # noqa: E402
 from sdctoolbox.model import CODING_SYSTEMS, MetricKind  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
-
-
-class Report:
-    """Collects pass/fail results and prints them as they happen."""
-
-    def __init__(self) -> None:
-        self.failures = 0
-        self.checks = 0
-
-    def check(self, ok: bool, description: str, detail: str = "") -> bool:  # noqa: FBT001
-        self.checks += 1
-        if not ok:
-            self.failures += 1
-        suffix = f"  [{detail}]" if detail else ""
-        print(f"  {'PASS' if ok else 'FAIL'}  {description}{suffix}", flush=True)
-        return ok
-
-    def summary(self) -> int:
-        print("-" * 74)
-        if self.failures:
-            print(f"RESULT: {self.failures} of {self.checks} checks FAILED")
-            return 1
-        print(f"RESULT: all {self.checks} checks passed")
-        return 0
 
 
 def check_preset(report: Report, path: Path) -> None:
@@ -56,11 +34,27 @@ def check_preset(report: Report, path: Path) -> None:
     print(f"\n{path.name}")
 
     try:
+        data = json.loads(path.read_text(encoding="utf-8"))
         device = config.load_file(path)
-    except config.ConfigError as exc:
+    except (OSError, UnicodeError, ValueError, config.ConfigError) as exc:
         report.check(False, f"{path.name} parses", str(exc)[:70])  # noqa: FBT003
         return
     report.check(True, "parses")  # noqa: FBT003
+    report.check(
+        data.get("version") == config.CONFIG_VERSION,
+        f"uses current profile version {config.CONFIG_VERSION}",
+        str(data.get("version")),
+    )
+    alerts_with_implicit_signals = [
+        alert.get("handle", alert.get("label", "?"))
+        for alert in data.get("alerts", [])
+        if not alert.get("signals")
+    ]
+    report.check(
+        not alerts_with_implicit_signals,
+        "records every alarm's version-3 signal definitions explicitly",
+        str(alerts_with_implicit_signals),
+    )
 
     report.check(
         device.device is not None and bool(device.device.friendly_name),
@@ -166,12 +160,18 @@ def check_nomenclature(report: Report, paths: list[Path]) -> None:
     print("\nNomenclature across all presets")
 
     totals: dict[str, dict[str, int]] = {}
+    non_numeric_mdc: list[str] = []
     for path in paths:
         device = config.load_file(path)
         counts = {"mdc": 0, "private": 0}
         for spec in device.metrics:
-            for coding in (spec.effective_type(), spec.effective_unit()):
+            codings = [spec.effective_type(), spec.effective_unit()]
+            if spec.kind is MetricKind.DISTRIBUTION:
+                codings.append(spec.effective_domain_unit())
+            for coding in codings:
                 counts[coding.system] = counts.get(coding.system, 0) + 1
+                if coding.system == "mdc" and not coding.code.isdecimal():
+                    non_numeric_mdc.append(f"{path.stem}:{spec.handle}:{coding.code}")
         totals[path.stem] = counts
 
     for name, counts in sorted(totals.items()):
@@ -196,6 +196,28 @@ def check_nomenclature(report: Report, paths: list[Path]) -> None:
         "no preset invents a coding system",
         str(sorted(systems)),
     )
+    report.check(
+        not non_numeric_mdc,
+        "every MDC coding uses a decimal context-free code",
+        str(non_numeric_mdc),
+    )
+
+
+def check_version_filter(report: Report) -> None:
+    """Preset discovery omits files with versions below the supported range."""
+    with tempfile.TemporaryDirectory(prefix="sdctoolbox-presets-") as directory:
+        folder = Path(directory)
+        for name, version in (("supported", config.LEGACY_CONFIG_VERSION), ("zero", 0), ("negative", -1)):
+            (folder / f"{name}.json").write_text(
+                json.dumps({"version": version, "name": name.title()}),
+                encoding="utf-8",
+            )
+        listed = config.list_presets(folder)
+    report.check(
+        [preset.name for preset in listed] == ["Supported"],
+        "preset discovery skips unsupported low config versions",
+        str([preset.name for preset in listed]),
+    )
 
 
 def main() -> int:
@@ -207,7 +229,13 @@ def main() -> int:
     print("=" * 74)
 
     paths = sorted((ROOT / "presets").glob("*.json"))
-    report.check(len(paths) >= 6, "presets are shipped", f"{len(paths)} files")  # noqa: PLR2004
+    actual_files = {path.name for path in paths}
+    report.check(
+        actual_files == constants.SHIPPED_PRESET_FILES,
+        "the exact canonical preset inventory is shipped",
+        f"missing {sorted(constants.SHIPPED_PRESET_FILES - actual_files)}, "
+        f"extra {sorted(actual_files - constants.SHIPPED_PRESET_FILES)}",
+    )
 
     for path in paths:
         check_preset(report, path)
@@ -217,12 +245,13 @@ def main() -> int:
     print("\nThe menu builds from these")
     listed = config.list_presets()
     report.check(
-        len(listed) == len(paths),
-        "every file is offered, so none is silently unreadable",
-        f"{len(listed)} of {len(paths)}",
+        {preset.path.name for preset in listed} == constants.SHIPPED_PRESET_FILES,
+        "exactly the shipped files are offered, so none is silently unreadable",
+        str(sorted(preset.path.name for preset in listed)),
     )
     for preset in listed:
         report.check(bool(preset.description), f"{preset.name} says what it is", preset.description[:44])
+    check_version_filter(report)
 
     print()
     return report.summary()

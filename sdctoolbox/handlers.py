@@ -8,7 +8,7 @@ dealing with, because the target handle travels with the call in
 from __future__ import annotations
 
 import logging
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from sdc11073.provider.operations import ExecuteParameters, ExecuteResult
@@ -16,8 +16,10 @@ from sdc11073.xml_types import msg_types, pm_types
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from contextlib import AbstractContextManager
 
     from sdc11073.mdib import ProviderMdib
+    from sdc11073.mdib.mdibbase import MdibVersionGroup
 
 logger = logging.getLogger("sdctoolbox.handlers")
 
@@ -42,7 +44,9 @@ def apply_metric_value(state: object, value: object) -> None:
 
 def make_set_handler(
     mdib: ProviderMdib,
+    coerce_value: Callable[[str, object], Decimal | str],
     on_applied: Callable[[str], None] | None = None,
+    execution_lock: AbstractContextManager | None = None,
 ) -> Callable[[ExecuteParameters], ExecuteResult]:
     """Build the execute handler bound to one provider MDIB.
 
@@ -60,12 +64,21 @@ def make_set_handler(
     The OperatingMode check is deliberate: ``ScoOperationsRegistry.handle_operation_request``
     does not look at it, so without this check a disabled control would still take effect.
 
+    Numeric targets accept finite ``Decimal`` values and decimal strings. Their BICEPS
+    ``Resolution`` describes measurement granularity; it is not a decimal-place limit.
+
     :param on_applied: called with the target handle after the write has been committed.
         It runs outside the transaction, because sdc11073 holds a non-reentrant lock for the
         whole of it and anything wanting a transaction of its own would deadlock.
     """
 
     def handler(params: ExecuteParameters) -> ExecuteResult:
+        if execution_lock is not None:
+            with execution_lock:
+                return execute(params)
+        return execute(params)
+
+    def execute(params: ExecuteParameters) -> ExecuteResult:
         operation_handle = params.operation_instance.handle
         target_handle = params.operation_instance.operation_target_handle
         requested = params.operation_request.argument
@@ -86,45 +99,10 @@ def make_set_handler(
         if target_entity is None:
             return _failed(mdib, f"target {target_handle!r} does not exist", target_handle)
 
-        descriptor = target_entity.descriptor
-
-        allowed = getattr(descriptor, "AllowedValue", None)
-        if allowed:
-            permitted = [item.Value for item in allowed]
-            if str(requested) not in permitted:
-                return _failed(
-                    mdib,
-                    f"{requested!r} is not among the allowed values {permitted} of {target_handle!r}",
-                    target_handle,
-                )
-            value: object = str(requested)
-        elif hasattr(descriptor, "Resolution"):
-            # Numeric target. Only Integers, no Floats, because of precision issues.
-            # The Resolution attribute is basically "how many decimal places are allowed", so it is present on all numeric metrics.
-            try:
-                value = requested if isinstance(requested, Decimal) else Decimal(str(requested))
-            except (InvalidOperation, ValueError):
-                return _failed(mdib, f"{requested!r} is not a number for {target_handle!r}", target_handle)
-
-            # AllowedRange on the operation state is what a remote caller must respect.
-            # The library does not police it, just as it does not police OperatingMode.
-            for permitted_range in getattr(operation_entity.state, "AllowedRange", None) or []:
-                lower = getattr(permitted_range, "Lower", None)
-                upper = getattr(permitted_range, "Upper", None)
-                if lower is not None and value < lower:
-                    return _failed(
-                        mdib,
-                        f"{value} is below the allowed minimum {lower} of {target_handle!r}",
-                        target_handle,
-                    )
-                if upper is not None and value > upper:
-                    return _failed(
-                        mdib,
-                        f"{value} is above the allowed maximum {upper} of {target_handle!r}",
-                        target_handle,
-                    )
-        else:
-            value = str(requested)
+        try:
+            value = coerce_value(target_handle, requested)
+        except (KeyError, TypeError, ValueError) as exc:
+            return _failed(mdib, str(exc), target_handle)
 
         apply_metric_value(target_entity.state, value)
 
@@ -146,8 +124,7 @@ def make_set_handler(
 
 def make_activate_handler(
     mdib: ProviderMdib,
-    effects_for: Callable[[str], dict[str, object]],
-    on_applied: Callable[[str], None] | None = None,
+    execute_effects: Callable[[str], tuple[MdibVersionGroup, Exception | None]],
 ) -> Callable[[ExecuteParameters], ExecuteResult]:
     """Build the handler shared by every ActivateOperation.
 
@@ -163,8 +140,9 @@ def make_activate_handler(
     OperatingMode is enforced here for the same reason as in the set handler:
     handle_operation_request never looks at it.
 
-    :param effects_for: given an operation handle, the metric values that operation sets.
-    :param on_applied: called once per touched metric, after the transaction closes.
+    :param execute_effects: provider-owned preparation, commit, and alert processing.
+        A returned exception means the effects committed but reporting or subsequent alert
+        processing failed; the remote invocation remains successful in that case.
     """
 
     def handler(params: ExecuteParameters) -> ExecuteResult:
@@ -183,31 +161,22 @@ def make_activate_handler(
                 target_handle,
             )
 
-        effects = effects_for(operation_handle)
-        touched = []
-        for handle, value in effects.items():
-            entity = mdib.entities.by_handle(handle)
-            if entity is None:
-                # A preset can name a metric that was removed since. Skipping beats
-                # refusing the whole action over one stale effect.
-                logger.warning("action %s: no metric %r to change", operation_handle, handle)
-                continue
-            apply_metric_value(entity.state, value)
-            touched.append(entity)
+        try:
+            version_group, alert_error = execute_effects(operation_handle)
+        except (KeyError, TypeError, ValueError) as exc:
+            return _failed(mdib, str(exc), target_handle)
 
-        if touched:
-            with mdib.metric_state_transaction() as mgr:
-                for entity in touched:
-                    mgr.write_entity(entity)
+        if alert_error is not None:
+            logger.error(
+                "action %s committed its effects, but post-commit processing failed",
+                operation_handle,
+                exc_info=(type(alert_error), alert_error, alert_error.__traceback__),
+            )
 
-        if on_applied is not None:
-            for entity in touched:
-                on_applied(entity.handle)
-
-        logger.info("action %s ran, changing %d metric(s)", operation_handle, len(touched))
+        logger.info("action %s ran", operation_handle)
         return ExecuteResult(
             msg_types.InvocationState.FINISHED,
-            mdib.mdib_version_group,
+            version_group,
             target_handle,
         )
 
