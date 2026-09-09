@@ -1,15 +1,17 @@
 """Generate a local self-signed CA and mutual-TLS identities for the toolbox.
 
-The result is suitable for two local toolbox instances. Each participant trusts
+The result is suitable for any number of local toolbox instances. Each participant trusts
 ``ca.pem`` and uses its own ``<name>.pem`` certificate and ``<name>-key.pem``
-private key. Generated private keys are encrypted unless ``--no-password`` is
-selected deliberately.
+private key. ``ca-key.pem`` stays with the test administrator and is needed only
+when adding another participant later. Generated private keys are encrypted unless
+``--no-password`` is selected deliberately.
 
 Examples:
 
     python helpers/tls/generate_certificates.py
     python helpers/tls/generate_certificates.py --ip 192.168.1.42 --password-file secret.txt
-    python helpers/tls/generate_certificates.py --provider ventilator --consumer workstation
+    python helpers/tls/generate_certificates.py --participants alpha beta gamma
+    python helpers/tls/generate_certificates.py --add gamma --ip 10.0.65.145
 """
 
 from __future__ import annotations
@@ -33,6 +35,14 @@ CA_VALIDITY_DAYS = 3650
 KEY_SIZE = 3072
 
 
+def participant_name(value: str) -> str:
+    """Accept a safe filename and certificate common name for one toolbox instance."""
+    name = value.strip()
+    if not name or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for character in name):
+        raise argparse.ArgumentTypeError("must contain only letters, numbers, hyphens, or underscores")
+    return name
+
+
 def ipv4_argument(value: str) -> ipaddress.IPv4Address:
     """Accept one IPv4 address, which becomes an IP subject alternative name."""
     try:
@@ -48,8 +58,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help=f"directory to create (default: {DEFAULT_OUTPUT})")
     parser.add_argument("--ip", type=ipv4_argument, default=ipaddress.IPv4Address("127.0.0.1"), help="IPv4 SAN for both participants")
-    parser.add_argument("--provider", default="provider", help="provider certificate filename and common name")
-    parser.add_argument("--consumer", default="consumer", help="consumer certificate filename and common name")
+    participants = parser.add_mutually_exclusive_group()
+    participants.add_argument(
+        "--participants",
+        nargs="+",
+        type=participant_name,
+        default=("alpha", "beta"),
+        metavar="NAME",
+        help="certificate names for toolbox instances (default: alpha beta)",
+    )
+    participants.add_argument(
+        "--add",
+        nargs="+",
+        type=participant_name,
+        metavar="NAME",
+        help="add identities signed by the existing ca.pem and ca-key.pem",
+    )
     parser.add_argument("--password-file", type=Path, help="read private-key password from a UTF-8 file")
     parser.add_argument("--no-password", action="store_true", help="write unencrypted private keys (not recommended)")
     parser.add_argument("--force", action="store_true", help="replace a previously generated directory")
@@ -121,7 +145,12 @@ def make_participant(name: str, ip: ipaddress.IPv4Address, ca_key, ca_certificat
     key = rsa.generate_private_key(public_exponent=65537, key_size=KEY_SIZE)
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)])
     certificate = (
-        certificate_builder(subject, ca_certificate.subject, key.public_key(), datetime.now(UTC) + timedelta(days=VALIDITY_DAYS))
+        certificate_builder(
+            subject,
+            ca_certificate.subject,
+            key.public_key(),
+            min(datetime.now(UTC) + timedelta(days=VALIDITY_DAYS), ca_certificate.not_valid_after_utc),
+        )
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .add_extension(
             x509.KeyUsage(
@@ -162,16 +191,48 @@ def write_private_key(path: Path, key: rsa.RSAPrivateKey, password: bytes | None
     )
 
 
-def prepare_output(path: Path, provider: str, consumer: str, force: bool) -> None:
+def read_ca(path: Path, password: bytes | None) -> tuple[rsa.RSAPrivateKey, x509.Certificate]:
+    """Load and validate the local signing CA required to add participants."""
+    certificate_path = path / "ca.pem"
+    private_key_path = path / "ca-key.pem"
+    if not certificate_path.is_file() or not private_key_path.is_file():
+        raise ValueError(
+            f"adding a participant needs {certificate_path.name} and {private_key_path.name}; "
+            "a CA certificate alone cannot sign a new participant certificate",
+        )
+    try:
+        certificate = x509.load_pem_x509_certificate(certificate_path.read_bytes())
+        private_key = serialization.load_pem_private_key(private_key_path.read_bytes(), password=password)
+    except (OSError, TypeError, ValueError) as exc:
+        raise ValueError("cannot read the existing CA certificate/key with the supplied password") from exc
+    try:
+        basic_constraints = certificate.extensions.get_extension_for_class(x509.BasicConstraints).value
+    except x509.ExtensionNotFound as exc:
+        raise ValueError("existing ca.pem is not a certificate authority") from exc
+    if not basic_constraints.ca:
+        raise ValueError("existing ca.pem is not a certificate authority")
+    if certificate.public_key().public_numbers() != private_key.public_key().public_numbers():
+        raise ValueError("existing ca.pem and ca-key.pem do not belong together")
+    if certificate.not_valid_after_utc <= datetime.now(UTC):
+        raise ValueError("existing CA certificate is expired")
+    return private_key, certificate
+
+
+def existing_participants(path: Path) -> tuple[str, ...]:
+    """Return complete generated identities, sorted so the instruction file is stable."""
+    names = []
+    for certificate_path in path.glob("*.pem"):
+        name = certificate_path.stem
+        if name != "ca" and (path / f"{name}-key.pem").is_file():
+            names.append(name)
+    return tuple(sorted(names))
+
+
+def prepare_output(path: Path, participants: tuple[str, ...], force: bool) -> None:
     """Avoid accidental key replacement; ``--force`` only clears known generated files."""
-    expected = {
-        "ca.pem",
-        f"{provider}.pem",
-        f"{provider}-key.pem",
-        f"{consumer}.pem",
-        f"{consumer}-key.pem",
-        "README.txt",
-    }
+    expected = {"ca.pem", "ca-key.pem", "README.txt"}
+    for name in participants:
+        expected.update({f"{name}.pem", f"{name}-key.pem"})
     if path.exists():
         existing = {entry.name for entry in path.iterdir()}
         if existing and not force:
@@ -182,10 +243,22 @@ def prepare_output(path: Path, provider: str, consumer: str, force: bool) -> Non
     path.mkdir(parents=True, exist_ok=True)
 
 
+def prepare_addition(path: Path, participants: tuple[str, ...]) -> None:
+    """Refuse accidental replacement while preserving all existing local identities."""
+    if not path.is_dir():
+        raise ValueError(f"TLS output directory does not exist: {path}")
+    duplicates = [
+        name
+        for name in participants
+        if (path / f"{name}.pem").exists() or (path / f"{name}-key.pem").exists()
+    ]
+    if duplicates:
+        raise ValueError(f"refusing to replace existing participant material: {', '.join(duplicates)}")
+
+
 def write_instructions(
     path: Path,
-    provider: str,
-    consumer: str,
+    participants: tuple[str, ...],
     ip: ipaddress.IPv4Address,
     encrypted: bool,
 ) -> None:
@@ -198,13 +271,16 @@ def write_instructions(
         "SDC Testing Toolbox local mutual-TLS material\n"
         "==============================================\n\n"
         f"Generated for IPv4 address: {ip}\n"
-        "The CA certificate is self-signed. It explicitly trusts the two participant certificates below.\n\n"
-        f"Provider: {provider}.pem and {provider}-key.pem\n"
-        f"Consumer: {consumer}.pem and {consumer}-key.pem\n"
-        "Trust bundle for both: ca.pem\n\n"
-        "Run these from the toolbox repository root to start a provider and consumer:\n\n"
-        f"  python run_toolbox.py --ip {ip} --name {provider} --tls-cert \"{path.parent / f'{provider}.pem'}\" --tls-key \"{path.parent / f'{provider}-key.pem'}\" --tls-ca \"{path.parent / 'ca.pem'}\"\n"
-        f"  python run_toolbox.py --ip {ip} --name {consumer} --tls-cert \"{path.parent / f'{consumer}.pem'}\" --tls-key \"{path.parent / f'{consumer}-key.pem'}\" --tls-ca \"{path.parent / 'ca.pem'}\"\n\n"
+        "The CA certificate is self-signed. It explicitly trusts every participant certificate below.\n\n"
+        "Each toolbox instance is both an SDC provider and consumer. Every generated identity\n"
+        "therefore has both TLS server and client authentication capabilities.\n\n"
+        "Trust bundle for every participant: ca.pem\n\n"
+        "Run one command per instance from the toolbox repository root:\n\n"
+        + "".join(
+            f"  python run_toolbox.py --ip {ip} --name {name} --tls-cert \"{path.parent / f'{name}.pem'}\" --tls-key \"{path.parent / f'{name}-key.pem'}\" --tls-ca \"{path.parent / 'ca.pem'}\"\n"
+            for name in participants
+        )
+        + "\n"
         f"{password_note}\n\n"
         "Do not commit this directory. The private keys grant the generated participant identities.\n",
         encoding="utf-8",
@@ -213,29 +289,39 @@ def write_instructions(
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    if not args.provider.strip() or not args.consumer.strip():
-        print("error: provider and consumer names cannot be blank", file=sys.stderr)
-        return 2
-    if args.provider == args.consumer:
-        print("error: provider and consumer names must differ", file=sys.stderr)
+    participants = tuple(args.add if args.add is not None else args.participants)
+    if len(set(participants)) != len(participants):
+        print("error: participant names must be distinct", file=sys.stderr)
         return 2
     try:
         password = key_password(args)
         output = args.output.resolve()
-        prepare_output(output, args.provider, args.consumer, args.force)
-        ca_key, ca_certificate = make_ca()
-        write_certificate(output / "ca.pem", ca_certificate)
-        for name in (args.provider, args.consumer):
+        if args.add is None:
+            prepare_output(output, participants, args.force)
+            ca_key, ca_certificate = make_ca()
+            write_certificate(output / "ca.pem", ca_certificate)
+            write_private_key(output / "ca-key.pem", ca_key, password)
+        else:
+            if args.force:
+                raise ValueError("--force only applies when creating a new CA; it cannot replace participant identities")
+            prepare_addition(output, participants)
+            ca_key, ca_certificate = read_ca(output, password)
+        for name in participants:
             key, certificate = make_participant(name, args.ip, ca_key, ca_certificate)
             write_certificate(output / f"{name}.pem", certificate)
             write_private_key(output / f"{name}-key.pem", key, password)
-        write_instructions(output / "README.txt", args.provider, args.consumer, args.ip, password is not None)
+        all_participants = existing_participants(output)
+        write_instructions(output / "README.txt", all_participants, args.ip, password is not None)
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    print(f"Created self-signed local CA and mTLS identities in {output}")
-    print(f"Provider certificate: {output / f'{args.provider}.pem'}")
-    print(f"Consumer certificate: {output / f'{args.consumer}.pem'}")
+    if args.add is None:
+        summary = f"Created self-signed local CA and {len(participants)} mTLS identities"
+    else:
+        summary = f"Added {len(participants)} mTLS identit{'y' if len(participants) == 1 else 'ies'}"
+    print(f"{summary} in {output}")
+    for name in participants:
+        print(f"Certificate: {output / f'{name}.pem'}")
     print("Read README.txt there for the exact startup commands.")
     return 0
 
