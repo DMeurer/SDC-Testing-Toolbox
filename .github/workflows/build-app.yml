@@ -26,6 +26,8 @@ jobs:
             script: tests/workflow_security.py
           - name: Diagnostic behavior
             script: tests/diagnostic_behavior.py
+          - name: TLS configuration
+            script: tests/security.py
           - name: Application defaults
             script: tests/application_defaults.py
           - name: Direct test import bootstrap
@@ -83,6 +85,10 @@ jobs:
           - name: Application defaults
             script: tests/application_defaults.py
             artifact: application-defaults
+            console-encoding: false
+          - name: TLS configuration
+            script: tests/security.py
+            artifact: tls-configuration
             console-encoding: false
           - name: Provider core
             script: tests/provider_core.py
@@ -168,6 +174,35 @@ jobs:
         with:
           name: network-acceptance-output
           path: network-acceptance.log
+          if-no-files-found: warn
+
+  tls-acceptance:
+    name: TLS acceptance
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run TLS provider/consumer acceptance
+        run: |
+          set -o pipefail
+          python tests/tls_acceptance.py 2>&1 | tee tls-acceptance.log
+
+      - name: Publish TLS acceptance output on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tls-acceptance-output
+          path: tls-acceptance.log
           if-no-files-found: warn
 
   build:
