@@ -56,8 +56,9 @@ Project and source: https://github.com/Draegerwerk/sdc11073
 
 The pinned direct dependency is `cryptography 46.0.5`, licensed under Apache-2.0
 OR BSD-3-Clause. It parses certificate metadata and supports test-only temporary
-certificate generation; the generated artifact inventory retains its exact wheel,
-license and native dependency notices.
+certificate generation. Its runtime dependencies `cffi` and `pycparser` are
+MIT-0 and BSD-3-Clause licensed respectively; the generated artifact inventory
+retains all three wheels' exact license notices.
 
 Project and source: https://github.com/pyca/cryptography
 

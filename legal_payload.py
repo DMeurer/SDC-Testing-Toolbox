@@ -133,6 +133,12 @@ _CORE_NOTICE_RULES = {
     ),
     "aiosignal": ((f"{LEGAL_ROOT}/licenses/aiosignal/LICENSE", ()),),
     "attrs": ((f"{LEGAL_ROOT}/licenses/attrs/LICENSE", ()),),
+    "cffi": ((f"{LEGAL_ROOT}/licenses/cffi/LICENSE", ()),),
+    "cryptography": (
+        (f"{LEGAL_ROOT}/licenses/cryptography/LICENSE", ()),
+        (f"{LEGAL_ROOT}/licenses/cryptography/LICENSE.APACHE", ()),
+        (f"{LEGAL_ROOT}/licenses/cryptography/LICENSE.BSD", ()),
+    ),
     "frozenlist": ((f"{LEGAL_ROOT}/licenses/frozenlist/LICENSE", ()),),
     "idna": ((f"{LEGAL_ROOT}/licenses/idna/LICENSE.md", ()),),
     "ifaddr": ((f"{LEGAL_ROOT}/licenses/ifaddr/LICENSE.txt", ()),),
@@ -145,6 +151,7 @@ _CORE_NOTICE_RULES = {
         (f"{LEGAL_ROOT}/licenses/propcache/LICENSE", ()),
         (f"{LEGAL_ROOT}/licenses/propcache/NOTICE", ()),
     ),
+    "pycparser": ((f"{LEGAL_ROOT}/licenses/pycparser/LICENSE", ()),),
     "Python": (
         (
             f"{LEGAL_ROOT}/licenses/python/LICENSE.txt",
@@ -231,12 +238,15 @@ _MODULE_PREFIXES = {
     "aiohttp": ("aiohttp",),
     "aiosignal": ("aiosignal",),
     "attrs": ("attr", "attrs"),
+    "cffi": ("_cffi_backend", "cffi"),
+    "cryptography": ("cryptography",),
     "frozenlist": ("frozenlist",),
     "idna": ("idna",),
     "ifaddr": ("ifaddr",),
     "lxml": ("lxml",),
     "multidict": ("multidict",),
     "propcache": ("propcache",),
+    "pycparser": ("pycparser",),
     "pyinstaller": (
         "_pyi_rth_utils",
         "pyimod",
@@ -266,6 +276,54 @@ _SOURCE_OVERRIDES = {
 _LEGAL_BASENAME = re.compile(
     r"^(license|licence|copying|notice|authors|copyright)", re.IGNORECASE
 )
+
+# GitHub's Linux Python toolcache omits the top-level LICENSE.txt carried by
+# python.org and Windows installers. This is the current PSF-2.0 notice from
+# CPython's LICENSE source file, retained as a deterministic build fallback.
+_PYTHON_LICENSE_FALLBACK = """PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2
+
+1. This LICENSE AGREEMENT is between the Python Software Foundation (\"PSF\"), and
+the Individual or Organization (\"Licensee\") accessing and otherwise using this
+software (\"Python\") in source or binary form and its associated documentation.
+
+2. Subject to the terms and conditions of this License Agreement, PSF hereby
+grants Licensee a nonexclusive, royalty-free, world-wide license to reproduce,
+analyze, test, perform and/or display publicly, prepare derivative works,
+distribute, and otherwise use Python alone or in any derivative version,
+provided, however, that PSF's License Agreement and PSF's notice of copyright,
+i.e., \"Copyright (c) 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010,
+2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023 Python
+Software Foundation; All Rights Reserved\" are retained in Python alone or in any
+derivative version prepared by Licensee.
+
+3. In the event Licensee prepares a derivative work that is based on or
+incorporates Python or any part thereof, and wants to make the derivative work
+available to others as provided herein, then Licensee hereby agrees to include in
+any such work a brief summary of the changes made to Python.
+
+4. PSF is making Python available to Licensee on an \"AS IS\" basis. PSF MAKES NO
+REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED. BY WAY OF EXAMPLE, BUT NOT
+LIMITATION, PSF MAKES NO AND DISCLAIMS ANY REPRESENTATION OR WARRANTY OF
+MERCHANTABILITY OR FITNESS FOR ANY PARTICULAR PURPOSE OR THAT THE USE OF PYTHON
+WILL NOT INFRINGE ANY THIRD PARTY RIGHTS.
+
+5. PSF SHALL NOT BE LIABLE TO LICENSEE OR ANY OTHER USERS OF PYTHON FOR ANY
+INCIDENTAL, SPECIAL, OR CONSEQUENTIAL DAMAGES OR LOSS AS A RESULT OF MODIFYING,
+DISTRIBUTING, OR OTHERWISE USING PYTHON, OR ANY DERIVATIVE THEREOF, EVEN IF
+ADVISED OF THE POSSIBILITY THEREOF.
+
+6. This License Agreement will automatically terminate upon a material breach of
+its terms and conditions.
+
+7. Nothing in this License Agreement shall be deemed to create any relationship
+of agency, partnership, or joint venture between PSF and Licensee. This License
+Agreement does not grant permission to use PSF trademarks or trade name in a
+trademark sense to endorse or promote products or services of Licensee, or any
+third party.
+
+8. By copying, installing or otherwise using Python, Licensee agrees to be bound
+by the terms and conditions of this License Agreement.
+"""
 
 
 def _canonicalize_name(name: str) -> str:
@@ -980,7 +1038,9 @@ def generate_payload(
 
     distributions = _distributions()
     owners = _distribution_file_owners(distributions)
-    runtime_closure = _dependency_closure(("sdc11073", "PySide6"), distributions)
+    runtime_closure = _dependency_closure(
+        ("sdc11073", "PySide6", "cryptography"), distributions
+    )
     build_closure = _dependency_closure(
         ("PyInstaller", "pyinstaller-hooks-contrib"), distributions
     )
@@ -1108,13 +1168,14 @@ def generate_payload(
             }
         )
 
-    python_license = installed_base / "LICENSE.txt"
-    if not python_license.is_file():
-        raise RuntimeError(f"Python license is missing: {python_license}")
     python_notice = f"{LEGAL_ROOT}/licenses/python/LICENSE.txt"
     target = output / Path(python_notice)
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(python_license, target)
+    python_license = installed_base / "LICENSE.txt"
+    if python_license.is_file():
+        shutil.copyfile(python_license, target)
+    else:
+        target.write_text(_PYTHON_LICENSE_FALLBACK, encoding="utf-8")
     components.append(
         {
             "name": "Python",
@@ -1291,7 +1352,7 @@ def generate_payload(
         "required_documents": list(REQUIRED_DOCUMENTS),
         "generation": {
             "method": "installed distribution metadata plus PyInstaller Analysis TOCs",
-            "runtime_roots": ["PySide6", "sdc11073"],
+            "runtime_roots": ["PySide6", "cryptography", "sdc11073"],
             "build_roots": ["PyInstaller", "pyinstaller-hooks-contrib"],
         },
     }
@@ -1574,7 +1635,7 @@ def validate_payload(
         build_roots = string_list(
             generation.get("build_roots"), "inventory generation.build_roots"
         )
-        if runtime_roots != ["PySide6", "sdc11073"]:
+        if runtime_roots != ["PySide6", "cryptography", "sdc11073"]:
             errors.append(
                 "inventory generation.runtime_roots is not the code-owned root set"
             )
@@ -1759,6 +1820,8 @@ def validate_payload(
         "aiohttp",
         "aiosignal",
         "attrs",
+        "cffi",
+        "cryptography",
         "frozenlist",
         "idna",
         "ifaddr",
@@ -1813,7 +1876,7 @@ def validate_payload(
         for entry in build_only + resolved_not_packaged
         if isinstance(entry.get("name"), str)
     }
-    for expected in ("pyinstaller-hooks-contrib", "PySide6_Addons"):
+    for expected in ("pycparser", "pyinstaller-hooks-contrib", "PySide6_Addons"):
         if expected not in classified_names:
             errors.append(
                 f"inventory does not classify expected unbundled distribution {expected}"
@@ -1848,12 +1911,15 @@ def validate_payload(
         "aiohttp",
         "aiosignal",
         "attrs",
+        "cffi",
+        "cryptography",
         "frozenlist",
         "idna",
         "ifaddr",
         "lxml",
         "multidict",
         "propcache",
+        "pycparser",
         "PySide6",
         "PySide6_Addons",
         "PySide6_Essentials",
