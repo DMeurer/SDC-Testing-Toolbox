@@ -164,6 +164,10 @@ class ConsumerPane(QWidget):
 
         self.status_label = QLabel("Not connected")
         constrain_dynamic_label(self.status_label, max_lines=3)
+        self.security_label = QLabel("")
+        constrain_dynamic_label(self.security_label, max_lines=3)
+        self.security_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        mute(self.security_label)
         self.context_label = QLabel("")
         constrain_dynamic_label(self.context_label, max_lines=3)
         self.context_label.setTextInteractionFlags(Qt.NoTextInteraction)
@@ -284,6 +288,7 @@ class ConsumerPane(QWidget):
         layout.addLayout(top)
         layout.addWidget(self.device_list)
         layout.addWidget(self.status_label)
+        layout.addWidget(self.security_label)
         layout.addWidget(self.context_label)
         layout.addWidget(self.views, 1)
         layout.addWidget(self.actions_widget)
@@ -331,7 +336,9 @@ class ConsumerPane(QWidget):
         self.devices = devices
         self.device_list.clear()
         for device in devices:
-            item = QListWidgetItem(device.epr)
+            secure = bool(device.x_addrs and device.x_addrs[0].startswith("https://"))
+            suffix = " [HTTPS]" if secure else " [HTTP]"
+            item = QListWidgetItem(device.epr + suffix)
             location = device.location_scope
             if location:
                 item.setToolTip(location)
@@ -400,6 +407,15 @@ class ConsumerPane(QWidget):
             lambda: self._on_peer_restarted() if current() else None,
         )
         self._set_status(f"Connected to {remote.epr}")
+        certificate = getattr(remote, "peer_certificate", None)
+        if certificate is None:
+            self.security_label.setText("Transport: HTTP (lab only)")
+        else:
+            common_name = certificate.common_name or certificate.subject
+            self.security_label.setText(
+                f"TLS peer: {common_name}; issuer {certificate.issuer}; "
+                f"SHA-256 {certificate.sha256_fingerprint}",
+            )
         self.refresh()
         self._update_buttons()
 
@@ -429,6 +445,7 @@ class ConsumerPane(QWidget):
         self._alert_columns.refit()
         self.board.clear()
         self.context_label.clear()
+        self.security_label.clear()
         self.refresh_actions()
 
         self.value_edit.clear()

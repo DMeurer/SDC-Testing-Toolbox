@@ -76,6 +76,25 @@ def issue_certificate(
     return builder.sign(issuer_key, hashes.SHA256())
 
 
+def make_tls_configurations(directory: Path) -> tuple[TlsConfig, TlsConfig]:
+    """Create two mutually trusted participant identities under one self-signed test CA."""
+    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Toolbox Test CA")])
+    ca_certificate = issue_certificate("Toolbox Test CA", ca_key, ca_name, ca_key, ca=True)
+    ca_path = directory / "ca.pem"
+    write_certificate(ca_path, ca_certificate)
+    configurations = []
+    for role in ("provider", "consumer"):
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        certificate = issue_certificate(role, key, ca_name, ca_key, ip_name="127.0.0.1")
+        certificate_path = directory / f"{role}.pem"
+        key_path = directory / f"{role}-key.pem"
+        write_certificate(certificate_path, certificate)
+        write_key(key_path, key)
+        configurations.append(TlsConfig.from_paths(certificate_path, key_path, ca_path))
+    return tuple(configurations)  # type: ignore[return-value]
+
+
 def main() -> int:
     report = Report()
     print("TLS configuration")
