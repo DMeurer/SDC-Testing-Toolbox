@@ -52,6 +52,15 @@ License. The build copies the installed wheel's complete license, including
 
 Project and source: https://github.com/Draegerwerk/sdc11073
 
+### cryptography
+
+The pinned direct dependency is `cryptography 46.0.5`, licensed under Apache-2.0
+OR BSD-3-Clause. It parses certificate metadata and supports test-only temporary
+certificate generation; the generated artifact inventory retains its exact wheel,
+license and native dependency notices.
+
+Project and source: https://github.com/pyca/cryptography
+
 ### PySide6, Shiboken6, and Qt
 
 PySide6 is Qt's official Python binding. The wheel metadata declares

@@ -148,7 +148,7 @@ def manifest_checks(report: Report) -> None:
         for line in workflow.splitlines()
         if "script: tests/" in line or "script: diagnostics/" in line
     }
-    workflow_scripts.add("tests/acceptance_core.py")
+    workflow_scripts.update({"tests/acceptance_core.py", "tests/tls_acceptance.py"})
     manifested_ci_scripts = {
         suite["argv"][0]
         for suite in suites

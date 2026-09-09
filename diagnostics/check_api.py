@@ -86,6 +86,7 @@ CHECKS: list[tuple[str, str, str]] = [
     ("sdc11073.definitions_sdc", "SdcV1Definitions.MedicalDeviceTypesFilter", "search filter"),
     # --- Provider ---
     ("sdc11073.provider", "SdcProvider", "provider"),
+    ("sdc11073.certloader", "SSLContextContainer", "TLS context container"),
     ("sdc11073.provider.providerimpl", "RoleProviderComponents", "role configuration"),
     ("sdc11073.location", "SdcLocation", "location context"),
     ("sdc11073.xml_types.dpws_types", "ThisModelType", "device model"),
@@ -146,6 +147,18 @@ SIGNATURE_CONTRACTS: list[tuple[str, str, str, CallShape]] = [
         "ScoOperationsRegistry.register_operation",
         "register_operation(operation)",
         CallShape(2),
+    ),
+    (
+        "sdc11073.provider",
+        "SdcProvider",
+        "SdcProvider(..., ssl_context_container=)",
+        CallShape(5, ("ssl_context_container",)),
+    ),
+    (
+        "sdc11073.consumer.consumerimpl",
+        "SdcConsumer.__init__",
+        "SdcConsumer(..., ssl_context_container, force_ssl_connect=True)",
+        CallShape(4, ("force_ssl_connect",)),
     ),
 ]
 

@@ -7,3 +7,4 @@
 
 sdc11073==3.0.0
 PySide6==6.11.2
+cryptography==46.0.5

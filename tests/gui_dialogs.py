@@ -200,6 +200,27 @@ def startup_dialog_checks(report: Report) -> None:
         dialog.close()
         dialog.deleteLater()
 
+    dialog = StartupDialog(name="tls-toggle")
+    try:
+        report.check(
+            not dialog.tls_cert_edit.isEnabled() and not dialog.tls_key_edit.isEnabled(),
+            "TLS fields stay out of the way until strict transport is selected",
+        )
+        dialog.tls_box.setChecked(True)
+        report.check(
+            dialog.tls_cert_edit.isEnabled() and dialog.tls_key_edit.isEnabled() and dialog.tls_ca_edit.isEnabled(),
+            "selecting TLS enables its certificate configuration fields",
+        )
+        dialog._on_accept()
+        report.check(
+            dialog.settings() is None and "TLS certificate" in dialog.error_label.text(),
+            "TLS startup requires certificate material before it accepts settings",
+            dialog.error_label.text(),
+        )
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
 
 def main() -> int:
     application()

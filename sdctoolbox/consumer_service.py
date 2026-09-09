@@ -37,6 +37,7 @@ from .model import (
     patient_info_from_biceps,
     validate_decimal,
 )
+from .security import CertificateInfo, TlsConfig
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -244,10 +245,17 @@ class _SetOperation:
 class RemoteDevice:
     """A connected peer. Wraps SdcConsumer plus its ConsumerMdib."""
 
-    def __init__(self, consumer: SdcConsumer, mdib: ConsumerMdib, epr: str) -> None:
+    def __init__(
+        self,
+        consumer: SdcConsumer,
+        mdib: ConsumerMdib,
+        epr: str,
+        peer_certificate: CertificateInfo | None = None,
+    ) -> None:
         self._consumer = consumer
         self._mdib = mdib
         self.epr = epr
+        self.peer_certificate = peer_certificate
         self._lock = threading.RLock()
 
     # -- reading -------------------------------------------------------------------
@@ -609,9 +617,17 @@ class RemoteDevice:
 class ConsumerService:
     """Discovery plus connection management for the consumer side."""
 
-    def __init__(self, ip: str = constants.DEFAULT_IP, *, own_epr: str | None = None) -> None:
+    def __init__(
+        self,
+        ip: str = constants.DEFAULT_IP,
+        *,
+        own_epr: str | None = None,
+        tls_config: TlsConfig | None = None,
+    ) -> None:
         self.ip = ip
         self._own_epr = own_epr
+        self.tls_config = tls_config
+        self._tls_contexts = None
         self._discovery: WSDiscovery | None = None
 
     def start(self) -> None:
@@ -619,6 +635,9 @@ class ConsumerService:
         if self._discovery is not None:
             msg = "consumer service is already started"
             raise RuntimeError(msg)
+        # The consumer hosts the HTTPS endpoint for provider event callbacks, so validate
+        # its full mTLS identity before discovery starts as well.
+        self._tls_contexts = self.tls_config.create_contexts() if self.tls_config is not None else None
         self._discovery = WSDiscovery(self.ip)
         try:
             self._discovery.start()
@@ -634,6 +653,7 @@ class ConsumerService:
         """Stop WS-Discovery."""
         discovery = self._discovery
         self._discovery = None
+        self._tls_contexts = None
         if discovery is not None:
             discovery.stop()
 
@@ -684,9 +704,32 @@ class ConsumerService:
 
     def connect(self, device: DiscoveredDevice) -> RemoteDevice:
         """Connect to a discovered provider and load its MDIB."""
-        consumer = SdcConsumer.from_wsd_service(device.service, ssl_context_container=None)
+        if self.tls_config is not None:
+            provider_address = next((address for address in device.x_addrs if address.startswith("https://")), None)
+            if provider_address is None:
+                msg = "TLS is required, but the discovered provider does not advertise an HTTPS endpoint"
+                raise RuntimeError(msg)
+        else:
+            provider_address = None
+        if self.tls_config is None:
+            consumer = SdcConsumer.from_wsd_service(device.service, ssl_context_container=None)
+        else:
+            # The factory does not expose force_ssl_connect in sdc11073 3.0.0. Constructing
+            # the same SDC-v1 consumer directly keeps a failed TLS handshake from retrying HTTP.
+            consumer = SdcConsumer(
+                provider_address,
+                SdcV1Definitions,
+                self._tls_contexts,
+                force_ssl_connect=True,
+                alternative_hostname=self.tls_config.server_name,
+            )
         try:
             consumer.start_all()
+            peer_certificate = (
+                self.tls_config.verify_peer_certificate(consumer.binary_peer_certificate)
+                if self.tls_config is not None
+                else None
+            )
             mdib = ConsumerMdib(consumer, extras_cls=_PeriodicConsumerMdibMethods)
             mdib.init_mdib()
         except Exception:
@@ -696,4 +739,4 @@ class ConsumerService:
                 logger.exception("error while rolling back consumer connection to %s", device.epr)
             raise
         logger.info("connected to %s, %d entities", device.epr, len(mdib.entities))
-        return RemoteDevice(consumer, mdib, device.epr)
+        return RemoteDevice(consumer, mdib, device.epr, peer_certificate)

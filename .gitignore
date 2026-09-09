@@ -17,6 +17,12 @@ smoke-test-error.txt
 diagnostics/*.log
 diagnostics/*.log.err
 
+# TLS material is local runtime configuration, never source material.
+*.pem
+*.key
+*.pfx
+*.p12
+
 # Tooling
 .vscode/
 .idea/

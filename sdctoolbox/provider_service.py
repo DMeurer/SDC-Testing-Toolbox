@@ -47,6 +47,7 @@ from .model import (
 )
 from .sample_generation import DemoSampleGenerator, SampleGeneratorSnapshot, domain_step
 from .sdc11073_v3_adapter import Sdc11073V3Adapter, Sdc11073V3Snapshot
+from .security import CertificateInfo, TlsConfig
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -173,6 +174,7 @@ class ProviderService:
             instance_name: str = constants.DEFAULT_INSTANCE_NAME,
             friendly_name: str | None = None,
             device: DeviceInfo | None = None,
+            tls_config: TlsConfig | None = None,
     ) -> None:
         self.ip = ip
         self.instance_name = instance_name
@@ -182,6 +184,8 @@ class ProviderService:
         self.device = device or DeviceInfo()
         self.friendly_name = friendly_name or self.device.friendly_name or f"Toolbox {instance_name}"
         self.epr = constants.epr_for(instance_name)
+        self.tls_config = tls_config
+        self._tls_contexts = None
 
         self._discovery: WSDiscovery | None = None
         self._provider: SdcProvider | None = None
@@ -236,6 +240,8 @@ class ProviderService:
             raise RuntimeError(msg)
 
         try:
+            # Validate key, certificate, CA bundle, and TLS policy before any listener exists.
+            self._tls_contexts = self.tls_config.create_contexts() if self.tls_config is not None else None
             self._discovery = WSDiscovery(self.ip)
             self._discovery.start()
 
@@ -283,6 +289,8 @@ class ProviderService:
                 this_device=this_device,
                 device_mdib_container=self._mdib,
                 role_provider_components=RoleProviderComponents(role_provider_class=role_provider_factory),
+                ssl_context_container=self._tls_contexts,
+                alternative_hostname=(self.tls_config.server_name if self.tls_config is not None else None),
             )
 
             # No waveform provider configured, so the real-time sample loop must stay off.
@@ -335,6 +343,7 @@ class ProviderService:
             self._handler = None
             self._activate_handler = None
             self._adapter = None
+            self._tls_contexts = None
             self._operations.clear()
             self._specs.clear()
             self._alerts.clear()
@@ -348,6 +357,16 @@ class ProviderService:
         logger.info("provider %r stopped", self.instance_name)
         if first_error is not None:
             raise first_error.with_traceback(first_traceback)
+
+    @property
+    def tls_enabled(self) -> bool:
+        """Whether this provider is configured to serve SDC over mutually authenticated TLS."""
+        return self.tls_config is not None
+
+    @property
+    def local_certificate(self) -> CertificateInfo | None:
+        """Safe metadata for the configured local certificate, when TLS is enabled."""
+        return self.tls_config.local_certificate() if self.tls_config is not None else None
 
     def _snapshot_configuration(self) -> _ConfigurationSnapshot:
         """Clone all mutable provider state needed to undo a profile import."""

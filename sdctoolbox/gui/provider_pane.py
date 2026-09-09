@@ -155,6 +155,9 @@ class ProviderPane(QWidget):
         constrain_dynamic_label(self.context_label, max_lines=3)
         self.context_label.setTextInteractionFlags(Qt.NoTextInteraction)
         mute(self.context_label)
+        transport = "Transport: TLS with client certificates" if self.service.tls_enabled else "Transport: HTTP (lab only)"
+        self.transport_label = QLabel(transport)
+        mute(self.transport_label)
 
         buttons = QHBoxLayout()
         buttons.addWidget(self.new_button)
@@ -247,6 +250,7 @@ class ProviderPane(QWidget):
         # two panels disagreed by 9px at the top and the bottom.
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(buttons)
+        layout.addWidget(self.transport_label)
         layout.addWidget(self.context_label)
         layout.addWidget(self.views, 1)
         layout.addWidget(self.actions_widget)
