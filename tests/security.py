@@ -120,8 +120,9 @@ def main() -> int:
         report.check(
             contexts.client_context.minimum_version == ssl.TLSVersion.TLSv1_2
             and contexts.client_context.check_hostname
-            and contexts.client_context.verify_mode == ssl.CERT_REQUIRED,
-            "client context requires trusted TLS 1.2+ peers and hostname checking",
+            and contexts.client_context.verify_mode == ssl.CERT_REQUIRED
+            and contexts.client_context.cert_store_stats()["x509_ca"] == 1,
+            "client context trusts only the configured CA and requires TLS 1.2+ hostname-checked peers",
         )
         report.check(
             contexts.server_context.minimum_version == ssl.TLSVersion.TLSv1_2

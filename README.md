@@ -528,6 +528,10 @@ other participant's certificate. TLS requires version 1.2 or newer, verifies the
 hostname/IP SAN, requires client certificates on both receiving endpoints, and refuses the
 library's normal TLS-to-HTTP fallback.
 
+For unattended use, an encrypted private key reads its password from
+`SDC_TOOLBOX_TLS_KEY_PASSWORD`; the password is never accepted as a command-line argument or
+written to a profile. The GUI prompts in its masked password field instead.
+
 One self-signed test CA issuing a certificate for each toolbox process is the recommended
 offline test setup. A directly self-signed participant certificate also works if it is put in
 the other participant's trusted CA bundle. Self-signed does not mean accepting arbitrary

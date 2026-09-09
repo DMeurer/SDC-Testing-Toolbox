@@ -192,8 +192,11 @@ class TlsConfig:
             raise TlsConfigError(f"TLS CA bundle contains no certificates: {self.ca_bundle_path}")
 
         password = self.private_key_password.encode("utf-8") if isinstance(self.private_key_password, str) else self.private_key_password
-        client_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=str(self.ca_bundle_path))
+        # A configured test/deployment CA bundle is the complete trust policy. Do not inherit
+        # operating-system roots, which could admit an unintended publicly trusted peer.
+        client_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         client_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        client_context.load_verify_locations(cafile=str(self.ca_bundle_path))
         client_context.load_cert_chain(
             certfile=str(self.certificate_path),
             keyfile=str(self.private_key_path),
