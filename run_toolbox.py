@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -67,7 +68,7 @@ def settings_from_args(args: argparse.Namespace) -> StartupSettings:
             args.tls_cert,
             args.tls_key,
             args.tls_ca,
-            private_key_password=None,
+            private_key_password=os.getenv("SDC_TOOLBOX_TLS_KEY_PASSWORD"),
             peer_fingerprint=args.tls_peer_fingerprint,
             server_name=args.tls_server_name,
         )

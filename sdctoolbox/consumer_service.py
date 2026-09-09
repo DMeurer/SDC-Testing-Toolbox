@@ -705,16 +705,19 @@ class ConsumerService:
     def connect(self, device: DiscoveredDevice) -> RemoteDevice:
         """Connect to a discovered provider and load its MDIB."""
         if self.tls_config is not None:
-            if not device.x_addrs or not device.x_addrs[0].startswith("https://"):
-                msg = "TLS is required, but the discovered provider does not advertise HTTPS as its first endpoint"
+            provider_address = next((address for address in device.x_addrs if address.startswith("https://")), None)
+            if provider_address is None:
+                msg = "TLS is required, but the discovered provider does not advertise an HTTPS endpoint"
                 raise RuntimeError(msg)
+        else:
+            provider_address = None
         if self.tls_config is None:
             consumer = SdcConsumer.from_wsd_service(device.service, ssl_context_container=None)
         else:
             # The factory does not expose force_ssl_connect in sdc11073 3.0.0. Constructing
             # the same SDC-v1 consumer directly keeps a failed TLS handshake from retrying HTTP.
             consumer = SdcConsumer(
-                device.x_addrs[0],
+                provider_address,
                 SdcV1Definitions,
                 self._tls_contexts,
                 force_ssl_connect=True,

@@ -77,7 +77,7 @@ SDC Testing Toolbox is free software licensed under the
 the toolbox's license, not the license of its dependencies.
 
 Dependencies retain their own terms. In particular, `sdc11073` 3.0.0 is MIT
-licensed, while PySide6 and Qt are available under applicable LGPLv3, GPL, or
+licensed, `cryptography` is Apache-2.0 OR BSD-3-Clause, while PySide6 and Qt are available under applicable LGPLv3, GPL, or
 commercial terms depending on the components and license option. Packaged
 builds also contain Python and files produced or embedded by PyInstaller. See
 [Third-Party Notices](THIRD_PARTY_NOTICES.md) for attribution, authoritative
