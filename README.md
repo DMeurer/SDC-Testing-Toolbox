@@ -97,7 +97,7 @@ compliance.
 - [x] **4b — Contexts and signal handling.** Editable patient and location, acknowledgement and delegation, a preset picker.
 - [x] **4c — Waveforms and distributions.** Both sample-array kinds, a generator for both, and a plot to watch them on.
 - [x] **4d — Device presets.** Seven realistic virtual device profiles with coded values, device identity, subsystem structure, and actions, each built by tests.
-- [ ] **4e — TLS.**
+- [x] **4e — TLS.** Strict TLS 1.2+ mutual authentication, certificate inspection and CA-based participant authorization.
 
 ## Try it
 
@@ -454,7 +454,7 @@ This is a focused SDC learning fixture, not an IEEE 11073 conformance claim. IEE
 
 | Severity                 | Not supported or partial                                                                                                                                                                                                                                                                                | Practical consequence                                                                                                                                                                                                   |
 |--------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **Will cause problems**  | Secure SDC deployment: there is no TLS, certificate handling, mutual authentication or authorization.                                                                                                                                                                                                   | SDC service and event traffic uses plain HTTP; WS-Discovery is also unsecured UDP multicast. Do not use it outside an isolated, trusted lab network.                                                                    |
+| **Might cause problems** | Per-certificate, per-operation authorization and known-invoker audit identity are unavailable.                                                                                                                                                                                                           | TLS can admit or reject a participant by its trusted CA/certificate, but the current sdc11073 operation handler cannot apply distinct permissions or report the client certificate identity for each operation. |
 | **Will cause problems**  | Remote control covers `SetValueOperation`, `SetStringOperation`, and argumentless `ActivateOperation` only. The toolbox does not publish or drive `SetContextState`, `SetAlertState`, `SetMetricState` or `SetComponentState` operations.                                                               | Valid state-changing workflows, actions requiring arguments, remote context association, and remote alert handling cannot be exercised end to end.                                                                      |
 | **Might cause problems** | Contexts cover patient and location only. The Network panel shows associated peer patients read-only, but ensemble, workflow, means and operator contexts are not modelled or shown.                                                                                                                      | Tests involving care-team, workflow or multi-device context coordination need another fixture or direct access to the raw MDIB.                                                                                         |
 | **Might cause problems** | The locally published alert model has one source metric per condition, local acknowledgement/delegation, and automatic limits only for decimal scalar values. Signals can use every standard manifestation and latching option. The consumer still displays peer source handles and signal manifestations. | Remote alert control, interoperable delegation, and limit conditions on text or choice sources cannot be exercised correctly.                                                                                 |
@@ -476,6 +476,7 @@ with `QT_QPA_PLATFORM=offscreen`:
 | `diagnostics/check_api.py` | required sdc11073 API surface |
 | `tests/workflow_security.py` | full-SHA action pins, release comments and Dependabot policy |
 | `tests/diagnostic_behavior.py` | diagnostic signature and update-result reporting |
+| `tests/security.py` | TLS policy, PEM validation, certificate metadata and fingerprint pins |
 | `tests/application_defaults.py` | shared application defaults and distinct acceptance identity |
 | `tests/import_bootstrap.py` | direct test imports under unrelated package shadowing |
 | `tests/licensing.py` | project licensing, notices and build legal-payload sources |
@@ -509,7 +510,7 @@ $env:QT_QPA_PLATFORM = "offscreen"
 .venv\Scripts\python.exe tests\consumer_lifecycle.py
 ```
 
-`tests/acceptance_core.py` is the Linux-only network acceptance suite. CI runs it in an isolated eight-minute job on every pull request, version tag, manual workflow dispatch and weekly schedule. It starts the repository's provider in a subprocess, exercises it through a consumer, and uploads their combined output if the job fails. This checks this implementation across processes; it is not interoperability testing against an independent SDC stack or product.
+`tests/acceptance_core.py` and `tests/tls_acceptance.py` are Linux-only network acceptance suites. CI runs each in an isolated job on every pull request, version tag, manual workflow dispatch and weekly schedule. The TLS suite generates a temporary self-signed test CA and participant certificates, then verifies HTTPS discovery, mutual authentication, MDIB retrieval and remote control without storing credentials in the repository. These checks exercise this implementation; they are not interoperability testing against an independent SDC stack or product.
 
 `tests/gui_smoke.py` remains a manual broad regression script because it is intentionally long and duplicates the focused GUI suites while also starting a live peer. Run it when changing interactions that cross several GUI areas; it uses the offscreen backend and needs no display.
 
@@ -519,9 +520,33 @@ The packaging jobs separately launch each built Windows and Linux application wi
 
 ## Security
 
-SDC service and event traffic runs over plain `http://`; WS-Discovery uses unsecured UDP multicast. Neither `ProviderService` nor `ConsumerService` passes an `ssl_context_container`, so there is no TLS, no certificates, no authentication and no authorization — treat it as a lab tool on an isolated network you trust.
+The default remains plain `http://` for the smallest possible lab demonstration. Select
+**Require TLS with client certificates** at startup, or give all of `--tls-cert`, `--tls-key`
+and `--tls-ca`, to run SDC services and event callbacks with strict mutual TLS. Both
+participants require their own PEM certificate/key and trust the CA bundle that issued the
+other participant's certificate. TLS requires version 1.2 or newer, verifies the server
+hostname/IP SAN, requires client certificates on both receiving endpoints, and refuses the
+library's normal TLS-to-HTTP fallback.
 
-The log line `Using SSL is enabled. TLS 1.3 Support = True` is a capability message from sdc11073, not a statement about the connection.
+One self-signed test CA issuing a certificate for each toolbox process is the recommended
+offline test setup. A directly self-signed participant certificate also works if it is put in
+the other participant's trusted CA bundle. Self-signed does not mean accepting arbitrary
+certificates: trust must remain explicit. Use `--tls-peer-fingerprint` to additionally pin
+one expected SHA-256 leaf certificate.
+
+The Network pane identifies discovered `HTTP` and `HTTPS` endpoints. Once connected over TLS,
+it displays the peer subject, issuer and SHA-256 fingerprint; the core retains its serial
+number, validity dates, SANs and EKUs for diagnostics. TLS mode is CA/certificate-based
+**participant authorization**: a peer not accepted by the configured trust store cannot read,
+subscribe or invoke operations.
+
+WS-Discovery remains unsecured UDP multicast, so discovery data is not identity proof. The
+HTTPS handshake and optional certificate pin are the trust decision.
+
+The current `sdc11073` operation handler does not retain the inbound client's certificate
+identity. The toolbox therefore cannot provide distinct per-certificate, per-operation
+permissions or standards-conformant known-invoker audit reports. This is the upstream
+unimplemented GLUE R0078 feature: [sdc11073 issue #490](https://github.com/Draegerwerk/sdc11073/issues/490).
 
 ## Using the core
 
