@@ -100,6 +100,14 @@ CHOICES = [
         SliderWidget,
     ),
     (
+        "technical bounds without operation limits still get a slider",
+        number(
+            resolution=Decimal("0.1"),
+            technical_ranges=(RemoteRange(Decimal("1"), Decimal("100"), Decimal("1")),),
+        ),
+        SliderWidget,
+    ),
+    (
         "a number with only a minimum gets a stepper",
         number(minimum=Decimal("0")),
         StepperWidget,

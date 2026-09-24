@@ -157,7 +157,7 @@ class SliderWidget(MetricWidget):
 
     @classmethod
     def matches(cls, spec: WidgetSpec) -> bool:
-        ranges = spec.control_ranges
+        ranges = spec.slider_ranges
         if (
             spec.kind is not MetricKind.NUMBER
             or len(ranges) != 1
@@ -170,7 +170,7 @@ class SliderWidget(MetricWidget):
     @staticmethod
     def _steps(spec: WidgetSpec) -> int | None:
         """How many slider positions the range needs, or None if that is unreasonable."""
-        allowed_range = spec.control_ranges[0]
+        allowed_range = spec.slider_ranges[0]
         span = allowed_range.upper - allowed_range.lower
         if span <= 0:
             return None
@@ -190,7 +190,7 @@ class SliderWidget(MetricWidget):
         return steps
 
     def build(self) -> None:
-        self._range = self.spec.control_ranges[0]
+        self._range = self.spec.slider_ranges[0]
         self._resolution = self._range.step_width or self.spec.resolution or Decimal("1")
         self._include_upper = self._range.step_width is None
         self._steps = self._steps(self.spec) or 1

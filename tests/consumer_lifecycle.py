@@ -1256,6 +1256,42 @@ def metric_reports_update_selected_editor(app: QApplication, provider: ProviderS
     window.close()
 
 
+def technical_only_range_is_visible(app: QApplication, provider: ProviderService) -> None:
+    window, pane, _service = new_window(provider)
+    remote = FakeRemote("technical-only")
+    remote.metric_values = {
+        "numeric.ch0.vmd0": RemoteMetric(
+            handle="numeric.ch0.vmd0",
+            node_type_name="NumericMetricDescriptor",
+            kind=MetricKind.NUMBER,
+            value=Decimal("32"),
+            resolution=Decimal("0.1"),
+            technical_ranges=(RemoteRange(Decimal("1"), Decimal("100"), Decimal("1")),),
+            operation_handles=("set.numeric",),
+            selected_operation_handle="set.numeric",
+            controllable_now=True,
+        ),
+    }
+    attach(pane, remote)
+    metric = remote.metric_values["numeric.ch0.vmd0"]
+    control = pane.board.card(metric.handle).control
+    check(
+        control.__class__.__name__ == "SliderWidget"
+        and control.low_label.text() == "1"
+        and control.high_label.text() == "100",
+        "a bounded TechnicalRange can supply the remote numeric slider's display bounds",
+    )
+    pane.select_handle(metric.handle)
+    row = next(row for row in range(pane.table.rowCount()) if pane.table.item(row, 0).text() == metric.handle)
+    check(
+        pane.table.item(row, consumer_module.COL_RANGE).text() == "technical: 1 to 100 (step 1)"
+        and not metric.allowed_ranges and not metric.has_range
+        and metric.numeric_value_allowed(Decimal("35.5")),
+        "the table labels the technical range without treating it as an AllowedRange",
+    )
+    window.close()
+
+
 def http_device(epr: str) -> DiscoveredDevice:
     return DiscoveredDevice(epr, (f"http://127.0.0.1/{epr}",), (), service=object())
 
@@ -1432,6 +1468,7 @@ def main() -> int:
         table_editor_enforces_complete_allowed_domain(app, provider)
         choice_controls_use_operation_allowed_values(app, provider)
         metric_reports_update_selected_editor(app, provider)
+        technical_only_range_is_visible(app, provider)
         passive_discovery_and_connect_next(app, provider)
         connection_loss_clears_the_peer(app, provider)
         departure_of_connected_peer(app, provider)

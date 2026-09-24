@@ -627,7 +627,10 @@ class ConsumerPane(QWidget):
                 COL_LABEL: metric.label or "",
                 COL_KIND: metric.kind.value if metric.kind else metric.node_type_name,
                 COL_VALUE: _value_text(metric),
-                COL_RANGE: metric.domain_text() or metric.range_text(),
+                COL_RANGE: metric.domain_text() or metric.range_text() or (
+                    "technical: " + "; ".join(range_.text() for range_ in metric.technical_ranges)
+                    if metric.technical_ranges else ""
+                ),
                 COL_UNIT: metric.unit_label or "",
                 COL_WRITABLE: writable,
             }

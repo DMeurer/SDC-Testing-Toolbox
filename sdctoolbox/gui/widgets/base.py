@@ -47,6 +47,9 @@ class WidgetSpec:
     sample_period: Decimal | None = None
     domain: str = ""
     allowed_ranges: tuple[RemoteRange, ...] = ()
+    # A remote metric may have a TechnicalRange but no operation AllowedRange. Use it to
+    # draw a bounded slider, without treating it as a limit on remote writes.
+    technical_ranges: tuple[RemoteRange, ...] = ()
 
     @property
     def caption(self) -> str:
@@ -66,6 +69,11 @@ class WidgetSpec:
         if self.minimum is not None or self.maximum is not None:
             return (RemoteRange(lower=self.minimum, upper=self.maximum),)
         return ()
+
+    @property
+    def slider_ranges(self) -> tuple[RemoteRange, ...]:
+        """Prefer operation limits; use technical bounds only for slider presentation."""
+        return self.control_ranges or self.technical_ranges
 
 
 def from_spec(handle: str, spec: MetricSpec, *, editable: bool, note: str = "") -> WidgetSpec:
@@ -113,6 +121,7 @@ def from_remote_metric(metric: RemoteMetric) -> WidgetSpec:
         maximum=metric.maximum,
         resolution=metric.resolution,
         allowed_ranges=metric.allowed_ranges,
+        technical_ranges=metric.technical_ranges,
         editable=metric.controllable_now,
         note=note,
         sample_period=metric.sample_period,
