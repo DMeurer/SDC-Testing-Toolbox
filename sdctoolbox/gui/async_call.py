@@ -69,8 +69,19 @@ class AsyncCall(QObject):
     managed_finished = Signal(object, object)
     managed_failed = Signal(object, str)
 
-    def __init__(self, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        parent: QObject | None = None,
+        *,
+        expected_errors: tuple[type[Exception], ...] = (),
+    ) -> None:
+        """``expected_errors`` are failures the owner reports to the user itself.
+
+        They are logged as one warning line; anything else keeps its full traceback, since
+        that is a bug worth reading.
+        """
         super().__init__(parent)
+        self._expected_errors = expected_errors
         self._lock = threading.RLock()
         self._threads: dict[object, threading.Thread] = {}
         self._resources: dict[object, _ResourceUse] = {}
@@ -127,7 +138,10 @@ class AsyncCall(QObject):
             try:
                 result = function(*args, **kwargs)
             except Exception as exc:  # noqa: BLE001 - the whole point is to report anything
-                logger.exception("background call failed")
+                if isinstance(exc, self._expected_errors):
+                    logger.warning("background call failed: %s", exc)
+                else:
+                    logger.exception("background call failed")
                 error = exc
             finally:
                 retirements: list[tuple[object, Callable[[], None]]] = []

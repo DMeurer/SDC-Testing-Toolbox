@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
 )
 from sdc11073.xml_types import msg_types
 
-from ..consumer_service import BACKGROUND_PROBE_SECONDS, ConsumerService
+from ..consumer_service import BACKGROUND_PROBE_SECONDS, ConsumerError, ConsumerService
 from ..model import MetricKind
 from .async_call import AsyncCall
 from .decimal_input import DecimalInputError, parse_decimal_input
@@ -146,6 +146,9 @@ class ConsumerPane(QWidget):
 
     # Emitted from sdc11073's networking thread; Qt queues it onto the GUI thread.
     discovery_changed = Signal()
+    provider_departed = Signal(str)
+    # (remote, reason). Emitted from whichever thread noticed; queued like the above.
+    connection_lost = Signal(object, str)
 
     def __init__(
         self,
@@ -164,6 +167,8 @@ class ConsumerPane(QWidget):
         # so a known device restarting under the same name does not trigger it.
         self._seen_eprs: set[str] = set()
         self._listed_snapshot: list[tuple[str, tuple[str, ...]]] = []
+        # The metric the in-flight set targets, so its card can show the device's answer.
+        self._invoked_handle: str | None = None
         self.remote: RemoteDevice | None = None
         self.bridge: MdibBridge | None = None
         self._generation = 0
@@ -323,7 +328,9 @@ class ConsumerPane(QWidget):
         layout.addLayout(editor)
 
     def _wire_async(self) -> None:
-        self._worker = AsyncCall(self)
+        # Consumer errors carry a message for the user and are shown in the pane, so they
+        # need no traceback on the console.
+        self._worker = AsyncCall(self, expected_errors=(ConsumerError,))
         self._worker.managed_finished.connect(self._on_work_finished)
         self._worker.managed_failed.connect(self._on_work_failed)
 
@@ -352,6 +359,9 @@ class ConsumerPane(QWidget):
         """
         self.discovery_changed.connect(self._refresh_devices)
         self.service.set_discovery_listener(self.discovery_changed.emit)
+        self.provider_departed.connect(self._on_provider_departed)
+        self.service.set_departure_listener(self.provider_departed.emit)
+        self.connection_lost.connect(self._on_connection_lost)
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setInterval(1000)
         self._refresh_timer.timeout.connect(self._refresh_devices)
@@ -486,6 +496,7 @@ class ConsumerPane(QWidget):
         self.bridge.peer_restarted.connect(
             lambda: self._on_peer_restarted() if current() else None,
         )
+        remote.on_connection_lost(lambda reason: self.connection_lost.emit(remote, reason))
         self._set_status(f"Connected to {remote.epr}")
         certificate = getattr(remote, "peer_certificate", None)
         if certificate is None:
@@ -541,6 +552,21 @@ class ConsumerPane(QWidget):
         self._teardown_remote()
         self._reset_remote_ui()
         self._set_status(f"Could not connect: {message}")
+
+    def _on_provider_departed(self, epr: str) -> None:
+        """A provider said goodbye. If it is the connected one, the connection is over."""
+        if self.remote is not None and self.remote.epr == epr:
+            self.remote.mark_connection_lost("the device announced it is shutting down")
+
+    def _on_connection_lost(self, remote: RemoteDevice, reason: str) -> None:
+        """Drop everything shown for a peer that is gone, and say why."""
+        if self._shutdown or remote is not self.remote:
+            return
+        self._advance_generation()
+        self._teardown_remote()
+        self._reset_remote_ui()
+        self._set_status(f"Connection lost: {reason}. Reconnect once the device is back.")
+        self._update_buttons()
 
     def _on_peer_restarted(self) -> None:
         """The far end restarted, so everything we cached about it is worthless."""
@@ -714,9 +740,21 @@ class ConsumerPane(QWidget):
         self.invocation_label.setText("waiting\u2026")
         remote = self.remote
         key = self._work_key("invoke", remote)
-        if not self._worker.start_managed(key, remote, remote.set_value, handle, value):
+        if self._worker.start_managed(key, remote, remote.set_value, handle, value):
+            self._invoked_handle = handle
+        else:
             self.invocation_label.setText("busy, try again")
+            self._restore_device_value(handle)
         self._update_buttons()
+
+    def _restore_device_value(self, handle: str | None) -> None:
+        """Put what the device actually holds back into the card that asked for a change."""
+        if handle is None or self.remote is None:
+            return
+        metric = self.remote.metrics((handle,)).get(handle)
+        card = self.board.card(handle)
+        if metric is not None and card is not None:
+            card.control.restore_value(_displayable(metric))
 
     def refresh_actions(self) -> None:
         """Rebuild the buttons for the peer's actions."""
@@ -763,7 +801,9 @@ class ConsumerPane(QWidget):
         self.invocation_label.setText("waiting\u2026")
         remote = self.remote
         key = self._work_key("invoke", remote)
-        if not self._worker.start_managed(key, remote, remote.run_action, handle):
+        if self._worker.start_managed(key, remote, remote.run_action, handle):
+            self._invoked_handle = None
+        else:
             self.invocation_label.setText("busy, try again")
         self._update_buttons()
 
@@ -888,7 +928,8 @@ class ConsumerPane(QWidget):
         self.invocation_label.setText("waiting\u2026")
         remote = self.remote
         key = self._work_key("invoke", remote)
-        self._worker.start_managed(key, remote, remote.set_value, handle, value)
+        if self._worker.start_managed(key, remote, remote.set_value, handle, value):
+            self._invoked_handle = handle
         self._update_buttons()
 
     def _on_set_finished(self, state: Any) -> None:
@@ -897,9 +938,11 @@ class ConsumerPane(QWidget):
         else:
             self.invocation_label.setText(f"refused ({state})")
         self.refresh_values()
+        self._restore_device_value(self._invoked_handle)
 
     def _on_set_failed(self, message: str) -> None:
         self.invocation_label.setText(f"failed: {message}")
+        self._restore_device_value(self._invoked_handle)
 
     def _on_work_finished(self, key: tuple, result: object) -> None:
         operation, generation, remote = key
@@ -960,6 +1003,7 @@ class ConsumerPane(QWidget):
             return
         self._shutdown = True
         self.service.set_discovery_listener(None)
+        self.service.set_departure_listener(None)
         self._refresh_timer.stop()
         self._probe_timer.stop()
         self._advance_generation()

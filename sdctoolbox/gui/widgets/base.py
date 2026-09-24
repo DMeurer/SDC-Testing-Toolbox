@@ -182,3 +182,16 @@ class MetricWidget(QWidget):
     def request(self, value: Any) -> None:
         """Ask for the metric to be set."""
         self.value_requested.emit(self.spec.handle, value)
+
+    def restore_value(self, value: Any) -> None:
+        """Show the device's value after a request finished, even over a pending edit.
+
+        Controls show what the user asked for the moment they ask. Once the device has
+        answered, what it actually holds wins, whether the request was refused, failed, or
+        accepted with a modified value. Focus is dropped first, because a focused field
+        counts as busy and would otherwise keep the rejected value on screen.
+        """
+        for child in self.findChildren(QWidget):
+            if child.hasFocus():
+                child.clearFocus()
+        self.show_value(value)

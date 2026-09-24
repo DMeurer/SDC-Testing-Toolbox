@@ -11,9 +11,11 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from functools import partial
+from http.client import HTTPException
 from typing import TYPE_CHECKING, Any
 
 from sdc11073 import observableproperties
@@ -253,6 +255,26 @@ class _SetOperation:
     allowed_values: tuple[str, ...]
 
 
+class ConsumerError(RuntimeError):
+    """An expected failure while talking to a peer. The message is written for the user."""
+
+
+class PeerConnectionLost(ConsumerError):
+    """The peer is gone: shut down, restarted, or unreachable."""
+
+
+class OperationReportsMissing(ConsumerError):
+    """The peer is there, but without an OperationInvokedReport subscription it refuses operations."""
+
+
+def _error_text(exc: BaseException) -> str:
+    """Name the underlying socket error; sdc11073 wraps it in a message-less NotConnected."""
+    while not str(exc) and (exc.__cause__ or exc.__context__) is not None:
+        exc = exc.__cause__ or exc.__context__
+    text = str(exc.args[1]) if isinstance(exc, OSError) and len(exc.args) > 1 else str(exc)
+    return f"{exc.__class__.__name__}: {text}" if text else exc.__class__.__name__
+
+
 def _action_uri(action: object) -> str:
     # sdc11073's Actions is a str-mixin Enum; str() of one yields "Actions.X", not the URI.
     return str(getattr(action, "value", action))
@@ -337,6 +359,80 @@ class RemoteDevice:
         self.epr = epr
         self.peer_certificate = peer_certificate
         self._lock = threading.RLock()
+        self._lost_reason: str | None = None
+        self._lost_listeners: list[Callable[[str], None]] = []
+        status = getattr(consumer, "subscription_status", None)
+        self._had_active_subscription = bool(status) and any(status.values())
+        if status is not None:
+            # A clean shutdown ends every subscription (SubscriptionEnd); a crashed or
+            # unreachable peer shows up when the renewals fail.
+            observableproperties.bind(consumer, subscription_status=self._on_subscription_status)
+
+    # -- connection health ---------------------------------------------------------
+
+    @property
+    def connection_lost_reason(self) -> str | None:
+        """Why the peer is considered gone, or None while the connection looks healthy."""
+        return self._lost_reason
+
+    def on_connection_lost(self, listener: Callable[[str], None]) -> None:
+        """Call `listener(reason)` once when the connection is lost.
+
+        It may run on an sdc11073 thread. Never touch Qt widgets from it.
+        """
+        with self._lock:
+            reason = self._lost_reason
+            if reason is None:
+                self._lost_listeners.append(listener)
+                return
+        listener(reason)
+
+    def mark_connection_lost(self, reason: str) -> None:
+        """Record that the peer is gone and tell the listeners, once."""
+        with self._lock:
+            if self._lost_reason is not None:
+                return
+            self._lost_reason = reason
+            listeners, self._lost_listeners = self._lost_listeners, []
+        logger.warning("connection to %s lost: %s", self.epr, reason)
+        for listener in listeners:
+            try:
+                listener(reason)
+            except Exception:
+                logger.exception("connection-lost listener failed")
+
+    def _on_subscription_status(self, status: dict[str, bool]) -> None:
+        if any(status.values()):
+            self._had_active_subscription = True
+        elif self._had_active_subscription:
+            self.mark_connection_lost(
+                "the device ended all subscriptions (it shut down, restarted or became unreachable)",
+            )
+
+    def _send(self, request: Callable[[], Any], timeout: float) -> Any:
+        """Send one operation request and wait for its final report part.
+
+        A request that cannot be delivered means the peer is gone. A delivered request whose
+        report does not arrive in time is only reported, since a slow device is still there.
+        """
+        if self._lost_reason is not None:
+            raise PeerConnectionLost(f"connection lost: {self._lost_reason}")
+        self._require_operation_reports()
+        try:
+            future = request()
+        except ConsumerError:
+            raise
+        except (OSError, HTTPException) as exc:
+            reason = f"the device could not be reached ({_error_text(exc)})"
+            self.mark_connection_lost(reason)
+            raise PeerConnectionLost(f"connection lost: {reason}") from exc
+        try:
+            return future.result(timeout=timeout)
+        except FutureTimeoutError as exc:
+            if self._lost_reason is not None:
+                raise PeerConnectionLost(f"connection lost: {self._lost_reason}") from exc
+            msg = f"the device accepted the request but sent no final result within {timeout:g} s"
+            raise ConsumerError(msg) from exc
 
     def operation_reports_subscribed(self) -> bool:
         """Whether an active subscription delivers this peer's OperationInvokedReports.
@@ -352,7 +448,7 @@ class RemoteDevice:
                 "not subscribed to OperationInvokedReport: the provider rejected or ended the "
                 "subscription, and will refuse operations. Reconnect, or see the log for the reason."
             )
-            raise RuntimeError(msg)
+            raise OperationReportsMissing(msg)
 
     # -- reading -------------------------------------------------------------------
 
@@ -582,7 +678,6 @@ class RemoteDevice:
         if operation_handle is None:
             logger.warning("no enabled set operation targets %s", metric_handle)
             return msg_types.InvocationState.FAILED
-        self._require_operation_reports()
         client = self._consumer.set_service_client
 
         if metric.kind is MetricKind.NUMBER:
@@ -591,13 +686,11 @@ class RemoteDevice:
             except (InvalidOperation, ValueError) as exc:
                 msg = f"{value!r} is not a number for {metric_handle!r}"
                 raise ValueError(msg) from exc
-            future = client.set_numeric_value(
-                operation_handle,
-                fixed_point_decimal(
-                    validate_decimal(numeric_value, f"value for {metric_handle!r}"),
-                    f"value for {metric_handle!r}",
-                ),
+            wire_value = fixed_point_decimal(
+                validate_decimal(numeric_value, f"value for {metric_handle!r}"),
+                f"value for {metric_handle!r}",
             )
+            report_part = self._send(lambda: client.set_numeric_value(operation_handle, wire_value), timeout)
         else:
             string_value = str(value)
             if metric.operation_allowed_values and string_value not in metric.operation_allowed_values:
@@ -607,9 +700,8 @@ class RemoteDevice:
                     operation_handle,
                 )
                 return msg_types.InvocationState.FAILED
-            future = client.set_string(operation_handle, string_value)
+            report_part = self._send(lambda: client.set_string(operation_handle, string_value), timeout)
 
-        report_part = future.result(timeout=timeout)
         info = report_part.InvocationInfo
         logger.info(
             "set %s via %s -> %s%s",
@@ -660,10 +752,9 @@ class RemoteDevice:
         if not action.enabled:
             logger.warning("action %s is disabled", action_handle)
             return msg_types.InvocationState.FAILED
-        self._require_operation_reports()
 
-        future = self._consumer.set_service_client.activate(action_handle, arguments=None)
-        report_part = future.result(timeout=timeout)
+        client = self._consumer.set_service_client
+        report_part = self._send(lambda: client.activate(action_handle, arguments=None), timeout)
         info = report_part.InvocationInfo
         logger.info(
             "ran %s -> %s%s",
@@ -705,9 +796,13 @@ class RemoteDevice:
         observableproperties.bind(self._mdib, **callbacks)
 
     def close(self) -> None:
-        """Unsubscribe and disconnect."""
+        """Unsubscribe and disconnect.
+
+        A lost peer is not sent Unsubscribe requests: they could only fail or wait for a
+        timeout, and would leave a traceback per subscription in the log.
+        """
         try:
-            self._consumer.stop_all()
+            self._consumer.stop_all(unsubscribe=self._lost_reason is None)
         except Exception:  # noqa: BLE001 - teardown must not mask the original problem
             logger.exception("error while closing consumer for %s", self.epr)
 
@@ -732,6 +827,7 @@ class ConsumerService:
         self._last_seen: dict[str, float] = {}
         self._last_seen_lock = threading.Lock()
         self._discovery_listener: Callable[[], None] | None = None
+        self._departure_listener: Callable[[str], None] | None = None
 
     def start(self) -> None:
         """Start WS-Discovery on the configured interface."""
@@ -785,9 +881,22 @@ class ConsumerService:
                     self._last_seen[epr] = now
         self._notify_listener()
 
+    def set_departure_listener(self, listener: Callable[[str], None] | None) -> None:
+        """Call `listener(epr)` when a provider announces it is leaving (WS-Discovery Bye).
+
+        Runs on sdc11073's networking thread. Never touch Qt widgets from it.
+        """
+        self._departure_listener = listener
+
     def _gone(self, epr: str) -> None:
         with self._last_seen_lock:
             self._last_seen.pop(epr, None)
+        departure = self._departure_listener
+        if departure is not None:
+            try:
+                departure(epr)
+            except Exception:  # noqa: BLE001 - a listener bug must not kill the networking thread
+                logger.exception("departure listener failed")
         self._notify_listener()
 
     def _notify_listener(self) -> None:

@@ -9,6 +9,7 @@ import threading
 import time
 import weakref
 from collections.abc import Iterable
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from script_support import Report, wait_until  # noqa: E402
 from sdc11073.xml_types import msg_types  # noqa: E402
 
+from sdctoolbox import consumer_service as consumer_service_module  # noqa: E402
 from sdctoolbox.consumer_service import DiscoveredDevice  # noqa: E402
 from sdctoolbox.gui import consumer_pane as consumer_module  # noqa: E402
 from sdctoolbox.gui.async_call import AsyncCall  # noqa: E402
@@ -88,9 +90,24 @@ class FakeRemote:
         self.context_values: dict[str, object] = {}
         self.metrics_count = 0
         self.metrics_requests: list[frozenset[str] | None] = []
+        self.lost_listeners: list = []
+        self.lost_reason: str | None = None
 
     def close(self) -> None:
         self.close_count += 1
+
+    def on_connection_lost(self, listener) -> None:  # noqa: ANN001
+        self.lost_listeners.append(listener)
+
+    def mark_connection_lost(self, reason: str) -> None:
+        """Like the real one: listeners run on the thread that noticed, here a foreign one."""
+        if self.lost_reason is not None:
+            return
+        self.lost_reason = reason
+        for listener in self.lost_listeners:
+            thread = threading.Thread(target=listener, args=(reason,))
+            thread.start()
+            thread.join()
 
     def set_value(self, *_args) -> object:
         return self.set_call()
@@ -159,6 +176,9 @@ class FakeConsumerService:
 
     def set_discovery_listener(self, listener) -> None:  # noqa: ANN001
         self.listener = listener
+
+    def set_departure_listener(self, listener) -> None:  # noqa: ANN001
+        self.departure_listener = listener
 
     def probe(self) -> None:
         self.probe_count += 1
@@ -1225,6 +1245,101 @@ def passive_discovery_and_connect_next(app: QApplication, provider: ProviderServ
     check(remote.close_count == 1 and service.stop_count == 1, "connect-next session resources close once")
 
 
+def controllable_peer(epr: str, value: Decimal = Decimal(7)) -> FakeRemote:
+    remote = FakeRemote(epr)
+    remote.mdib.entities = {
+        "mds": SimpleNamespace(node_type=SimpleNamespace(localname="MdsDescriptor"), parent_handle=None),
+    }
+    remote.metric_values = {
+        "metric": RemoteMetric(
+            handle="metric",
+            node_type_name="NumericMetricDescriptor",
+            kind=MetricKind.NUMBER,
+            label="Peer metric",
+            value=value,
+            operation_handles=("set.metric",),
+            controllable_now=True,
+        ),
+    }
+    return remote
+
+
+def connection_loss_clears_the_peer(app: QApplication, provider: ProviderService) -> None:
+    window, pane, _service = new_window(provider)
+    remote = controllable_peer("vanishing")
+    attach(pane, remote)
+    check(pane.board.handles == ["metric"] and pane.tree.topLevelItemCount() == 1, "lost-peer state starts populated")
+
+    remote.mark_connection_lost("the device ended all subscriptions")
+    check(wait_for(app, lambda: pane.remote is None), "a loss noticed on another thread disconnects the pane")
+    check(remote.close_count == 1, "the lost connection closes once")
+    check(
+        not pane.board.handles and pane.tree.topLevelItemCount() == 0 and pane.table.rowCount() == 0,
+        "a lost peer's widgets, tree and table are removed",
+    )
+    check(
+        pane.status_label.text().startswith("Connection lost: the device ended all subscriptions"),
+        "the status names the reason the connection was lost",
+    )
+    check(pane.disconnect_button.isEnabled() is False, "disconnect is off once the connection is gone")
+    window.close()
+
+
+def departure_of_connected_peer(app: QApplication, provider: ProviderService) -> None:
+    window, pane, service = new_window(provider)
+    remote = controllable_peer("leaving")
+    attach(pane, remote)
+
+    def depart(epr: str) -> None:
+        thread = threading.Thread(target=service.departure_listener, args=(epr,))
+        thread.start()
+        thread.join()
+
+    depart("someone-else")
+    pump(app)
+    check(pane.remote is remote, "a Bye from another provider leaves the connection alone")
+    depart("leaving")
+    check(wait_for(app, lambda: pane.remote is None), "a Bye from the connected provider ends the connection")
+    check(
+        "announced it is shutting down" in pane.status_label.text(),
+        "the status says the device announced its shutdown",
+    )
+    window.close()
+
+
+def failed_set_restores_device_value(app: QApplication, provider: ProviderService) -> None:
+    window, pane, _service = new_window(provider)
+    remote = controllable_peer("stubborn", Decimal(7))
+    attach(pane, remote)
+    control = pane.board.card("metric").control
+    control.edit.setFocus()
+    control.edit.setText("9")
+
+    remote.set_call.error = consumer_service_module.ConsumerError("the device could not be reached")
+    remote.set_call.release.set()
+    control._on_typed()  # noqa: SLF001 - Enter in the field
+    check(
+        wait_for(app, lambda: pane.invocation_label.text().startswith("failed:")),
+        "a failed set is reported in the pane",
+    )
+    check(control.edit.text() == "7", "a failed set puts the device's value back into the card")
+
+    remote.set_call.error = None
+    remote.set_call.result = msg_types.InvocationState.FAILED
+    control.edit.setText("11")
+    control._on_typed()  # noqa: SLF001
+    check(wait_for(app, lambda: pane.invocation_label.text().startswith("refused")), "a refused set is reported")
+    check(control.edit.text() == "7", "a refused set puts the device's value back into the card")
+
+    remote.set_call.result = msg_types.InvocationState.FINISHED_MOD
+    remote.metric_values["metric"] = replace(remote.metric_values["metric"], value=Decimal(10))
+    control.edit.setText("12")
+    control._on_typed()  # noqa: SLF001
+    check(wait_for(app, lambda: pane.invocation_label.text().startswith("accepted")), "an accepted set is reported")
+    check(control.edit.text() == "10", "an accepted set shows what the device actually holds")
+    window.close()
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     provider = ProviderService(instance_name="consumer-lifecycle")
@@ -1256,6 +1371,9 @@ def main() -> int:
         table_editor_enforces_complete_allowed_domain(app, provider)
         choice_controls_use_operation_allowed_values(app, provider)
         passive_discovery_and_connect_next(app, provider)
+        connection_loss_clears_the_peer(app, provider)
+        departure_of_connected_peer(app, provider)
+        failed_set_restores_device_value(app, provider)
     finally:
         consumer_module.ConsumerService = old_service
         consumer_module.MdibBridge = old_bridge
