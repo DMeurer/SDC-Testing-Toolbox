@@ -682,6 +682,16 @@ class ConsumerPane(QWidget):
             item = self.table.item(row, COL_VALUE)
             if item is not None:
                 item.setText(_value_text(metric))
+        selected = self.selected_handle()
+        if selected is not None and selected in metrics:
+            metric = metrics[selected]
+            if self.editor_stack.currentIndex() == EDITOR_CHOICE:
+                if not self.choice_box.view().isVisible() and metric.value is not None:
+                    index = self.choice_box.findText(str(metric.value))
+                    if index >= 0:
+                        self.choice_box.setCurrentIndex(index)
+            elif not self.value_edit.hasFocus():
+                self.value_edit.setText("" if metric.value is None else str(metric.value))
 
     def _on_waveforms_changed(self, blocks_by_handle: dict) -> None:
         """A block arrived from the peer.
@@ -748,13 +758,22 @@ class ConsumerPane(QWidget):
         self._update_buttons()
 
     def _restore_device_value(self, handle: str | None) -> None:
-        """Put what the device actually holds back into the card that asked for a change."""
+        """Put what the device actually holds back into the controls that requested a change."""
         if handle is None or self.remote is None:
             return
         metric = self.remote.metrics((handle,)).get(handle)
         card = self.board.card(handle)
         if metric is not None and card is not None:
             card.control.restore_value(_displayable(metric))
+        if metric is not None and self.selected_handle() == handle:
+            # A completed request wins over a focused text editor, just as it does for a
+            # card. Ordinary metric reports still leave an unfinished edit alone.
+            if self.editor_stack.currentIndex() == EDITOR_CHOICE:
+                index = self.choice_box.findText(str(metric.value)) if metric.value is not None else -1
+                if index >= 0:
+                    self.choice_box.setCurrentIndex(index)
+            else:
+                self.value_edit.setText("" if metric.value is None else str(metric.value))
 
     def refresh_actions(self) -> None:
         """Rebuild the buttons for the peer's actions."""

@@ -1195,6 +1195,67 @@ def choice_controls_use_operation_allowed_values(
     check(remote.close_count == 1 and service.stop_count == 1, "choice-domain session resources close once")
 
 
+def metric_reports_update_selected_editor(app: QApplication, provider: ProviderService) -> None:
+    window, pane, _service = new_window(provider)
+    remote = FakeRemote("reported-choice")
+    remote.metric_values = {
+        "mode": RemoteMetric(
+            handle="mode",
+            node_type_name="EnumStringMetricDescriptor",
+            kind=MetricKind.CHOICE,
+            allowed_values=("OFF", "ON"),
+            value="OFF",
+            operation_handles=("set.mode",),
+            selected_operation_handle="set.mode",
+            controllable_now=True,
+        ),
+    }
+    attach(pane, remote)
+    pane.select_handle("mode")
+    check(pane.choice_box.currentText() == "OFF", "selected editor starts with the reported value")
+
+    remote.metric_values["mode"] = replace(remote.metric_values["mode"], value="ON")
+    pane.bridge.metrics_changed.emit({"mode": object()})
+    pump(app)
+    check(
+        pane.choice_box.currentText() == "ON"
+        and pane.table.item(0, consumer_module.COL_VALUE).text() == "ON"
+        and pane.board.card("mode").control.box.currentText() == "ON",
+        "a metric report updates the table editor, value cell, and card together",
+    )
+
+    remote.metric_values["mode"] = replace(remote.metric_values["mode"], value="OFF")
+    pane._on_set_finished(msg_types.InvocationState.FINISHED_MOD)  # noqa: SLF001
+    check(pane.choice_box.currentText() == "OFF", "the completed operation refreshes the editor from the MDIB")
+
+    for kind, original, requested, reported in (
+        (MetricKind.NUMBER, Decimal(1), "3", Decimal(2)),
+        (MetricKind.TEXT, "old", "requested", "actual"),
+    ):
+        remote.metric_values["field"] = RemoteMetric(
+            handle="field",
+            node_type_name="NumericMetricDescriptor" if kind is MetricKind.NUMBER else "StringMetricDescriptor",
+            kind=kind,
+            value=original,
+            operation_handles=("set.field",),
+            selected_operation_handle="set.field",
+            controllable_now=True,
+        )
+        pane.refresh()
+        pane.select_handle("field")
+        pane.value_edit.setFocus()
+        pane.value_edit.setText(requested)
+        remote.metric_values["field"] = replace(remote.metric_values["field"], value=reported)
+        pane.bridge.metrics_changed.emit({"field": object()})
+        pump(app)
+        check(pane.value_edit.text() == requested, f"a metric report preserves a focused {kind.value} edit")
+        pane._invoked_handle = "field"  # noqa: SLF001 - complete the simulated request
+        pane._on_set_finished(msg_types.InvocationState.FINISHED_MOD)  # noqa: SLF001
+        check(pane.value_edit.text() == str(reported), f"a completed {kind.value} set shows the reported value")
+
+    window.close()
+
+
 def http_device(epr: str) -> DiscoveredDevice:
     return DiscoveredDevice(epr, (f"http://127.0.0.1/{epr}",), (), service=object())
 
@@ -1370,6 +1431,7 @@ def main() -> int:
         refresh_snapshot_and_editor_lookups_are_scoped(app, provider)
         table_editor_enforces_complete_allowed_domain(app, provider)
         choice_controls_use_operation_allowed_values(app, provider)
+        metric_reports_update_selected_editor(app, provider)
         passive_discovery_and_connect_next(app, provider)
         connection_loss_clears_the_peer(app, provider)
         departure_of_connected_peer(app, provider)
