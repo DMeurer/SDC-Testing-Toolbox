@@ -55,14 +55,30 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--tls-ca", help="trusted PEM CA certificate bundle")
     parser.add_argument("--tls-peer-fingerprint", help="optional SHA-256 pin for connected peers")
     parser.add_argument("--tls-server-name", help="optional DNS name in the peer certificate SAN")
+    parser.add_argument("--tls-trusted-dir", help="folder of trusted PEM certificates, self-signed ones included")
+    parser.add_argument(
+        "--tls-allow-self-signed",
+        action="store_true",
+        help="accept valid self-signed peer certificates (lab only)",
+    )
+    parser.add_argument(
+        "--tls-no-hostname-check",
+        action="store_true",
+        help="do not require the peer certificate to name the advertised host or IP",
+    )
     parser.add_argument("--smoke-test", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
 def settings_from_args(args: argparse.Namespace) -> StartupSettings:
     """Turn parsed arguments into the same shape the dialog produces."""
-    tls_values = (args.tls_cert, args.tls_key, args.tls_ca)
-    tls_options = (args.tls_peer_fingerprint, args.tls_server_name)
+    tls_values = (args.tls_cert, args.tls_key, args.tls_ca, args.tls_trusted_dir)
+    tls_options = (
+        args.tls_peer_fingerprint,
+        args.tls_server_name,
+        args.tls_allow_self_signed,
+        args.tls_no_hostname_check,
+    )
     if any(tls_values):
         tls_config = TlsConfig.from_paths(
             args.tls_cert,
@@ -71,9 +87,12 @@ def settings_from_args(args: argparse.Namespace) -> StartupSettings:
             private_key_password=os.getenv("SDC_TOOLBOX_TLS_KEY_PASSWORD"),
             peer_fingerprint=args.tls_peer_fingerprint,
             server_name=args.tls_server_name,
+            trusted_folder=args.tls_trusted_dir,
+            allow_self_signed=args.tls_allow_self_signed,
+            verify_hostname=not args.tls_no_hostname_check,
         )
     elif any(tls_options):
-        raise TlsConfigError("TLS peer options require --tls-cert, --tls-key, and --tls-ca")
+        raise TlsConfigError("TLS peer options require --tls-cert and --tls-key")
     else:
         tls_config = None
     return StartupSettings(

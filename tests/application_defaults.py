@@ -74,7 +74,7 @@ def check_tls_arguments() -> None:
     else:
         error = ""
     check(
-        error == "TLS peer options require --tls-cert, --tls-key, and --tls-ca",
+        error == "TLS peer options require --tls-cert and --tls-key",
         "TLS peer policy requires a complete local mTLS identity",
     )
 

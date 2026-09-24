@@ -544,6 +544,19 @@ the other participant's trusted CA bundle. Self-signed does not mean accepting a
 certificates: trust must remain explicit. Use `--tls-peer-fingerprint` to additionally pin
 one expected SHA-256 leaf certificate.
 
+Three options relax this for lab setups, each also available as a startup-dialog field:
+
+- **Trusted certificate folder** (`--tls-trusted-dir`): every PEM certificate (`.pem`, `.crt`,
+  `.cer`) in the folder is trusted, self-signed participant certificates included. Other files
+  such as keys are skipped. It replaces or complements `--tls-ca`, and mutual TLS stays in force.
+- **Allow self-signed peer certificates** (`--tls-allow-self-signed`): accepts any peer that
+  presents a currently valid self-signed certificate, plus anything the CA bundle or folder
+  issued. Python cannot hook chain validation, so the check happens right after the handshake
+  on the consumer side, and the provider **stops requesting client certificates**. Peers are
+  not authenticated. Combine it with `--tls-peer-fingerprint` if identity matters.
+- **Skip hostname/IP check** (`--tls-no-hostname-check`): the peer certificate no longer has
+  to name the advertised host or IP. The chain is still validated.
+
 Generate a self-contained local test CA plus provider and consumer identities with:
 
 ```powershell

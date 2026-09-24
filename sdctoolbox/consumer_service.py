@@ -37,7 +37,7 @@ from .model import (
     patient_info_from_biceps,
     validate_decimal,
 )
-from .security import CertificateInfo, TlsConfig
+from .security import CertificateInfo, TlsConfig, endpoint_host
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -726,7 +726,10 @@ class ConsumerService:
         try:
             consumer.start_all()
             peer_certificate = (
-                self.tls_config.verify_peer_certificate(consumer.binary_peer_certificate)
+                self.tls_config.verify_peer_certificate(
+                    consumer.binary_peer_certificate,
+                    endpoint_host(provider_address),
+                )
                 if self.tls_config is not None
                 else None
             )

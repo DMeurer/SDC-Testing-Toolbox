@@ -146,14 +146,35 @@ class StartupDialog(QDialog):
         self.tls_server_name_edit = QLineEdit()
         self.tls_fingerprint_edit.setPlaceholderText("optional SHA-256 pin")
         self.tls_server_name_edit.setPlaceholderText("optional local DNS name")
+        self.tls_ca_edit.setPlaceholderText("optional when a trusted folder is given")
+        self.tls_folder_edit = QLineEdit()
+        self.tls_folder_edit.setPlaceholderText("optional folder of trusted PEM certificates")
+        self.tls_folder_edit.setToolTip(
+            "Every certificate in this folder is trusted, self-signed ones included,\n"
+            "along with anything they issued.",
+        )
+        self.tls_self_signed_box = QCheckBox("Allow self-signed peer certificates")
+        self.tls_self_signed_box.setToolTip(
+            "Accept any peer presenting a valid self-signed certificate. Peers are then no\n"
+            "longer authenticated, and the provider stops requesting client certificates.\n"
+            "Lab use only; prefer a trusted folder or a fingerprint pin.",
+        )
+        self.tls_lenient_box = QCheckBox("Skip hostname/IP check of the peer certificate")
+        self.tls_lenient_box.setToolTip(
+            "Do not require the certificate to name the address the provider advertises.\n"
+            "The certificate chain is still checked.",
+        )
 
         tls_form = QFormLayout()
         tls_form.addRow("Certificate", self._path_picker(self.tls_cert_edit, "Choose TLS certificate"))
         tls_form.addRow("Private key", self._path_picker(self.tls_key_edit, "Choose TLS private key"))
         tls_form.addRow("Trusted CA bundle", self._path_picker(self.tls_ca_edit, "Choose trusted CA bundle"))
+        tls_form.addRow("Trusted certificate folder", self._folder_picker(self.tls_folder_edit, "Choose trusted certificate folder"))
         tls_form.addRow("Private-key password", self.tls_password_edit)
         tls_form.addRow("Expected peer fingerprint", self.tls_fingerprint_edit)
         tls_form.addRow("Advertised DNS name", self.tls_server_name_edit)
+        tls_form.addRow("", self.tls_self_signed_box)
+        tls_form.addRow("", self.tls_lenient_box)
         self.tls_group = QGroupBox("Transport security")
         self.tls_group.setCheckable(False)
         tls_layout = QVBoxLayout(self.tls_group)
@@ -246,14 +267,33 @@ class StartupDialog(QDialog):
         if filename:
             field.setText(filename)
 
+    def _folder_picker(self, field: QLineEdit, title: str) -> QWidget:
+        browse = QPushButton("Browse…")
+        browse.clicked.connect(lambda: self._browse_folder(field, title))
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(field, 1)
+        layout.addWidget(browse)
+        container = QWidget()
+        container.setLayout(layout)
+        return container
+
+    def _browse_folder(self, field: QLineEdit, title: str) -> None:
+        directory = QFileDialog.getExistingDirectory(self, title, "")
+        if directory:
+            field.setText(directory)
+
     def _update_tls_fields(self, enabled: bool) -> None:
         for field in (
             self.tls_cert_edit,
             self.tls_key_edit,
             self.tls_ca_edit,
+            self.tls_folder_edit,
             self.tls_password_edit,
             self.tls_fingerprint_edit,
             self.tls_server_name_edit,
+            self.tls_self_signed_box,
+            self.tls_lenient_box,
         ):
             field.setEnabled(enabled)
 
@@ -299,6 +339,9 @@ class StartupDialog(QDialog):
                     private_key_password=self.tls_password_edit.text() or os.getenv("SDC_TOOLBOX_TLS_KEY_PASSWORD"),
                     peer_fingerprint=self.tls_fingerprint_edit.text() or None,
                     server_name=self.tls_server_name_edit.text() or None,
+                    trusted_folder=self.tls_folder_edit.text() or None,
+                    allow_self_signed=self.tls_self_signed_box.isChecked(),
+                    verify_hostname=not self.tls_lenient_box.isChecked(),
                 )
                 tls_config.create_contexts()
             except TlsConfigError as exc:
