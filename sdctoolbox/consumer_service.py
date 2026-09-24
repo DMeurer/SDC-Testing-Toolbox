@@ -22,8 +22,9 @@ from sdc11073.definitions_sdc import SdcV1Definitions
 from sdc11073.mdib import ConsumerMdib
 from sdc11073.mdib.consumermdibxtra import ConsumerMdibMethods
 from sdc11073.wsdiscovery import WSDiscovery
-from sdc11073.xml_types import msg_types, pm_types
+from sdc11073.xml_types import eventing_types, msg_types, pm_types
 from sdc11073.xml_types import pm_qnames as pm
+from sdc11073.xml_types.dpws_types import DeviceEventingFilterDialectURI
 
 from . import constants
 from .model import (
@@ -252,6 +253,75 @@ class _SetOperation:
     allowed_values: tuple[str, ...]
 
 
+def _action_uri(action: object) -> str:
+    # sdc11073's Actions is a str-mixin Enum; str() of one yields "Actions.X", not the URI.
+    return str(getattr(action, "value", action))
+
+
+def _operation_report_actions(consumer: SdcConsumer) -> set[str]:
+    client = getattr(consumer, "set_service_client", None)
+    if client is None:
+        return set()
+    return {_action_uri(key.action) for key in client.get_available_subscriptions()}
+
+
+def _operation_reports_subscribed(consumer: SdcConsumer) -> bool:
+    actions = _operation_report_actions(consumer)
+    if not actions:
+        return True  # no SetService, so nothing to invoke and nothing to require
+    return any(active and actions & set(subscription_filter.split())
+               for subscription_filter, active in consumer.subscription_status.items())
+
+
+def _subscription_summary(consumer: SdcConsumer) -> str:
+    """One readable line per subscription: its state and the short action names it covers."""
+    parts = []
+    for subscription_filter, active in consumer.subscription_status.items():
+        names = ", ".join(action.rsplit("/", 1)[-1] for action in subscription_filter.split())
+        parts.append(f"{'active' if active else 'inactive'}: {names}")
+    return "; ".join(parts) or "no subscriptions"
+
+
+def _ensure_operation_report_subscription(consumer: SdcConsumer) -> None:
+    """Make sure OperationInvokedReports are subscribed, with a dedicated subscription if needed.
+
+    start_all() subscribes once per hosted service with every action that service offers.
+    When the provider groups SetService with other services, one action it dislikes (often
+    a periodic report) gets the whole combined subscription rejected, and sdc11073 only
+    logs that. Subscribing to OperationInvokedReport alone usually succeeds.
+    """
+    if _operation_reports_subscribed(consumer):
+        return
+    client = consumer.set_service_client
+    hosted = next(
+        (
+            candidate
+            for candidate in consumer.host_description.relationship.Hosted
+            if any(port_type.localname == "SetService" for port_type in candidate.Types or ())
+        ),
+        None,
+    )
+    logger.warning(
+        "no active OperationInvokedReport subscription after connecting (%s); "
+        "retrying with a dedicated subscription",
+        _subscription_summary(consumer),
+    )
+    if hosted is None:
+        logger.warning("provider metadata names no hosted SetService to subscribe at")
+        return
+    keys = list(client.get_available_subscriptions())
+    filter_type = eventing_types.FilterType()
+    filter_type.text = " ".join(_action_uri(key.action) for key in keys)
+    filter_type.Dialect = DeviceEventingFilterDialectURI.ACTION
+    try:
+        consumer.do_subscribe(hosted, filter_type, keys)
+    except Exception:
+        logger.exception("dedicated OperationInvokedReport subscription failed")
+        return
+    if _operation_reports_subscribed(consumer):
+        logger.info("dedicated OperationInvokedReport subscription is active")
+
+
 class RemoteDevice:
     """A connected peer. Wraps SdcConsumer plus its ConsumerMdib."""
 
@@ -267,6 +337,22 @@ class RemoteDevice:
         self.epr = epr
         self.peer_certificate = peer_certificate
         self._lock = threading.RLock()
+
+    def operation_reports_subscribed(self) -> bool:
+        """Whether an active subscription delivers this peer's OperationInvokedReports.
+
+        Providers may refuse set and activate requests from a consumer without one
+        (SDPi requires it), and sdc11073 only logs a failed or ended subscription.
+        """
+        return _operation_reports_subscribed(self._consumer)
+
+    def _require_operation_reports(self) -> None:
+        if not self.operation_reports_subscribed():
+            msg = (
+                "not subscribed to OperationInvokedReport: the provider rejected or ended the "
+                "subscription, and will refuse operations. Reconnect, or see the log for the reason."
+            )
+            raise RuntimeError(msg)
 
     # -- reading -------------------------------------------------------------------
 
@@ -496,6 +582,7 @@ class RemoteDevice:
         if operation_handle is None:
             logger.warning("no enabled set operation targets %s", metric_handle)
             return msg_types.InvocationState.FAILED
+        self._require_operation_reports()
         client = self._consumer.set_service_client
 
         if metric.kind is MetricKind.NUMBER:
@@ -573,6 +660,7 @@ class RemoteDevice:
         if not action.enabled:
             logger.warning("action %s is disabled", action_handle)
             return msg_types.InvocationState.FAILED
+        self._require_operation_reports()
 
         future = self._consumer.set_service_client.activate(action_handle, arguments=None)
         report_part = future.result(timeout=timeout)
@@ -814,6 +902,7 @@ class ConsumerService:
             )
         try:
             consumer.start_all()
+            _ensure_operation_report_subscription(consumer)
             peer_certificate = (
                 self.tls_config.verify_peer_certificate(
                     consumer.binary_peer_certificate,
