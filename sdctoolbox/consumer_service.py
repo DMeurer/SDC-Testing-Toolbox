@@ -49,6 +49,10 @@ logger = logging.getLogger("sdctoolbox.consumer")
 SCAN_POLL_SECONDS = 0.2
 PROBE_REPEAT_SECONDS = 1.0
 PROBE_SEND_SECONDS = 0.01
+# Continuous discovery: a background probe this often refreshes every provider that is
+# still there, and one not heard from for STALE_AFTER_SECONDS (crashed, no Bye) drops off.
+BACKGROUND_PROBE_SECONDS = 30.0
+STALE_AFTER_SECONDS = 2.5 * BACKGROUND_PROBE_SECONDS
 
 # Descriptor node types we recognize as metrics, mapped to our own kind enum.
 METRIC_NODE_TYPES = {
@@ -635,6 +639,11 @@ class ConsumerService:
         self.tls_config = tls_config
         self._tls_contexts = None
         self._discovery: WSDiscovery | None = None
+        # When each provider was last heard from, by EPR. Written from sdc11073's
+        # networking thread, read from whichever thread asks for known_devices().
+        self._last_seen: dict[str, float] = {}
+        self._last_seen_lock = threading.Lock()
+        self._discovery_listener: Callable[[], None] | None = None
 
     def start(self) -> None:
         """Start WS-Discovery on the configured interface."""
@@ -653,6 +662,13 @@ class ConsumerService:
             except Exception:
                 logger.exception("error while rolling back consumer discovery startup")
             raise
+        # Passive discovery: providers announce themselves with Hello on start and Bye on
+        # a clean shutdown. Probe and resolve answers count as "heard from" as well.
+        types = SdcV1Definitions.MedicalDeviceTypesFilter
+        self._discovery.set_remote_service_hello_callback(lambda _addr, service: self._heard(service.epr), types=types)
+        self._discovery.set_on_probe_matches_callback(lambda services: self._heard(*(s.epr for s in services)))
+        self._discovery.set_remote_service_resolve_match_callback(lambda service: self._heard(service.epr))
+        self._discovery.set_remote_service_bye_callback(lambda _addr, epr: self._gone(epr))
         logger.info("discovery up on %s", self.ip)
 
     def stop(self) -> None:
@@ -660,8 +676,76 @@ class ConsumerService:
         discovery = self._discovery
         self._discovery = None
         self._tls_contexts = None
+        with self._last_seen_lock:
+            self._last_seen.clear()
         if discovery is not None:
             discovery.stop()
+
+    def set_discovery_listener(self, listener: Callable[[], None] | None) -> None:
+        """Call `listener` whenever the set of known providers may have changed.
+
+        It runs on sdc11073's networking thread and takes no arguments; read the new state
+        with known_devices(). Never touch Qt widgets from it.
+        """
+        self._discovery_listener = listener
+
+    def _heard(self, *eprs: str) -> None:
+        now = time.monotonic()
+        with self._last_seen_lock:
+            for epr in eprs:
+                if epr:
+                    self._last_seen[epr] = now
+        self._notify_listener()
+
+    def _gone(self, epr: str) -> None:
+        with self._last_seen_lock:
+            self._last_seen.pop(epr, None)
+        self._notify_listener()
+
+    def _notify_listener(self) -> None:
+        listener = self._discovery_listener
+        if listener is None:
+            return
+        try:
+            listener()
+        except Exception:  # noqa: BLE001 - a listener bug must not kill the networking thread
+            logger.exception("discovery listener failed")
+
+    def probe(self) -> None:
+        """Send one multicast probe without waiting. Answers arrive through the listener."""
+        if self._discovery is None:
+            msg = "consumer service is not started"
+            raise RuntimeError(msg)
+        self._discovery.search_services(types=SdcV1Definitions.MedicalDeviceTypesFilter, timeout=PROBE_SEND_SECONDS)
+
+    def known_devices(self, max_age: float | None = STALE_AFTER_SECONDS) -> list[DiscoveredDevice]:
+        """Providers discovery currently knows of, without sending anything.
+
+        With `max_age`, a provider not heard from for that many seconds is left out; that is
+        how one that vanished without a Bye eventually disappears.
+        """
+        if self._discovery is None:
+            return []
+        devices = self._devices_from(
+            self._discovery.search_services(types=SdcV1Definitions.MedicalDeviceTypesFilter, timeout=0),
+        )
+        if max_age is None:
+            return devices
+        cutoff = time.monotonic() - max_age
+        with self._last_seen_lock:
+            return [device for device in devices if self._last_seen.get(device.epr, cutoff - 1) >= cutoff]
+
+    def _devices_from(self, services: Iterable[Any]) -> list[DiscoveredDevice]:
+        return [
+            DiscoveredDevice(
+                epr=service.epr,
+                x_addrs=tuple(getattr(service, "x_addrs", ()) or ()),
+                scopes=_scope_uris(service),
+                service=service,
+            )
+            for service in services
+            if self._own_epr is None or service.epr != self._own_epr
+        ]
 
     def __enter__(self) -> ConsumerService:
         self.start()
@@ -696,18 +780,7 @@ class ConsumerService:
             if now >= next_probe:
                 self._discovery.search_services(types=types, timeout=PROBE_SEND_SECONDS)
                 next_probe = now + PROBE_REPEAT_SECONDS
-            services = self._discovery.search_services(types=types, timeout=0)
-            if self._own_epr is not None:
-                services = [service for service in services if service.epr != self._own_epr]
-            found = [
-                DiscoveredDevice(
-                    epr=service.epr,
-                    x_addrs=tuple(getattr(service, "x_addrs", ()) or ()),
-                    scopes=_scope_uris(service),
-                    service=service,
-                )
-                for service in services
-            ]
+            found = self._devices_from(self._discovery.search_services(types=types, timeout=0))
             if len(found) >= expected or now >= deadline:
                 break
             if cancel_event is None:

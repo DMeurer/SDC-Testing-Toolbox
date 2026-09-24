@@ -149,9 +149,29 @@ class FakeConsumerService:
         self.scan_call = BlockingCall([])
         self.connect_call = BlockingCall()
         self.stop_count = 0
+        self.tls_config = None
+        self.probe_count = 0
+        self.known: list[DiscoveredDevice] = []
+        self.listener = None
 
     def start(self) -> None:
         pass
+
+    def set_discovery_listener(self, listener) -> None:  # noqa: ANN001
+        self.listener = listener
+
+    def probe(self) -> None:
+        self.probe_count += 1
+
+    def known_devices(self) -> list[DiscoveredDevice]:
+        return list(self.known)
+
+    def announce(self, *devices: DiscoveredDevice) -> None:
+        """Simulate discovery traffic arriving on sdc11073's networking thread."""
+        self.known = list(devices)
+        thread = threading.Thread(target=self.listener)
+        thread.start()
+        thread.join()
 
     def stop(self) -> None:
         self.stop_count += 1
@@ -1155,6 +1175,56 @@ def choice_controls_use_operation_allowed_values(
     check(remote.close_count == 1 and service.stop_count == 1, "choice-domain session resources close once")
 
 
+def http_device(epr: str) -> DiscoveredDevice:
+    return DiscoveredDevice(epr, (f"http://127.0.0.1/{epr}",), (), service=object())
+
+
+def passive_discovery_and_connect_next(app: QApplication, provider: ProviderService) -> None:
+    window, pane, service = new_window(provider)
+    check(service.probe_count == 1, "opening the pane probes once for providers already running")
+
+    known = http_device("known")
+    service.announce(known)
+    check(
+        wait_for(app, lambda: [device.epr for device in pane.devices] == ["known"]),
+        "a Hello from the networking thread reaches the list without a scan",
+    )
+    check(pane.device_list.currentRow() == 0, "the first announced device is selected")
+
+    pane.connect_next_box.setChecked(True)
+    service.announce()  # Bye
+    check(wait_for(app, lambda: not pane.devices), "a Bye removes the device from the list")
+    service.announce(known)
+    pump(app)
+    check(
+        not service.connect_call.entered.is_set() and pane.connect_next_box.isChecked(),
+        "a returning EPR seen earlier this session does not trigger Connect next",
+    )
+
+    secure_only = DiscoveredDevice("secure-only", ("https://127.0.0.1/secure",), (), service=object())
+    service.announce(known, secure_only)
+    pump(app)
+    check(
+        not service.connect_call.entered.is_set() and pane.connect_next_box.isChecked(),
+        "a new device without a matching transport is skipped",
+    )
+
+    remote = FakeRemote("fresh")
+    service.connect_call.result = remote
+    service.connect_call.release.set()
+    fresh = http_device("fresh")
+    service.announce(known, secure_only, fresh)
+    check(wait_for(app, service.connect_call.entered.is_set), "a new EPR triggers Connect next")
+    check(not pane.connect_next_box.isChecked(), "Connect next unticks itself after firing")
+    check(wait_for(app, lambda: pane.remote is remote), "Connect next attaches the new device")
+    check(pane._selected_device() is fresh, "the auto-connected device is selected")  # noqa: SLF001
+
+    window.close()
+    pump(app)
+    check(service.listener is None, "closing the pane detaches the discovery listener")
+    check(remote.close_count == 1 and service.stop_count == 1, "connect-next session resources close once")
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     provider = ProviderService(instance_name="consumer-lifecycle")
@@ -1185,6 +1255,7 @@ def main() -> int:
         refresh_snapshot_and_editor_lookups_are_scoped(app, provider)
         table_editor_enforces_complete_allowed_domain(app, provider)
         choice_controls_use_operation_allowed_values(app, provider)
+        passive_discovery_and_connect_next(app, provider)
     finally:
         consumer_module.ConsumerService = old_service
         consumer_module.MdibBridge = old_bridge

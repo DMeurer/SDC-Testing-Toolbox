@@ -11,14 +11,16 @@ AsyncCall rather than on the GUI thread.
 
 from __future__ import annotations
 
+import logging
 import re
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -38,7 +40,7 @@ from PySide6.QtWidgets import (
 )
 from sdc11073.xml_types import msg_types
 
-from ..consumer_service import ConsumerService
+from ..consumer_service import BACKGROUND_PROBE_SECONDS, ConsumerService
 from ..model import MetricKind
 from .async_call import AsyncCall
 from .decimal_input import DecimalInputError, parse_decimal_input
@@ -65,6 +67,8 @@ if TYPE_CHECKING:
 
     from ..consumer_service import DiscoveredDevice, RemoteDevice
     from ..model import RemoteMetric
+
+logger = logging.getLogger("sdctoolbox.gui.consumer")
 
 COLUMNS = ["Handle", "Label", "Kind", "Value", "Range", "Unit", "Writable"]
 COL_HANDLE, COL_LABEL, COL_KIND, COL_VALUE, COL_RANGE, COL_UNIT, COL_WRITABLE = range(len(COLUMNS))
@@ -127,8 +131,21 @@ def _set_action_button_caption(button: QPushButton, caption: str) -> None:
 FINISHED_STATES = (msg_types.InvocationState.FINISHED, msg_types.InvocationState.FINISHED_MOD)
 
 
+def _device_item(device: DiscoveredDevice) -> QListWidgetItem:
+    secure = bool(device.x_addrs and device.x_addrs[0].startswith("https://"))
+    suffix = " [HTTPS]" if secure else " [HTTP]"
+    item = QListWidgetItem(device.epr + suffix)
+    location = device.location_scope
+    if location:
+        item.setToolTip(location)
+    return item
+
+
 class ConsumerPane(QWidget):
     """Find SDC providers, inspect what they publish, and drive the parts that allow it."""
+
+    # Emitted from sdc11073's networking thread; Qt queues it onto the GUI thread.
+    discovery_changed = Signal()
 
     def __init__(
         self,
@@ -143,6 +160,10 @@ class ConsumerPane(QWidget):
         self.service.start()
 
         self.devices: list[DiscoveredDevice] = []
+        # Every EPR listed this session. "Connect next" only reacts to one outside this set,
+        # so a known device restarting under the same name does not trigger it.
+        self._seen_eprs: set[str] = set()
+        self._listed_snapshot: list[tuple[str, tuple[str, ...]]] = []
         self.remote: RemoteDevice | None = None
         self.bridge: MdibBridge | None = None
         self._generation = 0
@@ -150,6 +171,7 @@ class ConsumerPane(QWidget):
 
         self._build_ui()
         self._wire_async()
+        self._wire_discovery()
         self._update_buttons()
 
     # -- construction --------------------------------------------------------------
@@ -161,6 +183,11 @@ class ConsumerPane(QWidget):
         self.connect_button.clicked.connect(self._on_connect)
         self.disconnect_button = QPushButton("Disconnect")
         self.disconnect_button.clicked.connect(self._on_disconnect)
+        self.connect_next_box = QCheckBox("Connect next new device")
+        self.connect_next_box.setToolTip(
+            "Connect to the next provider that appears whose EPR has not been seen\n"
+            "since this window opened, then untick. A known device restarting does not count.",
+        )
 
         self.status_label = QLabel("Not connected")
         constrain_dynamic_label(self.status_label, max_lines=3)
@@ -177,6 +204,7 @@ class ConsumerPane(QWidget):
         top.addWidget(self.scan_button)
         top.addWidget(self.connect_button)
         top.addWidget(self.disconnect_button)
+        top.addWidget(self.connect_next_box)
         top.addStretch(1)
 
         # What the peer says it can be told to *do*, as opposed to the values it holds.
@@ -315,12 +343,73 @@ class ConsumerPane(QWidget):
 
     # -- discovery -----------------------------------------------------------------
 
+    def _wire_discovery(self) -> None:
+        """Keep the device list live from Hello/Bye/ProbeMatch traffic.
+
+        One probe now finds providers that were already running (they will not say Hello
+        again), a slow background probe keeps entries fresh, and a short refresh tick lets
+        providers that vanished without a Bye age out of the list.
+        """
+        self.discovery_changed.connect(self._refresh_devices)
+        self.service.set_discovery_listener(self.discovery_changed.emit)
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setInterval(1000)
+        self._refresh_timer.timeout.connect(self._refresh_devices)
+        self._refresh_timer.start()
+        self._probe_timer = QTimer(self)
+        self._probe_timer.setInterval(int(BACKGROUND_PROBE_SECONDS * 1000))
+        self._probe_timer.timeout.connect(self._background_probe)
+        self._probe_timer.start()
+        self._background_probe()
+
+    def _background_probe(self) -> None:
+        if self._shutdown:
+            return
+        try:
+            self.service.probe()
+        except Exception:  # noqa: BLE001 - a lost probe is retried by the next tick
+            logger.exception("background discovery probe failed")
+
+    def _refresh_devices(self) -> None:
+        """Mirror what discovery knows into the list, and act on "Connect next"."""
+        if self._shutdown:
+            return
+        devices = self.service.known_devices()
+        new_devices = [device for device in devices if device.epr not in self._seen_eprs]
+        self._seen_eprs.update(device.epr for device in devices)
+
+        snapshot = [(device.epr, device.x_addrs) for device in devices]
+        if snapshot != self._listed_snapshot:
+            self._listed_snapshot = snapshot
+            selected = self._selected_device()
+            self.devices = devices
+            self.device_list.clear()
+            for device in devices:
+                self.device_list.addItem(_device_item(device))
+            rows = [row for row, device in enumerate(devices) if selected is not None and device.epr == selected.epr]
+            if rows:
+                self.device_list.setCurrentRow(rows[0])
+            elif devices:
+                self.device_list.setCurrentRow(0)
+
+        if self.connect_next_box.isChecked():
+            candidate = next((device for device in new_devices if self._reachable(device)), None)
+            if candidate is not None:
+                self.connect_next_box.setChecked(False)
+                self.device_list.setCurrentRow(self.devices.index(candidate))
+                self._on_connect()
+                return
+        self._update_buttons()
+
+    def _reachable(self, device: DiscoveredDevice) -> bool:
+        """Whether this consumer's transport matches an address the provider advertises."""
+        scheme = "https://" if self.service.tls_config is not None else "http://"
+        return any(address.startswith(scheme) for address in device.x_addrs)
+
     def _on_scan(self) -> None:
         if self._shutdown:
             return
         self._set_status("Searching\u2026")
-        self.device_list.clear()
-        self.devices = []
         key = self._work_key("scan")
         self._worker.start_managed(
             key,
@@ -332,20 +421,11 @@ class ConsumerPane(QWidget):
         )
         self._update_buttons()
 
-    def _on_scan_finished(self, devices: list) -> None:
-        self.devices = devices
-        self.device_list.clear()
-        for device in devices:
-            secure = bool(device.x_addrs and device.x_addrs[0].startswith("https://"))
-            suffix = " [HTTPS]" if secure else " [HTTP]"
-            item = QListWidgetItem(device.epr + suffix)
-            location = device.location_scope
-            if location:
-                item.setToolTip(location)
-            self.device_list.addItem(item)
-        if devices:
-            self.device_list.setCurrentRow(0)
-            self._set_status(f"Found {len(devices)} device(s)")
+    def _on_scan_finished(self, _devices: list) -> None:
+        # The scan filled discovery's cache; the live list reads from that same source.
+        self._refresh_devices()
+        if self.devices:
+            self._set_status(f"Found {len(self.devices)} device(s)")
         else:
             self._set_status("No devices found")
         self._update_buttons()
@@ -879,6 +959,9 @@ class ConsumerPane(QWidget):
         if self._shutdown:
             return
         self._shutdown = True
+        self.service.set_discovery_listener(None)
+        self._refresh_timer.stop()
+        self._probe_timer.stop()
         self._advance_generation()
         self._teardown_remote()
         self._worker.retire(self.service, self.service.stop)
