@@ -326,7 +326,7 @@ class ConsumerPane(QWidget):
             key,
             self.service,
             self.service.scan,
-            timeout=8.0,
+            timeout=3.0,
             expected=99,
             cancel_event=self._worker.cancellation_event,
         )

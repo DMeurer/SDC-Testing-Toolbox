@@ -44,6 +44,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("sdctoolbox.consumer")
 
+# Discovery pacing. Providers answer a probe within about half a second; re-probing covers
+# lost multicast datagrams without flooding the segment.
+SCAN_POLL_SECONDS = 0.2
+PROBE_REPEAT_SECONDS = 1.0
+PROBE_SEND_SECONDS = 0.01
+
 # Descriptor node types we recognize as metrics, mapped to our own kind enum.
 METRIC_NODE_TYPES = {
     pm.NumericMetricDescriptor: MetricKind.NUMBER,
@@ -675,12 +681,22 @@ class ConsumerService:
             msg = "consumer service is not started"
             raise RuntimeError(msg)
 
-        deadline = time.monotonic() + timeout
+        # search_services() blocks for its whole timeout before returning anything. Instead,
+        # send probes with a near-zero timeout and read the cache that ProbeMatches fill,
+        # so a scan ends as soon as enough answers are in and a cancel takes effect at once.
+        # Forget earlier results first, so providers that left without a Bye drop off.
+        types = SdcV1Definitions.MedicalDeviceTypesFilter
+        self._discovery.clear_remote_services()
+        start = time.monotonic()
+        deadline = start + timeout
+        next_probe = start
         found: list[DiscoveredDevice] = []
-        while time.monotonic() < deadline and not (
-            cancel_event is not None and cancel_event.is_set()
-        ):
-            services = self._discovery.search_services(types=SdcV1Definitions.MedicalDeviceTypesFilter)
+        while not (cancel_event is not None and cancel_event.is_set()):
+            now = time.monotonic()
+            if now >= next_probe:
+                self._discovery.search_services(types=types, timeout=PROBE_SEND_SECONDS)
+                next_probe = now + PROBE_REPEAT_SECONDS
+            services = self._discovery.search_services(types=types, timeout=0)
             if self._own_epr is not None:
                 services = [service for service in services if service.epr != self._own_epr]
             found = [
@@ -692,11 +708,11 @@ class ConsumerService:
                 )
                 for service in services
             ]
-            if len(found) >= expected:
+            if len(found) >= expected or now >= deadline:
                 break
             if cancel_event is None:
-                time.sleep(1.0)
-            elif cancel_event.wait(1.0):
+                time.sleep(SCAN_POLL_SECONDS)
+            elif cancel_event.wait(SCAN_POLL_SECONDS):
                 break
 
         logger.info("discovered %d provider(s)", len(found))
