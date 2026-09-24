@@ -30,6 +30,7 @@ from sdctoolbox.model import MetricKind, MetricSpec  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 OPERATION_INVOKED = Actions.OperationInvokedReport.value
+EPISODIC_METRIC = Actions.EpisodicMetricReport.value
 
 
 def start_all_without_operation_reports(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
@@ -39,6 +40,12 @@ def start_all_without_operation_reports(self, *args, **kwargs):  # noqa: ANN001,
 
 
 ORIGINAL_START_ALL = SdcConsumer.start_all
+
+
+def start_all_without_metric_reports(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+    """Stand-in for a connection with the metric action missing from its subscriptions."""
+    kwargs["not_subscribed_actions"] = [EPISODIC_METRIC]
+    return ORIGINAL_START_ALL(self, *args, **kwargs)
 
 
 @contextmanager
@@ -69,6 +76,10 @@ def main() -> int:
         handle = provider.add_metric(
             MetricSpec(label="Setting", kind=MetricKind.NUMBER, controllable=True, initial_value=Decimal("1")),
         )
+        choice = provider.add_metric(
+            MetricSpec(label="Choice", kind=MetricKind.CHOICE, allowed_values=("OFF", "ON"),
+                       controllable=True, initial_value="OFF"),
+        )
         consumer.start()
         device = next(
             (candidate for candidate in consumer.scan(timeout=10.0, expected=1) if candidate.epr == provider.epr.urn),
@@ -85,6 +96,35 @@ def main() -> int:
             "a normal connection is recognized as subscribed without a retry",
         )
         healthy.close()
+
+        with patch.object(SdcConsumer, "start_all", start_all_without_metric_reports):
+            missing_metrics = consumer.connect(device)
+        report.check(
+            any(active and EPISODIC_METRIC in subscription_filter.split()
+                for subscription_filter, active in missing_metrics._consumer.subscription_status.items()),  # noqa: SLF001
+            "connecting restores a missing metric-report subscription",
+        )
+        missing_metrics.close()
+
+        # A peer can still accept sets without delivering metric notifications. GetMdState
+        # must reconcile both kinds of controls from the provider rather than guessing that
+        # the requested value became the reported one.
+        with patch.object(SdcConsumer, "start_all", start_all_without_metric_reports), patch(
+            "sdctoolbox.consumer_service._ensure_metric_report_subscription",
+        ):
+            unreported = consumer.connect(device)
+        try:
+            number_result = unreported.set_value(handle, Decimal("4"))
+            choice_result = unreported.set_value(choice, "ON")
+            report.check(
+                number_result in (msg_types.InvocationState.FINISHED, msg_types.InvocationState.FINISHED_MOD)
+                and choice_result in (msg_types.InvocationState.FINISHED, msg_types.InvocationState.FINISHED_MOD)
+                and unreported.metrics((handle,))[handle].value == Decimal("4")
+                and unreported.metrics((choice,))[choice].value == "ON",
+                "number and choice read back correctly when metric notifications are missing",
+            )
+        finally:
+            unreported.close()
 
         with capture_warnings() as warnings, patch.object(SdcConsumer, "start_all", start_all_without_operation_reports):
             remote = consumer.connect(device)

@@ -344,6 +344,47 @@ def _ensure_operation_report_subscription(consumer: SdcConsumer) -> None:
         logger.info("dedicated OperationInvokedReport subscription is active")
 
 
+def _ensure_metric_report_subscription(consumer: SdcConsumer) -> None:
+    """Restore metric notifications when a combined subscription failed at connect time."""
+    client = getattr(consumer, "state_event_service_client", None)
+    if client is None:
+        return
+    keys = [
+        key for key in client.get_available_subscriptions()
+        if _action_uri(key.action).rsplit("/", 1)[-1] in ("EpisodicMetricReport", "PeriodicMetricReport")
+    ]
+    if not keys:
+        return
+    hosted = next(
+        (
+            candidate for candidate in consumer.host_description.relationship.Hosted
+            if any(port_type.localname == "StateEventService" for port_type in candidate.Types or ())
+        ),
+        None,
+    )
+    for key in keys:
+        action = _action_uri(key.action)
+        if any(
+            active and action in subscription_filter.split()
+            for subscription_filter, active in consumer.subscription_status.items()
+        ):
+            continue
+        logger.warning(
+            "no active %s subscription (%s); retrying alone",
+            action.rsplit("/", 1)[-1], _subscription_summary(consumer),
+        )
+        if hosted is None:
+            logger.warning("provider metadata names no StateEventService to subscribe at")
+            return
+        filter_type = eventing_types.FilterType()
+        filter_type.text = action
+        filter_type.Dialect = DeviceEventingFilterDialectURI.ACTION
+        try:
+            consumer.do_subscribe(hosted, filter_type, [key])
+        except Exception:
+            logger.exception("dedicated %s subscription failed", action.rsplit("/", 1)[-1])
+
+
 class RemoteDevice:
     """A connected peer. Wraps SdcConsumer plus its ConsumerMdib."""
 
@@ -710,7 +751,61 @@ class RemoteDevice:
             info.InvocationState,
             f" ({info.InvocationErrorMessage})" if info.InvocationErrorMessage else "",
         )
+        if info.InvocationState in (msg_types.InvocationState.FINISHED, msg_types.InvocationState.FINISHED_MOD):
+            self._reconcile_metric(metric_handle, value)
         return info.InvocationState
+
+    def _reconcile_metric(self, handle: str, requested: Decimal | str) -> None:
+        """Read the actual value when a peer finishes a set without a metric notification.
+
+        OperationInvokedReport describes the invocation, not the resulting metric state.
+        A targeted GetMdState also covers peers whose metric subscription is missing or
+        whose metric report is delayed. Never overwrite a newer notification with an older
+        state version, and do not turn a successful invocation into a failure if Get fails.
+        """
+        get_client = self._consumer.client("Get")
+        if get_client is None:
+            logger.warning("cannot read back metric %s: peer has no GetService", handle)
+            return
+        try:
+            response = get_client.get_md_state([handle])
+            group = response.mdib_version_group
+            updated = {}
+            found = False
+            with self._mdib.mdib_lock:
+                if (
+                    group.sequence_id != self._mdib.sequence_id
+                    or group.instance_id != self._mdib.instance_id
+                ):
+                    logger.debug("ignoring stale GetMdState response for %s", handle)
+                    return
+                for state in response.result.MdState.State:
+                    if state.DescriptorHandle != handle:
+                        continue
+                    current = self._mdib.states.descriptor_handle.get_one(handle, allow_none=True)
+                    if current is None or state.StateVersion < current.StateVersion:
+                        continue
+                    found = True
+                    previous = getattr(getattr(current, "MetricValue", None), "Value", None)
+                    current.update_from_other_container(state)
+                    self._mdib.states.update_object(current)
+                    actual = getattr(getattr(current, "MetricValue", None), "Value", None)
+                    if previous != actual:
+                        updated[handle] = current
+                if updated:
+                    self._mdib.metrics_by_handle = updated
+            if not found:
+                logger.warning("GetMdState returned no usable metric state for %s", handle)
+            else:
+                actual = self.metrics((handle,)).get(handle)
+                if actual is None:
+                    logger.warning("GetMdState returned no usable metric state for %s", handle)
+                elif actual.value != requested:
+                    logger.warning("set %s finished: requested %r, device reports %r", handle, requested, actual.value)
+                else:
+                    logger.info("read back %s from GetMdState: %r", handle, actual.value)
+        except Exception:  # noqa: BLE001 - readback cannot change a completed invocation's result
+            logger.exception("could not read back metric %s after set", handle)
 
     def actions(self) -> dict[str, RemoteAction]:
         """The things the peer says it can be told to do.
@@ -1012,6 +1107,7 @@ class ConsumerService:
         try:
             consumer.start_all()
             _ensure_operation_report_subscription(consumer)
+            _ensure_metric_report_subscription(consumer)
             peer_certificate = (
                 self.tls_config.verify_peer_certificate(
                     consumer.binary_peer_certificate,
