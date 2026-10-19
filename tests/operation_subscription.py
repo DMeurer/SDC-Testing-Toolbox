@@ -20,13 +20,16 @@ TESTS = ROOT / "tests"
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(TESTS))
 
-from script_support import Report  # noqa: E402
+from script_support import Report, wait_until  # noqa: E402
 from sdc11073.consumer.consumerimpl import SdcConsumer  # noqa: E402
-from sdc11073.xml_types import msg_types  # noqa: E402
+from sdc11073.provider.porttypes.contextserviceimpl import ContextService  # noqa: E402
+from sdc11073.provider.porttypes.stateeventserviceimpl import StateEventService  # noqa: E402
+from sdc11073.provider.subscriptionmgr_base import SubscriptionsManagerBase  # noqa: E402
+from sdc11073.xml_types import eventing_types, msg_types, pm_types  # noqa: E402
 from sdc11073.xml_types.actions import Actions  # noqa: E402
 
 from sdctoolbox.consumer_service import ConsumerService  # noqa: E402
-from sdctoolbox.model import MetricKind, MetricSpec  # noqa: E402
+from sdctoolbox.model import AlertSpec, MetricKind, MetricSpec, PatientInfo  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 OPERATION_INVOKED = Actions.OperationInvokedReport.value
@@ -65,6 +68,75 @@ def capture_warnings() -> Iterator[list[str]]:
         logger.removeHandler(handler)
 
 
+def check_restricted_provider(report: Report) -> None:
+    """A real SOAP peer rejects whole filters containing unadvertised reports."""
+    unsupported = {
+        action.value for action in Actions
+        if "Periodic" in action.value or action in (Actions.SystemErrorReport, Actions.EpisodicComponentReport)
+    }
+    rejected: list[str] = []
+    original_subscribe = SubscriptionsManagerBase.on_subscribe_request
+
+    def restricted_subscribe(self, request):
+        subscription = eventing_types.Subscribe.from_node(request.message_data.p_msg.msg_node)
+        if unsupported.intersection(subscription.Filter.text.split()):
+            rejected.append(subscription.Filter.text)
+            raise ValueError("unsupported report in subscription filter")
+        return original_subscribe(self, request)
+
+    def restrict_wsdl(original):
+        def add_port_type(self, parent):
+            original(self, parent)
+            port_type = parent[-1]
+            for operation in list(port_type):
+                if any(action.rsplit("/", 1)[-1] == operation.get("name") for action in unsupported):
+                    port_type.remove(operation)
+        return add_port_type
+
+    provider = ProviderService(instance_name="restricted-report-provider")
+    consumer = ConsumerService()
+    remote = None
+    try:
+        with patch.object(StateEventService, "add_wsdl_port_type", restrict_wsdl(StateEventService.add_wsdl_port_type)), \
+             patch.object(ContextService, "add_wsdl_port_type", restrict_wsdl(ContextService.add_wsdl_port_type)), \
+             patch.object(SubscriptionsManagerBase, "on_subscribe_request", restricted_subscribe):
+            provider.start()
+            metric = provider.add_metric(MetricSpec(
+                label="Report source", kind=MetricKind.NUMBER, controllable=True, initial_value=Decimal("1"),
+            ))
+            alert = provider.add_alert(AlertSpec(label="Report alarm", source_handle=metric))
+            consumer.start()
+            device = next((d for d in consumer.scan(timeout=10, expected=99) if d.epr == provider.epr.urn), None)
+            report.require(device is not None, "restricted provider is discoverable")
+            remote = consumer.connect(device)
+            report.check(not rejected, "connect requests only WSDL-advertised reports", str(rejected))
+            report.check(remote.operation_reports_subscribed(), "restricted peer has operation-result reports")
+            provider.set_value(metric, Decimal("7"))
+            report.check(wait_until(lambda: remote.metrics()[metric].value == Decimal("7"), timeout=5),
+                         "metric notifications reach the consumer MDIB")
+            for present in (True, False):
+                provider.set_alert_presence(alert, present)
+                report.check(wait_until(lambda: remote.alerts()[alert].present == present, timeout=5),
+                             f"alert notification reaches the consumer MDIB: present={present}")
+                signals = provider.signal_handles_for(alert)
+                expected = pm_types.AlertSignalPresence.ON if present else pm_types.AlertSignalPresence.OFF
+                report.check(all(remote.mdib.entities.by_handle(h).state.Presence == expected for h in signals),
+                             f"visual and audible signals follow the alert: present={present}")
+            operation = provider.operation_handle_for(metric)
+            provider._set_operating_mode(operation, pm_types.OperatingMode.DISABLED)
+            report.check(wait_until(lambda: not remote.metrics()[metric].controllable_now, timeout=5),
+                         "operation enabled-state notification reaches the consumer MDIB")
+            patient = PatientInfo(given_name="Subscription", family_name="Regression")
+            provider.set_patient(patient)
+            report.check(wait_until(lambda: remote.patient() == patient, timeout=5),
+                         "context notification survives a peer without periodic reports")
+    finally:
+        if remote is not None:
+            remote.close()
+        consumer.stop()
+        provider.stop()
+
+
 def main() -> int:
     report = Report()
     print("OperationInvokedReport subscription")
@@ -82,7 +154,7 @@ def main() -> int:
         )
         consumer.start()
         device = next(
-            (candidate for candidate in consumer.scan(timeout=10.0, expected=1) if candidate.epr == provider.epr.urn),
+            (candidate for candidate in consumer.scan(timeout=10.0, expected=99) if candidate.epr == provider.epr.urn),
             None,
         )
         report.check(device is not None, "provider is discoverable")
@@ -164,6 +236,7 @@ def main() -> int:
             remote.close()
         consumer.stop()
         provider.stop()
+    check_restricted_provider(report)
     return report.summary()
 
 

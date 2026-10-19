@@ -276,7 +276,7 @@ def consumer_connection_failure(*, stage: str, tls: bool = False) -> None:
         "construct": "consumer MDIB construction failed",
         "init": "consumer MDIB init failed",
     }[stage]
-    patchers = [patch.object(consumer_module, "SdcConsumer", ConsumerFactory)]
+    patchers = [patch.object(consumer_module, "_WsdlSdcConsumer", ConsumerFactory)]
     if tls:
         patchers.append(patch.object(service.tls_config, "create_contexts", lambda: object()))
     with ExitStack() as stack:

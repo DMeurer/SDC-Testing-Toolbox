@@ -267,6 +267,31 @@ class OperationReportsMissing(ConsumerError):
     """The peer is there, but without an OperationInvokedReport subscription it refuses operations."""
 
 
+class _WsdlSdcConsumer(SdcConsumer):
+    """Limit subscriptions before start_all groups actions by hosted service."""
+
+    def _mk_hosted_services(self, host_description: Any) -> None:
+        super()._mk_hosted_services(host_description)
+        ns = "{http://schemas.xmlsoap.org/wsdl/}"
+        for hosted in self.hosted_services.values():
+            if hosted.wsdl_node is None:
+                continue
+            for name, client in hosted.services.items():
+                port_type = hosted.wsdl_node.find(f"{ns}portType[@name='{name}']")
+                if port_type is None:
+                    continue
+                # get_available_subscriptions() lists library capabilities, not peer support.
+                notifications = {
+                    _action_uri(getattr(self.sdc_definitions.Actions, operation.get("name"), ""))
+                    for operation in port_type.findall(f"{ns}operation")
+                    if operation.find(f"{ns}input") is None and operation.find(f"{ns}output") is not None
+                }
+                client.notifications = tuple(
+                    key for key in client.get_available_subscriptions()
+                    if _action_uri(key.action) in notifications
+                )
+
+
 def _error_text(exc: BaseException) -> str:
     """Name the underlying socket error; sdc11073 wraps it in a message-less NotConnected."""
     while not str(exc) and (exc.__cause__ or exc.__context__) is not None:
@@ -345,13 +370,20 @@ def _ensure_operation_report_subscription(consumer: SdcConsumer) -> None:
 
 
 def _ensure_metric_report_subscription(consumer: SdcConsumer) -> None:
-    """Restore metric notifications when a combined subscription failed at connect time."""
+    """Restore metric, alert and operation-state reports after a combined subscription fails.
+
+    OperationInvokedReport carries execution results, not enabled/disabled state.
+    Without EpisodicOperationalStateReport, action buttons can remain stale.
+    """
     client = getattr(consumer, "state_event_service_client", None)
     if client is None:
         return
     keys = [
         key for key in client.get_available_subscriptions()
-        if _action_uri(key.action).rsplit("/", 1)[-1] in ("EpisodicMetricReport", "PeriodicMetricReport")
+        if _action_uri(key.action).rsplit("/", 1)[-1] in (
+            "EpisodicMetricReport", "PeriodicMetricReport",
+            "EpisodicOperationalStateReport", "EpisodicAlertReport",
+        )
     ]
     if not keys:
         return
@@ -1093,11 +1125,11 @@ class ConsumerService:
         else:
             provider_address = None
         if self.tls_config is None:
-            consumer = SdcConsumer.from_wsd_service(device.service, ssl_context_container=None)
+            consumer = _WsdlSdcConsumer.from_wsd_service(device.service, ssl_context_container=None)
         else:
             # The factory does not expose force_ssl_connect in sdc11073 3.0.0. Constructing
             # the same SDC-v1 consumer directly keeps a failed TLS handshake from retrying HTTP.
-            consumer = SdcConsumer(
+            consumer = _WsdlSdcConsumer(
                 provider_address,
                 SdcV1Definitions,
                 self._tls_contexts,
