@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from contextlib import ExitStack
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -253,7 +254,7 @@ def consumer_discovery_start_failure() -> None:
 def consumer_connection_failure(*, stage: str, tls: bool = False) -> None:
     service = ConsumerService(tls_config=object() if tls else None)
     consumer = Tracker(fail_start="consumer start failed" if stage == "start" else None)
-    device = DiscoveredDevice("peer", (), (), service=object())
+    device = DiscoveredDevice("peer", (), (), service=SimpleNamespace(x_addrs=[]))
 
     class ConsumerFactory:
         def __new__(cls, *_args, **_kwargs) -> Tracker:
@@ -292,6 +293,53 @@ def consumer_connection_failure(*, stage: str, tls: bool = False) -> None:
     check(not consumer.active, f"consumer {stage} failure leaves no active consumer")
 
 
+def http_consumer_rejects_https_endpoint() -> None:
+    service = ConsumerService()
+    http = "http://127.0.0.1:1/device"
+    https = "https://127.0.0.1:1/device"
+    for addresses, live_addresses in (
+        ((https,), (https,)),
+        ((https, http), (https, http)),
+        ((http,), (http,)),
+        ((http, https), (http, https)),
+        ((), ()),
+        ((http,), (https, http)),
+        ((https,), (http, https)),
+    ):
+        discovered_service = SimpleNamespace(x_addrs=list(addresses))
+        device = DiscoveredDevice("peer", addresses, (), service=discovered_service)
+        discovered_service.x_addrs = list(live_addresses)
+
+        def construct(selected_service, *, ssl_context_container) -> None:  # noqa: ANN001
+            discovered_service.x_addrs[:] = [https]
+            check(
+                tuple(selected_service.x_addrs) == live_addresses,
+                "construction uses the checked addresses despite a later discovery update",
+            )
+            raise RuntimeError("consumer construction reached")
+
+        with patch.object(
+            consumer_module._WsdlSdcConsumer,
+            "from_wsd_service",
+            side_effect=construct,
+        ) as factory:
+            try:
+                service.connect(device)
+            except consumer_module.ConsumerError as exc:
+                check(bool(live_addresses) and live_addresses[0] == https, "only the selected HTTPS endpoint is rejected")
+                check(
+                    "requires HTTPS" in str(exc) and "configured for HTTP" in str(exc)
+                    and "Enable TLS" in str(exc) and "certificates" in str(exc),
+                    "transport mismatch explains the cause and how to enable secure connections",
+                )
+                factory.assert_not_called()
+            except RuntimeError as exc:
+                check(not live_addresses or live_addresses[0] == http, "an HTTPS endpoint is rejected before construction")
+                check(str(exc) == "consumer construction reached", "other endpoints keep their existing connection path")
+            else:
+                raise AssertionError("expected connection rejection or consumer construction")
+
+
 def main() -> int:
     print("Service lifecycle fault injection")
     mdib_load_failure()
@@ -303,6 +351,7 @@ def main() -> int:
     consumer_connection_failure(stage="start")
     consumer_connection_failure(stage="construct")
     consumer_connection_failure(stage="init")
+    http_consumer_rejects_https_endpoint()
     return REPORT.summary()
 
 

@@ -12,6 +12,7 @@ import logging
 import threading
 import time
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from copy import copy
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from functools import partial
@@ -1125,7 +1126,17 @@ class ConsumerService:
         else:
             provider_address = None
         if self.tls_config is None:
-            consumer = _WsdlSdcConsumer.from_wsd_service(device.service, ssl_context_container=None)
+            # Keep validation and construction on the same discovery snapshot.
+            service = copy(device.service)
+            service.x_addrs = list(service.x_addrs)
+            # The discovery factory uses the first advertised address.
+            if service.x_addrs and service.x_addrs[0].startswith("https://"):
+                msg = (
+                    "This provider requires HTTPS, but the Toolbox is configured for HTTP. "
+                    "Enable TLS and configure certificates in the startup settings."
+                )
+                raise ConsumerError(msg)
+            consumer = _WsdlSdcConsumer.from_wsd_service(service, ssl_context_container=None)
         else:
             # The factory does not expose force_ssl_connect in sdc11073 3.0.0. Constructing
             # the same SDC-v1 consumer directly keeps a failed TLS handshake from retrying HTTP.

@@ -13,6 +13,7 @@ from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -1404,6 +1405,32 @@ def departure_of_connected_peer(app: QApplication, provider: ProviderService) ->
     window.close()
 
 
+def https_mismatch_reaches_gui(app: QApplication, provider: ProviderService) -> None:
+    window, pane, service = new_window(provider)
+    service.connect = consumer_service_module.ConsumerService().connect
+    address = "https://127.0.0.1:1/device"
+    pane.devices = [DiscoveredDevice("secure-peer", (address,), (), service=SimpleNamespace(x_addrs=[address]))]
+    pane.device_list.addItem("secure-peer")
+    pane.device_list.setCurrentRow(0)
+    try:
+        with patch("sdctoolbox.gui.async_call.logger.exception") as traceback_log:
+            pane._on_connect()  # noqa: SLF001
+            check(
+                wait_for(app, lambda: pane.status_label.text().startswith("Could not connect:")),
+                "HTTPS mismatch is reported in the GUI",
+            )
+            message = pane.status_label.text()
+            check(
+                "requires HTTPS" in message and "configured for HTTP" in message
+                and "Enable TLS" in message and "certificates" in message,
+                "GUI explains the transport mismatch and how to configure TLS",
+            )
+            check(pane.remote is None and not pane.disconnect_button.isEnabled(), "HTTPS mismatch leaves the GUI disconnected")
+            traceback_log.assert_not_called()
+    finally:
+        window.close()
+
+
 def failed_set_restores_device_value(app: QApplication, provider: ProviderService) -> None:
     window, pane, _service = new_window(provider)
     remote = controllable_peer("stubborn", Decimal(7))
@@ -1472,6 +1499,7 @@ def main() -> int:
         passive_discovery_and_connect_next(app, provider)
         connection_loss_clears_the_peer(app, provider)
         departure_of_connected_peer(app, provider)
+        https_mismatch_reaches_gui(app, provider)
         failed_set_restores_device_value(app, provider)
     finally:
         consumer_module.ConsumerService = old_service
