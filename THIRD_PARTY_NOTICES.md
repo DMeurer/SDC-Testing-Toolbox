@@ -54,7 +54,7 @@ Project and source: https://github.com/Draegerwerk/sdc11073
 
 ### cryptography
 
-The pinned direct dependency is `cryptography 46.0.5`, licensed under Apache-2.0
+The pinned direct dependency is `cryptography 50.0.0`, licensed under Apache-2.0
 OR BSD-3-Clause. It parses certificate metadata and supports test-only temporary
 certificate generation. Its runtime dependencies `cffi` and `pycparser` are
 MIT-0 and BSD-3-Clause licensed respectively; the generated artifact inventory

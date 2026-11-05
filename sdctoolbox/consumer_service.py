@@ -30,6 +30,7 @@ from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types.dpws_types import DeviceEventingFilterDialectURI
 
 from . import constants
+from .http_server import configure_request_handler
 from .model import (
     MetricKind,
     PatientInfo,
@@ -270,6 +271,11 @@ class OperationReportsMissing(ConsumerError):
 
 class _WsdlSdcConsumer(SdcConsumer):
     """Limit subscriptions before start_all groups actions by hosted service."""
+
+    def _start_event_sink(self, shared_http_server: Any, http_server_start_timeout: float = 60.0) -> None:
+        super()._start_event_sink(shared_http_server, http_server_start_timeout)
+        if shared_http_server is None:
+            configure_request_handler(self._http_server)
 
     def _mk_hosted_services(self, host_description: Any) -> None:
         super()._mk_hosted_services(host_description)

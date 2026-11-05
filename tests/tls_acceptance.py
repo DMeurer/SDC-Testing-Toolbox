@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import faulthandler
+import io
+import socket
+import ssl
 import sys
+import threading
 import time
+from contextlib import redirect_stderr
 from decimal import Decimal
+from http.client import HTTPResponse
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent
 TESTS = ROOT / "tests"
@@ -22,6 +30,147 @@ from security import issue_certificate, make_tls_configurations, write_certifica
 from cryptography import x509  # noqa: E402
 from cryptography.hazmat.primitives.asymmetric import rsa  # noqa: E402
 from cryptography.x509.oid import NameOID  # noqa: E402
+
+
+def wait_for_tls_reader(worker: threading.Thread) -> None:
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        frame = sys._current_frames().get(worker.ident)
+        if frame is not None and frame.f_code is ssl.SSLSocket.read.__code__:
+            return
+        time.sleep(0.01)
+    raise AssertionError("request worker did not enter the blocking TLS read")
+
+
+def check_tls_server_shutdown(report: Report) -> None:
+    """An idle TLS reader is EOF on local shutdown, not a failed request."""
+    with TemporaryDirectory(prefix="sdc-tls-shutdown-") as raw_temporary:
+        provider_tls, consumer_tls = make_tls_configurations(Path(raw_temporary))
+        provider = ProviderService(instance_name="tls-shutdown-provider", tls_config=provider_tls)
+        provider.start()
+        server = provider._provider._http_server  # noqa: SLF001 - inspect real network cleanup
+        httpd = server.httpd
+        idle = threading.Event()
+        shutdown = threading.Event()
+        errors = io.StringIO()
+        original_handler = httpd.RequestHandlerClass
+        httpd.dispatcher.register_instance(
+            "shutdown-test", SimpleNamespace(do_get=lambda *_args: (200, "OK", b"ok", "text/plain")),
+        )
+
+        class ObservedHandler(original_handler):
+            def handle_one_request(self) -> None:
+                if hasattr(self, "raw_requestline"):
+                    idle.set()
+                super().handle_one_request()
+
+        httpd.RequestHandlerClass = ObservedHandler
+        stop_errors = []
+
+        def stop_provider() -> None:
+            try:
+                provider.stop()
+            except Exception as exc:  # noqa: BLE001 - retain background cleanup failures
+                stop_errors.append(exc)
+
+        stopper = threading.Thread(target=stop_provider, daemon=True)
+        faulthandler.dump_traceback_later(15)
+        try:
+            with (
+                redirect_stderr(errors),
+                socket.create_connection(("127.0.0.1", server.server_port), timeout=5) as raw,
+                consumer_tls.create_contexts().client_context.wrap_socket(raw, server_hostname="127.0.0.1") as tls,
+            ):
+                tls.sendall(b"GET /shutdown-test HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                response = HTTPResponse(tls)
+                response.begin()
+                assert response.status == 200 and response.read() == b"ok"
+                response.close()
+                assert idle.wait(5), "HTTP worker did not return to its next request line"
+                workers = list(httpd.threads)
+                assert len(workers) == 1
+                wait_for_tls_reader(workers[0].thread)
+                request = workers[0].request
+                original_shutdown = request.shutdown
+
+                def observe_shutdown(how: int) -> None:
+                    original_shutdown(how)
+                    if how == socket.SHUT_RDWR:
+                        shutdown.set()
+
+                request.shutdown = observe_shutdown
+                stopper.start()
+                assert shutdown.wait(10), "provider did not shut down the accepted TLS socket"
+                # Release any OpenSSL read still waiting on the peer after local shutdown.
+                tls.close()
+                stopper.join(5)
+                server.join(5)
+                for worker in workers:
+                    worker.thread.join(5)
+            report.check(not stop_errors and not stopper.is_alive(), "provider shutdown completes without cleanup failure")
+            report.check(
+                not server.is_alive() and all(not worker.thread.is_alive() for worker in workers)
+                and request.fileno() == -1 and httpd.socket.fileno() == -1,
+                "TLS shutdown closes listener, accepted socket, and request worker",
+            )
+            report.check("Traceback" not in errors.getvalue(), "local TLS request-line shutdown is normal EOF")
+            if errors.getvalue():
+                print(errors.getvalue(), file=sys.stderr, end="")
+        finally:
+            faulthandler.cancel_dump_traceback_later()
+            if stopper.ident is None:
+                provider.stop()
+            else:
+                stopper.join(5)
+
+
+def check_unexpected_server_errors(report: Report) -> None:
+    """Even during local TLS shutdown, body/response failures retain tracebacks."""
+    with TemporaryDirectory(prefix="sdc-tls-errors-") as raw_temporary:
+        provider_tls, consumer_tls = make_tls_configurations(Path(raw_temporary))
+        for failure in (RuntimeError("unexpected request failure"), BrokenPipeError(10058, "unexpected response failure")):
+            provider = ProviderService(instance_name="tls-errors-provider", tls_config=provider_tls)
+            provider.start()
+            server = provider._provider._http_server  # noqa: SLF001
+            httpd = server.httpd
+            handled = threading.Event()
+            errors = io.StringIO()
+            original_handler = httpd.RequestHandlerClass
+
+            class FailingHandler(original_handler):
+                def do_GET(self) -> None:
+                    # Recreate both shutdown conditions, but fail *inside* a request.
+                    self.server.dispatcher = None
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                    raise failure
+
+            original_error_handler = httpd.handle_error
+
+            def observe_error(request, address) -> None:  # noqa: ANN001
+                original_error_handler(request, address)
+                handled.set()
+
+            httpd.RequestHandlerClass = FailingHandler
+            httpd.handle_error = observe_error
+            try:
+                with (
+                    redirect_stderr(errors),
+                    socket.create_connection(("127.0.0.1", server.server_port), timeout=5) as raw,
+                    consumer_tls.create_contexts().client_context.wrap_socket(raw, server_hostname="127.0.0.1") as tls,
+                ):
+                    tls.sendall(b"GET /failure HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                    assert handled.wait(5), "unexpected request failure was not reported"
+                    workers = list(httpd.threads)
+                    for worker in workers:
+                        worker.thread.join(5)
+                report.check(
+                    "Traceback" in errors.getvalue() and type(failure).__name__ in errors.getvalue()
+                    and str(failure) in errors.getvalue(),
+                    f"unexpected {type(failure).__name__} retains its traceback during TLS shutdown",
+                )
+            finally:
+                provider.stop()
+                server.join(5)
 
 
 def check_tls_connection(report: Report) -> None:
@@ -142,7 +291,14 @@ def check_untrusted_client_rejected(report: Report) -> None:
 def main() -> int:
     report = Report()
     print("TLS acceptance")
-    check_tls_connection(report)
+    check_tls_server_shutdown(report)
+    check_unexpected_server_errors(report)
+    errors = io.StringIO()
+    with redirect_stderr(errors):
+        check_tls_connection(report)
+    if errors.getvalue():
+        print(errors.getvalue(), file=sys.stderr, end="")
+    report.check("Traceback" not in errors.getvalue(), "provider and consumer TLS teardown emits no unexpected traceback")
     check_https_requirement(report)
     check_untrusted_client_rejected(report)
     return report.summary()

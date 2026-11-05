@@ -1386,18 +1386,25 @@ def _archive_path(path: object) -> tuple[str, str] | None:
     return normalized, unicodedata.normalize("NFC", normalized).casefold()
 
 
-def _pyinstaller_modules(executable: bytes) -> set[str]:
-    """Read module names from a PyInstaller executable without importing it."""
+def _pyinstaller_evidence(executable: bytes) -> tuple[int, str, set[str]] | None:
+    """Read Python runtime and module names without importing the executable."""
     cookie_magic = b"MEI\014\013\012\013\016"
     cookie_format = "!8sIIII64s"
     cookie_length = struct.calcsize(cookie_format)
     cookie_offset = executable.rfind(cookie_magic)
     if cookie_offset < 0 or cookie_offset + cookie_length > len(executable):
-        return set()
-    _magic, archive_length, toc_offset, toc_length, _version, _library = struct.unpack(
+        return None
+    _magic, archive_length, toc_offset, toc_length, version, library = struct.unpack(
         cookie_format, executable[cookie_offset : cookie_offset + cookie_length]
     )
     archive_start = cookie_offset + cookie_length - archive_length
+    if (
+        archive_start < 0
+        or archive_length < cookie_length
+        or toc_offset + toc_length > archive_length - cookie_length
+    ):
+        return None
+    library_name = library.rstrip(b"\0").decode("utf-8")
     toc = executable[
         archive_start + toc_offset : archive_start + toc_offset + toc_length
     ]
@@ -1407,11 +1414,16 @@ def _pyinstaller_modules(executable: bytes) -> set[str]:
     entry_header = "!IIIIBc"
     entry_header_length = struct.calcsize(entry_header)
     while position + entry_header_length <= len(toc):
-        entry_length, offset, length, _raw_length, compressed, typecode = struct.unpack(
+        entry_length, offset, length, raw_length, compressed, typecode = struct.unpack(
             entry_header, toc[position : position + entry_header_length]
         )
-        if entry_length < entry_header_length or position + entry_length > len(toc):
-            return set()
+        if (
+            entry_length < entry_header_length
+            or position + entry_length > len(toc)
+            or offset + length > toc_offset
+            or (not compressed and raw_length != length)
+        ):
+            return None
         name = toc[position + entry_header_length : position + entry_length]
         name = name.rstrip(b"\0").decode("utf-8")
         if typecode in {b"m", b"M"}:
@@ -1422,16 +1434,22 @@ def _pyinstaller_modules(executable: bytes) -> set[str]:
             ]
             if compressed:
                 pyz_data = zlib.decompress(pyz_data)
+            if len(pyz_data) != raw_length:
+                return None
         position += entry_length
+    if position != len(toc):
+        return None
     if pyz_data is None or not pyz_data.startswith(b"PYZ\0") or len(pyz_data) < 12:
-        return modules
+        return version, library_name, modules
     pyz_toc_offset = struct.unpack("!i", pyz_data[8:12])[0]
+    if not 12 <= pyz_toc_offset < len(pyz_data):
+        return None
     pyz_toc = marshal.loads(pyz_data[pyz_toc_offset:])
     if not isinstance(pyz_toc, (dict, list, tuple)):
-        return set()
+        return None
     entries = pyz_toc.keys() if isinstance(pyz_toc, dict) else dict(pyz_toc).keys()
     modules.update(name for name in entries if isinstance(name, str))
-    return modules
+    return version, library_name, modules
 
 
 def validate_payload(
@@ -1587,6 +1605,7 @@ def validate_payload(
         "SDC-Testing-Toolbox.exe" if system == "Windows" else "SDC-Testing-Toolbox"
     )
     executable_bytes = archive_file(executable)
+    python_version: int | None = None
     if executable_bytes is None:
         errors.append(
             f"archive is missing expected platform executable file {executable}"
@@ -1594,7 +1613,7 @@ def validate_payload(
         embedded_modules: set[str] = set()
     else:
         try:
-            embedded_modules = _pyinstaller_modules(executable_bytes)
+            executable_evidence = _pyinstaller_evidence(executable_bytes)
         except (
             EOFError,
             ImportError,
@@ -1605,11 +1624,40 @@ def validate_payload(
             struct.error,
             zlib.error,
         ):
-            embedded_modules = set()
+            executable_evidence = None
+        embedded_modules = executable_evidence[2] if executable_evidence else set()
         if not embedded_modules:
             errors.append(
                 "platform executable has no readable PyInstaller module table"
             )
+        elif executable_evidence is not None:
+            version, library, _modules = executable_evidence
+            if not re.fullmatch(
+                rf"(?:python{version}t?\.dll|libpython{version // 100}\.{version % 100}t?\.so(?:\.\d+)*)",
+                library,
+            ):
+                errors.append("executable Python version and library disagree")
+            elif (
+                archive_file(library) is None
+                and archive_file(f"_internal/{library}") is None
+            ):
+                errors.append(f"executable Python library is absent: {library}")
+            else:
+                python_version = version
+
+    # The supported aiohttp/aiosignal markers require this only below Python 3.13.
+    typing_extensions_required = python_version is None or python_version < 313
+    typing_extensions_shipped = any(
+        module == "typing_extensions" or module.startswith("typing_extensions.")
+        for module in embedded_modules
+    ) or any(
+        re.search(
+            r"/typing_extensions(?:/|(?:\.[^/]+)?\.(?:pyc?|pyd|so)$)",
+            name.casefold(),
+        )
+        for name, _value in normalized.values()
+        if name.startswith(f"{ARTIFACT_ROOT}/")
+    )
 
     required_documents = string_list(
         inventory.get("required_documents"), "inventory required_documents"
@@ -1752,6 +1800,12 @@ def validate_payload(
             component_names.append(raw_name)
         for field in ("version", "scope", "license_expression"):
             string_field(component.get(field), f"{label}.{field}")
+        if raw_name == "Python" and python_version is not None:
+            if not re.match(
+                rf"^{python_version // 100}\.{python_version % 100}\.",
+                str(component.get("version")),
+            ):
+                errors.append("Python.version does not match executable runtime")
         validate_urls(component, label)
         notices = validate_notices(component, label)
         evidence = object_field(
@@ -1835,9 +1889,10 @@ def validate_payload(
         "Qt",
         "sdc11073",
         "shiboken6",
-        "typing_extensions",
         "yarl",
     }
+    if typing_extensions_required or typing_extensions_shipped:
+        expected_component_names.add("typing_extensions")
     missing_components = expected_component_names - set(component_names)
     unexpected_components = set(component_names) - expected_component_names
     for name in sorted(missing_components):
@@ -1925,9 +1980,10 @@ def validate_payload(
         "PySide6_Essentials",
         "sdc11073",
         "shiboken6",
-        "typing_extensions",
         "yarl",
     }
+    if typing_extensions_required:
+        expected_runtime.add("typing_extensions")
     if set(resolved_names) != expected_runtime or len(resolved_names) != len(
         expected_runtime
     ):

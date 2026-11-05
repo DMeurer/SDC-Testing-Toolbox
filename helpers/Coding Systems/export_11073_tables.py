@@ -24,7 +24,7 @@ try:
 except ImportError as exc:  # pragma: no cover - startup guidance
     raise SystemExit(
         "Missing PyMuPDF. Install helper dependencies with "
-        "'.venv\\Scripts\\python.exe -m pip install -r helpers\\requirements.txt'.",
+        "'.venv\\Scripts\\python.exe -m pip install -r \"helpers/Coding Systems/requirements.txt\"'.",
     ) from exc
 
 try:

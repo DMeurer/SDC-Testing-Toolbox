@@ -7,4 +7,8 @@
 
 sdc11073==3.0.0
 PySide6==6.11.2
-cryptography==46.0.5
+cryptography==50.0.0
+
+# Security floors for existing SDC transitive dependencies in reused environments.
+lxml>=6.1.0
+aiohttp>=3.14.4

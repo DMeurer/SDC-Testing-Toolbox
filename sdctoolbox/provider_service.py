@@ -28,6 +28,7 @@ from sdc11073.xml_types.xml_structure import DateOfBirthProperty
 
 from . import constants
 from .handlers import apply_metric_value, make_activate_handler, make_set_handler
+from .http_server import configure_request_handler
 from .model import (
     DEFAULT_PATIENT,
     ActionSpec,
@@ -295,6 +296,8 @@ class ProviderService:
 
             # No waveform provider configured, so the real-time sample loop must stay off.
             self._provider.start_all(start_rtsample_loop=False)
+            if self._tls_contexts is not None:
+                configure_request_handler(self._provider._http_server)  # noqa: SLF001 - library has no server factory hook
             if self._sco is not None:
                 self._adapter = Sdc11073V3Adapter(self._mdib)
                 self._adapter.bind(self._provider, self._sco)

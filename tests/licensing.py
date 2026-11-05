@@ -5,9 +5,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import marshal
+import re
+import struct
 import sys
 import tarfile
 import zipfile
+import zlib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -50,6 +54,290 @@ def _archive_files(path: Path) -> list[tuple[str, bytes]]:
                 and (extracted := archive.extractfile(member)) is not None
             ]
     raise ValueError(f"unsupported or invalid archive: {path}")
+
+
+def check_conditional_typing_extensions(
+    report: Report, files: dict[str, bytes], inventory_path: str
+) -> None:
+    inventory = json.loads(files[inventory_path])
+    windows = inventory["platform"]["system"] == "Windows"
+    executable = f"{ARTIFACT_ROOT}/SDC-Testing-Toolbox" + (".exe" if windows else "")
+    modules = {
+        module
+        for component in inventory["components"]
+        if component["name"] != "typing_extensions"
+        for module in component["evidence"]["modules"]
+    }
+    notice = "legal/licenses/typing-extensions/LICENSE"
+
+    def fixture(minor: int, *, shipped: bool = False) -> dict[str, bytes]:
+        changed_inventory = json.loads(json.dumps(inventory))
+        for field in (
+            "components", "resolved_runtime", "resolved_runtime_not_packaged", "build_only"
+        ):
+            changed_inventory[field] = [
+                item
+                for item in changed_inventory[field]
+                if item["name"] not in {"typing_extensions", "typing-extensions"}
+            ]
+        python = next(
+            c for c in changed_inventory["components"] if c["name"] == "Python"
+        )
+        library = f"python3{minor}.dll" if windows else f"libpython3.{minor}.so.1.0"
+        old_libraries = [
+            path
+            for path in python["evidence"]["artifact_paths"]
+            if re.fullmatch(
+                r"(?:python3\d+t?\.dll|libpython3\.\d+t?\.so(?:\.\d+)*)",
+                Path(path).name,
+            )
+        ]
+        python["version"] = f"3.{minor}.0"
+        python["evidence"]["artifact_paths"] = [
+            path
+            for path in python["evidence"]["artifact_paths"]
+            if path not in old_libraries
+        ] + [library]
+        old_basenames = {Path(path).name for path in old_libraries}
+        changed = {
+            name: value
+            for name, value in files.items()
+            if Path(name).name not in old_basenames
+        }
+        changed[f"{ARTIFACT_ROOT}/{library}"] = b"Python runtime fixture"
+        included_modules = modules | ({"typing_extensions"} if shipped else set())
+        # Only the CArchive/PYZ tables are needed; no fixture code is executed.
+        pyz = (
+            b"PYZ\0" + b"\0" * 4 + struct.pack("!i", 12)
+            + marshal.dumps([(name, (0, 0, 0)) for name in sorted(included_modules)])
+        )
+        toc = struct.pack("!IIIIBc", 22, 0, len(pyz), len(pyz), 0, b"z") + b"PYZ\0"
+        changed[executable] = pyz + toc + struct.pack(
+            "!8sIIII64s",
+            b"MEI\014\013\012\013\016",
+            len(pyz) + len(toc) + 88,
+            len(pyz),
+            len(toc),
+            300 + minor,
+            library.encode(),
+        )
+        if shipped:
+            changed_inventory["components"].append(
+                {
+                    "name": "typing_extensions",
+                    "version": "4.16.0",
+                    "scope": "runtime",
+                    "license_expression": "PSF-2.0",
+                    "project_url": "https://github.com/python/typing_extensions",
+                    "source_archive_urls": [],
+                    "notice_paths": [notice],
+                    "evidence": {"modules": ["typing_extensions"], "artifact_paths": []},
+                }
+            )
+            changed[f"{ARTIFACT_ROOT}/{notice}"] = b"Python Software Foundation License"
+        if minor < 13:
+            changed_inventory["resolved_runtime"].append(
+                {"name": "typing_extensions", "version": "4.16.0"}
+            )
+        changed[inventory_path] = json.dumps(changed_inventory).encode()
+        return changed
+
+    def check(
+        description: str, changed: dict[str, bytes], expected: str | None = None
+    ) -> None:
+        errors = validate_payload(changed)
+        report.check(
+            not errors
+            if expected is None
+            else any(expected in error for error in errors),
+            description,
+            "; ".join(errors),
+        )
+
+    for minor, shipped in ((12, True), (13, False), (14, False), (13, True)):
+        check(
+            f"Python 3.{minor} conditional typing_extensions closure (shipped={shipped})",
+            fixture(minor, shipped=shipped),
+        )
+    missing = fixture(12)
+    check(
+        "Python 3.12 rejects missing required typing_extensions", missing,
+        "missing expected runtime component typing_extensions",
+    )
+    missing_inventory = json.loads(missing[inventory_path])
+    missing_inventory["resolved_runtime"] = [
+        c for c in missing_inventory["resolved_runtime"]
+        if c["name"] != "typing_extensions"
+    ]
+    python = next(c for c in missing_inventory["components"] if c["name"] == "Python")
+    python["version"] = "3.13.0"
+    missing[inventory_path] = json.dumps(missing_inventory).encode()
+    check(
+        "Python inventory claim cannot hide the 3.12 typing_extensions requirement",
+        missing, "missing expected runtime component typing_extensions",
+    )
+    check(
+        "Python inventory version must agree with CArchive runtime", missing,
+        "Python.version does not match executable runtime",
+    )
+
+    shipped = fixture(13, shipped=True)
+    omitted = json.loads(shipped[inventory_path])
+    omitted["components"] = [
+        c for c in omitted["components"] if c["name"] != "typing_extensions"
+    ]
+    shipped[inventory_path] = json.dumps(omitted).encode()
+    check(
+        "Python 3.13 rejects an unclassified embedded typing_extensions", shipped,
+        "missing expected runtime component typing_extensions",
+    )
+    loose = fixture(13)
+    loose[f"{ARTIFACT_ROOT}/typing_extensions.py"] = b"# standalone module"
+    check(
+        "Python 3.13 rejects an unclassified loose typing_extensions", loose,
+        "missing expected runtime component typing_extensions",
+    )
+    missing_notice = fixture(13, shipped=True)
+    del missing_notice[f"{ARTIFACT_ROOT}/{notice}"]
+    check(
+        "Python 3.13 shipped typing_extensions still requires its notice",
+        missing_notice, "missing bundled notice",
+    )
+    wrong_notice = fixture(13, shipped=True)
+    wrong_inventory = json.loads(wrong_notice[inventory_path])
+    typing = next(
+        c for c in wrong_inventory["components"] if c["name"] == "typing_extensions"
+    )
+    typing["notice_paths"] = ["legal/licenses/python/LICENSE.txt"]
+    wrong_notice[inventory_path] = json.dumps(wrong_inventory).encode()
+    check(
+        "Python 3.13 rejects a misassigned typing_extensions notice", wrong_notice,
+        "missing or misassigned component-specific legal notice",
+    )
+
+    missing_library = fixture(13)
+    library_path = f"{ARTIFACT_ROOT}/" + (
+        "python313.dll" if windows else "libpython3.13.so.1.0"
+    )
+    del missing_library[library_path]
+    check(
+        "Conditional closure requires the CArchive Python library in the artifact",
+        missing_library, "executable Python library is absent",
+    )
+    mismatched_library = fixture(13)
+    binary = mismatched_library[executable]
+    mismatched_library[executable] = binary[:-64] + (
+        b"python312.dll" if windows else b"libpython3.12.so.1.0"
+    ).ljust(64, b"\0")
+    check(
+        "Conditional closure rejects a CArchive version/library mismatch",
+        mismatched_library, "executable Python version and library disagree",
+    )
+    unreadable = fixture(13)
+    unreadable[executable] = b"not a PyInstaller executable"
+    check(
+        "Unreadable executable cannot waive the typing_extensions requirement",
+        unreadable, "missing expected runtime component typing_extensions",
+    )
+    invalid_cookie = fixture(13)
+    binary = invalid_cookie[executable]
+    invalid_cookie[executable] = (
+        binary[:-80] + struct.pack("!I", len(binary) + 1) + binary[-76:]
+    )
+    check(
+        "Out-of-bounds CArchive cannot waive the typing_extensions requirement",
+        invalid_cookie, "missing expected runtime component typing_extensions",
+    )
+    bounds_fixture = fixture(13)
+    binary = bounds_fixture[executable]
+    pyz_length = struct.unpack("!I", binary[-76:-72])[0]
+    pyz = binary[:pyz_length]
+    toc = binary[pyz_length:-88]
+
+    def repack(pyz_data: bytes, toc_data: bytes) -> bytes:
+        magic, _size, _offset, _length, version, library = struct.unpack(
+            "!8sIIII64s", binary[-88:]
+        )
+        return bytes(pyz_data) + bytes(toc_data) + struct.pack(
+            "!8sIIII64s", magic, len(pyz_data) + len(toc_data) + 88,
+            len(pyz_data), len(toc_data), version, library,
+        )
+
+    for description, field_offset, value in (
+        ("overlong stored entry", 8, len(binary) + 1),
+        ("entry overlapping TOC", 8, pyz_length + 1),
+        ("entry offset beyond DATA", 4, pyz_length + 1),
+        ("maximum unsigned entry offset", 4, 0xFFFFFFFF),
+        ("inconsistent uncompressed entry length", 12, pyz_length + 1),
+    ):
+        changed = dict(bounds_fixture)
+        changed_toc = bytearray(toc)
+        struct.pack_into("!I", changed_toc, field_offset, value)
+        changed[executable] = repack(pyz, changed_toc)
+        check(
+            f"Malformed {description} cannot waive typing_extensions", changed,
+            "missing expected runtime component typing_extensions",
+        )
+    for trailing_length in (1, 17):
+        changed = dict(bounds_fixture)
+        changed[executable] = repack(pyz, toc + b"\0" * trailing_length)
+        check(
+            f"Incomplete trailing TOC ({trailing_length} bytes) cannot waive typing_extensions",
+            changed, "missing expected runtime component typing_extensions",
+        )
+    for offset, length in ((pyz_length - 1, 2), (pyz_length + 1, 0), (0xFFFFFFFF, 0)):
+        changed = dict(bounds_fixture)
+        extra_entry = struct.pack(
+            "!IIIIBc", 22, offset, length, length, 0, b"x"
+        ) + b"bad\0"
+        changed[executable] = repack(pyz, toc + extra_entry)
+        check(
+            f"Out-of-range non-PYZ entry ({offset}, {length}) cannot waive typing_extensions",
+            changed, "missing expected runtime component typing_extensions",
+        )
+    for offset in (12 - pyz_length, -1, 0, 11, pyz_length, pyz_length + 1):
+        changed = dict(bounds_fixture)
+        changed_pyz = bytearray(pyz)
+        struct.pack_into("!i", changed_pyz, 8, offset)
+        changed[executable] = repack(changed_pyz, toc)
+        check(
+            f"Invalid PYZ TOC offset {offset} cannot waive typing_extensions", changed,
+            "missing expected runtime component typing_extensions",
+        )
+    compressed_pyz = zlib.compress(pyz)
+    compressed_toc = bytearray(toc)
+    struct.pack_into("!I", compressed_toc, 8, len(compressed_pyz))
+    compressed_toc[16] = 1
+    compressed_fixture = dict(bounds_fixture)
+    compressed_fixture[executable] = repack(compressed_pyz, compressed_toc)
+    check("Valid compressed PYZ preserves conditional closure", compressed_fixture)
+    struct.pack_into("!I", compressed_toc, 12, pyz_length + 1)
+    compressed_fixture[executable] = repack(compressed_pyz, compressed_toc)
+    check(
+        "Inconsistent decompressed PYZ length cannot waive typing_extensions",
+        compressed_fixture, "missing expected runtime component typing_extensions",
+    )
+    omitted_dependency = fixture(13)
+    omitted_inventory = json.loads(omitted_dependency[inventory_path])
+    for field in ("components", "resolved_runtime"):
+        omitted_inventory[field] = [
+            c for c in omitted_inventory[field] if c["name"] != "aiohttp"
+        ]
+    omitted_dependency[inventory_path] = json.dumps(omitted_inventory).encode()
+    check(
+        "Python 3.13 still rejects other code-owned dependency omissions",
+        omitted_dependency, "resolved_runtime does not match the code-owned",
+    )
+    invented_dependency = fixture(13)
+    invented_inventory = json.loads(invented_dependency[inventory_path])
+    invented_inventory["resolved_runtime"].append(
+        {"name": "typing_extensions", "version": "4.16.0"}
+    )
+    invented_dependency[inventory_path] = json.dumps(invented_inventory).encode()
+    check(
+        "Inventory cannot invent a Python 3.13 typing_extensions requirement",
+        invented_dependency, "resolved_runtime does not match the code-owned",
+    )
 
 
 def _check_pinned_legal_hashes(
@@ -300,6 +588,7 @@ def check_archive(report: Report, archive_path: Path) -> None:
     if inventory_path is None:
         return
     inventory = json.loads(file_map[inventory_path].decode("utf-8"))
+    check_conditional_typing_extensions(report, file_map, inventory_path)
 
     malformed_root = dict(file_map)
     malformed_root[inventory_path] = b"[]"
