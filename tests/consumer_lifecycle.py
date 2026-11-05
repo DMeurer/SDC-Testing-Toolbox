@@ -11,9 +11,10 @@ import weakref
 from collections.abc import Iterable
 from dataclasses import replace
 from decimal import Decimal
+from http.client import BadStatusLine, NotConnected
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -1431,6 +1432,39 @@ def https_mismatch_reaches_gui(app: QApplication, provider: ProviderService) -> 
         window.close()
 
 
+def tls_alert_reaches_gui(app: QApplication, provider: ProviderService) -> None:
+    window, pane, service = new_window(provider)
+    service.connect = consumer_service_module.ConsumerService().connect
+    address = "http://127.0.0.1:1/device"
+    pane.devices = [DiscoveredDevice("misadvertised-peer", (address,), (), service=SimpleNamespace(x_addrs=[address]))]
+    pane.device_list.addItem("misadvertised-peer")
+    pane.device_list.setCurrentRow(0)
+    failure = NotConnected()
+    failure.__cause__ = BadStatusLine("\x15\x03\x03\x00\x02\x02\x16")
+    consumer = SimpleNamespace(start_all=Mock(side_effect=failure), stop_all=Mock())
+    try:
+        with (
+            patch.object(consumer_service_module._WsdlSdcConsumer, "from_wsd_service", return_value=consumer),
+            patch("sdctoolbox.gui.async_call.logger.exception") as traceback_log,
+        ):
+            pane._on_connect()  # noqa: SLF001
+            check(
+                wait_for(app, lambda: pane.status_label.text().startswith("Could not connect:")),
+                "misadvertised HTTP failure reaches the GUI",
+            )
+            message = pane.status_label.text()
+            check(
+                "TLS alert" in message and "HTTP request" in message
+                and "advertised" in message and "Enable TLS" in message,
+                "GUI explains a TLS alert from an endpoint advertised as HTTP",
+            )
+            check(pane.remote is None and not pane.disconnect_button.isEnabled(), "TLS alert leaves the GUI disconnected")
+            traceback_log.assert_not_called()
+            consumer.stop_all.assert_called_once()
+    finally:
+        window.close()
+
+
 def failed_set_restores_device_value(app: QApplication, provider: ProviderService) -> None:
     window, pane, _service = new_window(provider)
     remote = controllable_peer("stubborn", Decimal(7))
@@ -1500,6 +1534,7 @@ def main() -> int:
         connection_loss_clears_the_peer(app, provider)
         departure_of_connected_peer(app, provider)
         https_mismatch_reaches_gui(app, provider)
+        tls_alert_reaches_gui(app, provider)
         failed_set_restores_device_value(app, provider)
     finally:
         consumer_module.ConsumerService = old_service

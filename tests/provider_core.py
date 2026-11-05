@@ -25,6 +25,7 @@ import tempfile
 import threading
 import time
 from contextlib import contextmanager
+from copy import deepcopy
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -2849,10 +2850,10 @@ def check_contexts(report: Report, service: ProviderService) -> None:
 
     first = patient_entity("PC.first", "First")
     second = patient_entity("PC.second", "Second")
-    remote = RemoteDevice.__new__(RemoteDevice)
-    remote._lock = threading.RLock()  # noqa: SLF001 - fixture for the public read API
-    remote._mdib = SimpleNamespace(  # noqa: SLF001 - fixture for the public read API
-        entities=SimpleNamespace(by_node_type=lambda _: [second, first]),
+    remote = RemoteDevice(
+        SimpleNamespace(),
+        SimpleNamespace(entities=SimpleNamespace(by_node_type=lambda _: [second, first])),
+        "urn:provider-core:patient-contexts",
     )
     contexts = remote.patient_contexts()
     report.check(
@@ -2909,10 +2910,35 @@ def check_presets(report: Report) -> None:
 def check_foreign_consumer_operations(report: Report) -> None:
     print("\n13. Foreign consumer operation selection")
 
+    class Consumer(SimpleNamespace):
+        subscription_status = observableproperties.ObservableProperty()
+
     class SetClient:
-        def __init__(self) -> None:
+        def __init__(self, entities) -> None:
+            self.entities = entities
             self.calls = []
             self.activate_results = {}
+            self.states = {
+                handle: deepcopy(entity.state)
+                for handle, entity in entities.items()
+                if getattr(entity.state, "is_metric_state", False)
+            }
+
+        def get_available_subscriptions(self):
+            return [SimpleNamespace(action=SdcV1Definitions.Actions.OperationInvokedReport)]
+
+        def _set_value(self, handle, value):
+            target = self.entities[handle].descriptor.OperationTarget
+            state = self.states[target]
+            state.MetricValue.Value = value
+            state.StateVersion += 1
+            return self._future()
+
+        def get_md_state(self, handles):
+            return SimpleNamespace(
+                mdib_version_group=self.mdib.mdib_version_group,
+                result=SimpleNamespace(MdState=SimpleNamespace(State=[deepcopy(self.states[h]) for h in handles])),
+            )
 
         def _future(self, state=msg_types.InvocationState.FINISHED):
             info = SimpleNamespace(InvocationState=state, InvocationErrorMessage=None)
@@ -2921,11 +2947,11 @@ def check_foreign_consumer_operations(report: Report) -> None:
 
         def set_numeric_value(self, handle, value):
             self.calls.append(("number", handle, value))
-            return self._future()
+            return self._set_value(handle, value)
 
         def set_string(self, handle, value):
             self.calls.append(("string", handle, value))
-            return self._future()
+            return self._set_value(handle, value)
 
         def activate(self, handle, arguments):
             self.calls.append(("activate", handle, arguments))
@@ -2946,7 +2972,9 @@ def check_foreign_consumer_operations(report: Report) -> None:
             ],
             Resolution=resolution,
         )
-        state = SimpleNamespace(MetricValue=SimpleNamespace(Value=None))
+        data_model = SdcV1Definitions.data_model
+        state = data_model.mk_state_container(data_model.mk_descriptor_container(node_type, handle, None))
+        state.mk_metric_value()
         return SimpleNamespace(
             node_type=copied_qname(node_type),
             descriptor=descriptor,
@@ -2986,11 +3014,21 @@ def check_foreign_consumer_operations(report: Report) -> None:
         )
 
     def remote_for(entities):
-        client = SetClient()
-        remote = RemoteDevice.__new__(RemoteDevice)
-        remote._lock = threading.RLock()
-        remote._mdib = SimpleNamespace(entities=entities)
-        remote._consumer = SimpleNamespace(set_service_client=client)
+        client = SetClient(entities)
+        consumer = Consumer(
+            set_service_client=client,
+            sdc_definitions=SdcV1Definitions,
+            log_prefix="",
+            msg_reader=None,
+            client=lambda service: client if service == "Get" else None,
+        )
+        consumer.subscription_status = {SdcV1Definitions.Actions.OperationInvokedReport.value: True}
+        mdib = ConsumerMdib(consumer)
+        mdib.entities = entities
+        for handle in client.states:
+            mdib.states.add_object(entities[handle].state)
+        client.mdib = mdib
+        remote = RemoteDevice(consumer, mdib, "urn:provider-core:foreign-operations")
         return remote, client
 
     cases = (
@@ -3015,6 +3053,7 @@ def check_foreign_consumer_operations(report: Report) -> None:
     )
     selections = []
     invocations = []
+    readbacks = []
     for kind, metric_type, compatible_type, incompatible_type in cases:
         for enabled_first in (False, True):
             metric_handle = f"metric.{kind.value}.{'enabled' if enabled_first else 'disabled'}-first"
@@ -3049,9 +3088,13 @@ def check_foreign_consumer_operations(report: Report) -> None:
                 and metric.allowed_ranges[0].step_width == Decimal("0.5")
             )
             value = Decimal("15") if kind is MetricKind.NUMBER else "value"
-            remote.set_value(metric_handle, value)
+            result = remote.set_value(metric_handle, value)
             method = "number" if kind is MetricKind.NUMBER else "string"
-            invocations.append(client.calls == [(method, enabled_handle, value)])
+            invocations.append(
+                result is msg_types.InvocationState.FINISHED
+                and client.calls == [(method, enabled_handle, value)],
+            )
+            readbacks.append(remote.metrics()[metric_handle].value == value)
 
     report.check(
         all(selections),
@@ -3062,6 +3105,11 @@ def check_foreign_consumer_operations(report: Report) -> None:
         all(invocations),
         "the operations advertised as usable are the operations invoked",
         str(invocations),
+    )
+    report.check(
+        all(readbacks),
+        "successful foreign metric operations reconcile their values through GetMdState",
+        str(readbacks),
     )
 
     remote_resolutions = []
@@ -3121,6 +3169,7 @@ def check_foreign_consumer_operations(report: Report) -> None:
     report.check(
         rejected_choice is msg_types.InvocationState.FAILED
         and accepted_choice is msg_types.InvocationState.FINISHED
+        and remote.metrics()[choice_handle].value == "operation-a"
         and choice_client.calls == [("string", choice_operation, "operation-a")],
         "operation AllowedValues gate SetString transport independently of descriptor values",
     )

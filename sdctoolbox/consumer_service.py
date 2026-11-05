@@ -16,7 +16,7 @@ from copy import copy
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from functools import partial
-from http.client import HTTPException
+from http.client import BadStatusLine, HTTPException
 from typing import TYPE_CHECKING, Any
 
 from sdc11073 import observableproperties
@@ -1161,11 +1161,28 @@ class ConsumerService:
             )
             mdib = ConsumerMdib(consumer, extras_cls=_PeriodicConsumerMdibMethods)
             mdib.init_mdib()
-        except Exception:
+        except Exception as exc:
             try:
                 consumer.stop_all()
             except Exception:
                 logger.exception("error while rolling back consumer connection to %s", device.epr)
+            cause = exc.__cause__ or exc
+            if self.tls_config is None and isinstance(exc, HTTPException) and isinstance(cause, BadStatusLine):
+                # A complete TLS alert identifies the protocol; a connection reset does not.
+                line = cause.line
+                if (
+                    len(line) == 7
+                    and line[:2] == "\x15\x03"
+                    and line[2] in "\x01\x02\x03"
+                    and line[3:5] == "\x00\x02"
+                    and line[5] in "\x01\x02"
+                ):
+                    msg = (
+                        "This provider returned a TLS alert to an HTTP request. "
+                        "Check the provider's advertised HTTP/HTTPS address. "
+                        "Enable TLS and configure certificates in the startup settings."
+                    )
+                    raise ConsumerError(msg) from exc
             raise
         logger.info("connected to %s, %d entities", device.epr, len(mdib.entities))
         return RemoteDevice(consumer, mdib, device.epr, peer_certificate)

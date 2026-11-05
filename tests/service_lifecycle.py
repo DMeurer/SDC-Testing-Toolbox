@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from contextlib import ExitStack
+from http.client import BadStatusLine, NotConnected
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -340,6 +341,61 @@ def http_consumer_rejects_https_endpoint() -> None:
                 raise AssertionError("expected connection rejection or consumer construction")
 
 
+def tls_alert_connection_diagnostics() -> None:
+    alert = "\x15\x03\x03\x00\x02\x02\x16"
+    unrelated = RuntimeError("unrelated startup failure")
+    unrelated.__cause__ = BadStatusLine(alert)
+    cases = (
+        (BadStatusLine(alert), True, False, True),
+        (BadStatusLine("\x15\x03\x01\x00\x02\x02\x16"), True, False, True),
+        (BadStatusLine("\x15\x03\x02\x00\x02\x02\x16"), True, False, True),
+        (BadStatusLine("\x15\x03\x03\x00\x02\x01\x00"), True, False, True),
+        (BadStatusLine(alert), False, False, True),
+        (BadStatusLine("not an HTTP response"), True, False, False),
+        (BadStatusLine("\x15\x03\x03"), True, False, False),
+        (BadStatusLine(alert + "\x00"), True, False, False),
+        (BadStatusLine("\x15\x02\x03\x00\x02\x02\x16"), True, False, False),
+        (BadStatusLine("\x15\x03\x04\x00\x02\x02\x16"), True, False, False),
+        (BadStatusLine("\x15\x03\x03\x00\x01\x02\x16"), True, False, False),
+        (BadStatusLine("\x15\x03\x03\x00\x02\x00\x16"), True, False, False),
+        (BadStatusLine("\x14\x03\x03\x00\x02\x02\x16"), True, False, False),
+        (ConnectionResetError("connection reset by peer"), True, False, False),
+        (BadStatusLine(alert), True, True, False),
+        (None, True, False, False),
+        (unrelated, False, False, False),
+    )
+    for cause, wrapped, tls, expected in cases:
+        failure = NotConnected() if wrapped else cause
+        if wrapped:
+            failure.__cause__ = cause
+        service = ConsumerService(tls_config=SimpleNamespace(server_name=None) if tls else None)
+        address = "https://127.0.0.1:1/device" if tls else "http://127.0.0.1:1/device"
+        device = DiscoveredDevice("peer", (address,), (), service=SimpleNamespace(x_addrs=[address]))
+        consumer = Tracker()
+        with (
+            patch.object(consumer, "start_all", side_effect=failure),
+            patch.object(consumer_module, "_WsdlSdcConsumer", return_value=consumer) as factory,
+        ):
+            factory.from_wsd_service.return_value = consumer
+            try:
+                service.connect(device)
+            except consumer_module.ConsumerError as exc:
+                check(expected, "only a confirmed TLS alert in HTTP mode gets a transport diagnosis")
+                check(
+                    "TLS alert" in str(exc) and "HTTP request" in str(exc)
+                    and "advertised" in str(exc) and "Enable TLS" in str(exc),
+                    "misadvertisement diagnosis explains the TLS response and configuration to check",
+                )
+                check(exc.__cause__ is failure, "transport diagnosis retains the original error chain")
+            except Exception as exc:
+                check(not expected, "unconfirmed responses and TLS-mode failures are not misdiagnosed")
+                check(exc is failure, "unconfirmed and TLS-mode failures retain their original error")
+            else:
+                raise AssertionError("failed startup unexpectedly connected")
+            check(factory.call_count + factory.from_wsd_service.call_count == 1, "connection failure never retries another transport")
+        check(consumer.stop_count == 1, "transport failure rolls back the consumer once")
+
+
 def main() -> int:
     print("Service lifecycle fault injection")
     mdib_load_failure()
@@ -352,6 +408,7 @@ def main() -> int:
     consumer_connection_failure(stage="construct")
     consumer_connection_failure(stage="init")
     http_consumer_rejects_https_endpoint()
+    tls_alert_connection_diagnostics()
     return REPORT.summary()
 
 
