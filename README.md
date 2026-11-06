@@ -17,8 +17,8 @@ py -3.12 -m venv .venv
 ```
 
 Python 3.12 is the project's tested interpreter and is selected explicitly on Windows and in
-CI. The pinned runtime dependencies declare support for Python 3.10 through 3.14, so Ubuntu
-22.04's default Python 3.10 is also suitable. `requirements.txt` and
+CI. Use Python 3.12 for source installs and builds; Ubuntu 22.04's default Python 3.10 cannot
+run this project's code even though some dependencies support it. `requirements.txt` and
 `requirements-build.txt` pin direct dependencies only; pip still resolves transitive
 dependencies at install time, so they are not a complete reproducible lock.
 
@@ -43,16 +43,20 @@ source/relinking instructions, and collected license texts. The inventory is
 generated from installed distributions and PyInstaller analysis for each
 native build; it is not a static lock file.
 
+For Linux source builds, first install Python 3.12 with its `venv` support from a trusted
+Python distributor. It must be available as `python3.12`; the system's `python3` on Ubuntu
+22.04 is not a substitute. The commands below install the remaining native libraries.
+
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  python3 python3-venv binutils libbrotli1 libdbus-1-3 libegl1 \
+  binutils libbrotli1 libdbus-1-3 libegl1 \
   libfontconfig1 libfreetype6 libgl1 \
   libglib2.0-0 libgtk-3-0 libx11-xcb1 libxcb-cursor0 libxcb-icccm4 \
   libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
   libxcb-render0 libxcb-shape0 libxcb-shm0 libxcb-sync1 libxcb-xfixes0 \
   libxcb-xkb1 libxkbcommon-x11-0 libxkbcommon0
-python3 -m venv .venv
+python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt -r requirements-build.txt
 .venv/bin/python -m PyInstaller --clean --noconfirm SDC-Testing-Toolbox.spec
 tar -C dist -czf dist/SDC-Testing-Toolbox-linux-x86_64.tar.gz SDC-Testing-Toolbox
@@ -480,6 +484,8 @@ Linux and once on Windows through `tests/run_suites.py`. Qt jobs use
 | `tests/security.py` | TLS policy, PEM validation, certificate metadata and fingerprint pins |
 | `tests/tls_helper.py` | self-signed local CA generation, additive participant identities and overwrite protection |
 | `tests/application_defaults.py` | shared application defaults and distinct acceptance identity |
+| `tests/console_commands.py` | rejected console writes stay interactive; text and choice values keep leading zeros |
+| `tests/coding_export.py` | PDF text-row separation and missing-text diagnostics without optional PDF dependencies |
 | `tests/import_bootstrap.py` | direct test imports under unrelated package shadowing |
 | `tests/licensing.py` | project licensing, notices and build legal-payload sources |
 | `tests/provider_core.py` | provider descriptors, values, alarms, contexts and rollback |
@@ -492,6 +498,7 @@ Linux and once on Windows through `tests/run_suites.py`. Qt jobs use
 | `tests/gui_provider_structure.py` | provider action, alarm and operation structural refreshes |
 | `tests/service_lifecycle.py` | provider and consumer startup fault cleanup |
 | `tests/consumer_lifecycle.py` | window-close races, stale work and natural real-window shutdown |
+| `tests/gui_audit_regressions.py` | truthful missing/current values, active drafts, cleanup handoffs, plot bounds and scope updates |
 | `tests/acceptance_readiness.py` | bounded provider readiness waits and subprocess cleanup |
 
 The manifest selects platform-appropriate suites, including TLS configuration and helper checks

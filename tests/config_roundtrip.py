@@ -10,6 +10,8 @@ Usage:  .venv/Scripts/python.exe tests/config_roundtrip.py
 
 from __future__ import annotations
 
+import errno
+import io
 import json
 import logging
 import sys
@@ -707,8 +709,9 @@ def check_connected_consumer_rollback(report: Report) -> None:  # noqa: PLR0915 
             ),
         )
         alert = service.add_alert(
-            AlertSpec(label="Original alert", source_handle=metric, upper_limit=Decimal("10"), delegable=True),
+            AlertSpec(label="High", source_handle=metric, upper_limit=Decimal("10"), delegable=True),
         )
+        duplicate_alert = service.add_alert(AlertSpec(label="High", source_handle=metric))
         service.set_signal_delegated(service.signal_handles_for(alert)[0], delegated=True)
         service.add_action(ActionSpec(label="Original action", target_handle=metric, effects={metric: Decimal("5")}))
         service.set_location(LocationInfo(facility="OLD", point_of_care="OR", bed="7"))
@@ -769,7 +772,13 @@ def check_connected_consumer_rollback(report: Report) -> None:  # noqa: PLR0915 
                         "initial_value": "3",
                     },
                 ],
-                "alerts": [{"label": "Replacement alert", "watches": "m.replacement_metric"}],
+                "alerts": [
+                    {
+                        "handle": "al.high", "label": "High", "watches": "m.replacement_metric",
+                        "upper_limit": "10", "delegable": True,
+                    },
+                    {"handle": "al.high.2", "label": "High", "watches": "m.replacement_metric"},
+                ],
                 "actions": [
                     {
                         "label": "Replacement action",
@@ -816,7 +825,7 @@ def check_connected_consumer_rollback(report: Report) -> None:  # noqa: PLR0915 
         )
         report.check(
             set(remote.metrics()) == {metric}
-            and set(remote.alerts()) == {alert}
+            and set(remote.alerts()) == {alert, duplicate_alert}
             and set(remote.actions()) == {"act.original_action"}
             and remote.patient().given_name == "Before",
             "consumer restores metrics, alerts, actions, and associated context",
@@ -1594,6 +1603,360 @@ def check_metric_handle_resolution(report: Report, service: ProviderService) -> 
     report.check(existing not in service.list_metrics(), "successful replacement removes the prior metric")
 
 
+def check_atomic_save(report: Report, service: ProviderService, workdir: Path) -> None:
+    """A partial ENOSPC write or failed replacement must not damage the old profile."""
+    target = workdir / "atomic.sdcprofile.json"
+    old_bytes = b'{"version": 1, "name": "previous"}\n'
+    target.write_bytes(old_bytes)
+    before_files = set(workdir.iterdir())
+    real_open = io.open
+    written_paths = []
+
+    class FullDiskFile:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return self.stream.__exit__(*exc)
+
+        def write(self, text):
+            written_paths.append(Path(self.name))
+            self.stream.write(text[:12])
+            self.stream.flush()
+            raise OSError(errno.ENOSPC, "injected disk full after JSON prefix")
+
+    with patch.object(io, "open", lambda *args, **kwargs: FullDiskFile(real_open(*args, **kwargs))):
+        try:
+            config.save(service, target)
+        except OSError as exc:
+            report.check(exc.errno == errno.ENOSPC, "partial save exposes ENOSPC")
+        else:
+            report.check(False, "partial save exposes ENOSPC")
+    report.check(target.read_bytes() == old_bytes, "a partial save preserves the old target bytes")
+    report.check(set(workdir.iterdir()) == before_files, "a failed partial save removes its temporary output")
+    report.check(
+        bool(written_paths) and all(path != target and path.parent == target.parent for path in written_paths),
+        "profile output is staged in the target directory, never in the target itself",
+        str(written_paths),
+    )
+
+    target.write_bytes(old_bytes)
+    with patch.object(Path, "replace", side_effect=PermissionError("injected replace failure")):
+        try:
+            config.save(service, target)
+        except PermissionError:
+            rejected = True
+        else:
+            rejected = False
+    report.check(
+        rejected and target.read_bytes() == old_bytes and set(workdir.iterdir()) == before_files,
+        "a failed atomic replacement preserves the old profile and cleans its temporary file",
+    )
+    result = config.save(service, target)
+    report.check(
+        result == target and json.loads(target.read_text(encoding="utf-8")) == config.to_dict(service)
+        and set(workdir.iterdir()) == before_files,
+        "a successful atomic save returns the requested Path and valid JSON without temporary files",
+    )
+
+
+def check_xml_profile_preflight(report: Report, service: ProviderService) -> None:
+    """Parsing and mutable-spec preflight reject invalid effects before replacing live state."""
+    broken = "broken\x01"
+    service.add_metric(MetricSpec(label="XML existing", kind=MetricKind.TEXT, initial_value="old"))
+    original = config.parse(config.to_dict(service))
+    payload = {
+        "metrics": [
+            {"handle": "m.xml_import_number", "label": "XML import number", "kind": "number", "initial_value": "2"},
+            {"handle": "m.xml_import_text", "label": "XML import text", "kind": "text", "initial_value": "old"},
+        ],
+        "actions": [{
+            "label": "XML import", "target": "m.xml_import_number",
+            "effects": {"m.xml_import_number": "3", "m.xml_import_text": broken},
+        }],
+    }
+    before = complete_snapshot(service)
+    try:
+        config.parse(payload)
+    except config.ConfigError as exc:
+        rejected = "XML" in str(exc)
+    else:
+        rejected = False
+    report.check(
+        rejected and complete_snapshot(service) == before,
+        "parsing an XML-invalid action effect rejects it without provider mutation",
+    )
+
+    payload["actions"][0]["effects"]["m.xml_import_text"] = "valid"
+    profile = config.parse(payload)
+    profile.actions[0].effects["m.xml_import_text"] = broken
+    try:
+        config.apply_to(service, profile)
+    except config.ConfigError as exc:
+        rejected = "XML" in str(exc)
+    else:
+        rejected = False
+    report.check(
+        rejected and complete_snapshot(service) == before
+        and profile.actions[0].target_handle == "m.xml_import_number",
+        "mutable action preflight rejects XML before replacing descriptors or normalizing the action target",
+    )
+    if complete_snapshot(service) != before:
+        config.apply_to(service, original)
+
+    append = config.parse({"actions": [{
+        "label": "XML append", "target": "m.xml_existing", "effects": {"m.xml_existing": broken},
+    }]})
+    before = complete_snapshot(service)
+    try:
+        config.apply_to(service, append, replace=False)
+    except config.ConfigError as exc:
+        rejected = "XML" in str(exc)
+    else:
+        rejected = False
+    report.check(
+        rejected and complete_snapshot(service) == before,
+        "append preflight resolves existing text targets and rejects XML without storing an action",
+    )
+    service.remove_action("act.xml_append")
+    for kind, field, value in (
+        (MetricKind.TEXT, "initial_value", broken),
+        *[(MetricKind.NUMBER, field, Decimal("1E-19")) for field in ("initial_value", "resolution", "minimum", "maximum")],
+    ):
+        profile = config.parse(payload)
+        profile.actions.clear()
+        spec = next(spec for spec in profile.metrics if spec.kind is kind)
+        setattr(spec, field, value)
+        before = complete_snapshot(service)
+        try:
+            config.apply_to(service, profile)
+        except config.ConfigError:
+            rejected = True
+        else:
+            rejected = False
+        report.check(
+            rejected and complete_snapshot(service) == before,
+            f"a mutated {kind.value} {field} is rejected before profile replacement changes state or versions",
+        )
+        if complete_snapshot(service) != before:
+            config.apply_to(service, original)
+    service.remove_metric("m.xml_existing")
+
+
+def check_derived_step_preflight(report: Report, service: ProviderService) -> None:
+    """Representable domain endpoints do not make a lossy calculated step safe to import."""
+    existing = service.add_metric(
+        MetricSpec(label="Step preflight original", kind=MetricKind.NUMBER, controllable=True, initial_value=Decimal("7")),
+    )
+    try:
+        for replace in (True, False):
+            mode = "replace" if replace else "append"
+            profile = config.parse({"metrics": [
+                {"label": "Step preflight first", "kind": "number", "initial_value": "2"},
+                {
+                    "label": "Tiny distribution", "kind": "distribution",
+                    "domain_minimum": "0", "domain_maximum": "1E-17",
+                },
+            ]})
+            before = complete_snapshot(service)
+            try:
+                config.apply_to(service, profile, replace=replace)
+            except config.ConfigError as exc:
+                rejected = "distribution StepWidth" in str(exc) and "losing precision" in str(exc)
+            else:
+                rejected = False
+            report.check(rejected, f"{mode} rejects a lossy calculated distribution step")
+            after = complete_snapshot(service)
+            report.check(
+                after == before,
+                f"{mode} rejects the derived step before the preceding valid metric changes any state or versions",
+                f"versions {before['mdib_versions']} -> {after['mdib_versions']}; "
+                f"changed {[name for name in before if before[name] != after[name]]}",
+            )
+    finally:
+        service.remove_metric(existing)
+
+
+def check_derived_sample_range_preflight(report: Report, service: ProviderService) -> None:
+    """One-sided wire-safe endpoints can derive a lossy bound; reject before any live writes."""
+    existing = service.add_metric(
+        MetricSpec(label="Range preflight original", kind=MetricKind.NUMBER, controllable=True, initial_value=Decimal("7")),
+    )
+    try:
+        for replace in (True, False):
+            mode = "replace" if replace else "append"
+            for kind in (MetricKind.WAVEFORM, MetricKind.DISTRIBUTION):
+                for field, initial, derived_field in (("maximum", "100", "minimum"), ("minimum", "0", "maximum")):
+                    profile = config.parse({"metrics": [
+                        {"label": "Range preflight first", "kind": "number", "initial_value": "2"},
+                        {"label": "One-sided sample", "kind": kind.value, field: initial},
+                    ]})
+                    setattr(profile.metrics[1], field, Decimal("1E-17"))
+                    before = complete_snapshot(service)
+                    try:
+                        config.apply_to(service, profile, replace=replace)
+                    except config.ConfigError as exc:
+                        rejected = f"{derived_field} used for sample generation" in str(exc) and "losing precision" in str(exc)
+                    else:
+                        rejected = False
+                    case = f"{mode} {kind.value} with only {field}"
+                    report.check(rejected, f"{case} rejects a lossy derived {derived_field}")
+                    after = complete_snapshot(service)
+                    report.check(
+                        after == before,
+                        f"{case} rejects the derived sample range before the preceding valid metric changes state or versions",
+                        f"versions {before['mdib_versions']} -> {after['mdib_versions']}; "
+                        f"changed {[name for name in before if before[name] != after[name]]}",
+                    )
+    finally:
+        service.remove_metric(existing)
+
+
+def check_mutable_alert_limit_preflight(report: Report, service: ProviderService) -> None:
+    """Mutable alarm limits must fail preflight, not trigger live import compensation."""
+    existing = service.add_metric(
+        MetricSpec(label="Alert preflight original", kind=MetricKind.NUMBER, controllable=True, initial_value=Decimal("7")),
+    )
+    try:
+        for replace in (True, False):
+            mode = "replace" if replace else "append"
+            for field in ("lower_limit", "upper_limit"):
+                profile = config.parse({
+                    "metrics": [{"label": "Alert preflight first", "kind": "number", "initial_value": "2"}],
+                    "alerts": [{
+                        "label": "Mutable limit", "watches": "m.alert_preflight_first",
+                        "lower_limit": "0", "upper_limit": "10",
+                    }],
+                })
+                setattr(profile.alerts[0], field, Decimal("1E-19"))
+                before = complete_snapshot(service)
+                try:
+                    config.apply_to(service, profile, replace=replace)
+                except config.ConfigError as exc:
+                    rejected = field in str(exc) and "losing precision" in str(exc)
+                else:
+                    rejected = False
+                report.check(rejected, f"{mode} rejects a mutable lossy alarm {field}")
+                after = complete_snapshot(service)
+                report.check(
+                    after == before,
+                    f"{mode} rejects the mutable alarm {field} before any state or versions change",
+                    f"versions {before['mdib_versions']} -> {after['mdib_versions']}; "
+                    f"changed {[name for name in before if before[name] != after[name]]}",
+                )
+    finally:
+        service.remove_metric(existing)
+
+
+def check_duplicate_alarm_roundtrip(report: Report, service: ProviderService) -> None:
+    """Identical labels allocate the same unique generated signals in preflight and creation."""
+    metric = service.add_metric(MetricSpec(label="Duplicate alarm source", kind=MetricKind.NUMBER, initial_value=Decimal("7")))
+    alerts = [service.add_alert(AlertSpec(label="High", source_handle=metric)) for _ in range(2)]
+    expected_signals = {
+        "al.high": ["sig.high.vis", "sig.high.aud"],
+        "al.high.2": ["sig.high.vis.2", "sig.high.aud.2"],
+    }
+    payload = config.to_dict(service)
+    try:
+        config.apply_to(service, config.parse(payload))
+    except config.ConfigError as exc:
+        report.check(False, "two High alarms can be exported and reimported", str(exc))
+    else:
+        report.check(
+            {handle: service.signal_handles_for(handle) for handle in alerts} == expected_signals,
+            "two High alarms round-trip with the original unique suffix allocation",
+        )
+        implicit = {
+            **payload,
+            "alerts": [{key: value for key, value in alert.items() if key != "handle"} for alert in payload["alerts"]],
+        }
+        config.apply_to(service, config.parse(implicit))
+        report.check(
+            {handle: service.signal_handles_for(handle) for handle in alerts} == expected_signals,
+            "implicit duplicate alarm handles use the same suffix allocation as add_alert",
+        )
+        before_graph = semantic_mdib(service.mdib)
+        before_version = service.mdib.mdib_version
+        original_set_patient = service.set_patient
+        created_signals = {}
+
+        def fail_after_alarms(info: PatientInfo) -> None:
+            created_signals.update({handle: service.signal_handles_for(handle) for handle in alerts})
+            original_set_patient(info)
+            raise RuntimeError("injected failure after duplicate alarms")
+
+        with patch.object(service, "set_patient", fail_after_alarms):
+            try:
+                config.apply_to(service, config.parse(payload))
+            except config.ConfigError as exc:
+                rejected = "injected failure after duplicate alarms" in str(exc)
+            else:
+                rejected = False
+        report.check(
+            rejected and created_signals == expected_signals
+            and semantic_mdib(service.mdib) == before_graph
+            and service.mdib.mdib_version > before_version,
+            "failure after creating duplicate alarms compensates the complete graph without rewinding versions",
+        )
+    for handle in alerts:
+        service.remove_alert(handle)
+    repeated = AlertSpec(
+        label="Repeated manifestation", source_handle=metric,
+        signals=(AlertSignalSpec(AlertManifestation.VIS), AlertSignalSpec(AlertManifestation.VIS, latching=True)),
+    )
+    try:
+        handle = service.add_alert(repeated)
+    except ValueError as exc:
+        report.check(False, "pending signals with the same manifestation get unique handles", str(exc))
+    else:
+        report.check(
+            service.signal_handles_for(handle) == ["sig.repeated_manifestation.vis", "sig.repeated_manifestation.vis.2"],
+            "pending signals with the same manifestation get unique handles",
+        )
+        service.remove_alert(handle)
+    service.remove_metric(metric)
+
+
+def check_detached_patient_export(report: Report, service: ProviderService) -> None:
+    """An exported detach is an instruction; an omitted patient remains no instruction."""
+    service.clear_patient()
+    payload = config.to_dict(service)
+    report.check(
+        payload.get("contexts", {}).get("patient") == {}, "a detached patient exports an explicit patient: {}",
+    )
+    fresh = ProviderService(instance_name="config-detached-patient")
+    fresh.start()
+    try:
+        for version in (1, 2, 3):
+            if fresh.get_patient().is_empty():
+                fresh.set_patient(PatientInfo(given_name="Default associated"))
+            payload["version"] = version
+            config.apply_to(fresh, config.parse(payload))
+            entity = fresh.mdib.entities.by_handle(constants.PATIENT_CONTEXT_HANDLE)
+            report.check(
+                fresh.get_patient().is_empty()
+                and not any(
+                    state.ContextAssociation == pm_types.ContextAssociation.ASSOCIATED for state in entity.states.values()
+                ),
+                f"version {version} detached-patient export clears a fresh associated provider",
+            )
+            fresh.set_patient(PatientInfo(given_name="Keep this patient"))
+            before = complete_snapshot(fresh)
+            config.apply_to(fresh, config.parse({"version": version, "contexts": {}}))
+            report.check(
+                complete_snapshot(fresh) == before,
+                f"version {version} omitted patient leaves the associated context unchanged",
+            )
+    finally:
+        fresh.stop()
+
+
 def check_config_versions(report: Report, workdir: Path) -> None:
     """All supported versions upgrade on export; rejected versions never reach apply."""
     cases = [
@@ -2132,6 +2495,20 @@ def run_checks(report: Report, workdir: Path) -> None:
         report.check("cannot read" in str(exc), "missing file reported clearly", str(exc)[:60])
     else:
         report.check(False, "missing file reported clearly", "it was accepted")  # noqa: FBT003
+
+    print("\n12. Audit regressions: atomic saves, XML preflight, duplicate alarms, and patient detach")
+    regressions = ProviderService(instance_name="config-write-regressions")
+    regressions.start()
+    try:
+        check_atomic_save(report, regressions, workdir)
+        check_xml_profile_preflight(report, regressions)
+        check_derived_step_preflight(report, regressions)
+        check_derived_sample_range_preflight(report, regressions)
+        check_mutable_alert_limit_preflight(report, regressions)
+        check_duplicate_alarm_roundtrip(report, regressions)
+        check_detached_patient_export(report, regressions)
+    finally:
+        regressions.stop()
 
 
 def check_owned_temp_cleanup(report: Report) -> None:

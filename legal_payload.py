@@ -276,6 +276,12 @@ _SOURCE_OVERRIDES = {
 _LEGAL_BASENAME = re.compile(
     r"^(license|licence|copying|notice|authors|copyright)", re.IGNORECASE
 )
+_DEBIAN_COMMON_LICENSE = re.compile(r"/usr/share/common-licenses/([A-Za-z0-9.+-]+)")
+_QT_IMAGEFORMATS_PLUGIN = re.compile(
+    r"/plugins/imageformats/(?:lib)?q(?:dds|icns|jp2|mng|tga|tiff|wbmp|webp)"
+    r"\.(?:dll|so(?:\.\d+)*)$",
+    re.IGNORECASE,
+)
 
 # GitHub's Linux Python toolcache omits the top-level LICENSE.txt carried by
 # python.org and Windows installers. This is the current PSF-2.0 notice from
@@ -984,13 +990,7 @@ def _debian_native_components(
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(copyright_file, target)
         notice_paths = [notice]
-        for common in sorted(
-            set(
-                re.findall(
-                    r"/usr/share/common-licenses/([A-Za-z0-9.+-]+)", copyright_text
-                )
-            )
-        ):
+        for common in sorted(set(_DEBIAN_COMMON_LICENSE.findall(copyright_text))):
             source = Path("/usr/share/common-licenses") / common
             if source.is_file():
                 destination = f"{LEGAL_ROOT}/licenses/debian/common/{common}"
@@ -1277,6 +1277,8 @@ def generate_payload(
             qt_modules.append("qtsvg")
         if any("translations/" in path for path in qt_paths):
             qt_modules.append("qttranslations")
+        if any(_QT_IMAGEFORMATS_PLUGIN.search(f"/{path}") for path in qt_paths):
+            qt_modules.append("qtimageformats")
         components.append(
             {
                 "name": "Qt",
@@ -2060,7 +2062,19 @@ def validate_payload(
             copyright_path = (
                 f"{LEGAL_ROOT}/licenses/debian/{package.replace(':', '_')}/copyright"
             )
-            rules = ((copyright_path, ("Format:", "License:")),)
+            copyright_bytes = archive_file(copyright_path)
+            copyright_text = (
+                copyright_bytes.decode("utf-8", errors="replace")
+                if copyright_bytes else ""
+            )
+            common_licenses = sorted(set(_DEBIAN_COMMON_LICENSE.findall(copyright_text)))
+            rules = (
+                (copyright_path, ("Format:", "License:")),
+                *(
+                    (f"{LEGAL_ROOT}/licenses/debian/common/{common}", ())
+                    for common in common_licenses
+                ),
+            )
         if rules is None:
             errors.append(f"{label}: no code-owned component-specific notice mapping")
         else:
@@ -2162,6 +2176,18 @@ def validate_payload(
         for path in qt_paths
     ):
         errors.append("Qt inventory has no separately packaged shared library")
+    if qt and any(_QT_IMAGEFORMATS_PLUGIN.search(name) for name in archive_names):
+        qt_version = qt.get("version")
+        imageformats_archive = (
+            "https://download.qt.io/official_releases/qt/"
+            f"{'.'.join(str(qt_version).split('.')[:2])}/{qt_version}/submodules/"
+            f"qtimageformats-everywhere-src-{qt_version}.tar.xz"
+        )
+        urls = qt.get("source_archive_urls")
+        if not isinstance(urls, list) or imageformats_archive not in urls:
+            errors.append(
+                "Qt: missing exact-version qtimageformats corresponding-source archive URL"
+            )
     if any("qt6pdf" in name or "virtualkeyboard" in name for name in lowered):
         errors.append(
             "artifact contains excluded unused Qt PDF or Virtual Keyboard payload"

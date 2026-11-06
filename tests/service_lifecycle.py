@@ -13,11 +13,13 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from script_support import Report  # noqa: E402
+from sdc11073.definitions_sdc import SdcV1Definitions  # noqa: E402
+from sdc11073.xml_types.actions import Actions  # noqa: E402
 
 from sdctoolbox import consumer_service as consumer_module  # noqa: E402
 from sdctoolbox import provider_service as provider_module  # noqa: E402
 from sdctoolbox import sample_generation as sample_module  # noqa: E402
-from sdctoolbox.consumer_service import ConsumerService, DiscoveredDevice  # noqa: E402
+from sdctoolbox.consumer_service import ConsumerService, DiscoveredDevice, RemoteDevice  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 REPORT = Report()
@@ -396,6 +398,41 @@ def tls_alert_connection_diagnostics() -> None:
         check(consumer.stop_count == 1, "transport failure rolls back the consumer once")
 
 
+def metric_subscription_health() -> None:
+    """Subscription health follows measurement feeds, not operation-result traffic."""
+    episodic = Actions.EpisodicMetricReport.value
+    periodic = Actions.PeriodicMetricReport.value
+    operation = Actions.OperationInvokedReport.value
+    optional = Actions.EpisodicAlertReport.value
+    cases = (
+        ({episodic: True, operation: True}, {episodic: False, operation: True}, True, "lost metric feed with live operation results"),
+        ({episodic: True, periodic: True, operation: True}, {episodic: False, periodic: True, operation: True}, False, "surviving periodic metric alternative"),
+        ({episodic: True, optional: True}, {episodic: True, optional: False}, False, "missing optional action with a live metric feed"),
+        ({episodic: False, operation: True}, None, True, "initially rejected metric feed"),
+        ({}, None, True, "peer with no report subscriptions"),
+    )
+    for initial, updated, lost, description in cases:
+        consumer = consumer_module._WsdlSdcConsumer("http://127.0.0.1:1/device", SdcV1Definitions, None)
+        consumer.subscription_status = initial
+        consumer._service_clients["StateEventService"] = SimpleNamespace(  # peer-advertised capabilities
+            get_available_subscriptions=lambda: [SimpleNamespace(action=episodic), SimpleNamespace(action=periodic)],
+        )
+        remote = RemoteDevice(consumer, object(), description)
+        reasons = []
+        remote.on_connection_lost(reasons.append)
+        if updated is not None:
+            consumer.subscription_status = updated
+        REPORT.check((remote.connection_lost_reason is not None) is lost, description)
+        REPORT.check(bool(reasons) is lost, f"health callback: {description}")
+        if lost:
+            consumer.subscription_status = {**consumer.subscription_status, optional: False}
+            REPORT.check(len(reasons) == 1, f"connection/data-loss callback is one-shot: {description}")
+    consumer = consumer_module._WsdlSdcConsumer("http://127.0.0.1:1/device", SdcV1Definitions, None)
+    consumer.subscription_status = {operation: True}
+    remote = RemoteDevice(consumer, object(), "operations-only peer")
+    REPORT.check(remote.connection_lost_reason is None, "no invented metric-feed requirement for an operations-only peer")
+
+
 def main() -> int:
     print("Service lifecycle fault injection")
     mdib_load_failure()
@@ -409,6 +446,7 @@ def main() -> int:
     consumer_connection_failure(stage="init")
     http_consumer_rejects_https_endpoint()
     tls_alert_connection_diagnostics()
+    metric_subscription_health()
     return REPORT.summary()
 
 

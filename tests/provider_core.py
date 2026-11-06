@@ -44,6 +44,7 @@ from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 from sdc11073.mdib import ConsumerMdib  # noqa: E402
 from sdc11073.xml_types import msg_types, pm_types  # noqa: E402
 from sdc11073.xml_types import pm_qnames as pm  # noqa: E402
+from sdc11073.xml_types.dataconverters import DecimalConverter  # noqa: E402
 
 from sdctoolbox import config, constants  # noqa: E402
 from sdctoolbox.consumer_service import (  # noqa: E402
@@ -66,6 +67,7 @@ from sdctoolbox.model import (  # noqa: E402
     PatientInfo,
     PatientMeasurement,
     WaveformShape,
+    fixed_point_decimal,
 )
 from sdctoolbox.provider_service import (  # noqa: E402
     ProviderService,
@@ -1267,6 +1269,241 @@ def check_metric_value_validation(report: Report, service: ProviderService) -> N
         service.remove_metric(handle)
 
 
+def check_xml_write_validation(report: Report, service: ProviderService) -> None:
+    """Invalid XML must fail before a scalar or any action effect commits."""
+    broken = "broken\x01"
+    number = service.add_metric(MetricSpec(label="XML number", kind=MetricKind.NUMBER, initial_value=Decimal("2")))
+    text = service.add_metric(MetricSpec(label="XML text", kind=MetricKind.TEXT, initial_value="old"))
+    choice_spec = MetricSpec(label="XML choice", kind=MetricKind.CHOICE, allowed_values=("old",))
+    choice = service.add_metric(choice_spec)
+    service.set_value(choice, "old")
+    # Specs stay mutable; membership alone must not make an XML control character safe.
+    choice_spec.allowed_values = ("old", broken)
+    action = service.add_action(
+        ActionSpec(label="XML effects", target_handle=constants.MDS_HANDLE, effects={number: "3", text: broken}),
+    )
+    operation = service._sco._registered_operations[action]  # noqa: SLF001
+    params = SimpleNamespace(operation_instance=operation, operation_request=SimpleNamespace(argument=None))
+    writes = (
+        ("local text", lambda: service.set_value(text, broken)),
+        ("local choice", lambda: service.set_value(choice, broken)),
+        ("local action", lambda: service.run_action(action)),
+        ("remote action", lambda: service._activate_handler(params)),  # noqa: SLF001
+    )
+    try:
+        for description, write in writes:
+            before_version = service.mdib.mdib_version
+            before_values = tuple(service.get_value(handle) for handle in (number, text, choice))
+            try:
+                result = write()
+            except ValueError:
+                rejected = True
+            else:
+                rejected = getattr(result, "invocation_state", None) is msg_types.InvocationState.FAILED
+            report.check(rejected, f"{description} rejects XML-invalid text")
+            report.check(
+                service.mdib.mdib_version == before_version
+                and tuple(service.get_value(handle) for handle in (number, text, choice)) == before_values,
+                f"rejected {description} leaves all values and the MDIB version unchanged",
+            )
+            try:
+                service.mdib.reconstruct_mdib_with_context_states()
+            except ValueError:
+                readable = False
+            else:
+                readable = True
+            report.check(readable, f"the MDIB remains readable after {description}")
+            # Repair a failing baseline so later cases independently demonstrate the defect.
+            for handle, value in zip((number, text, choice), before_values, strict=True):
+                if service.get_value(handle) != value:
+                    service.set_value(handle, value)
+    finally:
+        service.remove_action(action)
+        for handle in (number, text, choice):
+            service.remove_metric(handle)
+
+
+def check_operation_ranges(report: Report, service: ProviderService) -> None:
+    """A real enabled SetValue must obey the current range union, including steps."""
+    metric = service.add_metric(
+        MetricSpec(
+            label="Live operation ranges",
+            kind=MetricKind.NUMBER,
+            minimum=Decimal("-1E+100"),
+            maximum=Decimal("1E+100"),
+            resolution=Decimal("0.1"),
+            controllable=True,
+            initial_value=Decimal("2"),
+        ),
+    )
+    operation_handle = service.operation_handle_for(metric)
+    operation = service._sco._registered_operations[operation_handle]  # noqa: SLF001
+    cases = (
+        (
+            (pm_types.Range(Decimal("0"), Decimal("10"), Decimal("1")),),
+            (("1.5", False), ("0", True), ("10", True), ("11", False)),
+        ),
+        (
+            (
+                pm_types.Range(Decimal("0"), Decimal("2"), Decimal("1")),
+                pm_types.Range(Decimal("10"), Decimal("20"), Decimal("2")),
+            ),
+            (("5", False), ("12", True), ("13", False), ("20", True)),
+        ),
+        (
+            (pm_types.Range(upper=Decimal("0"), step_width=Decimal("0.5")),),
+            (("-0.25", False), ("-0.5", True), ("0.5", False)),
+        ),
+        ((pm_types.Range(lower=Decimal("10"), step_width=Decimal("2")),), (("11", False), ("12", True))),
+        (
+            (pm_types.Range(Decimal("-1E+100"), Decimal("1E+100"), Decimal("1")),),
+            (("1E+99", True), ("0.00000000000000001", False)),
+        ),
+        ((), (("1.5", True),)),
+        ((pm_types.Range(step_width=Decimal("0.5")),), (("1.25", True),)),
+    )
+    try:
+        for ranges, values in cases:
+            entity = service.mdib.entities.by_handle(operation_handle)
+            entity.state.AllowedRange = list(ranges)
+            with service.mdib.operational_state_transaction() as manager:
+                manager.write_entity(entity)
+            for raw, allowed in values:
+                before = (
+                    service.get_value(metric),
+                    service.mdib.entities.by_handle(metric).state.StateVersion,
+                    service.mdib.mdib_version,
+                    service.mdib.mdstate_version,
+                )
+                params = SimpleNamespace(
+                    operation_instance=operation, operation_request=SimpleNamespace(argument=Decimal(raw)),
+                )
+                result = service._handler(params)  # noqa: SLF001 - exercise the registered provider boundary
+                expected = msg_types.InvocationState.FINISHED if allowed else msg_types.InvocationState.FAILED
+                report.check(
+                    result.invocation_state is expected,
+                    f"live AllowedRange {'accepts' if allowed else 'rejects'} {raw}", str(ranges),
+                )
+                after = (
+                    service.get_value(metric),
+                    service.mdib.entities.by_handle(metric).state.StateVersion,
+                    service.mdib.mdib_version,
+                    service.mdib.mdstate_version,
+                )
+                report.check(
+                    service.get_value(metric) == Decimal(raw) if allowed else after == before,
+                    f"SetValue {raw} {'stores the exact value' if allowed else 'changes neither value nor state/MDIB versions'}",
+                )
+    finally:
+        service.remove_metric(metric)
+
+
+def check_lossless_decimal_writes(report: Report, service: ProviderService) -> None:
+    """Every decimal write path must reject, rather than silently truncate, fractions."""
+    for raw in ("0E-999999", "1E-17", "-1E-16", "12345678901234567.1", "1.0000000000000000000", "1E+100"):
+        value = Decimal(raw)
+        report.check(
+            Decimal(DecimalConverter.to_xml(fixed_point_decimal(value, "test value"))) == value,
+            f"representable decimal {raw} stays lossless",
+        )
+    for raw in ("1E-19", "1E-18", "-1E-17", "0.123456789012345678", "-12345678901234567.1"):
+        try:
+            fixed_point_decimal(Decimal(raw), "test value")
+        except ValueError:
+            rejected = True
+        else:
+            rejected = False
+        report.check(rejected, f"fixed_point_decimal rejects lossy {raw}")
+
+    for field in ("resolution", "minimum", "maximum", "initial_value"):
+        before = service.mdib.mdib_version
+        try:
+            MetricSpec(label="Lossy scalar", kind=MetricKind.NUMBER, **{field: Decimal("1E-19")})
+        except ValueError:
+            rejected = True
+        else:
+            rejected = False
+        report.check(rejected and service.mdib.mdib_version == before, f"lossy scalar {field} is rejected before mutation")
+
+        spec = MetricSpec(label=f"Mutated lossless {field}", kind=MetricKind.NUMBER, section=f"Lossless {field}")
+        setattr(spec, field, Decimal("1E-19"))
+        before_handles = {handle for handle, _ in service.mdib.entities.items()}
+        before_sections = service.sections()
+        before = service.mdib.mdib_version
+        try:
+            service.add_metric(spec)
+        except ValueError:
+            rejected = True
+        else:
+            rejected = False
+        report.check(
+            rejected and service.mdib.mdib_version == before
+            and {handle for handle, _ in service.mdib.entities.items()} == before_handles
+            and service.sections() == before_sections,
+            f"a mutated lossy scalar {field} is rejected before creating a section or metric",
+        )
+        for handle in set(service.list_metrics()) - before_handles:
+            service.remove_metric(handle)
+        service._remove_empty_sections()  # noqa: SLF001 - also clean an interrupted baseline creation
+
+    number = service.add_metric(MetricSpec(label="Lossless scalar write", kind=MetricKind.NUMBER, initial_value=Decimal("7")))
+    try:
+        before = service.mdib.mdib_version
+        try:
+            service.set_value(number, Decimal("1E-19"))
+        except ValueError:
+            rejected = True
+        else:
+            rejected = False
+        report.check(
+            rejected and service.get_value(number) == Decimal("7") and service.mdib.mdib_version == before,
+            "a lossy scalar write preserves the prior value and version",
+        )
+        for kind in (MetricKind.WAVEFORM, MetricKind.DISTRIBUTION):
+            handle = service.add_metric(MetricSpec(label=f"Lossless {kind.value}", kind=kind))
+            service.stop_generator()
+            try:
+                samples = [Decimal("1E-17")] * (DISTRIBUTION_BINS if kind is MetricKind.DISTRIBUTION else 2)
+                service.set_samples(handle, samples)
+                before = service.mdib.mdib_version
+                bad_samples = [*samples[:-1], Decimal("1E-19")]
+                try:
+                    service.set_samples(handle, bad_samples)
+                except ValueError:
+                    rejected = True
+                else:
+                    rejected = False
+                report.check(
+                    rejected and service.get_samples(handle) == samples and service.mdib.mdib_version == before,
+                    f"a lossy manual {kind.value} block preserves samples and version",
+                )
+                spec = service.list_metrics()[handle]
+                spec.minimum = spec.maximum = Decimal("1E-19")
+                try:
+                    if kind is MetricKind.WAVEFORM:
+                        service._next_block(handle, spec)  # noqa: SLF001
+                    else:
+                        distribution_samples(spec, 0.0)
+                except ValueError:
+                    rejected = True
+                else:
+                    rejected = False
+                report.check(rejected, f"direct {kind.value} generation rejects a mutated lossy range")
+                service._sample_generator.pinned.discard(handle)  # noqa: SLF001 - exercise generated publication
+                before = service.mdib.mdib_version
+                service._publish_one_block()  # noqa: SLF001
+                report.check(
+                    service.get_samples(handle) == samples
+                    and service.mdib.mdib_version == before
+                    and handle in service._sample_generator.quarantined,  # noqa: SLF001
+                    f"a lossy generated {kind.value} range is quarantined without publication",
+                )
+            finally:
+                service.remove_metric(handle)
+    finally:
+        service.remove_metric(number)
+
+
 def check_action_execution(report: Report, service: ProviderService) -> None:
     print("\n6a. Shared local and remote action execution")
 
@@ -1691,11 +1928,11 @@ def check_decimal_boundaries(report: Report, service: ProviderService) -> None:
                 kind=MetricKind.DISTRIBUTION,
                 section="Uncreated decimal section",
                 domain_minimum=Decimal("0"),
-                domain_maximum=Decimal("1e-20"),
+                domain_maximum=Decimal("1e-17"),
             ),
         )
     except ValueError as exc:
-        wire_zero_rejected = "zero StepWidth on the wire" in str(exc)
+        wire_zero_rejected = "StepWidth" in str(exc)
     else:
         wire_zero_rejected = False
     report.check(
@@ -3446,6 +3683,9 @@ def main() -> int:
         check_section_removal(report, service)
         check_section_handle_types(report, service)
         check_metric_value_validation(report, service)
+        check_xml_write_validation(report, service)
+        check_operation_ranges(report, service)
+        check_lossless_decimal_writes(report, service)
         check_action_execution(report, service)
         check_decimal_boundaries(report, service)
         check_concurrent_alert_evaluation(report, service)

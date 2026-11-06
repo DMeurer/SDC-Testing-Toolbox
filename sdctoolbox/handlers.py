@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING
 from sdc11073.provider.operations import ExecuteParameters, ExecuteResult
 from sdc11073.xml_types import msg_types, pm_types
 
+from .model import RemoteRange, numeric_value_in_ranges
+
 if TYPE_CHECKING:
     from collections.abc import Callable
     from contextlib import AbstractContextManager
@@ -103,6 +105,14 @@ def make_set_handler(
             value = coerce_value(target_handle, requested)
         except (KeyError, TypeError, ValueError) as exc:
             return _failed(mdib, str(exc), target_handle)
+
+        if isinstance(value, Decimal):
+            ranges = tuple(
+                RemoteRange(lower=item.Lower, upper=item.Upper, step_width=item.StepWidth)
+                for item in operation_entity.state.AllowedRange
+            )
+            if not numeric_value_in_ranges(value, ranges):
+                return _failed(mdib, f"{value} is outside the AllowedRange of {operation_handle!r}", target_handle)
 
         apply_metric_value(target_entity.state, value)
 

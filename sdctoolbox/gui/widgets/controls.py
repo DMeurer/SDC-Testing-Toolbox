@@ -9,8 +9,9 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtWidgets import (
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -40,6 +41,13 @@ def _trim(value: Decimal) -> str:
     if "." in text:
         text = text.rstrip("0").rstrip(".")
     return text or "0"
+
+
+def show_choice_value(box: QComboBox, value: object) -> None:
+    """Display even a missing or non-writable current value without offering it as a write."""
+    with QSignalBlocker(box):
+        box.setPlaceholderText(value_text(value))
+        box.setCurrentIndex(-1 if value is None else box.findText(str(value)))
 
 
 class SampleArrayWidget(MetricWidget):
@@ -123,6 +131,7 @@ class ChoiceWidget(MetricWidget):
     def build(self) -> None:
         self.box = NoWheelComboBox()
         self.box.addItems(list(self.spec.allowed_values))
+        show_choice_value(self.box, None)
         self.box.activated.connect(self._on_activated)
 
         layout = QVBoxLayout(self)
@@ -135,13 +144,9 @@ class ChoiceWidget(MetricWidget):
         self.request(self.box.itemText(index))
 
     def show_value(self, value: Any) -> None:
-        if value is None or self.busy_editing():
+        if self.busy_editing():
             return
-        index = self.box.findText(str(value))
-        if index >= 0:
-            self.box.blockSignals(True)
-            self.box.setCurrentIndex(index)
-            self.box.blockSignals(False)
+        show_choice_value(self.box, value)
 
     def set_editable(self, editable: bool) -> None:  # noqa: FBT001
         self.box.setEnabled(editable)
@@ -252,7 +257,12 @@ class SliderWidget(MetricWidget):
         self.request(self._position_to_value(self.slider.value()))
 
     def show_value(self, value: Any) -> None:
-        if not isinstance(value, Decimal) or self.busy_editing():
+        if self.busy_editing():
+            return
+        if value is None:
+            self.readout.setText(NO_VALUE)
+            return
+        if not isinstance(value, Decimal):
             return
         self.slider.blockSignals(True)
         self.slider.setValue(self._value_to_position(value))
@@ -366,10 +376,13 @@ class StepperWidget(MetricWidget):
         self.request(value)
 
     def show_value(self, value: Any) -> None:
-        if value is None or self.busy_editing():
+        if self.busy_editing():
             return
         self._clear_error()
-        self.edit.setText(_trim(value) if isinstance(value, Decimal) else str(value))
+        if value is None:
+            self.edit.clear()
+        else:
+            self.edit.setText(_trim(value) if isinstance(value, Decimal) else str(value))
 
     def set_editable(self, editable: bool) -> None:  # noqa: FBT001
         self.edit.setReadOnly(not editable)

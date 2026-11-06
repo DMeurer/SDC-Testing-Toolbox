@@ -38,25 +38,9 @@ except ImportError:
 EXTRACTOR_VERSION = "1.1"
 REFERENCE_ID = re.compile(r"\bMDC(?:_[A-Z0-9]+)+\b")
 PART_CODE = re.compile(r"\b(?P<part>\d{1,3})\s*::\s*(?P<code>\d{1,6})\b")
-CF_CODE = re.compile(r"\b\d{5,10}\b")
 WHITESPACE = re.compile(r"\s+")
 CODE_TABLE_MARKERS = ("mdc_", "part::code", "code10", "cf_code10", "reference id")
 TRAILING_PART_AND_CODE = re.compile(r"\b(?P<part>\d{1,3})\s+(?P<code>\d{1,6})\s*$")
-
-HEADER_ALIASES = {
-    "reference_id": ("refid", "reference id", "reference identifier", "ref id"),
-    "systematic_name": ("sysname", "systematic name"),
-    "common_term": ("common term", "term", "display name"),
-    "mnemonic": ("mnemonic", "acronym"),
-    "description": ("description", "definition", "description definition"),
-    "part_code": ("part code", "part::code", "part code10"),
-    "part": ("part",),
-    "code": ("code10", "term code", "numeric code", "code"),
-    "cf_code10": ("cf code10", "cf_code10", "context free code"),
-    "uom_mdc": ("uom mdc",),
-    "uom_ucum": ("uom ucum",),
-}
-
 
 @dataclass
 class ExportData:
@@ -72,10 +56,6 @@ def clean(value: Any) -> str:
     if value is None:
         return ""
     return WHITESPACE.sub(" ", str(value)).strip()
-
-
-def normalized_header(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
 
 
 def source_hash(path: Path) -> str:
@@ -105,7 +85,7 @@ def parse_page_range(value: str | None) -> tuple[int, int] | None:
 
 
 def page_text(page: Any) -> str:
-    return clean(page.get_text("text", sort=True))
+    return page.get_text("text", sort=True)
 
 
 def find_title(page: Any, table_bbox: tuple[float, float, float, float]) -> str:
@@ -142,20 +122,6 @@ def looks_like_header(row: list[str]) -> bool:
     )
 
 
-def header_index(headers: list[str], field: str) -> int | None:
-    aliases = HEADER_ALIASES[field]
-    for index, header in enumerate(headers):
-        candidate = normalized_header(header)
-        if candidate in aliases:
-            return index
-    return None
-
-
-def row_value(row: list[str], headers: list[str], field: str) -> str:
-    index = header_index(headers, field)
-    return row[index] if index is not None and index < len(row) else ""
-
-
 def find_reference_id(values: Iterable[str]) -> str:
     cells = list(values)
     for start, value in enumerate(cells):
@@ -185,41 +151,6 @@ def find_part_code(values: Iterable[str]) -> tuple[str, str, str]:
     return "", "", ""
 
 
-def find_cf_code(values: Iterable[str], part: str, code: str) -> str:
-    for value in values:
-        match = CF_CODE.search(value)
-        if match is not None:
-            return match.group(0)
-    if part.isdecimal() and code.isdecimal():
-        return str(int(part) * 65536 + int(code))
-    return ""
-
-
-def normalize_code_row(headers: list[str], values: list[str]) -> dict[str, str]:
-    reference_id = row_value(values, headers, "reference_id") or find_reference_id(values)
-    part, code, part_code = find_part_code([row_value(values, headers, "part_code"), *values])
-    if not part_code:
-        part = row_value(values, headers, "part")
-        code = row_value(values, headers, "code")
-        if part.isdecimal() and code.isdecimal():
-            part_code = f"{part}::{code}"
-    cf_code10 = row_value(values, headers, "cf_code10") or find_cf_code([], part, code)
-    return {
-        "reference_id": reference_id,
-        "systematic_name": row_value(values, headers, "systematic_name"),
-        "common_term": row_value(values, headers, "common_term"),
-        "mnemonic": row_value(values, headers, "mnemonic"),
-        "description": row_value(values, headers, "description"),
-        "part": part,
-        "code": code,
-        "part_code": part_code,
-        "cf_code10": cf_code10,
-        "uom_mdc": row_value(values, headers, "uom_mdc"),
-        "uom_ucum": row_value(values, headers, "uom_ucum"),
-        "validation_status": "exact_reference_id_and_part_code" if reference_id and part_code else "raw_table_row_only",
-    }
-
-
 def extract_code_lines(
     text: str,
     document: dict[str, str],
@@ -246,7 +177,7 @@ def extract_code_lines(
                 continue
             part, code = trailing.group("part"), trailing.group("code")
             part_code = f"{part}::{code}"
-        cf_code10 = find_cf_code([], part, code)
+        cf_code10 = str(int(part) * 65536 + int(code))
         table_id = f"{document['document_id']}-p{page_number}-text"
         data.codes.append({
             "table_row_id": f"{table_id}-r{line_number}",
@@ -344,7 +275,7 @@ def extract_document(path: Path, page_range: tuple[int, int] | None, data: Expor
     for page_number in range(start, min(end, pdf.page_count) + 1):
         page = pdf.load_page(page_number - 1)
         text = page_text(page)
-        if not text:
+        if not text.strip():
             data.issues.append({
                 "document_id": identifier,
                 "source_filename": path.name,

@@ -49,6 +49,7 @@ from sdc11073.xml_types import pm_types  # noqa: E402
 import run_toolbox  # noqa: E402
 from sdctoolbox import constants  # noqa: E402
 from sdctoolbox.constants import CODE_DIMENSIONLESS, epr_for  # noqa: E402
+from sdctoolbox.consumer_service import RemoteDevice  # noqa: E402
 from sdctoolbox.gui.consumer_pane import COL_RANGE as COL_R_RANGE  # noqa: E402
 from sdctoolbox.gui.consumer_pane import COL_VALUE as COL_R_VALUE  # noqa: E402
 from sdctoolbox.gui.consumer_pane import COL_WRITABLE as COL_R_WRITABLE  # noqa: E402
@@ -1418,18 +1419,21 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         # literally and must not let it dictate the splitter's minimum width.
         consumer = window.network_pane
         consumer_minimum_before = consumer.minimumSizeHint().width()
-        consumer.remote = SimpleNamespace(
-            patient_contexts=lambda: {
-                "PC.foreign": PatientInfo(
-                    given_name="<b>Foreign</b>",
-                    race=Coding(
-                        code="foreign-race",
-                        system="private",
-                        label="<img src=not-found width=10000 height=1>",
-                    ),
-                ),
-            },
+        consumer.remote = RemoteDevice(
+            SimpleNamespace(stop_all=lambda **_kwargs: None),
+            SimpleNamespace(entities={}),
+            "foreign-context-view",
         )
+        consumer.remote.patient_contexts = lambda: {
+            "PC.foreign": PatientInfo(
+                given_name="<b>Foreign</b>",
+                race=Coding(
+                    code="foreign-race",
+                    system="private",
+                    label="<img src=not-found width=10000 height=1>",
+                ),
+            ),
+        }
         consumer._refresh_contexts()  # noqa: SLF001 - exercise peer context presentation
         pump(app)
         report.check(
@@ -1681,7 +1685,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             if peer_row is not None:
                 consumer.device_list.setCurrentRow(peer_row)
                 pump(app)
-                report.check(consumer.connect_button.isEnabled(), "connect becomes available")
+                report.check(wait_for(app, consumer.connect_button.isEnabled), "connect becomes available")
 
                 consumer._on_connect()  # noqa: SLF001
                 connected = wait_for(app, lambda: consumer.remote is not None, timeout=40)

@@ -20,7 +20,7 @@ from http.client import BadStatusLine, HTTPException
 from typing import TYPE_CHECKING, Any
 
 from sdc11073 import observableproperties
-from sdc11073.consumer.consumerimpl import SdcConsumer
+from sdc11073.consumer.consumerimpl import SdcConsumer, default_components_factory
 from sdc11073.definitions_sdc import SdcV1Definitions
 from sdc11073.mdib import ConsumerMdib
 from sdc11073.mdib.consumermdibxtra import ConsumerMdibMethods
@@ -42,7 +42,7 @@ from .model import (
     patient_info_from_biceps,
     validate_decimal,
 )
-from .security import CertificateInfo, TlsConfig, endpoint_host
+from .security import CertificateInfo, TlsConfig, VerifiedSoapClient, endpoint_host
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -327,6 +327,13 @@ def _operation_reports_subscribed(consumer: SdcConsumer) -> bool:
                for subscription_filter, active in consumer.subscription_status.items())
 
 
+def _metric_report_actions(consumer: SdcConsumer) -> set[str]:
+    client = getattr(consumer, "state_event_service_client", None)
+    actions = {_action_uri(key.action) for key in client.get_available_subscriptions()} if client is not None else set()
+    actions.update(action for subscription_filter in consumer.subscription_status for action in subscription_filter.split())
+    return {action for action in actions if action.rsplit("/", 1)[-1] in ("EpisodicMetricReport", "PeriodicMetricReport")}
+
+
 def _subscription_summary(consumer: SdcConsumer) -> str:
     """One readable line per subscription: its state and the short action names it covers."""
     parts = []
@@ -442,11 +449,12 @@ class RemoteDevice:
         self._lost_reason: str | None = None
         self._lost_listeners: list[Callable[[str], None]] = []
         status = getattr(consumer, "subscription_status", None)
-        self._had_active_subscription = bool(status) and any(status.values())
+        self._metric_report_actions = _metric_report_actions(consumer) if status is not None else set()
         if status is not None:
             # A clean shutdown ends every subscription (SubscriptionEnd); a crashed or
             # unreachable peer shows up when the renewals fail.
             observableproperties.bind(consumer, subscription_status=self._on_subscription_status)
+            self._on_subscription_status(consumer.subscription_status)
 
     # -- connection health ---------------------------------------------------------
 
@@ -482,11 +490,16 @@ class RemoteDevice:
                 logger.exception("connection-lost listener failed")
 
     def _on_subscription_status(self, status: dict[str, bool]) -> None:
-        if any(status.values()):
-            self._had_active_subscription = True
-        elif self._had_active_subscription:
+        if not any(status.values()):
             self.mark_connection_lost(
-                "the device ended all subscriptions (it shut down, restarted or became unreachable)",
+                "the device has no active report subscriptions (it shut down, restarted or became unreachable)",
+            )
+        elif self._metric_report_actions and not any(
+            active and self._metric_report_actions.intersection(subscription_filter.split())
+            for subscription_filter, active in status.items()
+        ):
+            self.mark_connection_lost(
+                "the device has no active metric-report subscription; measurement data is no longer live",
             )
 
     def _send(self, request: Callable[[], Any], timeout: float) -> Any:
@@ -1146,12 +1159,15 @@ class ConsumerService:
         else:
             # The factory does not expose force_ssl_connect in sdc11073 3.0.0. Constructing
             # the same SDC-v1 consumer directly keeps a failed TLS handshake from retrying HTTP.
+            components = default_components_factory()
+            components.soap_client_class = partial(VerifiedSoapClient, tls_config=self.tls_config)
             consumer = _WsdlSdcConsumer(
                 provider_address,
                 SdcV1Definitions,
                 self._tls_contexts,
                 force_ssl_connect=True,
                 alternative_hostname=self.tls_config.server_name,
+                components=components,
             )
         try:
             consumer.start_all()

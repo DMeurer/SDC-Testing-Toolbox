@@ -13,6 +13,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -22,18 +23,21 @@ sys.path.insert(0, str(TESTS))
 
 from script_support import Report, wait_until  # noqa: E402
 from sdc11073.consumer.consumerimpl import SdcConsumer  # noqa: E402
+from sdc11073.definitions_sdc import SdcV1Definitions  # noqa: E402
+from sdc11073.provider.periodicreports import PeriodicStates  # noqa: E402
 from sdc11073.provider.porttypes.contextserviceimpl import ContextService  # noqa: E402
 from sdc11073.provider.porttypes.stateeventserviceimpl import StateEventService  # noqa: E402
 from sdc11073.provider.subscriptionmgr_base import SubscriptionsManagerBase  # noqa: E402
 from sdc11073.xml_types import eventing_types, msg_types, pm_types  # noqa: E402
 from sdc11073.xml_types.actions import Actions  # noqa: E402
 
-from sdctoolbox.consumer_service import ConsumerService  # noqa: E402
+from sdctoolbox.consumer_service import ConsumerService, DiscoveredDevice  # noqa: E402
 from sdctoolbox.model import AlertSpec, MetricKind, MetricSpec, PatientInfo  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 OPERATION_INVOKED = Actions.OperationInvokedReport.value
 EPISODIC_METRIC = Actions.EpisodicMetricReport.value
+PERIODIC_METRIC = Actions.PeriodicMetricReport.value
 
 
 def start_all_without_operation_reports(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
@@ -137,6 +141,70 @@ def check_restricted_provider(report: Report) -> None:
         provider.stop()
 
 
+def check_partial_metric_feed_loss(report: Report) -> None:
+    """Use actual SubscriptionEnd messages and a surviving periodic SOAP notification."""
+    provider = ProviderService(instance_name="partial-metric-feed-provider")
+    service = ConsumerService()
+    remote = None
+
+    def separate_metric_subscriptions(self, *args, **kwargs):
+        kwargs["not_subscribed_actions"] = [EPISODIC_METRIC, PERIODIC_METRIC]
+        return ORIGINAL_START_ALL(self, *args, **kwargs)
+
+    def end(action: str) -> None:
+        subscriptions = [
+            (manager, subscription)
+            for manager in provider._provider._subscriptions_managers.values()
+            for subscription in manager._subscriptions.objects
+            if subscription.filter_type.text == action
+            and subscription.notify_to_address.startswith(remote._consumer.base_url)
+        ]
+        assert len(subscriptions) == 1, "expected a dedicated metric subscription"
+        manager, subscription = subscriptions[0]
+        manager._async_send_thread.run_coro(subscription.async_send_notification_end_message())
+        assert wait_until(lambda: remote._consumer.subscription_status.get(action) is False, timeout=5)
+
+    try:
+        provider.start()
+        handle = provider.add_metric(MetricSpec(label="Live metric feed", kind=MetricKind.NUMBER, initial_value=Decimal("1")))
+        service.start()
+        device = DiscoveredDevice(provider.epr.urn, (provider._provider.get_xaddrs()[0],), (), service=object())
+        # HTTP discovery construction needs the same immutable direct-address snapshot.
+        device.service = SimpleNamespace(x_addrs=list(device.x_addrs), types=SdcV1Definitions.MedicalDeviceTypesFilter)
+        with patch.object(SdcConsumer, "start_all", separate_metric_subscriptions):
+            remote = service.connect(device)
+        reasons = []
+        remote.on_connection_lost(reasons.append)
+        end(PERIODIC_METRIC)
+        report.check(remote.connection_lost_reason is None, "loss of an optional periodic action keeps episodic metrics live")
+        end(EPISODIC_METRIC)
+        report.check(
+            remote.operation_reports_subscribed() and bool(reasons) and remote.connection_lost_reason is not None,
+            "ending the metric feed reports data loss even while OperationInvokedReport remains active",
+        )
+        remote._consumer.stop_all()  # this peer is reachable; explicitly clean up its remaining subscriptions
+        remote = None
+
+        with patch.object(SdcConsumer, "start_all", separate_metric_subscriptions):
+            remote = service.connect(device)
+        end(EPISODIC_METRIC)
+        provider.set_value(handle, Decimal("9"))
+        state = provider.mdib.states.descriptor_handle.get_one(handle).mk_copy()
+        provider._provider.hosted_services.state_event_service.send_periodic_metric_report(
+            [PeriodicStates(provider.mdib.mdib_version, [state])], provider.mdib.mdib_version_group,
+        )
+        report.check(
+            remote.connection_lost_reason is None
+            and wait_until(lambda: remote.metrics()[handle].value == Decimal("9"), timeout=5),
+            "a surviving periodic metric subscription remains usable after the episodic subscription ends",
+        )
+    finally:
+        if remote is not None:
+            remote._consumer.stop_all()
+        service.stop()
+        provider.stop()
+
+
 def main() -> int:
     report = Report()
     print("OperationInvokedReport subscription")
@@ -237,6 +305,7 @@ def main() -> int:
         consumer.stop()
         provider.stop()
     check_restricted_provider(report)
+    check_partial_metric_feed_loss(report)
     return report.summary()
 
 

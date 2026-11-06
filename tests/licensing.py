@@ -13,7 +13,11 @@ import tarfile
 import zipfile
 import zlib
 from collections.abc import Callable
+from email.message import Message
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from unittest.mock import patch
 
 TESTS = Path(__file__).resolve().parent
 ROOT = TESTS.parent
@@ -23,9 +27,11 @@ sys.path.insert(0, str(TESTS))
 from legal_payload import (  # noqa: I001 - ROOT must precede local imports
     ARTIFACT_ROOT,
     INVENTORY_NAME,
+    REQUIRED_DOCUMENTS,
     filter_binaries,
     validate_payload,
 )
+import legal_payload
 from script_support import Report
 
 
@@ -478,8 +484,251 @@ def check_binary_filter(report: Report) -> None:
     )
 
 
+def legal_fixture() -> tuple[dict[str, bytes], dict[str, object]]:
+    """A complete, offline artifact; the executable table contains no runnable code."""
+    notices = {
+        "aiohappyeyeballs": ["aiohappyeyeballs/LICENSE"],
+        "aiohttp": ["aiohttp/LICENSE.txt", "aiohttp/vendor/llhttp/LICENSE"],
+        "aiosignal": ["aiosignal/LICENSE"],
+        "attrs": ["attrs/LICENSE"],
+        "cffi": ["cffi/LICENSE"],
+        "cryptography": ["cryptography/LICENSE", "cryptography/LICENSE.APACHE", "cryptography/LICENSE.BSD"],
+        "frozenlist": ["frozenlist/LICENSE"],
+        "idna": ["idna/LICENSE.md"],
+        "ifaddr": ["ifaddr/LICENSE.txt"],
+        "lxml": ["lxml/LICENSE.txt", "lxml/LICENSES.txt"],
+        "multidict": ["multidict/LICENSE"],
+        "propcache": ["propcache/LICENSE", "propcache/NOTICE"],
+        "pyinstaller": ["pyinstaller/COPYING.txt"],
+        "PySide6": ["pyside6/LicenseRef-Qt-Commercial.txt"],
+        "PySide6_Essentials": ["pyside6-essentials/LicenseRef-Qt-Commercial.txt"],
+        "Python": ["python/LICENSE.txt"],
+        "Qt": [],
+        "sdc11073": ["sdc11073/LICENSE"],
+        "shiboken6": ["shiboken6/LicenseRef-Qt-Commercial.txt"],
+        "yarl": ["yarl/LICENSE", "yarl/NOTICE"],
+    }
+    qt_notices = [
+        "legal/licenses/qt/LGPL-3.0-only.txt",
+        "legal/licenses/qt/GPL-3.0-only.txt",
+        "legal/licenses/qt/Qt-GPL-exception-1.0.txt",
+    ]
+    files = {
+        f"{ARTIFACT_ROOT}/{relative}": (
+            ROOT / ("LICENSE" if relative == qt_notices[1] else relative)
+        ).read_bytes()
+        for relative in REQUIRED_DOCUMENTS
+        if relative != INVENTORY_NAME
+    }
+    components = []
+    modules = []
+    for name, suffixes in notices.items():
+        paths = [f"legal/licenses/{suffix}" for suffix in suffixes]
+        for path in paths:
+            files[f"{ARTIFACT_ROOT}/{path}"] = (
+                b"notice fixture: valid commercial Qt licenses; Bootloader Exception; "
+                b"PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2; MIT License Draeger"
+            )
+        if name in {"PySide6", "PySide6_Essentials", "shiboken6", "Qt"}:
+            paths.extend(qt_notices)
+        if name == "Qt":
+            paths.append("legal/SOURCE_OFFER.md")
+        module = {
+            "attrs": "attr", "Python": "__future__", "PySide6_Essentials": "PySide6",
+        }.get(name, name)
+        modules.append(module)
+        components.append({
+            "name": name,
+            "version": "3.13.0" if name == "Python" else "6.11.2",
+            "scope": "runtime",
+            "license_expression": "MIT",
+            "project_url": "https://example.test/project",
+            "source_archive_urls": [
+                "https://download.qt.io/official_releases/qt/6.11/6.11.2/submodules/qtbase-everywhere-src-6.11.2.tar.xz"
+            ] if name == "Qt" else [],
+            "notice_paths": paths,
+            "evidence": {
+                "modules": [module] if name not in {"Qt", "pyinstaller"} else [],
+                "artifact_paths": ["PySide6/Qt6Core.dll"] if name == "Qt" else (
+                    ["SDC-Testing-Toolbox executable bootloader and embedded loader"]
+                    if name == "pyinstaller" else []
+                ),
+            },
+        })
+    pyz = b"PYZ\0" + b"\0" * 4 + struct.pack("!i", 12) + marshal.dumps(
+        [(name, (0, 0, 0)) for name in modules]
+    )
+    toc = struct.pack("!IIIIBc", 22, 0, len(pyz), len(pyz), 0, b"z") + b"PYZ\0"
+    files[f"{ARTIFACT_ROOT}/SDC-Testing-Toolbox"] = pyz + toc + struct.pack(
+        "!8sIIII64s", b"MEI\014\013\012\013\016", len(pyz) + len(toc) + 88,
+        len(pyz), len(toc), 313, b"libpython3.13.so.1.0",
+    )
+    files[f"{ARTIFACT_ROOT}/libpython3.13.so.1.0"] = b"Python runtime fixture"
+    files[f"{ARTIFACT_ROOT}/PySide6/Qt6Core.dll"] = b"Qt shared library fixture"
+    unpackaged = ["pycparser", "PySide6_Addons"]
+    inventory = {
+        "schema_version": 2,
+        "artifact_layout": "PyInstaller one-directory bundle with replaceable shared libraries",
+        "platform": {"system": "Linux", "machine": "x86_64"},
+        "components": components,
+        "native_components": [],
+        "build_only": [{"name": "pyinstaller-hooks-contrib", "version": "1", "reason": "not bundled"}],
+        "resolved_runtime_not_packaged": [
+            {"name": name, "version": "1", "reason": "not bundled"} for name in unpackaged
+        ],
+        "resolved_runtime": [
+            {"name": name, "version": "6.11.2"}
+            for name in [*notices, *unpackaged] if name not in {"Python", "Qt", "pyinstaller"}
+        ],
+        "required_documents": list(REQUIRED_DOCUMENTS),
+        "generation": {
+            "method": "offline fixture", "runtime_roots": ["PySide6", "cryptography", "sdc11073"],
+            "build_roots": ["PyInstaller", "pyinstaller-hooks-contrib"],
+        },
+    }
+    files[f"{ARTIFACT_ROOT}/{INVENTORY_NAME}"] = json.dumps(inventory).encode()
+    return files, inventory
+
+
+def check_debian_common_notices(report: Report) -> None:
+    with TemporaryDirectory(prefix="sdctoolbox-debian-") as temporary:
+        root = Path(temporary)
+        copyright_path = root / "doc" / "libfixture1" / "copyright"
+        copyright_path.parent.mkdir(parents=True)
+        copyright_path.write_text(
+            "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n"
+            "License: GPL-2\n See /usr/share/common-licenses/GPL-2 for the full text.\n",
+            encoding="utf-8",
+        )
+        common = root / "common" / "GPL-2"
+        common.parent.mkdir()
+        common.write_text("GNU GENERAL PUBLIC LICENSE Version 2 fixture", encoding="utf-8")
+
+        def system_path(value: str) -> Path:
+            return {
+                "/usr/share/doc": root / "doc",
+                "/usr/share/common-licenses": root / "common",
+            }.get(value, Path(value))
+
+        def query(argv: list[str], **_kwargs: object) -> object:
+            return SimpleNamespace(returncode=0, stdout=(
+                "libfixture1:amd64: /lib/libfixture.so.1\n" if argv[1] == "-S"
+                else "1.0\thttps://example.test/libfixture\tlibfixture\n"
+            ))
+
+        output = root / "output"
+        with patch.object(legal_payload, "Path", side_effect=system_path), patch.object(
+            legal_payload.subprocess, "run", side_effect=query,
+        ):
+            native = legal_payload._debian_native_components(
+                {root / "libfixture.so.1": {"libfixture.so.1"}}, output,
+            )[0]
+        expected = [
+            "legal/licenses/debian/libfixture1/copyright",
+            "legal/licenses/debian/common/GPL-2",
+        ]
+        report.check(native["notice_paths"] == expected, "Debian generation includes the referenced common GPL-2 text")
+        files, inventory = legal_fixture()
+        inventory["native_components"] = [native]
+        files[f"{ARTIFACT_ROOT}/libfixture.so.1"] = b"native fixture"
+        for path in expected:
+            files[f"{ARTIFACT_ROOT}/{path}"] = (output / path).read_bytes()
+        key = f"{ARTIFACT_ROOT}/{INVENTORY_NAME}"
+        files[key] = json.dumps(inventory).encode()
+        errors = validate_payload(files)
+        report.check(not errors, "validator accepts the complete generated Debian notice set", "; ".join(errors))
+
+        for description, mutate, expected_error in (
+            ("omitted common notice claim", lambda n, f: n["notice_paths"].pop(), "missing or misassigned"),
+            ("missing common notice file", lambda n, f: f.pop(f"{ARTIFACT_ROOT}/{expected[1]}"), "missing bundled notice"),
+            ("unrelated common notice", lambda n, f: n["notice_paths"].append("legal/licenses/common/Zlib.txt"), "missing or misassigned"),
+            ("unsafe common notice path", lambda n, f: n["notice_paths"].append("legal/../escape"), "unsafe or non-normalized"),
+            ("incorrect common hash", lambda n, f: n["notice_sha256"].__setitem__(expected[1], "0" * 64), "SHA-256 mismatch"),
+        ):
+            changed_inventory = json.loads(json.dumps(inventory))
+            changed = dict(files)
+            changed_native = changed_inventory["native_components"][0]
+            mutate(changed_native, changed)
+            if description != "incorrect common hash":
+                changed_native["notice_sha256"] = {
+                    path: hashlib.sha256(changed[f"{ARTIFACT_ROOT}/{path}"]).hexdigest()
+                    for path in changed_native["notice_paths"]
+                    if f"{ARTIFACT_ROOT}/{path}" in changed
+                }
+            changed[key] = json.dumps(changed_inventory).encode()
+            errors = validate_payload(changed)
+            report.check(any(expected_error in error for error in errors), f"Debian validation rejects {description}", "; ".join(errors))
+
+        no_reference = json.loads(json.dumps(inventory))
+        native = no_reference["native_components"][0]
+        native["notice_paths"] = expected[:1]
+        files[f"{ARTIFACT_ROOT}/{expected[0]}"] = b"Format: Debian copyright\nLicense: MIT\n"
+        native["notice_sha256"] = {
+            expected[0]: hashlib.sha256(files[f"{ARTIFACT_ROOT}/{expected[0]}"]).hexdigest(),
+        }
+        files[key] = json.dumps(no_reference).encode()
+        errors = validate_payload(files)
+        report.check(not errors, "Debian copyright without common-license references needs only its own notice", "; ".join(errors))
+
+
+def check_qt_imageformat_sources(report: Report) -> None:
+    archive = "https://download.qt.io/official_releases/qt/6.11/6.11.2/submodules/qtimageformats-everywhere-src-6.11.2.tar.xz"
+    for plugin, required in (
+        ("PySide6/plugins/imageformats/qtiff.dll", True),
+        ("PySide6/Qt/plugins/imageformats/libqwebp.so", True),
+        ("PySide6/plugins/imageformats/qjpeg.dll", False),
+        ("vendor/qwebp.dll", False),
+    ):
+        with TemporaryDirectory(prefix="sdctoolbox-qt-sources-") as temporary:
+            root = Path(temporary)
+            distributions = {}
+            for name in ("pyside6", "pyside6-essentials", "sdc11073", "cryptography", "pyinstaller", "pyinstaller-hooks-contrib"):
+                metadata = Message()
+                metadata["Name"] = name
+                metadata["License"] = "MIT"
+                metadata["Home-page"] = "https://example.test/project"
+                notice = f"{name}/LICENSE"
+                (root / name).mkdir()
+                (root / notice).write_text("notice fixture", encoding="utf-8")
+                distributions[name] = SimpleNamespace(
+                    metadata=metadata, version="6.11.2", requires=[], files=[notice],
+                    locate_file=lambda relative: root / relative,
+                )
+            distributions["pyside6-essentials"].files.append("plugin")
+            (root / "plugin").write_bytes(b"plugin fixture")
+            with patch.object(legal_payload, "_distributions", return_value=distributions), patch.object(
+                legal_payload, "_linked_library_names", return_value=set(),
+            ):
+                legal_payload.generate_payload(ROOT, root / "output", [], [(plugin, str(root / "plugin"), "BINARY")], [])
+            generated = json.loads((root / "output" / INVENTORY_NAME).read_text(encoding="utf-8"))
+            qt = next(c for c in generated["components"] if c["name"] == "Qt")
+            report.check((archive in qt["source_archive_urls"]) == required, f"Qt generation conditionally supplies qtimageformats for {plugin}")
+
+        files, inventory = legal_fixture()
+        qt = next(c for c in inventory["components"] if c["name"] == "Qt")
+        files[f"{ARTIFACT_ROOT}/{plugin}"] = b"plugin fixture"
+        key = f"{ARTIFACT_ROOT}/{INVENTORY_NAME}"
+        files[key] = json.dumps(inventory).encode()
+        errors = validate_payload(files)
+        report.check(
+            any("qtimageformats" in error for error in errors) if required else not errors,
+            f"Qt validation derives imageformat source requirements from archive files: {plugin}", "; ".join(errors),
+        )
+        if required:
+            qt["source_archive_urls"].append(archive)
+            files[key] = json.dumps(inventory).encode()
+            errors = validate_payload(files)
+            report.check(not errors, "Qt validation accepts the exact versioned imageformats source archive", "; ".join(errors))
+            qt["source_archive_urls"][-1] = archive.replace("6.11.2", "6.11.1")
+            files[key] = json.dumps(inventory).encode()
+            errors = validate_payload(files)
+            report.check(any("qtimageformats" in error for error in errors), "Qt validation rejects a wrong-version imageformats archive", "; ".join(errors))
+
+
 def check_sources(report: Report) -> None:
     check_binary_filter(report)
+    check_debian_common_notices(report)
+    check_qt_imageformat_sources(report)
     license_text = (ROOT / "LICENSE").read_text(encoding="utf-8")
     report.check(
         "GNU GENERAL PUBLIC LICENSE\n                       Version 3, 29 June 2007"

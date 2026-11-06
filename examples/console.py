@@ -263,13 +263,12 @@ class ProviderShell(Cmd):
             return
         handle, raw = parts[0], " ".join(parts[1:])
         try:
-            value: Decimal | str = Decimal(raw)
-        except InvalidOperation:
-            value = raw
-        try:
-            self.service.set_value(handle, value)
+            self.service.set_value(handle, raw)
         except KeyError:
             print(f"no such handle: {handle}")
+            return
+        except (TypeError, ValueError) as exc:
+            print(f"rejected: {exc}")
             return
         print(f"{handle} = {show(self.service.get_value(handle))}")
 
@@ -740,12 +739,7 @@ class ConsumerShell(Cmd):
             print("usage: set <handle> <value>")
             return
         handle, raw = parts[0], " ".join(parts[1:])
-        try:
-            value: Decimal | str = Decimal(raw)
-        except InvalidOperation:
-            value = raw
-
-        state = self.remote.set_value(handle, value)
+        state = self.remote.set_value(handle, raw)
         if state in (msg_types.InvocationState.FINISHED, msg_types.InvocationState.FINISHED_MOD):
             time.sleep(0.6)
             print(f"accepted, {handle} is now {show(self.remote.metrics()[handle].value)}")

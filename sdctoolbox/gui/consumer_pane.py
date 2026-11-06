@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
@@ -61,6 +62,7 @@ from .styling import (
 )
 from .table_columns import TableColumns
 from .widgets import WidgetBoard, from_remote_metric
+from .widgets.controls import show_choice_value
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -166,13 +168,14 @@ class ConsumerPane(QWidget):
         # Every EPR listed this session. "Connect next" only reacts to one outside this set,
         # so a known device restarting under the same name does not trigger it.
         self._seen_eprs: set[str] = set()
-        self._listed_snapshot: list[tuple[str, tuple[str, ...]]] = []
+        self._listed_snapshot: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
         # The metric the in-flight set targets, so its card can show the device's answer.
         self._invoked_handle: str | None = None
         self.remote: RemoteDevice | None = None
         self.bridge: MdibBridge | None = None
         self._generation = 0
         self._shutdown = False
+        self._health_lock = threading.RLock()
 
         self._build_ui()
         self._wire_async()
@@ -335,8 +338,9 @@ class ConsumerPane(QWidget):
         self._worker.managed_failed.connect(self._on_work_failed)
 
     def _advance_generation(self) -> int:
-        self._generation += 1
-        return self._generation
+        with self._health_lock:
+            self._generation += 1
+            return self._generation
 
     def _work_key(self, operation: str, remote: RemoteDevice | None = None) -> tuple:
         return operation, self._generation, remote
@@ -388,7 +392,7 @@ class ConsumerPane(QWidget):
         new_devices = [device for device in devices if device.epr not in self._seen_eprs]
         self._seen_eprs.update(device.epr for device in devices)
 
-        snapshot = [(device.epr, device.x_addrs) for device in devices]
+        snapshot = [(device.epr, device.x_addrs, device.scopes) for device in devices]
         if snapshot != self._listed_snapshot:
             self._listed_snapshot = snapshot
             selected = self._selected_device()
@@ -467,13 +471,19 @@ class ConsumerPane(QWidget):
         self._update_buttons()
 
     def _on_connected(self, remote: RemoteDevice, generation: int) -> None:
-        if self._shutdown or generation != self._generation:
-            remote.close()
-            return
-        self.remote = remote
+        with self._health_lock:
+            if self._shutdown or generation != self._generation:
+                self._worker.retire(remote, remote.close)
+                return
+            self.remote = remote
         self.bridge = MdibBridge(remote.mdib, self)
         def current() -> bool:
             return not self._shutdown and generation == self._generation and self.remote is remote
+
+        def on_connection_lost(reason: str) -> None:
+            with self._health_lock:
+                if current():
+                    self.connection_lost.emit(remote, reason)
 
         self.bridge.metrics_changed.connect(self._on_metrics_changed)
         for signal in (
@@ -496,7 +506,9 @@ class ConsumerPane(QWidget):
         self.bridge.peer_restarted.connect(
             lambda: self._on_peer_restarted() if current() else None,
         )
-        remote.on_connection_lost(lambda reason: self.connection_lost.emit(remote, reason))
+        remote.on_connection_lost(on_connection_lost)
+        if not current():
+            return
         self._set_status(f"Connected to {remote.epr}")
         certificate = getattr(remote, "peer_certificate", None)
         if certificate is None:
@@ -519,12 +531,14 @@ class ConsumerPane(QWidget):
 
     def _teardown_remote(self) -> None:
         if self.bridge is not None:
+            self.bridge.close()
             self.bridge.deleteLater()
             self.bridge = None
-        if self.remote is not None:
-            remote = self.remote
-            self.remote = None
-            self._worker.retire(remote, remote.close)
+        with self._health_lock:
+            if self.remote is not None:
+                remote = self.remote
+                self._worker.retire(remote, remote.close)
+                self.remote = None
 
     def _reset_remote_ui(self) -> None:
         """Clear every view and control derived from the current peer."""
@@ -689,10 +703,8 @@ class ConsumerPane(QWidget):
         if selected is not None and selected in metrics:
             metric = metrics[selected]
             if self.editor_stack.currentIndex() == EDITOR_CHOICE:
-                if not self.choice_box.view().isVisible() and metric.value is not None:
-                    index = self.choice_box.findText(str(metric.value))
-                    if index >= 0:
-                        self.choice_box.setCurrentIndex(index)
+                if not self.choice_box.view().isVisible():
+                    show_choice_value(self.choice_box, metric.value)
             elif not self.value_edit.hasFocus():
                 self.value_edit.setText("" if metric.value is None else str(metric.value))
 
@@ -772,9 +784,7 @@ class ConsumerPane(QWidget):
             # A completed request wins over a focused text editor, just as it does for a
             # card. Ordinary metric reports still leave an unfinished edit alone.
             if self.editor_stack.currentIndex() == EDITOR_CHOICE:
-                index = self.choice_box.findText(str(metric.value)) if metric.value is not None else -1
-                if index >= 0:
-                    self.choice_box.setCurrentIndex(index)
+                show_choice_value(self.choice_box, metric.value)
             else:
                 self.value_edit.setText("" if metric.value is None else str(metric.value))
 
@@ -899,10 +909,7 @@ class ConsumerPane(QWidget):
             self.editor_stack.setCurrentIndex(EDITOR_CHOICE)
             self.choice_box.clear()
             self.choice_box.addItems(list(allowed_values))
-            if metric.value is not None:
-                index = self.choice_box.findText(str(metric.value))
-                if index >= 0:
-                    self.choice_box.setCurrentIndex(index)
+            show_choice_value(self.choice_box, metric.value)
         else:
             self.editor_stack.setCurrentIndex(EDITOR_TEXT)
             self.value_edit.setText("" if metric.value is None else str(metric.value))
@@ -932,6 +939,8 @@ class ConsumerPane(QWidget):
 
         allowed_values = metric.operation_allowed_values or metric.allowed_values
         if metric.kind is MetricKind.CHOICE and allowed_values:
+            if self.choice_box.currentIndex() < 0:
+                return
             value: Decimal | str = self.choice_box.currentText()
         elif metric.kind is MetricKind.NUMBER:
             raw = self.value_edit.text().strip()
@@ -967,8 +976,15 @@ class ConsumerPane(QWidget):
         self._restore_device_value(self._invoked_handle)
 
     def _on_work_finished(self, key: tuple, result: object) -> None:
+        if self._shutdown:
+            return
         operation, generation, remote = key
         if operation == "connect":
+            if generation != self._generation:
+                # Keep the queued result owned until off-thread retirement is accepted.
+                self._worker.retire(result, result.close)
+                self._worker.claim_result(result)
+                return
             if not self._worker.claim_result(result):
                 return
             self._on_connected(result, generation)
@@ -1020,15 +1036,17 @@ class ConsumerPane(QWidget):
     # -- teardown ------------------------------------------------------------------
 
     def shutdown(self) -> None:
-        """Disconnect and stop discovery. Called when the window closes."""
-        if self._shutdown:
-            return
-        self._shutdown = True
-        self.service.set_discovery_listener(None)
-        self.service.set_departure_listener(None)
-        self._refresh_timer.stop()
-        self._probe_timer.stop()
-        self._advance_generation()
-        self._teardown_remote()
-        self._worker.retire(self.service, self.service.stop)
-        self._worker.close(timeout=0.25)
+        """Suppress callbacks and retire transports; retry any interrupted handoffs."""
+        with self._health_lock:
+            if not self._shutdown:
+                self._shutdown = True
+                self.service.set_discovery_listener(None)
+                self.service.set_departure_listener(None)
+                self._refresh_timer.stop()
+                self._probe_timer.stop()
+                self._advance_generation()
+        try:
+            self._teardown_remote()
+            self._worker.retire(self.service, self.service.stop)
+        finally:
+            self._worker.close(timeout=0.25)
