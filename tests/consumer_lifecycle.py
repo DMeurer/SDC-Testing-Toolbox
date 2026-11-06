@@ -6,7 +6,6 @@ import gc
 import os
 import sys
 import threading
-import time
 import weakref
 from collections.abc import Iterable
 from dataclasses import replace
@@ -62,6 +61,9 @@ class FakeBridge(QObject):
 
     def __init__(self, _mdib, parent=None) -> None:  # noqa: ANN001
         super().__init__(parent)
+
+    def close(self) -> None:
+        pass
 
 
 class BlockingCall:
@@ -296,7 +298,7 @@ def close_with_queued_connection(app: QApplication, provider: ProviderService) -
     pane._on_connect()  # noqa: SLF001
     check(service.connect_call.entered.wait(1.0), "connect result is queued for the GUI")
     # Do not pump Qt here: the test needs the queued completion to remain pending.
-    time.sleep(0.02)
+    check(pane._worker.wait(1.0), "connect finishes with its result still queued")  # noqa: SLF001
     window.close()
     check(remote.close_count == 1, "queued connection closes once during window close")
     check(service.stop_count == 1, "queued connection does not delay discovery close")
@@ -314,7 +316,7 @@ def async_resources_retire_once() -> None:
         close_count += 1
 
     worker.retire(resource, close_resource)
-    check(close_count == 1, "an unused resource closes immediately")
+    check(worker.wait(1.0) and close_count == 1, "an unused resource closes off-thread")
     check(
         not worker._resources,  # noqa: SLF001
         "an unused retired resource leaves no active bookkeeping",
@@ -614,7 +616,10 @@ def retired_remote_graph_is_collectable(
 
     attach(pane, remote)
     pane._on_disconnect()  # noqa: SLF001
-    check(remote.close_count == 1, "disconnect closes an idle remote exactly once")
+    check(
+        pane._worker.wait(1.0) and remote.close_count == 1,  # noqa: SLF001
+        "disconnect closes an idle remote exactly once",
+    )
     del remote, mdib, nested
     for _ in range(3):
         app.processEvents()
@@ -706,7 +711,7 @@ def peer_restart_requires_manual_reconnect(app: QApplication, provider: Provider
 
     check(pane._generation == generation + 1, "peer restart retires the current session")  # noqa: SLF001
     check(pane.remote is None and pane.bridge is None, "peer restart disconnects instead of reloading")
-    check(remote.close_count == 1, "restarted peer connection closes once")
+    check(wait_for(app, lambda: remote.close_count == 1), "restarted peer connection closes once")
     check(
         pane.tree.topLevelItemCount() == 0
         and pane.table.rowCount() == 0
@@ -824,7 +829,7 @@ def failed_reconnect_clears_peer_ui(
         pane._generation == generation + 1,  # noqa: SLF001
         "replacement connection advances the session generation",
     )
-    check(old.close_count == 1, "old peer is closed before replacement work continues")
+    check(wait_for(app, lambda: old.close_count == 1), "the retired old peer closes during replacement work")
     check(
         remote_ui_is_empty(),
         "old peer data is cleared while replacement connection is pending",
@@ -1371,7 +1376,7 @@ def connection_loss_clears_the_peer(app: QApplication, provider: ProviderService
 
     remote.mark_connection_lost("the device ended all subscriptions")
     check(wait_for(app, lambda: pane.remote is None), "a loss noticed on another thread disconnects the pane")
-    check(remote.close_count == 1, "the lost connection closes once")
+    check(wait_for(app, lambda: remote.close_count == 1), "the lost connection closes once")
     check(
         not pane.board.handles and pane.tree.topLevelItemCount() == 0 and pane.table.rowCount() == 0,
         "a lost peer's widgets, tree and table are removed",

@@ -5,11 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
+
+from process_control import start_process, terminate_process_tree
+from script_support import ProcessOutput
 
 TESTS = Path(__file__).resolve().parent
 ROOT = TESTS.parent
@@ -55,33 +58,6 @@ def load_manifest(path: Path) -> list[dict[str, Any]]:
     return suites
 
 
-def terminate_process_tree(process: subprocess.Popen[str]) -> None:
-    if process.poll() is not None:
-        return
-    if os.name == "nt":
-        subprocess.run(  # noqa: S603
-            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-            capture_output=True,
-            check=False,
-            text=True,
-        )
-    else:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
-        try:
-            process.wait(timeout=5)
-            return
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
-
-
 def run_suite(suite: dict[str, Any], *, root: Path = ROOT) -> int:
     environment = os.environ.copy()
     environment.update(
@@ -92,17 +68,13 @@ def run_suite(suite: dict[str, Any], *, root: Path = ROOT) -> int:
     resources = ", ".join(suite.get("resources", ())) or "none"
     print(f"\n== {suite['id']} (resources: {resources}) ==", flush=True)
     try:
-        process = subprocess.Popen(  # noqa: S603
+        process = start_process(
             command,
             cwd=working_directory,
             env=environment,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            start_new_session=os.name != "nt",
-            creationflags=(
-                subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
-            ),
         )
     except OSError as exc:
         print(
@@ -112,20 +84,32 @@ def run_suite(suite: dict[str, Any], *, root: Path = ROOT) -> int:
         )
         return 1
 
+    output = None
     try:
-        output, _ = process.communicate(timeout=float(suite["timeout_seconds"]))
-    except subprocess.TimeoutExpired:
-        terminate_process_tree(process)
-        output = process.communicate()[0] or ""
-        print(output, end="", flush=True)
-        print(f"RUNNER TIMEOUT: {suite['id']}", file=sys.stderr, flush=True)
-        return 124
-    except KeyboardInterrupt:
-        terminate_process_tree(process)
-        print(f"RUNNER INTERRUPTED: {suite['id']}", file=sys.stderr, flush=True)
-        raise
-    print(output, end="", flush=True)
-    return process.returncode
+        output = ProcessOutput(process, echo=False)
+        timeout = float(suite["timeout_seconds"])
+        deadline = time.monotonic() + timeout
+        try:
+            process.wait(timeout=timeout)
+            if not output.join(timeout=max(0, deadline - time.monotonic())):
+                raise subprocess.TimeoutExpired(command, timeout)
+        except subprocess.TimeoutExpired:
+            terminate_process_tree(process)
+            output.join(timeout=2)
+            print(output.buffered_output, end="", flush=True)
+            print(f"RUNNER TIMEOUT: {suite['id']}", file=sys.stderr, flush=True)
+            return 124
+        except KeyboardInterrupt:
+            print(f"RUNNER INTERRUPTED: {suite['id']}", file=sys.stderr, flush=True)
+            raise
+        print(output.buffered_output, end="", flush=True)
+        return process.returncode
+    finally:
+        try:
+            terminate_process_tree(process)
+        finally:
+            if output is not None:
+                output.close()
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

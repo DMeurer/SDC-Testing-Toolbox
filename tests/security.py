@@ -52,6 +52,7 @@ def issue_certificate(
     *,
     ca: bool = False,
     ip_name: str | None = None,
+    dns_name: str | None = None,
     expired: bool = False,
 ) -> x509.Certificate:  # noqa: ANN001
     now = datetime.now(UTC)
@@ -65,11 +66,13 @@ def issue_certificate(
         .not_valid_after(now - timedelta(days=1) if expired else now + timedelta(days=30))
         .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True)
     )
+    names = []
     if ip_name is not None:
-        builder = builder.add_extension(
-            x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address(ip_name))]),
-            critical=False,
-        )
+        names.append(x509.IPAddress(ipaddress.ip_address(ip_name)))
+    if dns_name is not None:
+        names.append(x509.DNSName(dns_name))
+    if names:
+        builder = builder.add_extension(x509.SubjectAlternativeName(names), critical=False)
     if not ca:
         builder = builder.add_extension(
             x509.ExtendedKeyUsage([ExtendedKeyUsageOID.CLIENT_AUTH, ExtendedKeyUsageOID.SERVER_AUTH]),
@@ -97,10 +100,12 @@ def make_tls_configurations(directory: Path) -> tuple[TlsConfig, TlsConfig]:
     return tuple(configurations)  # type: ignore[return-value]
 
 
-def self_signed_identity(directory: Path, name: str, ip_name: str | None = "127.0.0.1") -> tuple[Path, Path, x509.Certificate]:
+def self_signed_identity(
+    directory: Path, name: str, ip_name: str | None = "127.0.0.1", *, dns_name: str | None = None,
+) -> tuple[Path, Path, x509.Certificate]:
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)])
-    certificate = issue_certificate(name, key, subject, key, ip_name=ip_name)
+    certificate = issue_certificate(name, key, subject, key, ip_name=ip_name, dns_name=dns_name)
     certificate_path = directory / f"{name}.pem"
     key_path = directory / f"{name}-key.pem"
     write_certificate(certificate_path, certificate)
@@ -203,6 +208,26 @@ def relaxed_policy_checks(report: Report, temporary: Path) -> None:
     report.check(empty_rejected, "an empty trusted folder as the only trust source is rejected")
 
 
+def advertised_dns_checks(report: Report, temporary: Path) -> None:
+    alpha_cert, alpha_key, _ = self_signed_identity(temporary, "alpha.lab", None, dns_name="alpha.lab")
+    _, _, beta = self_signed_identity(temporary, "beta.lab", None, dns_name="beta.lab")
+    config = TlsConfig.from_paths(alpha_cert, alpha_key, None, allow_self_signed=True, server_name="alpha.lab")
+    peer_der = beta.public_bytes(serialization.Encoding.DER)
+    try:
+        peer = config.verify_peer_certificate(peer_der, "beta.lab")
+    except TlsConfigError as exc:
+        report.check(False, "local advertised DNS never replaces the remote verification endpoint", str(exc))
+    else:
+        report.check(peer.dns_names == ("beta.lab",), "local advertised DNS never replaces the remote verification endpoint")
+    try:
+        config.verify_peer_certificate(peer_der, "gamma.lab")
+    except TlsConfigError:
+        rejected = True
+    else:
+        rejected = False
+    report.check(rejected, "self-signed DNS verification still rejects a certificate for another remote endpoint")
+
+
 def main() -> int:
     report = Report()
     print("TLS configuration")
@@ -273,6 +298,7 @@ def main() -> int:
         report.check(invalid_fingerprint_rejected, "invalid fingerprint syntax is rejected")
 
         relaxed_policy_checks(report, temporary)
+        advertised_dns_checks(report, temporary)
     return report.summary()
 
 

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import codecs
+import io
+import os
 import queue
 import subprocess
 import threading
@@ -132,28 +135,58 @@ class Report:
 class ProcessOutput:
     """Drain, echo, and retain a subprocess's combined output."""
 
-    def __init__(self, process: subprocess.Popen[str]) -> None:
+    def __init__(self, process: subprocess.Popen[str], *, echo: bool = True) -> None:
         if process.stdout is None:
             raise ValueError("process stdout must be piped")
         self._stream = process.stdout
+        os.set_blocking(self._stream.fileno(), False)
+        self._echo = echo
         self._pending: queue.Queue[str | None] = queue.Queue()
         self._lines: list[str] = []
         self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._error: Exception | None = None
         self._thread = threading.Thread(
             target=self._pump,
             name="provider-output-reader",
+            daemon=True,
         )
         self._thread.start()
 
     def _pump(self) -> None:
+        decoder = io.IncrementalNewlineDecoder(
+            codecs.getincrementaldecoder(self._stream.encoding)(self._stream.errors),
+            translate=True,
+        )
+        partial = ""
         try:
-            for line in self._stream:
+            while not self._stop.is_set():
+                try:
+                    chunk = os.read(self._stream.fileno(), 65536)
+                except BlockingIOError:
+                    self._stop.wait(0.01)
+                    continue
+                text = decoder.decode(chunk, final=not chunk)
                 with self._lock:
-                    self._lines.append(line)
-                print(f"    {line.rstrip()}", flush=True)
-                self._pending.put(line)
+                    self._lines.append(text)
+                lines = (partial + text).split("\n")
+                partial = lines.pop()
+                for line in lines:
+                    self._publish(line + "\n")
+                if not chunk:
+                    break
+            if partial:
+                self._publish(partial)
+        except Exception as exc:
+            self._error = exc
         finally:
+            self._stream.close()
             self._pending.put(None)
+
+    def _publish(self, line: str) -> None:
+        if self._echo:
+            print(f"    {line.rstrip()}", flush=True)
+        self._pending.put(line)
 
     @property
     def buffered_output(self) -> str:
@@ -167,8 +200,16 @@ class ProcessOutput:
     def next_line(self, timeout: float) -> str | None:
         return self._pending.get(timeout=timeout)
 
-    def join(self) -> None:
-        self._thread.join()
+    def join(self, timeout: float = 2) -> bool:
+        self._thread.join(timeout=timeout)
+        if self._error is not None:
+            raise self._error
+        return not self.is_alive
+
+    def close(self) -> None:
+        """Cancel a stalled inherited pipe without blocking on a buffered read lock."""
+        self._stop.set()
+        self._thread.join(timeout=1)
 
 
 def wait_for_output_line(output: ProcessOutput, expected: str, timeout: float) -> bool:
@@ -195,11 +236,14 @@ def wait_for_ready(output: ProcessOutput, timeout: float) -> bool:
 
 def stop_process(process: subprocess.Popen[str], output: ProcessOutput) -> None:
     """Stop and reap a subprocess, then join its output reader."""
-    if process.poll() is None:
-        process.terminate()
     try:
-        process.wait(timeout=15)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
-    output.join()
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=2)
+        output.join(timeout=2)
+    finally:
+        output.close()

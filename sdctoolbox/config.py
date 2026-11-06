@@ -8,6 +8,7 @@ replaces tracked metrics, alerts, and actions by default, or appends them with `
 from __future__ import annotations
 
 import json
+import tempfile
 from dataclasses import dataclass, field, fields
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -421,12 +422,7 @@ def action_from_dict(entry: dict[str, Any], metrics: dict[str, MetricSpec]) -> A
 
 
 def _context_to_dict(service: ProviderService) -> dict[str, Any]:
-    """Patient and location, omitted entirely when neither was filled in.
-
-    Location is always present in practice, since every provider publishes a default one as
-    a discovery scope, but a config that only describes data sources should not grow a
-    patient block full of empty strings.
-    """
+    """Capture contexts, including an explicit empty patient instruction for a detach."""
     contexts: dict[str, Any] = {}
     location = service.get_location()
     if not location.is_empty():
@@ -465,6 +461,8 @@ def _context_to_dict(service: ProviderService) -> dict[str, Any]:
         if patient.race is not None:
             patient_data["race"] = _coding_to_json(patient.race, "")
         contexts["patient"] = patient_data
+    else:
+        contexts["patient"] = {}
     return contexts
 
 
@@ -509,12 +507,20 @@ def to_dict(service: ProviderService, *, include_values: bool = True) -> dict[st
 
 
 def save(service: ProviderService, path: str | Path, *, include_values: bool = True) -> Path:
-    """Write a running provider's configuration to a file."""
+    """Atomically replace a profile, preserving the old file if writing fails."""
     target = Path(path)
-    target.write_text(
-        json.dumps(to_dict(service, include_values=include_values), indent=2) + "\n",
-        encoding="utf-8",
-    )
+    payload = json.dumps(to_dict(service, include_values=include_values), indent=2) + "\n"
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=target.parent, suffix=".tmp", delete=False,
+        ) as output:
+            temporary = Path(output.name)
+            output.write(payload)
+        temporary.replace(target)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     return target
 
 

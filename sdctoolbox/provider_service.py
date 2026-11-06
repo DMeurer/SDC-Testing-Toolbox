@@ -12,6 +12,7 @@ import time
 from copy import deepcopy
 from dataclasses import dataclass
 from decimal import Decimal
+from functools import partial
 from typing import TYPE_CHECKING
 
 from sdc11073.location import SdcLocation
@@ -19,7 +20,7 @@ from sdc11073.mdib import ProviderMdib, mdibbase
 from sdc11073.provider import SdcProvider
 from sdc11073.provider.baseproduct import BaseProduct
 from sdc11073.provider.operations import ActivateOperation
-from sdc11073.provider.providerimpl import RoleProviderComponents
+from sdc11073.provider.providerimpl import RoleProviderComponents, provider_components_async_factory
 from sdc11073.wsdiscovery import WSDiscovery
 from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types import pm_types
@@ -27,6 +28,7 @@ from sdc11073.xml_types.dpws_types import ThisDeviceType, ThisModelType
 from sdc11073.xml_types.xml_structure import DateOfBirthProperty
 
 from . import constants
+from .config import _unique_in
 from .handlers import apply_metric_value, make_activate_handler, make_set_handler
 from .http_server import configure_request_handler
 from .model import (
@@ -48,7 +50,7 @@ from .model import (
 )
 from .sample_generation import DemoSampleGenerator, SampleGeneratorSnapshot, domain_step
 from .sdc11073_v3_adapter import Sdc11073V3Adapter, Sdc11073V3Snapshot
-from .security import CertificateInfo, TlsConfig
+from .security import CertificateInfo, TlsConfig, VerifiedSoapClientAsync
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -283,12 +285,18 @@ class ProviderService:
                 self._sco = sco
                 return BaseProduct(mdib, sco, log_prefix)
 
+            provider_components = None
+            if self.tls_config is not None:
+                provider_components = provider_components_async_factory()
+                provider_components.soap_client_class = partial(VerifiedSoapClientAsync, tls_config=self.tls_config)
+
             self._provider = SdcProvider(
                 ws_discovery=self._discovery,
                 epr=self.epr,
                 this_model=this_model,
                 this_device=this_device,
                 device_mdib_container=self._mdib,
+                components=provider_components,
                 role_provider_components=RoleProviderComponents(role_provider_class=role_provider_factory),
                 ssl_context_container=self._tls_contexts,
                 alternative_hostname=(self.tls_config.server_name if self.tls_config is not None else None),
@@ -652,6 +660,16 @@ class ProviderService:
 
         descriptors.update(section_handles)
         for spec in device.metrics:
+            for name in ("resolution", "minimum", "maximum", "domain_minimum", "domain_maximum"):
+                value = getattr(spec, name)
+                if value is not None:
+                    fixed_point_decimal(value, name)
+            if spec.is_sample_array:
+                spec.generated_sample_range()
+            if spec.kind is MetricKind.DISTRIBUTION:
+                domain_step(spec)
+            if spec.initial_value is not None:
+                coerce_metric_value(spec, spec.initial_value)
             if spec.handle is None:
                 raise ValueError(f"metrics[{spec.label}]: metric handle was not resolved during parsing")
             self._claim_profile_handle(descriptors, spec.handle, f"metrics[{spec.label}]")
@@ -665,18 +683,23 @@ class ProviderService:
                 self._adapter.validate_descriptor_type(operation, operation_type)
 
         for spec in device.alerts:
+            for name in ("lower_limit", "upper_limit"):
+                value = getattr(spec, name)
+                if value is not None:
+                    fixed_point_decimal(value, name)
             if spec.source_handle not in metrics:
                 raise ValueError(
                     f"alerts[{spec.label}]: watches {spec.source_handle!r}, which is not a metric available after import",
                 )
             if spec.has_limits and metric_specs[spec.source_handle].kind is not MetricKind.NUMBER:
                 raise ValueError(f"alerts[{spec.label}]: a limit alarm requires a numeric scalar source")
-            handle = spec.handle or constants.ALERT_HANDLE_PREFIX + spec.slug
+            handle = spec.handle or _unique_in(descriptors, constants.ALERT_HANDLE_PREFIX + spec.slug)
             handle = self._claim_profile_handle(descriptors, handle, f"alerts[{spec.label}]")
             alert_type = pm.LimitAlertConditionDescriptor if spec.has_limits else pm.AlertConditionDescriptor
             self._adapter.validate_descriptor_type(handle, alert_type)
             for signal in spec.signals:
                 signal_handle = constants.SIGNAL_HANDLE_PREFIX + spec.slug + "." + signal.manifestation.value.lower()
+                signal_handle = _unique_in(descriptors, signal_handle)
                 signal_handle = self._claim_profile_handle(descriptors, signal_handle, f"alerts[{spec.label}] signal")
                 self._adapter.validate_descriptor_type(signal_handle, pm.AlertSignalDescriptor)
 
@@ -731,6 +754,13 @@ class ProviderService:
         a DescriptionModificationReport, so connected consumers see the new metric appear.
         """
         with self._lock:
+            # Mutable specs must validate before even a lazy section can be published.
+            for name in ("resolution", "minimum", "maximum", "domain_minimum", "domain_maximum"):
+                value = getattr(spec, name)
+                if value is not None:
+                    fixed_point_decimal(value, name)
+            if spec.initial_value is not None:
+                coerce_metric_value(spec, spec.initial_value)
             if spec.is_sample_array:
                 # MetricSpec is mutable, so repeat this preflight immediately before any
                 # lazy section, descriptor, bookkeeping, or generator mutation.
@@ -1035,11 +1065,14 @@ class ProviderService:
                 )
 
             signal_entities = []
+            handles = {live_handle for live_handle, _ in self.mdib.entities.items()} | {handle}
             for signal_spec in spec.signals:
                 manifestation = signal_spec.manifestation
-                signal_handle = self._unique_handle(
+                signal_handle = _unique_in(
+                    handles,
                     f"{constants.SIGNAL_HANDLE_PREFIX}{spec.slug}.{manifestation.value.lower()}",
                 )
+                handles.add(signal_handle)
                 signal = self.mdib.entities.new_entity(
                     pm.AlertSignalDescriptor,
                     signal_handle,

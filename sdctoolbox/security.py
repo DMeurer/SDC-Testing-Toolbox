@@ -16,10 +16,15 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from aiohttp import ClientSession, ClientTimeout, TCPConnector
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.x509.oid import ExtensionOID, NameOID
 from sdc11073.certloader import SSLContextContainer
+from sdc11073.pysoap.soapclient import HTTPSConnectionNoDelay, SoapClient
+from sdc11073.pysoap.soapclient_async import SoapClientAsync
+
+from .http_server import DeferredHandshakeSocket
 
 
 class TlsConfigError(ValueError):
@@ -135,6 +140,7 @@ class TlsConfig:
     ca_bundle_path: Path | None = None
     private_key_password: str | bytes | None = field(default=None, repr=False, compare=False)
     peer_fingerprint: str | None = None
+    # Local provider/event-sink advertisement, not a remote certificate-name override.
     server_name: str | None = None
     # Directory of PEM certificates that are trusted as-is, self-signed ones included.
     trusted_folder: Path | None = None
@@ -249,6 +255,7 @@ class TlsConfig:
         client_context.minimum_version = ssl.TLSVersion.TLSv1_2
         server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         server_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        server_context.sslsocket_class = DeferredHandshakeSocket
         for context in (client_context, server_context):
             if anchor_pem:
                 context.load_verify_locations(cadata=anchor_pem)
@@ -288,7 +295,7 @@ class TlsConfig:
             if not self._is_trusted(certificate):
                 raise TlsConfigError("TLS peer certificate is neither self-signed nor issued by a trusted certificate")
             if self.verify_hostname:
-                host = self.server_name or endpoint
+                host = endpoint
                 if host is not None and not certificate_matches_endpoint(info, host):
                     raise TlsConfigError(f"TLS peer certificate does not name {host}")
         return info
@@ -305,6 +312,69 @@ class TlsConfig:
                 continue
             return True
         return False
+
+
+class _VerifiedHTTPSConnection(HTTPSConnectionNoDelay):
+    def __init__(self, *args: Any, tls_config: TlsConfig, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._tls_config = tls_config
+
+    def connect(self) -> None:
+        try:
+            super().connect()
+            self._tls_config.verify_peer_certificate(self.sock.getpeercert(binary_form=True), self.host)
+        except Exception:
+            self.close()
+            raise
+
+
+class VerifiedSoapClient(SoapClient):
+    """Apply the participant's TLS policy before any HTTP bytes, including reconnects."""
+
+    def __init__(self, *args: Any, tls_config: TlsConfig, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._tls_config = tls_config
+
+    def _mk_http_connection(self) -> _VerifiedHTTPSConnection:
+        if self._ssl_context is None:
+            raise TlsConfigError("TLS is required; refusing an unencrypted SOAP connection")
+        return _VerifiedHTTPSConnection(
+            self._netloc, context=self._ssl_context, timeout=self._socket_timeout, tls_config=self._tls_config,
+        )
+
+
+class _VerifiedTCPConnector(TCPConnector):
+    def __init__(self, *args: Any, tls_config: TlsConfig, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._tls_config = tls_config
+
+    async def _create_connection(self, req: Any, traces: Any, timeout: Any) -> Any:
+        # shortcut: aiohttp's per-connection hook; recheck when upgrading the SDC transport dependencies.
+        protocol = await super()._create_connection(req, traces, timeout)
+        transport = protocol.transport
+        if transport is None:
+            raise TlsConfigError("TLS connection closed before peer verification")
+        try:
+            tls = transport.get_extra_info("ssl_object")
+            self._tls_config.verify_peer_certificate(tls.getpeercert(binary_form=True) if tls else None, req.url.host)
+        except Exception:
+            transport.close()
+            raise
+        return protocol
+
+
+class VerifiedSoapClientAsync(SoapClientAsync):
+    """Apply the same pre-payload policy to asynchronous provider callbacks."""
+
+    def __init__(self, *args: Any, tls_config: TlsConfig, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._tls_config = tls_config
+
+    async def _mk_http_connection(self) -> ClientSession:
+        if self._ssl_context is None:
+            raise TlsConfigError("TLS is required; refusing an unencrypted SOAP callback")
+        connector = _VerifiedTCPConnector(ssl=self._ssl_context, tls_config=self._tls_config)
+        return ClientSession(f"https://{self._netloc}/", connector=connector, timeout=ClientTimeout(self._socket_timeout))
 
 
 TRUSTED_FOLDER_SUFFIXES = frozenset({".pem", ".crt", ".cer"})

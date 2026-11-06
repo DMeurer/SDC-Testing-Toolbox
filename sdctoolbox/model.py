@@ -319,26 +319,8 @@ def _fixed_point_length(value: Decimal) -> int:
 
 
 def patient_measurement_wire_value(value: Decimal) -> Decimal:
-    """Return a lossless BICEPS-serializable Decimal for a demographic Measurement.
-
-    sdc11073 3.0.0 sends exponent-form Decimals through ``float``. Force fixed-point
-    formatting, reject unbounded expansions, and verify the library will not truncate the
-    value before it is allowed into a context state.
-    """
-    validate_decimal(value, "patient measurement value")
-    if _fixed_point_length(value) > MAX_DECIMAL_WIRE_CHARS:
-        msg = f"patient measurement value exceeds {MAX_DECIMAL_WIRE_CHARS} wire characters"
-        raise ValueError(msg)
-    wire_value = _FixedPointDecimal("0") if value.is_zero() else _FixedPointDecimal(value)
-    serialized = DecimalConverter.to_xml(wire_value)
-    try:
-        lossless = Decimal(serialized) == value
-    except (ArithmeticError, ValueError):
-        lossless = False
-    if not lossless:
-        msg = "patient measurement value cannot be serialized without losing precision"
-        raise ValueError(msg)
-    return wire_value
+    """Return a lossless BICEPS-serializable Decimal for a demographic Measurement."""
+    return fixed_point_decimal(value, "patient measurement value")
 
 
 def validate_decimal(
@@ -373,12 +355,21 @@ def validate_decimal(
 
 
 def fixed_point_decimal(value: Decimal, field: str) -> Decimal:
-    """Return a bounded Decimal whose string form is safe for xsd:decimal."""
+    """Return a bounded Decimal that sdc11073 can serialize without losing precision."""
     validate_decimal(value, field)
     if _fixed_point_length(value) > MAX_DECIMAL_WIRE_CHARS:
         msg = f"{field} exceeds {MAX_DECIMAL_WIRE_CHARS} wire characters"
         raise ValueError(msg)
-    return _FixedPointDecimal("0") if value.is_zero() else _FixedPointDecimal(value)
+    wire_value = _FixedPointDecimal("0") if value.is_zero() else _FixedPointDecimal(value)
+    serialized = DecimalConverter.to_xml(wire_value)
+    try:
+        lossless = Decimal(serialized) == value
+    except (ArithmeticError, ValueError):
+        lossless = False
+    if not lossless:
+        msg = f"{field} cannot be serialized without losing precision"
+        raise ValueError(msg)
+    return wire_value
 
 
 @dataclass(frozen=True)
@@ -609,6 +600,8 @@ class MetricSpec:
 
         validate_decimal(low, "minimum used for sample generation", float_representable=True)
         validate_decimal(high, "maximum used for sample generation", float_representable=True)
+        fixed_point_decimal(low, "minimum used for sample generation")
+        fixed_point_decimal(high, "maximum used for sample generation")
         if span < 0:
             msg = f"minimum {low} is greater than maximum {high}"
             raise ValueError(msg)
@@ -698,12 +691,12 @@ def coerce_metric_value(spec: MetricSpec, value: object, handle: str | None = No
             raise ValueError(msg)
         return fixed_point_decimal(normalized, f"value for {target!r}")
 
-    if spec.kind is MetricKind.TEXT:
-        return str(value)
-
-    if spec.kind is MetricKind.CHOICE:
+    if spec.kind in (MetricKind.TEXT, MetricKind.CHOICE):
         normalized = str(value)
-        if normalized not in spec.allowed_values:
+        if not _xml_compatible(normalized):
+            msg = f"value for {target!r} contains characters not allowed in XML 1.0"
+            raise ValueError(msg)
+        if spec.kind is MetricKind.CHOICE and normalized not in spec.allowed_values:
             msg = f"{normalized!r} is not among the allowed values {list(spec.allowed_values)} of {target!r}"
             raise ValueError(msg)
         return normalized
@@ -1218,15 +1211,18 @@ class RemoteRange:
                 return False
             if self.step_width is None:
                 return True
-            if self.lower is not None:
-                offset = value - self.lower
-            elif self.upper is not None:
-                offset = self.upper - value
-            else:
-                return True
-            if not self.step_width.is_finite() or self.step_width <= 0:
-                return False
-            return offset % self.step_width == 0
+            # Keep offsets and remainders exact even for large, lossless wire values.
+            with localcontext() as context:
+                context.prec = MAX_DECIMAL_WIRE_CHARS * 2 + 32
+                if self.lower is not None:
+                    offset = value - self.lower
+                elif self.upper is not None:
+                    offset = self.upper - value
+                else:
+                    return True
+                if not self.step_width.is_finite() or self.step_width <= 0:
+                    return False
+                return offset % self.step_width == 0
         except (ArithmeticError, AttributeError, TypeError, ValueError):
             return False
 

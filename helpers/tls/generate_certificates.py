@@ -43,6 +43,16 @@ def participant_name(value: str) -> str:
     return name
 
 
+def validate_participant_files(participants: tuple[str, ...]) -> None:
+    """Reserve every output filename, including case aliases on Windows."""
+    filenames = {"ca.pem", "ca-key.pem"}
+    for name in participants:
+        for filename in (f"{name}.pem", f"{name}-key.pem"):
+            if filename.casefold() in filenames:
+                raise ValueError(f"participant output filenames overlap or use a reserved CA filename: {filename}")
+            filenames.add(filename.casefold())
+
+
 def ipv4_argument(value: str) -> ipaddress.IPv4Address:
     """Accept one IPv4 address, which becomes an IP subject alternative name."""
     try:
@@ -224,6 +234,10 @@ def existing_participants(path: Path) -> tuple[str, ...]:
     for certificate_path in path.glob("*.pem"):
         name = certificate_path.stem
         if name != "ca" and (path / f"{name}-key.pem").is_file():
+            try:
+                x509.load_pem_x509_certificate(certificate_path.read_bytes())
+            except ValueError:
+                continue
             names.append(name)
     return tuple(sorted(names))
 
@@ -247,10 +261,11 @@ def prepare_addition(path: Path, participants: tuple[str, ...]) -> None:
     """Refuse accidental replacement while preserving all existing local identities."""
     if not path.is_dir():
         raise ValueError(f"TLS output directory does not exist: {path}")
+    existing = {entry.name.casefold() for entry in path.iterdir()}
     duplicates = [
         name
         for name in participants
-        if (path / f"{name}.pem").exists() or (path / f"{name}-key.pem").exists()
+        if f"{name}.pem".casefold() in existing or f"{name}-key.pem".casefold() in existing
     ]
     if duplicates:
         raise ValueError(f"refusing to replace existing participant material: {', '.join(duplicates)}")
@@ -259,9 +274,20 @@ def prepare_addition(path: Path, participants: tuple[str, ...]) -> None:
 def write_instructions(
     path: Path,
     participants: tuple[str, ...],
-    ip: ipaddress.IPv4Address,
     encrypted: bool,
 ) -> None:
+    participant_ips = {}
+    for name in participants:
+        certificate = x509.load_pem_x509_certificate((path.parent / f"{name}.pem").read_bytes())
+        try:
+            names = certificate.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        except x509.ExtensionNotFound as exc:
+            raise ValueError(f"participant {name} has no IP subject alternative name") from exc
+        addresses = [address for address in names.get_values_for_type(x509.IPAddress)
+                     if isinstance(address, ipaddress.IPv4Address)]
+        if not addresses:
+            raise ValueError(f"participant {name} has no IPv4 subject alternative name")
+        participant_ips[name] = addresses[0]
     password_note = (
         "Enter the same password in the GUI for each instance, or set SDC_TOOLBOX_TLS_KEY_PASSWORD before CLI use."
         if encrypted
@@ -270,14 +296,14 @@ def write_instructions(
     path.write_text(
         "SDC Testing Toolbox local mutual-TLS material\n"
         "==============================================\n\n"
-        f"Generated for IPv4 address: {ip}\n"
+        f"Generated for IPv4 addresses: {', '.join(sorted({str(ip) for ip in participant_ips.values()}))}\n"
         "The CA certificate is self-signed. It explicitly trusts every participant certificate below.\n\n"
         "Each toolbox instance is both an SDC provider and consumer. Every generated identity\n"
         "therefore has both TLS server and client authentication capabilities.\n\n"
         "Trust bundle for every participant: ca.pem\n\n"
         "Run one command per instance from the toolbox repository root:\n\n"
         + "".join(
-            f"  python run_toolbox.py --ip {ip} --name {name} --tls-cert \"{path.parent / f'{name}.pem'}\" --tls-key \"{path.parent / f'{name}-key.pem'}\" --tls-ca \"{path.parent / 'ca.pem'}\"\n"
+            f"  python run_toolbox.py --ip {participant_ips[name]} --name {name} --tls-cert \"{path.parent / f'{name}.pem'}\" --tls-key \"{path.parent / f'{name}-key.pem'}\" --tls-ca \"{path.parent / 'ca.pem'}\"\n"
             for name in participants
         )
         + "\n"
@@ -290,10 +316,8 @@ def write_instructions(
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     participants = tuple(args.add if args.add is not None else args.participants)
-    if len(set(participants)) != len(participants):
-        print("error: participant names must be distinct", file=sys.stderr)
-        return 2
     try:
+        validate_participant_files(participants)
         password = key_password(args)
         output = args.output.resolve()
         if args.add is None:
@@ -311,7 +335,7 @@ def main(argv: list[str] | None = None) -> int:
             write_certificate(output / f"{name}.pem", certificate)
             write_private_key(output / f"{name}-key.pem", key, password)
         all_participants = existing_participants(output)
-        write_instructions(output / "README.txt", all_participants, args.ip, password is not None)
+        write_instructions(output / "README.txt", all_participants, password is not None)
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

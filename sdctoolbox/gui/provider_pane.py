@@ -52,6 +52,7 @@ from .styling import (
 )
 from .table_columns import TableColumns
 from .widgets import WidgetBoard, from_spec
+from .widgets.controls import show_choice_value
 
 if TYPE_CHECKING:
     from ..provider_service import ProviderService
@@ -424,6 +425,15 @@ class ProviderPane(QWidget):
         finally:
             self._refreshing = False
 
+        selected = self.selected_handle()
+        if selected is not None and selected in states_by_handle:
+            current = self.service.get_value(selected)
+            if self.editor_stack.currentIndex() == EDITOR_CHOICE:
+                if not self.choice_box.view().isVisible():
+                    show_choice_value(self.choice_box, current)
+            elif not self.value_edit.hasFocus():
+                self.value_edit.setText("" if current is None else str(current))
+
     def _on_descriptors_changed(self, descriptors_by_handle: dict) -> None:
         """Refresh only the views affected by a structural MDIB change."""
         node_types = {
@@ -742,10 +752,7 @@ class ProviderPane(QWidget):
             self.editor_stack.setCurrentIndex(EDITOR_CHOICE)
             self.choice_box.clear()
             self.choice_box.addItems(list(spec.allowed_values))
-            if current is not None:
-                index = self.choice_box.findText(str(current))
-                if index >= 0:
-                    self.choice_box.setCurrentIndex(index)
+            show_choice_value(self.choice_box, current)
         else:
             self.editor_stack.setCurrentIndex(EDITOR_TEXT)
             self.value_edit.setText("" if current is None else str(current))
@@ -822,6 +829,8 @@ class ProviderPane(QWidget):
             return
 
         if spec.kind is MetricKind.CHOICE:
+            if self.choice_box.currentIndex() < 0:
+                return
             value: Decimal | str = self.choice_box.currentText()
         elif spec.kind is MetricKind.NUMBER:
             raw = self.value_edit.text().strip()
