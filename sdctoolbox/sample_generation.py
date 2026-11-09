@@ -75,11 +75,21 @@ class SamplePublisher:
         if entity is None:
             msg = f"no metric with handle {handle!r}"
             raise KeyError(msg)
+        ranges = entity.descriptor.TechnicalRange
+        # Sample granularity is not a setpoint grid: enforce bounds, not StepWidth.
+        for sample in prepared:
+            if ranges and not any(
+                (limit.Lower is None or sample >= limit.Lower)
+                and (limit.Upper is None or sample <= limit.Upper)
+                for limit in ranges
+            ):
+                msg = f"sample {sample} is outside the TechnicalRange of {handle!r}"
+                raise ValueError(msg)
         if entity.state.MetricValue is None:
             entity.state.mk_metric_value()
         entity.state.MetricValue.Samples = prepared
         entity.state.MetricValue.DeterminationTime = determination_time
-        entity.state.MetricValue.Validity = pm_types.MeasurementValidity.VALID
+        entity.state.MetricValue.MetricQuality.Validity = pm_types.MeasurementValidity.VALID
         entity.state.MetricValue.MetricQuality.Mode = pm_types.GenerationMode.DEMO
         entity.state.ActivationState = pm_types.ComponentActivation.ON
 

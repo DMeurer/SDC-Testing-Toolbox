@@ -15,6 +15,7 @@ import time
 import unittest
 import weakref
 from contextlib import contextmanager, nullcontext
+from dataclasses import replace
 from decimal import Decimal as D
 from pathlib import Path
 from types import SimpleNamespace as NS
@@ -38,10 +39,10 @@ from sdctoolbox.consumer_service import DiscoveredDevice, RemoteDevice
 from sdctoolbox.gui import consumer_pane as cp
 from sdctoolbox.gui.async_call import AsyncCall
 from sdctoolbox.gui.helpers import NO_VALUE
-from sdctoolbox.gui.provider_pane import COL_VALUE
+from sdctoolbox.gui.provider_pane import COL_CONTROL, COL_VALUE
 from sdctoolbox.gui.qt_bridge import MdibBridge
 from sdctoolbox.gui.widgets import WidgetSpec, build_widget, from_remote_metric, from_spec
-from sdctoolbox.model import MetricKind as K, MetricSpec, RemoteMetric
+from sdctoolbox.model import MetricKind as K, MetricSpec, RemoteMetric, RemoteRange
 
 
 class GatedCloser:
@@ -340,6 +341,164 @@ class GuiAuditRegressions(unittest.TestCase):
                     self.assertEqual(requested, [], "refreshing or clearing must not write")
                 finally:
                     shiboken6.delete(control)
+
+    def test_provider_rebuild_preserves_focused_same_definition_draft(self) -> None:
+        with WindowFixture("followup-provider-draft") as fixture:
+            service, pane = fixture.service, fixture.window.provider_pane
+            number = service.add_metric(MetricSpec("Number", K.NUMBER, initial_value=D(7), handle="m.zznumber"))
+            other = service.add_metric(MetricSpec("Other", K.NUMBER, initial_value=D(3), controllable=True))
+            pane.refresh()
+            pane.set_use_widgets(False)
+            self.app.processEvents()
+            pane.select_handle(number)
+            pane.value_edit.setFocus()
+            self.app.processEvents()
+            self.assertTrue(pane.value_edit.hasFocus())
+            changes = []
+            pane.value_edit.textChanged.connect(changes.append)
+            for event in ("descriptor", "operation"):
+                pane.value_edit.setText("9")
+                changes.clear()
+                if event == "descriptor":
+                    service.add_metric(MetricSpec("Earlier", K.NUMBER, handle="m.aaa"))
+                    self.assertTrue(wait_for(self.app, lambda: pane.table.rowCount() == 3))
+                else:
+                    service.disable_control(other)
+                    row = next(row for row in range(pane.table.rowCount()) if pane.table.item(row, 0).text() == other)
+                    self.assertTrue(wait_for(self.app, lambda: pane.table.item(row, COL_CONTROL).checkState() == Qt.Unchecked))
+                with self.subTest(event=event):
+                    self.assertEqual(pane.selected_handle(), number)
+                    self.assertEqual(pane.value_edit.text(), "9", "an unrelated rebuild cannot replace the focused draft with current 7")
+                    self.assertEqual(changes, [], "intermediate selection signals cannot reset and then restore a draft")
+                    self.assertEqual(service.get_value(number), D(7))
+
+            pane.value_edit.setText("9")
+            service.list_metrics()[number].maximum = D(8)
+            pane.refresh()
+            self.assertEqual(pane.value_edit.text(), "7", "a changed numeric domain resets the old draft")
+            pane.value_edit.setText("9")
+            pane.select_handle(other)
+            self.assertEqual(pane.value_edit.text(), "3", "selecting another metric resets a focused draft")
+            pane.select_handle(number)
+            pane.value_edit.setText("9")
+            service.remove_metric(number)
+            self.assertTrue(wait_for(self.app, lambda: number not in pane.board.handles))
+            self.assertIsNone(pane.selected_handle())
+            self.assertFalse(pane.editor_stack.isEnabled(), "deletion cannot leave the draft writable")
+
+    def test_provider_rebuild_preserves_open_same_definition_choice(self) -> None:
+        with WindowFixture("followup-provider-choice") as fixture:
+            service, pane = fixture.service, fixture.window.provider_pane
+            mode = service.add_metric(MetricSpec("Mode", K.CHOICE, allowed_values=("IDLE", "RUN", "PAUSE"), initial_value="RUN"))
+            other = service.add_metric(MetricSpec("Other", K.NUMBER, controllable=True))
+            pane.refresh()
+            pane.set_use_widgets(False)
+            self.app.processEvents()
+            pane.select_handle(mode)
+            pane.choice_box.setCurrentIndex(2)
+            pane.choice_box.showPopup()
+            self.app.processEvents()
+            self.assertTrue(pane.choice_box.view().isVisible())
+            try:
+                for event in ("descriptor", "operation"):
+                    if event == "descriptor":
+                        service.add_metric(MetricSpec("Earlier", K.NUMBER, handle="m.aaa"))
+                        self.assertTrue(wait_for(self.app, lambda: pane.table.rowCount() == 3))
+                    else:
+                        service.disable_control(other)
+                        row = next(row for row in range(pane.table.rowCount()) if pane.table.item(row, 0).text() == other)
+                        self.assertTrue(wait_for(self.app, lambda: pane.table.item(row, COL_CONTROL).checkState() == Qt.Unchecked))
+                    with self.subTest(event=event):
+                        self.assertEqual(pane.choice_box.currentText(), "PAUSE")
+                        self.assertTrue(pane.choice_box.view().isVisible(), "the open choice must not be rebuilt")
+                        self.assertEqual(service.get_value(mode), "RUN", "a preserved draft is not a write")
+                service.list_metrics()[mode].allowed_values = ("IDLE", "RUN")
+                pane.refresh()
+                self.assertEqual(tuple(pane.choice_box.itemText(i) for i in range(pane.choice_box.count())), ("IDLE", "RUN"))
+                self.assertEqual(pane.choice_box.currentText(), "RUN", "a changed choice domain drops the old draft")
+            finally:
+                pane.choice_box.hidePopup()
+
+    def test_consumer_rebuild_preserves_focused_same_definition_draft(self) -> None:
+        with self.consumer() as pane:
+            remote = FakeRemote("followup-numeric-draft")
+            remote.metric_values["zznumber"] = RemoteMetric(
+                "zznumber", "NumericMetricDescriptor", kind=K.NUMBER, value=D(7),
+                operation_handles=("set.number",), selected_operation_handle="set.number", controllable_now=True,
+            )
+            remote.metric_values["other"] = RemoteMetric("other", "NumericMetricDescriptor", kind=K.NUMBER, value=D(3))
+            pane._on_connected(remote, pane._generation)
+            pane.set_use_widgets(False)
+            pane.show()
+            pane.activateWindow()
+            pane.select_handle("zznumber")
+            pane.value_edit.setFocus()
+            self.app.processEvents()
+            self.assertTrue(pane.value_edit.hasFocus())
+            changes = []
+            pane.value_edit.textChanged.connect(changes.append)
+            for event in ("descriptor", "operation"):
+                pane.value_edit.setText("9")
+                changes.clear()
+                if event == "descriptor":
+                    remote.metric_values["aaa"] = RemoteMetric("aaa", "NumericMetricDescriptor", kind=K.NUMBER)
+                    pane.bridge.descriptors_added.emit({"aaa": object()})
+                else:
+                    pane.bridge.operations_changed.emit({"set.other": object()})
+                with self.subTest(event=event):
+                    self.assertEqual(pane.selected_handle(), "zznumber")
+                    self.assertEqual(pane.value_edit.text(), "9", "an unrelated rebuild cannot replace the focused draft with current 7")
+                    self.assertEqual(changes, [], "intermediate selection signals cannot reset and then restore a draft")
+                    self.assertFalse(remote.set_call.entered.is_set())
+
+            for definition in (
+                {"maximum": D(8), "allowed_ranges": (RemoteRange(None, D(8)),)},
+                {"operation_handles": ("set.replacement",), "selected_operation_handle": "set.replacement"},
+            ):
+                pane.value_edit.setText("9")
+                remote.metric_values["zznumber"] = replace(remote.metric_values["zznumber"], **definition)
+                pane.refresh()
+                self.assertEqual(pane.value_edit.text(), "7", "a changed domain or selected operation resets the draft")
+            pane.value_edit.setText("9")
+            pane.select_handle("other")
+            self.assertEqual(pane.value_edit.text(), "3", "selection changes cannot keep a different metric's draft")
+            pane.select_handle("zznumber")
+            remote.metric_values["zznumber"] = replace(remote.metric_values["zznumber"], controllable_now=False)
+            pane.refresh()
+            self.assertFalse(pane.editor_stack.isEnabled(), "disabled control still wins over focus")
+            del remote.metric_values["zznumber"]
+            pane.bridge.descriptors_deleted.emit({"zznumber": object()})
+            self.assertIsNone(pane.selected_handle())
+            self.assertFalse(pane.apply_button.isEnabled(), "deletion cannot keep a writable draft")
+
+    def test_consumer_rebuild_preserves_open_same_definition_choice(self) -> None:
+        with self.consumer() as pane:
+            remote = FakeRemote("followup-choice-draft")
+            remote.metric_values["mode"] = RemoteMetric(
+                "mode", "EnumStringMetricDescriptor", kind=K.CHOICE, value="RUN", allowed_values=("IDLE", "RUN", "PAUSE"),
+                operation_handles=("set.mode",), selected_operation_handle="set.mode", controllable_now=True,
+            )
+            pane._on_connected(remote, pane._generation)
+            pane.set_use_widgets(False)
+            pane.show()
+            pane.select_handle("mode")
+            pane.choice_box.setCurrentIndex(2)
+            pane.choice_box.showPopup()
+            self.app.processEvents()
+            self.assertTrue(pane.choice_box.view().isVisible())
+            try:
+                for signal in (pane.bridge.descriptors_added, pane.bridge.operations_changed):
+                    signal.emit({"unrelated": object()})
+                    with self.subTest(signal=signal):
+                        self.assertEqual(pane.choice_box.currentText(), "PAUSE")
+                        self.assertTrue(pane.choice_box.view().isVisible())
+                        self.assertFalse(remote.set_call.entered.is_set())
+                remote.metric_values["mode"] = replace(remote.metric_values["mode"], operation_allowed_values=("IDLE", "RUN"))
+                pane.refresh()
+                self.assertEqual(tuple(pane.choice_box.itemText(i) for i in range(pane.choice_box.count())), ("IDLE", "RUN"))
+                self.assertEqual(pane.choice_box.currentText(), "RUN", "a changed operation choice domain resets the draft")
+            finally:
+                pane.choice_box.hidePopup()
 
     def test_missing_reports_preserve_active_card_drafts(self) -> None:
         stepper = build_widget(WidgetSpec("number", "Number", K.NUMBER, editable=True))

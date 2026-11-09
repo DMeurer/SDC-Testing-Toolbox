@@ -475,6 +475,8 @@ def to_dict(service: ProviderService, *, include_values: bool = True) -> dict[st
     metrics = []
     for handle, spec in sorted(service.list_metrics().items()):
         entry = metric_to_dict(handle, spec)
+        # Capability survives disabling; current OperatingMode is not part of a profile.
+        entry["controllable"] = service.operation_handle_for(handle) is not None
         # A sample array's samples are generated or pushed, not configured, so recording
         # a block of them as an initial value would be recording noise.
         if include_values and not spec.is_sample_array:
@@ -829,7 +831,9 @@ def _contexts_from_dict(data: Any) -> tuple[LocationInfo | None, PatientInfo | N
         _check_keys(raw, allowed, field)
         _check_types(raw, {key: str for key in allowed}, field)
         try:
-            return cls(**raw)
+            context = cls(**raw)
+            context.validate_text()
+            return context
         except (TypeError, ValueError) as exc:
             msg = f"{field}: {exc}"
             raise ConfigError(msg) from exc

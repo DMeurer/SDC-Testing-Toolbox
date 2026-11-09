@@ -6,7 +6,7 @@ specific control gets the chance to claim a metric before a more general one.
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from typing import Any
 
 from PySide6.QtCore import QSignalBlocker, Qt
@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ...model import SAMPLE_ARRAY_KINDS, MetricKind
+from ...model import MAX_DECIMAL_WIRE_CHARS, SAMPLE_ARRAY_KINDS, MetricKind
 from ..decimal_input import DecimalInputError, parse_decimal_input
 from ..helpers import NO_VALUE, value_text
 from ..no_wheel import NoWheelComboBox, NoWheelSlider
@@ -176,7 +176,9 @@ class SliderWidget(MetricWidget):
     def _steps(spec: WidgetSpec) -> int | None:
         """How many slider positions the range needs, or None if that is unreasonable."""
         allowed_range = spec.slider_ranges[0]
-        span = allowed_range.upper - allowed_range.lower
+        with localcontext() as context:
+            context.prec = MAX_DECIMAL_WIRE_CHARS * 2 + 32
+            span = allowed_range.upper - allowed_range.lower
         if span <= 0:
             return None
         resolution = allowed_range.step_width or spec.resolution or Decimal("1")
@@ -235,7 +237,9 @@ class SliderWidget(MetricWidget):
     def _position_to_value(self, position: int) -> Decimal:
         if self._include_upper and position >= self._steps:
             return self._range.upper
-        value = self._range.lower + Decimal(position) * self._resolution
+        with localcontext() as context:
+            context.prec = MAX_DECIMAL_WIRE_CHARS * 2 + 32
+            value = self._range.lower + Decimal(position) * self._resolution
         return min(value, self._range.upper)
 
     def _value_to_position(self, value: Decimal) -> int:
@@ -243,7 +247,9 @@ class SliderWidget(MetricWidget):
             return 0
         if value >= self._range.upper:
             return self._steps
-        offset = (value - self._range.lower) / self._resolution
+        with localcontext() as context:
+            context.prec = MAX_DECIMAL_WIRE_CHARS * 2 + 32
+            offset = (value - self._range.lower) / self._resolution
         return max(0, min(self._steps, int(offset)))
 
     def _on_moved(self, position: int) -> None:
@@ -344,7 +350,9 @@ class StepperWidget(MetricWidget):
             self._show_error(str(exc))
             return
         try:
-            target = base + delta
+            with localcontext() as context:
+                context.prec = MAX_DECIMAL_WIRE_CHARS * 2 + 32
+                target = base + delta
             ranges = self.spec.control_ranges
             if len(ranges) == 1:
                 if ranges[0].lower is not None:
@@ -390,7 +398,7 @@ class StepperWidget(MetricWidget):
             button.setEnabled(editable)
 
     def busy_editing(self) -> bool:
-        return self.edit.hasFocus()
+        return self.edit.hasFocus() or self.edit.isModified()
 
 
 class TextWidget(MetricWidget):
@@ -427,7 +435,7 @@ class TextWidget(MetricWidget):
         self.apply.setEnabled(editable)
 
     def busy_editing(self) -> bool:
-        return self.edit.hasFocus()
+        return self.edit.hasFocus() or self.edit.isModified()
 
 
 class ReadoutWidget(MetricWidget):

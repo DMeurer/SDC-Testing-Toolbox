@@ -12,7 +12,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -34,7 +34,6 @@ from ..model import MetricKind
 from .context_dialog import ContextDialog
 from .decimal_input import DecimalInputError, parse_decimal_input
 from .helpers import (
-    NO_VALUE,
     sample_count_text,
     select_table_row,
     selected_table_value,
@@ -99,6 +98,7 @@ class ProviderPane(QWidget):
         self.service = service
         # Guards against the table's own updates being mistaken for user clicks.
         self._refreshing = False
+        self._editor_definition = None
 
         self._build_ui()
 
@@ -314,7 +314,10 @@ class ProviderPane(QWidget):
         selected = self.selected_handle()
 
         self._refreshing = True
+        blocker = QSignalBlocker(self.table)
         try:
+            self.table.clearSelection()
+            self.table.setCurrentItem(None)
             self.table.setRowCount(len(specs))
             for row, (handle, spec) in enumerate(sorted(specs.items())):
                 cells = {
@@ -347,11 +350,12 @@ class ProviderPane(QWidget):
                     control.setForeground(muted_colour(self))
                     control.setToolTip(f"{spec.kind.value} metrics cannot be remote-controlled")
                 self.table.setItem(row, COL_CONTROL, control)
+            if selected is not None:
+                self.select_handle(selected)
         finally:
             self._refreshing = False
+            blocker.unblock()
 
-        if selected is not None:
-            self.select_handle(selected)
         self._on_selection_changed()
         self._columns.refit()
         self._refresh_board()
@@ -734,28 +738,37 @@ class ProviderPane(QWidget):
         select_table_row(self.table, COL_HANDLE, handle)
 
     def _on_selection_changed(self) -> None:
+        if self._refreshing:
+            return
         handle = self.selected_handle()
         self.remove_button.setEnabled(handle is not None)
         if handle is None:
+            self._editor_definition = None
             self.editor_label.setText("Select a data source to change its value")
             self._set_editor_enabled(enabled=False)
             return
 
         spec = self.service.list_metrics().get(handle)
         if spec is None:
+            self._editor_definition = None
             self._set_editor_enabled(enabled=False)
             return
 
+        definition = from_spec(handle, spec, editable=True)
+        same_definition = definition == self._editor_definition
+        self._editor_definition = definition
         self.editor_label.setText(f"{spec.label}:")
         current = self.service.get_value(handle)
         if spec.kind is MetricKind.CHOICE:
             self.editor_stack.setCurrentIndex(EDITOR_CHOICE)
-            self.choice_box.clear()
-            self.choice_box.addItems(list(spec.allowed_values))
-            show_choice_value(self.choice_box, current)
+            if not same_definition or not self.choice_box.view().isVisible():
+                self.choice_box.clear()
+                self.choice_box.addItems(list(spec.allowed_values))
+                show_choice_value(self.choice_box, current)
         else:
             self.editor_stack.setCurrentIndex(EDITOR_TEXT)
-            self.value_edit.setText("" if current is None else str(current))
+            if not same_definition or not self.value_edit.hasFocus():
+                self.value_edit.setText("" if current is None else str(current))
             self.value_edit.setPlaceholderText(spec.range_text() if spec.has_range else "")
         if spec.has_range:
             self.editor_label.setText(f"{spec.label} ({spec.range_text()}):")

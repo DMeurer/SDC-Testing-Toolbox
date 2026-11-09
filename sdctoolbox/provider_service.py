@@ -660,11 +660,15 @@ class ProviderService:
 
         descriptors.update(section_handles)
         for spec in device.metrics:
+            spec.validate_text()
             for name in ("resolution", "minimum", "maximum", "domain_minimum", "domain_maximum"):
                 value = getattr(spec, name)
                 if value is not None:
                     fixed_point_decimal(value, name)
             if spec.is_sample_array:
+                if spec.kind is MetricKind.WAVEFORM:
+                    spec.waveform_cycle_sample_count()
+                    spec.generated_waveform_block_sample_count()
                 spec.generated_sample_range()
             if spec.kind is MetricKind.DISTRIBUTION:
                 domain_step(spec)
@@ -683,6 +687,7 @@ class ProviderService:
                 self._adapter.validate_descriptor_type(operation, operation_type)
 
         for spec in device.alerts:
+            spec.validate_text()
             for name in ("lower_limit", "upper_limit"):
                 value = getattr(spec, name)
                 if value is not None:
@@ -705,6 +710,7 @@ class ProviderService:
 
         normalized_effects = []
         for spec in device.actions:
+            spec.validate_text()
             if spec.target_handle not in descriptors:
                 raise ValueError(f"actions[{spec.label}]: target {spec.target_handle!r} is not available after import")
             effects = {}
@@ -719,8 +725,10 @@ class ProviderService:
             handle = self._claim_profile_handle(descriptors, handle, f"actions[{spec.label}]")
             self._adapter.validate_descriptor_type(handle, pm.ActivateOperationDescriptor)
 
-        if device.location is not None and device.location.is_empty():
-            raise ValueError("contexts.location: an explicit location needs at least one detail")
+        if device.location is not None:
+            device.location.validate_text()
+            if device.location.is_empty():
+                raise ValueError("contexts.location: an explicit location needs at least one detail")
         if device.patient is not None:
             if device.patient.sex:
                 pm_types.Sex(device.patient.sex)
@@ -755,6 +763,7 @@ class ProviderService:
         """
         with self._lock:
             # Mutable specs must validate before even a lazy section can be published.
+            spec.validate_text()
             for name in ("resolution", "minimum", "maximum", "domain_minimum", "domain_maximum"):
                 value = getattr(spec, name)
                 if value is not None:
@@ -1010,6 +1019,7 @@ class ProviderService:
         only ``set_alert_presence`` moves.
         """
         with self._lock:
+            spec.validate_text()
             source = self.mdib.entities.by_handle(spec.source_handle)
             if source is None:
                 msg = f"no metric with handle {spec.source_handle!r} to watch"
@@ -1556,6 +1566,7 @@ class ProviderService:
         re-announce the device or consumers would keep filtering on the old one.
         """
         with self._lock:
+            info.validate_text()
             if self._provider is None:
                 msg = "provider is not started"
                 raise RuntimeError(msg)
@@ -1725,6 +1736,7 @@ class ProviderService:
         the report, the same route a set operation takes.
         """
         with self._lock:
+            spec.validate_text()
             if self.mdib.entities.by_handle(spec.target_handle) is None:
                 msg = f"no descriptor with handle {spec.target_handle!r} for action {spec.label!r} to act on"
                 raise KeyError(msg)

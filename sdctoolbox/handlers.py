@@ -40,7 +40,7 @@ def apply_metric_value(state: object, value: object) -> None:
     if getattr(state, "MetricValue", None) is None:
         state.mk_metric_value()
     state.MetricValue.Value = value
-    state.MetricValue.Validity = pm_types.MeasurementValidity.VALID
+    state.MetricValue.MetricQuality.Validity = pm_types.MeasurementValidity.VALID
     state.ActivationState = pm_types.ComponentActivation.ON
 
 

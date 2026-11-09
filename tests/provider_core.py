@@ -545,6 +545,156 @@ def check_demo_mode_lifecycle(report: Report, service: ProviderService) -> None:
     service._set_mds_operating_mode(pm_types.MdsOperatingMode.NORMAL)  # noqa: SLF001
 
 
+def check_wire_validity_recovery(report: Report, service: ProviderService) -> None:
+    """Successful writes repair the real nested quality, not an unserialized shadow field."""
+    service.stop_generator()
+    handles = []
+    try:
+        for kind, initial, requested in (
+            (MetricKind.NUMBER, Decimal("1"), Decimal("2")),
+            (MetricKind.TEXT, "before", "after"),
+            (MetricKind.CHOICE, "A", "B"),
+            (MetricKind.WAVEFORM, None, None),
+            (MetricKind.DISTRIBUTION, None, None),
+        ):
+            with patch.object(service, "start_generator", lambda: None):
+                handle = service.add_metric(MetricSpec(
+                    label=f"Validity {kind.value}", kind=kind, initial_value=initial,
+                    controllable=kind.controllable,
+                    allowed_values=("A", "B") if kind is MetricKind.CHOICE else (),
+                ))
+            handles.append(handle)
+            modes = ("manual", "generated") if kind in (MetricKind.WAVEFORM, MetricKind.DISTRIBUTION) else ("local", "registered")
+            for mode in modes:
+                entity = service.mdib.entities.by_handle(handle)
+                if entity.state.MetricValue is None:
+                    entity.state.mk_metric_value()
+                entity.state.MetricValue.MetricQuality.Validity = pm_types.MeasurementValidity.INVALID
+                transaction = service.mdib.rt_sample_state_transaction if kind is MetricKind.WAVEFORM else service.mdib.metric_state_transaction
+                with transaction() as manager:
+                    manager.write_entity(entity)
+                if mode == "local":
+                    service.set_value(handle, requested)
+                elif mode == "registered":
+                    operation = service._sco._registered_operations[service.operation_handle_for(handle)]  # noqa: SLF001
+                    params = SimpleNamespace(operation_instance=operation, operation_request=SimpleNamespace(argument=requested))
+                    result = service._handler(params)  # noqa: SLF001
+                    report.check(result.invocation_state is msg_types.InvocationState.FINISHED, f"{kind.value} registered write succeeds")
+                elif mode == "manual":
+                    service.set_samples(handle, [Decimal("5")] * DISTRIBUTION_BINS)
+                else:
+                    service._sample_generator.pinned.discard(handle)  # noqa: SLF001
+                    service._publish_one_block()  # noqa: SLF001
+                node = service.mdib.reconstruct_mdib_with_context_states()[0]
+                validity = node.xpath(
+                    "//*[@DescriptorHandle=$handle]/*[local-name()='MetricValue']/*[local-name()='MetricQuality']/@Validity",
+                    handle=handle,
+                )
+                report.check(validity == ["Vld"], f"{mode} {kind.value} write serializes MetricQuality/@Validity=Vld", repr(validity))
+    finally:
+        for handle in handles:
+            service.remove_metric(handle)
+
+
+def check_manual_sample_bounds(report: Report, service: ProviderService) -> None:
+    """Manual blocks obey live advertised bounds without imposing sample-step divisibility."""
+    service.stop_generator()
+
+    def snapshot() -> tuple:
+        return (
+            etree.tostring(service.mdib.reconstruct_mdib_with_context_states()[0], method="c14n"),
+            service.mdib.mdib_version, service.mdib.mdstate_version, service.mdib.mddescription_version,
+            service._sample_generator.snapshot(),  # noqa: SLF001
+        )
+
+    for kind in (MetricKind.WAVEFORM, MetricKind.DISTRIBUTION):
+        for case, minimum, maximum, low, high in (
+            ("bounded", Decimal("0"), Decimal("10"), Decimal("0"), Decimal("10")),
+            ("default", None, None, Decimal("0"), Decimal("100")),
+            ("minimum only", Decimal("5"), None, Decimal("5"), Decimal("105")),
+            ("maximum only", None, Decimal("-5"), Decimal("-105"), Decimal("-5")),
+        ):
+            with patch.object(service, "start_generator", lambda: None):
+                handle = service.add_metric(MetricSpec(
+                    label=f"Manual {kind.value} {case}", kind=kind,
+                    minimum=minimum, maximum=maximum, resolution=Decimal("3"),
+                ))
+            try:
+                service._publish_one_block()  # noqa: SLF001 - populate source clocks and phases without a worker
+                descriptor = service.mdib.entities.by_handle(handle).descriptor
+                bounds = descriptor.TechnicalRange[0]
+                report.check((bounds.Lower, bounds.Upper) == (low, high), f"{kind.value} {case} advertises expected finite bounds")
+                bad_blocks = (
+                    ([Decimal("99")] * DISTRIBUTION_BINS,)
+                    if case == "bounded"
+                    else ([low - 1] * DISTRIBUTION_BINS, [high + 1] * DISTRIBUTION_BINS)
+                )
+                for bad in bad_blocks:
+                    before = snapshot()
+                    try:
+                        service.set_samples(handle, bad)
+                    except ValueError:
+                        rejected = True
+                    else:
+                        rejected = False
+                    report.check(rejected and snapshot() == before, f"{kind.value} {case} rejects {bad[0]} without changing samples, versions, or generator bookkeeping")
+
+                endpoint_block = [low, high] * (DISTRIBUTION_BINS // 2)
+                service.set_samples(handle, endpoint_block)
+                report.check(service.get_samples(handle) == endpoint_block, f"{kind.value} {case} accepts both endpoints without step divisibility")
+                before = snapshot()
+                try:
+                    service.set_samples(handle, [*endpoint_block[:-1], high + 1])
+                except ValueError:
+                    rejected = True
+                else:
+                    rejected = False
+                report.check(rejected and snapshot() == before, f"{kind.value} {case} rejects a late invalid sample before any part of the block commits")
+
+                entity = service.mdib.entities.by_handle(handle)
+                entity.descriptor.TechnicalRange = [pm_types.Range(lower=Decimal("2"), upper=Decimal("4"), step_width=Decimal("3"))]
+                with service.mdib.descriptor_transaction() as manager:
+                    manager.write_entity(entity)
+                service.set_samples(handle, [Decimal("2.5")] * DISTRIBUTION_BINS)
+                report.check(service.get_samples(handle) == [Decimal("2.5")] * DISTRIBUTION_BINS, f"{kind.value} accepts in-range samples off the advertised step")
+                before = snapshot()
+                try:
+                    service.set_samples(handle, [Decimal("5")] * DISTRIBUTION_BINS)
+                except ValueError:
+                    rejected = True
+                else:
+                    rejected = False
+                report.check(
+                    rejected and snapshot() == before,
+                    f"{kind.value} uses the current advertised range, not stale spec bounds",
+                )
+                if case == "bounded":
+                    for ranges, accepted, bad in (
+                        ([pm_types.Range(lower=Decimal("200"), step_width=Decimal("3"))], Decimal("200.5"), Decimal("199.5")),
+                        ([pm_types.Range(upper=Decimal("-200"), step_width=Decimal("3"))], Decimal("-200.5"), Decimal("-199.5")),
+                        ([pm_types.Range(Decimal("0"), Decimal("1")), pm_types.Range(Decimal("10"), Decimal("11"))], Decimal("10.5"), Decimal("5")),
+                        ([], Decimal("500"), None),
+                    ):
+                        entity = service.mdib.entities.by_handle(handle)
+                        entity.descriptor.TechnicalRange = ranges
+                        with service.mdib.descriptor_transaction() as manager:
+                            manager.write_entity(entity)
+                        block = [accepted] * DISTRIBUTION_BINS
+                        service.set_samples(handle, block)
+                        report.check(service.get_samples(handle) == block, f"{kind.value} accepts {accepted} within live open/union/unbounded ranges")
+                        if bad is not None:
+                            before = snapshot()
+                            try:
+                                service.set_samples(handle, [bad] * DISTRIBUTION_BINS)
+                            except ValueError:
+                                rejected = True
+                            else:
+                                rejected = False
+                            report.check(rejected and snapshot() == before, f"{kind.value} rejects {bad} outside live open/union bounds without writes")
+            finally:
+                service.remove_metric(handle)
+
+
 def check_sample_publication_semantics(report: Report, service: ProviderService) -> None:  # noqa: PLR0915
     print("\n2b. Sample timing, quality, and failure isolation")
 
@@ -3677,6 +3827,8 @@ def main() -> int:
         check_rollback(report, service)
         check_sample_arrays(report, service)
         check_demo_mode_lifecycle(report, service)
+        check_wire_validity_recovery(report, service)
+        check_manual_sample_bounds(report, service)
         check_sample_publication_semantics(report, service)
         check_alarm_rollback(report, service)
         check_metric_removal_dependencies(report, service)

@@ -6,21 +6,183 @@ import os
 import sys
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from gui_test_support import Report, WindowFixture, pump, wait_for
+from gui_test_support import Report, WindowFixture, application, pump, wait_for
+from PySide6.QtGui import QColor, QImage, QPalette
 
+from sdctoolbox.gui.widgets import plot as plot_module
 from sdctoolbox.gui.widgets.controls import SampleArrayWidget
+from sdctoolbox.gui.widgets.plot import SamplePlot
 from sdctoolbox.model import MetricKind, MetricSpec
+
+
+class PaintProbe(SamplePlot):
+    """Keep Qt-dispatched Python paint failures inside the regression, not stderr."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.paint_errors = []
+        self.resize(240, 76)
+        palette = self.palette()
+        palette.setColor(QPalette.Highlight, QColor(240, 0, 180))
+        self.setPalette(palette)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        try:
+            super().paintEvent(event)
+        except Exception as exc:
+            # Do not retain the traceback's live QPainter past its paint device.
+            self.paint_errors.append(f"{type(exc).__name__}: {exc}")
+
+
+def painted(plot: PaintProbe, report: Report, description: str) -> QImage:
+    image = QImage(plot.size(), QImage.Format_ARGB32)
+    image.fill(QColor("white"))
+    plot.render(image)
+    report.check(not plot.paint_errors, f"{description} paints without Qt callback errors", str(plot.paint_errors))
+    return image
+
+
+def check_exact_plot_painting(report: Report) -> None:
+    """Lossy pre-scaling or a fake flat fallback changes these real rendered pixels."""
+    legacy = PaintProbe()
+    try:
+        legacy.add_samples([Decimal("0"), Decimal("2.5"), Decimal("5")])
+        drawn = legacy.samples
+        try:
+            breaks = [abs(drawn[index] - drawn[index - 1] - 2.5) for index in range(1, len(drawn))]
+        except TypeError as exc:
+            report.check(False, "plot snapshots still support the existing float-based continuity reader", str(exc))
+        else:
+            report.check(breaks == [0.0, 0.0], "plot snapshots still support the existing float-based continuity reader")
+    finally:
+        legacy.clear()
+        legacy.deleteLater()
+
+    values = [Decimal("1000000000000000000000000000000"), Decimal("1000000000000000000000000000050"), Decimal("1000000000000000000000000000100")]
+    small = [Decimal("0"), Decimal("50"), Decimal("100")]
+    for scrolling in (True, False):
+        name = "waveform" if scrolling else "distribution"
+        for bounded_low, bounded_high in ((True, True), (True, False), (False, True), (False, False)):
+            plots = [
+                PaintProbe(scrolling=scrolling, minimum=block[0] if bounded_low else None, maximum=block[-1] if bounded_high else None)
+                for block in (small, values)
+            ]
+            try:
+                images = []
+                for plot, block in zip(plots, (small, values)):
+                    plot.add_samples(block)
+                    plot.flush()
+                    images.append(painted(plot, report, f"{name} bounds={bounded_low, bounded_high}"))
+                pixels = {
+                    (x, y) for y in range(images[0].height()) for x in range(images[0].width())
+                    if (colour := images[0].pixelColor(x, y)).red() - colour.green() > 60
+                    and colour.blue() - colour.green() > 40
+                }
+                tops = [min((y for x, y in pixels if abs(x - column) <= 2), default=76) for column in (3, 120, 236)]
+                report.check(tops[0] - tops[1] > 20 and tops[1] - tops[2] > 20, f"the reference {name} has three distinct sample heights", str(tops))
+                report.check(images[0] == images[1], f"offsetting {name} by 10^30 preserves actual painted geometry")
+                report.check(list(plots[1]._samples) == values, f"the {name} keeps distinct source values")  # noqa: SLF001
+            finally:
+                for plot in plots:
+                    plot.clear()
+                    plot.deleteLater()
+
+        for block, description in (
+            ([values[0]] * 3, "a constant large-offset signal"),
+            ([Decimal("1e400"), Decimal("1.5e400"), Decimal("2e400")], "finite values larger than floats"),
+        ):
+            plot = PaintProbe(scrolling=scrolling)
+            reference = PaintProbe(scrolling=scrolling)
+            try:
+                plot.add_samples(block)
+                reference.add_samples([Decimal("0")] * 3 if block[0] == block[-1] else small)
+                plot.flush()
+                reference.flush()
+                image = painted(plot, report, f"{name}: {description}")
+                expected = painted(reference, report, f"{name}: reference for {description}")
+                report.check(image == expected, f"{name}: {description} retains its geometry")
+            finally:
+                for item in (plot, reference):
+                    item.clear()
+                    item.deleteLater()
+
+        for invalid in ("NaN", "sNaN", "Infinity", "-Infinity", "not-a-number"):
+            plot = PaintProbe(scrolling=scrolling)
+            try:
+                plot.add_samples(small)
+                plot.flush()
+                before = painted(plot, report, f"{name}: last good block")
+                plot.add_samples([invalid, "50", "100"])
+                plot.flush()
+                after = painted(plot, report, f"{name}: rejected {invalid}")
+                report.check(plot.samples == small and after == before, f"{name}: {invalid} preserves the whole last good trace")
+            finally:
+                plot.clear()
+                plot.deleteLater()
+
+        plot = PaintProbe(scrolling=scrolling, minimum=Decimal("0"), maximum=Decimal("Infinity"))
+        reference = PaintProbe(scrolling=scrolling)
+        try:
+            for item in (plot, reference):
+                item.add_samples(small)
+                item.flush()
+            report.check(
+                painted(plot, report, f"{name}: a non-finite bound") == painted(reference, report, f"{name}: automatic bounds"),
+                f"{name}: a non-finite descriptor bound does not flatten valid samples",
+            )
+        finally:
+            for item in (plot, reference):
+                item.clear()
+                item.deleteLater()
+
+    paced = PaintProbe(sample_period=Decimal("0.01"))
+    try:
+        with patch.object(plot_module.time, "monotonic", return_value=10.0) as clock:
+            paced.add_samples(values)
+            report.check(paced.samples == [] and list(paced._pending) == values, "pacing queues exact samples without revealing a block early")  # noqa: SLF001
+            clock.return_value = 10.025
+            paced._on_frame()  # noqa: SLF001
+            report.check(list(paced._samples) == values[:2] and list(paced._pending) == values[2:], "pacing reveals only the samples due at the declared period")  # noqa: SLF001
+        paced.flush()
+        report.check(list(paced._samples) == values and not paced._timer.isActive(), "flush preserves exact paced samples and stops its timer")  # noqa: SLF001
+    finally:
+        paced.clear()
+        paced.deleteLater()
+
+    plots = [PaintProbe(scrolling=False, minimum=block[0], maximum=block[-1]) for block in (small, values)]
+    try:
+        with patch.object(plot_module.time, "monotonic", return_value=10.0) as clock:
+            for plot, block in zip(plots, (small, values)):
+                plot.add_samples([block[0]] * 3)
+                plot.flush()
+                plot.add_samples(block)
+            clock.return_value = 10.09
+            for plot in plots:
+                plot._on_frame()  # noqa: SLF001
+            report.check(list(plots[1]._samples) != values and plots[1]._target == values, "large-offset distributions still tween towards the exact target")  # noqa: SLF001
+            report.check(painted(plots[0], report, "small mid-tween") == painted(plots[1], report, "large mid-tween"), "the in-between tween retains offset-independent geometry")
+            clock.return_value = 10.2
+            for plot in plots:
+                plot._on_frame()  # noqa: SLF001
+            report.check(list(plots[1]._samples) == values and not plots[1]._timer.isActive(), "a completed tween settles on the exact target and stops")  # noqa: SLF001
+    finally:
+        for plot in plots:
+            plot.clear()
+            plot.deleteLater()
 
 
 def main() -> int:
     report = Report()
+    app = application()
     print("GUI cards and plots (offscreen)")
+    check_exact_plot_painting(report)
     with WindowFixture("gui-cards-plots") as fixture:
         app = fixture.app
         service = fixture.service

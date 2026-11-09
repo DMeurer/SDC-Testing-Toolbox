@@ -34,8 +34,10 @@ from PySide6.QtWidgets import (
 
 from .. import config
 from .consumer_pane import ConsumerPane
+from .consumer_tabs import ConsumerTabs
 from .no_wheel import NoWheelTabBar
 from .provider_pane import ProviderPane
+from .styling import is_dark, set_dark_mode
 
 if TYPE_CHECKING:
     from ..provider_service import ProviderService
@@ -94,7 +96,7 @@ class MainWindow(QMainWindow):
         self.resize(1100, 560)
 
         self.provider_pane = ProviderPane(service, self)
-        self.network_pane = ConsumerPane(
+        self.network_tabs = ConsumerTabs(
             service.ip,
             self,
             own_epr=service.epr.urn,
@@ -102,7 +104,7 @@ class MainWindow(QMainWindow):
         )
 
         self.provider_panel = TitledPanel(PROVIDER_TITLE, self.provider_pane)
-        self.network_panel = TitledPanel(NETWORK_TITLE, self.network_pane)
+        self.network_panel = TitledPanel(NETWORK_TITLE, self.network_tabs)
 
         # Both layouts exist all the time; the panels move between them on demand.
         self.splitter = QSplitter(Qt.Horizontal)
@@ -127,6 +129,11 @@ class MainWindow(QMainWindow):
         self._show_status_hint()
 
     # -- layout --------------------------------------------------------------------
+
+    @property
+    def network_pane(self) -> ConsumerPane:
+        """Current connection for existing single-pane callers."""
+        return self.network_tabs.current_pane
 
     def set_split_view(self, enabled: bool) -> None:  # noqa: FBT001 - matches the Qt signal
         """Choose between panels side by side and stacked tabs."""
@@ -176,7 +183,7 @@ class MainWindow(QMainWindow):
         "If possible" is the operative part: a metric with no control that suits it still
         gets a card, showing its value read-only, rather than vanishing from the view.
         """
-        for pane in (self.provider_pane, self.network_pane):
+        for pane in (self.provider_pane, self.network_tabs):
             pane.set_use_widgets(enabled)
         if self.widgets_action.isChecked() != enabled:
             self.widgets_action.setChecked(enabled)
@@ -252,6 +259,14 @@ class MainWindow(QMainWindow):
         self.split_view_action.setStatusTip("Panels side by side, or stacked as tabs")
         self.split_view_action.toggled.connect(self.set_split_view)
         view_menu.addAction(self.split_view_action)
+
+        view_menu.addSeparator()
+        self.dark_mode_action = QAction("&Dark mode", self)
+        self.dark_mode_action.setCheckable(True)
+        self.dark_mode_action.setChecked(is_dark(self))
+        self.dark_mode_action.setStatusTip("Use dark colours, or switch back to light mode")
+        self.dark_mode_action.toggled.connect(set_dark_mode)
+        view_menu.addAction(self.dark_mode_action)
 
         # Hiding is opt-in. The actions keep working through their shortcuts either way.
         for menu in (file_menu, view_menu):
@@ -332,7 +347,7 @@ class MainWindow(QMainWindow):
         Everything already configured is discarded, since a preset describes a whole device
         rather than an addition to one.
         """
-        existing = len(self.service.list_metrics()) + len(self.service.list_alerts())
+        existing = len(self.service.list_metrics()) + len(self.service.list_alerts()) + len(self.service.list_actions())
         if confirm and existing:
             answer = QMessageBox.question(
                 self,
@@ -431,5 +446,5 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: ANN001, N802 - Qt naming
         """Drop the consumer's subscriptions and discovery socket on the way out."""
-        self.network_pane.shutdown()
+        self.network_tabs.shutdown()
         super().closeEvent(event)

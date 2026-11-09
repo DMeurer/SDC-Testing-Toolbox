@@ -180,6 +180,16 @@ def _xml_compatible(value: str) -> bool:
     )
 
 
+def validate_xml_text(value: object, field: str) -> None:
+    """Reject non-text and XML-invalid user strings before any MDIB writes."""
+    if not isinstance(value, str):
+        msg = f"{field} must be a string"
+        raise TypeError(msg)
+    if not _xml_compatible(value):
+        msg = f"{field} contains characters not allowed in XML 1.0"
+        raise ValueError(msg)
+
+
 _URI_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 _URI_CHARACTERS = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
@@ -451,6 +461,7 @@ class MetricSpec:
     section: str = ""
 
     def __post_init__(self) -> None:
+        self.validate_text()
         if self.controllable and not self.kind.controllable:
             msg = f"{self.kind.value} metrics cannot be remote-controlled"
             raise ValueError(msg)
@@ -539,6 +550,15 @@ class MetricSpec:
             raise ValueError(msg)
         if self.initial_value is not None:
             self.initial_value = coerce_metric_value(self, self.initial_value)
+
+    def validate_text(self) -> None:
+        """Validate descriptor text again when a mutable spec reaches a write boundary."""
+        for name in ("label", "unit_label", "domain_unit_label", "section"):
+            validate_xml_text(getattr(self, name), f"metric {name}")
+        if self.handle is not None:
+            validate_xml_text(self.handle, "metric handle")
+        for value in self.allowed_values:
+            validate_xml_text(value, "metric allowed_values")
 
     @property
     def slug(self) -> str:
@@ -771,6 +791,7 @@ class AlertSpec:
     signals: tuple[AlertSignalSpec, ...] = field(default_factory=_default_alert_signals)
 
     def __post_init__(self) -> None:
+        self.validate_text()
         # AlertKind and AlertPriority are the BICEPS enums, and those subclass str. Anything
         # that round-trips a value through a string - Qt's QVariant, a JSON file, a console
         # argument - hands back a plain str that looks right but is not the enum. Coerce
@@ -802,6 +823,13 @@ class AlertSpec:
         if not self.label.strip():
             msg = "an alarm needs a label"
             raise ValueError(msg)
+
+    def validate_text(self) -> None:
+        """Validate mutable alert descriptor text before publication or profile replacement."""
+        for name in ("label", "source_handle"):
+            validate_xml_text(getattr(self, name), f"alarm {name}")
+        if self.handle is not None:
+            validate_xml_text(self.handle, "alarm handle")
 
     @property
     def slug(self) -> str:
@@ -894,6 +922,11 @@ class LocationInfo:
     point_of_care: str = ""
     room: str = ""
     bed: str = ""
+
+    def validate_text(self) -> None:
+        """Validate all six details before context association or discovery publication."""
+        for name in ("facility", "building", "floor", "point_of_care", "room", "bed"):
+            validate_xml_text(getattr(self, name), f"location {name}")
 
     def is_empty(self) -> bool:
         """Whether nothing at all was given."""
@@ -1099,6 +1132,7 @@ class ActionSpec:
     note: str = ""
 
     def __post_init__(self) -> None:
+        self.validate_text()
         if not self.label.strip():
             msg = "an action needs a label"
             raise ValueError(msg)
@@ -1111,6 +1145,15 @@ class ActionSpec:
                 raise TypeError(msg)
             if isinstance(value, Decimal):
                 fixed_point_decimal(value, f"action {self.label!r}: effect on {handle}")
+
+    def validate_text(self) -> None:
+        """Validate mutable action text without changing its execution-time effect checks."""
+        for name in ("label", "target_handle", "note"):
+            validate_xml_text(getattr(self, name), f"action {name}")
+        if self.handle is not None:
+            validate_xml_text(self.handle, "action handle")
+        for handle in self.effects:
+            validate_xml_text(handle, "action effect handle")
 
     @property
     def slug(self) -> str:

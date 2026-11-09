@@ -132,10 +132,20 @@ The **Network** panel is everybody else's. *Scan* finds providers, *Connect* loa
 Rows the device will accept writes for are marked writable; select one and the editor underneath adapts to it — a combo box for a choice, a plain field with the permitted range for a number.
 The result of a write is reported as the provider's own `InvocationState`.
 
+Each Network tab is an independent connection. Use **+** (**Ctrl+T**) to add one, then
+Scan/Connect in that tab. The tab's close button (or **Ctrl+W** while focused inside
+Network) disconnects only that session; closing the last tab leaves an empty one ready
+to connect. Numbered tab titles identify the peer; hover for its connection status.
+Switching tabs or hiding Network never pauses backend connections, subscriptions or
+incoming MDIB reports. Hidden controls/plots need not repaint. Widget/table mode and
+the light/dark theme apply to every tab, including new ones. Closing the application
+closes every session. Connections are not saved or automatically reconnected.
+
 The menu bar is on screen by default.\
 *View → Always show menu bar* hides it until you press **Alt**, if you would rather have the room.\
 *View → Split view* (F8) swaps between the two panels sitting side by side with a movable divider, and the same two stacked as tabs.\
 *View → Use widgets if possible* (F9) swaps the metric tables for a control per metric.\
+*View → Dark mode* switches between dark (checked) and light (unchecked) colours for this session.
 
 ## Widgets
 
@@ -464,7 +474,7 @@ This is a focused SDC learning fixture, not an IEEE 11073 conformance claim. IEE
 | **Might cause problems** | The locally published alert model has one source metric per condition, local acknowledgement/delegation, and automatic limits only for decimal scalar values. Signals can use every standard manifestation and latching option. The consumer still displays peer source handles and signal manifestations. | Remote alert control, interoperable delegation, and limit conditions on text or choice sources cannot be exercised correctly.                                                                                 |
 | **Might cause problems** | The provider is a small MDIB model: scalar writes set `Validity=Valid` and `ActivationState=On`, with no controls for quality, component state or lifecycle transitions.                                                                                                                                | It cannot simulate many degraded, unavailable, inactive or quality-qualified states a consumer may need to handle.                                                                                                      |
 | **Might cause problems** | Sample arrays have no waveform annotations and use one non-real-time generator thread.                                                  | It is useful for basic streaming and display tests, not for timing or annotation conformance tests.                                                                                      |
-| **Might cause problems** | The GUI keeps one active peer. When a peer changes MDIB sequence or instance identity, it disconnects and requires a manual reconnect.                                                                                                                                                                  | Multi-peer monitoring and automatic restart/reload recovery are not covered.                                                                                                                                            |
+| **Might cause problems** | Network tabs keep independent peers active. When a peer changes MDIB sequence or instance identity, only its tab disconnects and requires a manual reconnect.                                                                                                                                          | Automatic restart/reload recovery is not covered.                                                                                                                                                                      |
 | **Might cause problems** | There is no declared conformance profile and no end-to-end test against an independent SDC implementation or product.                                                                                                                                                                                   | A passing repository suite demonstrates this toolbox talking to itself across processes, not product interoperability or standards conformance.                                                                         |
 | **Invisible**            | The consumer gives detailed metric views only for the five BICEPS metric descriptor types it recognizes. Other entities and extensions remain in the generic containment tree or raw `RemoteDevice.mdib`.                                                                                               | A simple peer appears complete, while foreign extensions and most non-metric state are not available through the high-level UI/API.                                                                                     |
 | **Invisible**            | The GUI takes the first inline concept description it finds. It does not select a language or use the peer's LocalizationService.                                                                                                                                                                       | The English labels in shipped presets look normal; localized or service-supplied text is not tested.                                                                                                                    |
@@ -498,6 +508,7 @@ Linux and once on Windows through `tests/run_suites.py`. Qt jobs use
 | `tests/gui_provider_structure.py` | provider action, alarm and operation structural refreshes |
 | `tests/service_lifecycle.py` | provider and consumer startup fault cleanup |
 | `tests/consumer_lifecycle.py` | window-close races, stale work and natural real-window shutdown |
+| `tests/multi_provider.py` | independent connection tabs, hidden backend reports, per-provider writes and lifecycle/settings isolation |
 | `tests/gui_audit_regressions.py` | truthful missing/current values, active drafts, cleanup handoffs, plot bounds and scope updates |
 | `tests/acceptance_readiness.py` | bounded provider readiness waits and subprocess cleanup |
 

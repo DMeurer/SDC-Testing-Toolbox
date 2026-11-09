@@ -17,7 +17,7 @@ import threading
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -46,7 +46,6 @@ from ..model import MetricKind
 from .async_call import AsyncCall
 from .decimal_input import DecimalInputError, parse_decimal_input
 from .helpers import (
-    NO_VALUE,
     sample_count_text,
     select_table_row,
     selected_table_value,
@@ -151,6 +150,7 @@ class ConsumerPane(QWidget):
     provider_departed = Signal(str)
     # (remote, reason). Emitted from whichever thread noticed; queued like the above.
     connection_lost = Signal(object, str)
+    status_changed = Signal(str)
 
     def __init__(
         self,
@@ -176,6 +176,8 @@ class ConsumerPane(QWidget):
         self._generation = 0
         self._shutdown = False
         self._health_lock = threading.RLock()
+        self._editor_definition = None
+        self._choice_dirty = False
 
         self._build_ui()
         self._wire_async()
@@ -286,6 +288,7 @@ class ConsumerPane(QWidget):
         self.value_edit = QLineEdit()
         self.value_edit.returnPressed.connect(self._on_apply)
         self.choice_box = NoWheelComboBox()
+        self.choice_box.activated.connect(self._on_choice_edited)
         self.editor_stack = QStackedWidget()
         self.editor_stack.addWidget(self.value_edit)
         self.editor_stack.addWidget(self.choice_box)
@@ -542,6 +545,8 @@ class ConsumerPane(QWidget):
 
     def _reset_remote_ui(self) -> None:
         """Clear every view and control derived from the current peer."""
+        self._editor_definition = None
+        self._choice_dirty = False
         self.tree.clear()
         self.table.clearSelection()
         self.table.setRowCount(0)
@@ -553,7 +558,7 @@ class ConsumerPane(QWidget):
         self.security_label.clear()
         self.refresh_actions()
 
-        self.value_edit.clear()
+        self.value_edit.setText("")
         self.value_edit.setPlaceholderText("")
         self.choice_box.clear()
         self.editor_stack.setCurrentIndex(EDITOR_TEXT)
@@ -633,38 +638,41 @@ class ConsumerPane(QWidget):
     def _rebuild_table(self, metrics: dict[str, RemoteMetric]) -> None:
         selected = self.selected_handle()
 
-        self.table.setRowCount(len(metrics))
-        for row, (handle, metric) in enumerate(sorted(metrics.items())):
-            writable, tooltip = self._writable_text(metric)
-            cells = {
-                COL_HANDLE: handle,
-                COL_LABEL: metric.label or "",
-                COL_KIND: metric.kind.value if metric.kind else metric.node_type_name,
-                COL_VALUE: _value_text(metric),
-                COL_RANGE: metric.domain_text() or metric.range_text() or (
-                    "technical: " + "; ".join(range_.text() for range_ in metric.technical_ranges)
-                    if metric.technical_ranges else ""
-                ),
-                COL_UNIT: metric.unit_label or "",
-                COL_WRITABLE: writable,
-            }
-            for column, text in cells.items():
-                item = QTableWidgetItem(text)
-                if column == COL_VALUE:
-                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                if column == COL_WRITABLE and writable != "yes":
-                    item.setForeground(muted_colour(self))
-                if column == COL_WRITABLE:
-                    item.setToolTip(tooltip)
-                if column == COL_LABEL and not metric.label:
-                    # A foreign device may publish no concept description at all. Show the
-                    # code instead of an empty cell, so the row is still identifiable.
-                    item.setText(metric.type_code or "")
-                    item.setForeground(muted_colour(self))
-                self.table.setItem(row, column, item)
+        with QSignalBlocker(self.table):
+            self.table.clearSelection()
+            self.table.setCurrentItem(None)
+            self.table.setRowCount(len(metrics))
+            for row, (handle, metric) in enumerate(sorted(metrics.items())):
+                writable, tooltip = self._writable_text(metric)
+                cells = {
+                    COL_HANDLE: handle,
+                    COL_LABEL: metric.label or "",
+                    COL_KIND: metric.kind.value if metric.kind else metric.node_type_name,
+                    COL_VALUE: _value_text(metric),
+                    COL_RANGE: metric.domain_text() or metric.range_text() or (
+                        "technical: " + "; ".join(range_.text() for range_ in metric.technical_ranges)
+                        if metric.technical_ranges else ""
+                    ),
+                    COL_UNIT: metric.unit_label or "",
+                    COL_WRITABLE: writable,
+                }
+                for column, text in cells.items():
+                    item = QTableWidgetItem(text)
+                    if column == COL_VALUE:
+                        item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    if column == COL_WRITABLE and writable != "yes":
+                        item.setForeground(muted_colour(self))
+                    if column == COL_WRITABLE:
+                        item.setToolTip(tooltip)
+                    if column == COL_LABEL and not metric.label:
+                        # A foreign device may publish no concept description at all. Show the
+                        # code instead of an empty cell, so the row is still identifiable.
+                        item.setText(metric.type_code or "")
+                        item.setForeground(muted_colour(self))
+                    self.table.setItem(row, column, item)
 
-        if selected is not None:
-            self.select_handle(selected)
+            if selected is not None:
+                self.select_handle(selected)
         self._columns.refit()
 
     @staticmethod
@@ -703,9 +711,9 @@ class ConsumerPane(QWidget):
         if selected is not None and selected in metrics:
             metric = metrics[selected]
             if self.editor_stack.currentIndex() == EDITOR_CHOICE:
-                if not self.choice_box.view().isVisible():
+                if not self._choice_dirty and not self.choice_box.view().isVisible():
                     show_choice_value(self.choice_box, metric.value)
-            elif not self.value_edit.hasFocus():
+            elif not (self.value_edit.hasFocus() or self.value_edit.isModified()):
                 self.value_edit.setText("" if metric.value is None else str(metric.value))
 
     def _on_waveforms_changed(self, blocks_by_handle: dict) -> None:
@@ -783,6 +791,7 @@ class ConsumerPane(QWidget):
         if metric is not None and self.selected_handle() == handle:
             # A completed request wins over a focused text editor, just as it does for a
             # card. Ordinary metric reports still leave an unfinished edit alone.
+            self._choice_dirty = False
             if self.editor_stack.currentIndex() == EDITOR_CHOICE:
                 show_choice_value(self.choice_box, metric.value)
             else:
@@ -890,6 +899,9 @@ class ConsumerPane(QWidget):
         """Restore the selection to a given handle, if it is still there."""
         select_table_row(self.table, COL_HANDLE, handle)
 
+    def _on_choice_edited(self, _index: int) -> None:
+        self._choice_dirty = True
+
     def _on_selection_changed(self) -> None:
         self.invocation_label.setText("")
         handle = self.selected_handle()
@@ -900,19 +912,29 @@ class ConsumerPane(QWidget):
         )
 
         if metric is None:
+            self._editor_definition = None
+            self._choice_dirty = False
+            self.value_edit.setModified(False)
             self.editor_label.setText("Connect to a device to control it")
             self._set_editor_enabled(enabled=False)
             return
 
+        definition = (from_remote_metric(metric), metric.selected_operation_handle)
+        same_definition = definition == self._editor_definition
+        self._editor_definition = definition
+        if not same_definition:
+            self._choice_dirty = False
         allowed_values = metric.operation_allowed_values or metric.allowed_values
         if metric.kind is MetricKind.CHOICE and allowed_values:
             self.editor_stack.setCurrentIndex(EDITOR_CHOICE)
-            self.choice_box.clear()
-            self.choice_box.addItems(list(allowed_values))
-            show_choice_value(self.choice_box, metric.value)
+            if not same_definition or not (self._choice_dirty or self.choice_box.view().isVisible()):
+                self.choice_box.clear()
+                self.choice_box.addItems(list(allowed_values))
+                show_choice_value(self.choice_box, metric.value)
         else:
             self.editor_stack.setCurrentIndex(EDITOR_TEXT)
-            self.value_edit.setText("" if metric.value is None else str(metric.value))
+            if not same_definition or not (self.value_edit.hasFocus() or self.value_edit.isModified()):
+                self.value_edit.setText("" if metric.value is None else str(metric.value))
             self.value_edit.setPlaceholderText(metric.range_text())
 
         caption = metric.label or handle
@@ -1013,6 +1035,7 @@ class ConsumerPane(QWidget):
 
     def _set_status(self, text: str) -> None:
         self.status_label.setText(text)
+        self.status_changed.emit(text)
 
     def _invocation_busy(self) -> bool:
         return self.remote is not None and self._worker.busy_for(

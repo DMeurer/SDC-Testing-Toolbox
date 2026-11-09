@@ -54,6 +54,7 @@ from sdctoolbox.gui.consumer_pane import COL_RANGE as COL_R_RANGE  # noqa: E402
 from sdctoolbox.gui.consumer_pane import COL_VALUE as COL_R_VALUE  # noqa: E402
 from sdctoolbox.gui.consumer_pane import COL_WRITABLE as COL_R_WRITABLE  # noqa: E402
 from sdctoolbox.gui.context_dialog import ContextDialog  # noqa: E402
+from sdctoolbox.gui.helpers import NO_VALUE  # noqa: E402
 from sdctoolbox.gui.main_window import MainWindow  # noqa: E402
 from sdctoolbox.gui.new_alert_dialog import NewAlertDialog  # noqa: E402
 from sdctoolbox.gui.new_metric_dialog import NewMetricDialog  # noqa: E402
@@ -67,7 +68,6 @@ from sdctoolbox.gui.provider_pane import (  # noqa: E402
     COL_RANGE,
     COL_UNIT,
     COL_VALUE,
-    NO_VALUE,
 )
 from sdctoolbox.gui.startup_dialog import LINK_LOCAL_PREFIX, StartupDialog  # noqa: E402
 from sdctoolbox.gui.styling import mute  # noqa: E402
@@ -297,8 +297,8 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             "and every entry is loadable, so none of the shipped presets is broken",
         )
         report.check(
-            view_items == ["Always show &menu bar", "Use &widgets if possible", "&Split view"],
-            "View has all three toggles",
+            view_items == ["Always show &menu bar", "Use &widgets if possible", "&Split view", "&Dark mode"],
+            "View has all four toggles, including the theme",
             str(view_items),
         )
         report.check(

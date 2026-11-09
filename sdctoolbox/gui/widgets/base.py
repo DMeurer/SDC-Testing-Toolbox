@@ -12,7 +12,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QLineEdit, QWidget
 
 from ...model import MetricKind, RemoteRange
 
@@ -50,16 +50,13 @@ class WidgetSpec:
     # A remote metric may have a TechnicalRange but no operation AllowedRange. Use it to
     # draw a bounded slider, without treating it as a limit on remote writes.
     technical_ranges: tuple[RemoteRange, ...] = ()
+    # A replacement operation invalidates unfinished input even if its domain is identical.
+    selected_operation_handle: str | None = None
 
     @property
     def caption(self) -> str:
         """What to show as the control's title."""
         return self.label or self.handle
-
-    @property
-    def bounded(self) -> bool:
-        """Whether both ends of the range are known."""
-        return self.minimum is not None and self.maximum is not None
 
     @property
     def control_ranges(self) -> tuple[RemoteRange, ...]:
@@ -122,6 +119,7 @@ def from_remote_metric(metric: RemoteMetric) -> WidgetSpec:
         resolution=metric.resolution,
         allowed_ranges=metric.allowed_ranges,
         technical_ranges=metric.technical_ranges,
+        selected_operation_handle=metric.selected_operation_handle,
         editable=metric.controllable_now,
         note=note,
         sample_period=metric.sample_period,
@@ -190,6 +188,8 @@ class MetricWidget(QWidget):
 
     def request(self, value: Any) -> None:
         """Ask for the metric to be set."""
+        for edit in self.findChildren(QLineEdit):
+            edit.setModified(False)
         self.value_requested.emit(self.spec.handle, value)
 
     def restore_value(self, value: Any) -> None:
@@ -197,10 +197,12 @@ class MetricWidget(QWidget):
 
         Controls show what the user asked for the moment they ask. Once the device has
         answered, what it actually holds wins, whether the request was refused, failed, or
-        accepted with a modified value. Focus is dropped first, because a focused field
-        counts as busy and would otherwise keep the rejected value on screen.
+        accepted with a modified value. Clear unfinished edits and focus first, so a busy
+        field cannot keep the rejected value on screen.
         """
         for child in self.findChildren(QWidget):
+            if isinstance(child, QLineEdit):
+                child.setModified(False)
             if child.hasFocus():
                 child.clearFocus()
         self.show_value(value)

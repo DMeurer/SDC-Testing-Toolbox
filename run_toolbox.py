@@ -158,11 +158,13 @@ def main(argv: list[str] | None = None) -> int:
         device=device,
         tls_config=settings.tls_config,
     )
+    window = None
     try:
         service.start()
         window = MainWindow(service)
         if settings.config_path and device_config is not None:
-            window.apply_config(device_config, settings.config_path)
+            if not window.apply_config(device_config, settings.config_path):
+                return 2
         window.show()
         if args.smoke_test:
             bundled_files = {path.name for path in constants.PRESET_DIR.glob("*.json")}
@@ -193,7 +195,11 @@ def main(argv: list[str] | None = None) -> int:
         QMessageBox.critical(None, "SDC testing toolbox", str(exc))
         raise
     finally:
-        service.stop()
+        try:
+            if window is not None:
+                window.close()
+        finally:
+            service.stop()
 
 
 if __name__ == "__main__":

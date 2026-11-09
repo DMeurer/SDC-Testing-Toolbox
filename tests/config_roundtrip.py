@@ -21,6 +21,7 @@ import time
 from decimal import Decimal
 from itertools import pairwise, permutations
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from lxml import etree
@@ -35,7 +36,7 @@ from sdc11073.definitions_sdc import SdcV1Definitions  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 from sdc11073.mdib import ConsumerMdib  # noqa: E402
 from sdc11073.xml_types import pm_qnames as pm  # noqa: E402
-from sdc11073.xml_types import pm_types  # noqa: E402
+from sdc11073.xml_types import msg_types, pm_types  # noqa: E402
 
 from sdctoolbox import config, constants  # noqa: E402
 from sdctoolbox.consumer_service import RemoteDevice  # noqa: E402
@@ -1749,6 +1750,215 @@ def check_xml_profile_preflight(report: Report, service: ProviderService) -> Non
     service.remove_metric("m.xml_existing")
 
 
+def check_rejected_unchanged(
+    report: Report, service: ProviderService, operation, description: str, expected_text: str = "",
+) -> None:
+    """A validation failure must precede even a compensating/versioned write."""
+    before = complete_snapshot(service)
+    try:
+        operation()
+    except (config.ConfigError, TypeError, ValueError, RuntimeError) as exc:
+        rejected = True
+        detail = str(exc)
+    else:
+        rejected = False
+        detail = "accepted"
+    report.check(rejected and expected_text in detail, f"{description} is rejected", detail)
+    try:
+        after = complete_snapshot(service)
+    except (TypeError, ValueError, RuntimeError) as exc:
+        after = {}
+        detail = f"snapshot is no longer readable: {exc}"
+    else:
+        detail = str([name for name in before if before[name] != after[name]])
+    report.require(after == before, f"{description} leaves the complete provider and wire state unchanged", detail)
+
+
+def check_location_xml_validation(report: Report, service: ProviderService) -> None:
+    """Invalid location details cannot disassociate the current context or poison MDIB XML."""
+    service.stop_generator()
+    original = service.get_location()
+    fields = ("facility", "building", "floor", "point_of_care", "room", "bed")
+    for field in fields:
+        payload = {"contexts": {"location": {field: "Bad\x01facility"}}}
+        check_rejected_unchanged(
+            report, service, lambda: config.parse(json.loads(json.dumps(payload))),
+            f"JSON location {field} with XML-invalid text", "XML",
+        )
+        check_rejected_unchanged(
+            report, service,
+            lambda: service.set_location(LocationInfo(**{field: "Bad\x01facility"})),
+            f"direct location {field} with XML-invalid text", "XML",
+        )
+        invalid = LocationInfo(**{field: "Bad\x01facility"})
+        for replace in (True, False):
+            profile = config.DeviceConfig(
+                metrics=[MetricSpec(label="Location first", kind=MetricKind.NUMBER, handle="m.location_first")],
+                location=invalid,
+            )
+            check_rejected_unchanged(
+                report, service, lambda: config.apply_to(service, profile, replace=replace),
+                f"{'replace' if replace else 'append'} invalid location {field}", "XML",
+            )
+
+    for field in fields:
+        check_rejected_unchanged(
+            report, service, lambda: service.set_location(LocationInfo(**{field: 1})),
+            f"non-string location {field}",
+        )
+    permitted = LocationInfo(**{field: "Klinik München 東京\t\n\r" for field in fields})
+    try:
+        service.set_location(permitted)
+        node = service.mdib.reconstruct_mdib_with_context_states()[0]
+        details = node.xpath(
+            "//*[@DescriptorHandle=$handle and @ContextAssociation='Assoc']/*[local-name()='LocationDetail']",
+            handle=constants.LOCATION_CONTEXT_HANDLE,
+        )
+        report.check(
+            service.get_location() == permitted and len(details) == 1
+            and dict(details[0].attrib) == {
+                name: "Klinik München 東京\t\n\r" for name in ("Facility", "Building", "Floor", "PoC", "Room", "Bed")
+            },
+            "all location fields retain ordinary Unicode and XML-permitted whitespace on the wire",
+        )
+        report.check(
+            config.parse(config.to_dict(service)).location == permitted,
+            "permitted location text survives export and JSON/profile parsing",
+        )
+        config.apply_to(service, config.parse({}), replace=False)
+        report.check(service.get_location() == permitted, "an omitted location preserves the current association")
+        check_rejected_unchanged(
+            report, service, lambda: config.apply_to(service, config.parse({"contexts": {"location": {}}})),
+            "an explicit empty location",
+        )
+    finally:
+        service.set_location(original)
+
+
+def check_control_capability_roundtrip(report: Report, service: ProviderService) -> None:
+    """A late-created set operation is profile capability, even while disabled."""
+    handles = []
+    try:
+        for kind, initial, requested in (
+            (MetricKind.NUMBER, Decimal("1"), Decimal("2")),
+            (MetricKind.TEXT, "before", "after"),
+        ):
+            handle = service.add_metric(MetricSpec(
+                label=f"Late control {kind.value}", kind=kind, initial_value=initial,
+            ))
+            handles.append(handle)
+            report.check(service.operation_handle_for(handle) is None, f"{kind.value} starts without a set operation")
+            service.enable_control(handle)
+            for disabled in (False, True):
+                if disabled:
+                    service.disable_control(handle)
+                payload = config.to_dict(service)
+                entry = next(item for item in payload["metrics"] if item["handle"] == handle)
+                report.check(entry["controllable"] is True, f"{'disabled' if disabled else 'enabled'} late {kind.value} control exports capability")
+                config.apply_to(service, config.parse(json.loads(json.dumps(payload))))
+                operation_handle = service.operation_handle_for(handle)
+                operation = service._sco._registered_operations.get(operation_handle)  # noqa: SLF001
+                report.check(
+                    operation is not None and operation.operation_target_handle == handle,
+                    f"{'disabled' if disabled else 'enabled'} late {kind.value} control reloads a real registered set operation",
+                )
+                if operation is not None:
+                    params = SimpleNamespace(
+                        operation_instance=operation, operation_request=SimpleNamespace(argument=requested),
+                    )
+                    result = service._handler(params)  # noqa: SLF001 - exercise the restored registered boundary
+                    report.check(
+                        result.invocation_state is msg_types.InvocationState.FINISHED
+                        and service.get_value(handle) == requested,
+                        f"reloaded {kind.value} capability accepts a real set (OperatingMode is not persisted)",
+                    )
+                else:
+                    service.enable_control(handle)
+    finally:
+        for handle in handles:
+            service.remove_metric(handle)
+
+
+def check_descriptor_text_preflight(report: Report, service: ProviderService) -> None:
+    """Descriptor text must validate even with explicit codings and mutable parsed specs."""
+    service.stop_generator()
+    witness = service.add_metric(MetricSpec(label="Descriptor witness", kind=MetricKind.NUMBER))
+    payload = {
+        "metrics": [
+            {"label": "Text first", "kind": "number", "section": "Text section"},
+            {
+                "label": "Text second", "kind": "choice", "allowed_values": ["A", "B"],
+                "type": {"code": "type", "label": "Type"}, "unit": {"code": "unit", "label": "Unit"},
+            },
+            {"label": "Text domain", "kind": "distribution", "domain_unit": {"code": "domain", "label": "Domain"}},
+        ],
+        "alerts": [{"label": "Text alert", "watches": "m.text_first"}],
+        "actions": [{"label": "Text action", "target": "m.text_first"}],
+    }
+    cases = (
+        ("metrics", 1, "label", "label"),
+        ("metrics", 1, "unit", "unit_label"),
+        ("metrics", 1, "allowed_values", "allowed_values"),
+        ("metrics", 1, "section", "section"),
+        ("metrics", 1, "handle", "handle"),
+        ("metrics", 2, "domain_unit", "domain_unit_label"),
+        ("alerts", 0, "label", "label"),
+        ("alerts", 0, "handle", "handle"),
+        ("actions", 0, "label", "label"),
+        ("actions", 0, "handle", "handle"),
+        ("actions", 0, "note", "note"),
+    )
+    for group, index, key, field in cases:
+        broken = json.loads(json.dumps(payload))
+        broken[group][index][key] = ["A", "Bad\x01text"] if key == "allowed_values" else "Bad\x01text"
+        check_rejected_unchanged(
+            report, service, lambda: config.parse(broken), f"JSON {group} {field} with XML-invalid text", "XML",
+        )
+        for replace in (True, False):
+            profile = config.parse(payload)
+            spec = getattr(profile, group)[index]
+            setattr(spec, field, ("A", "Bad\x01text") if field == "allowed_values" else "Bad\x01text")
+            check_rejected_unchanged(
+                report, service, lambda: config.apply_to(service, profile, replace=replace),
+                f"{'replace' if replace else 'append'} mutated {group} {field}", "XML",
+            )
+        if group == "alerts":
+            spec.source_handle = witness
+        elif group == "actions":
+            spec.target_handle = constants.MDS_HANDLE
+        check_rejected_unchanged(
+            report, service,
+            lambda: getattr(service, {"metrics": "add_metric", "alerts": "add_alert", "actions": "add_action"}[group])(spec),
+            f"direct mutated {group} {field}", "XML",
+        )
+    service.remove_metric(witness)
+
+
+def check_mutated_waveform_preflight(report: Report, service: ProviderService) -> None:
+    """Import repeats the geometry checks before removals or an earlier valid addition."""
+    witness = service.add_metric(MetricSpec(label="Preflight witness", kind=MetricKind.WAVEFORM))
+    service.stop_generator()
+    service._publish_one_block()  # noqa: SLF001 - deterministic samples and generator bookkeeping
+    try:
+        cases = (
+            *[("sample_period", value) for value in (None, Decimal("0"), Decimal("-0.1"), Decimal("NaN"), Decimal("1E-100"), 0.1)],
+            *[("cycle_samples", value) for value in (None, Decimal("40"), True, 1)],
+        )
+        for replace in (True, False):
+            for field, invalid in cases:
+                profile = config.parse({"metrics": [
+                    {"label": "Geometry first", "kind": "number", "initial_value": "2", "section": "Geometry new section"},
+                    {"label": "Geometry second", "kind": "waveform"},
+                ]})
+                setattr(profile.metrics[1], field, invalid)
+                check_rejected_unchanged(
+                    report, service, lambda: config.apply_to(service, profile, replace=replace),
+                    f"{'replace' if replace else 'append'} waveform {field}={invalid!r}", field,
+                )
+    finally:
+        service.remove_metric(witness)
+
+
 def check_derived_step_preflight(report: Report, service: ProviderService) -> None:
     """Representable domain endpoints do not make a lossy calculated step safe to import."""
     existing = service.add_metric(
@@ -2501,6 +2711,10 @@ def run_checks(report: Report, workdir: Path) -> None:
     regressions.start()
     try:
         check_atomic_save(report, regressions, workdir)
+        check_location_xml_validation(report, regressions)
+        check_control_capability_roundtrip(report, regressions)
+        check_descriptor_text_preflight(report, regressions)
+        check_mutated_waveform_preflight(report, regressions)
         check_xml_profile_preflight(report, regressions)
         check_derived_step_preflight(report, regressions)
         check_derived_sample_range_preflight(report, regressions)

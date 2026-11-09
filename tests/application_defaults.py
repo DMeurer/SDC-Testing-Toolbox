@@ -16,7 +16,9 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(TESTS))
 
 from acceptance_provider import PEER_INSTANCE
+from gui_test_support import application
 from script_support import Report
+import shiboken6
 
 import run_toolbox
 from examples import console
@@ -147,6 +149,9 @@ def check_gui_startup_reuses_profile(*, interactive: bool) -> None:
         def show(self) -> None:
             events.append("show")
 
+        def close(self) -> None:
+            events.append("close")
+
     originals = (
         run_toolbox.QApplication,
         run_toolbox.ProviderService,
@@ -261,6 +266,100 @@ def check_startup_dialog_retains_profile() -> None:
         and settings.config_path == str(source),
         "startup dialog retains the exact profile object it validates",
     )
+
+
+def check_gui_profile_application_startup(mode: str) -> None:
+    """Use real parsing, profile preflight, window and transports; control only modal UI/exec."""
+    app = application()
+    events, windows, providers, warnings, loads, applications = [], [], [], [], [], []
+    succeeds = mode == "smoke-success"
+    real_load = run_toolbox.config.load_file
+
+    class ApplicationBoundary:
+        def exec(self) -> int:
+            events.append("exec")
+            return app.exec() if mode.startswith("smoke") else 0
+
+    class ObservedProvider(run_toolbox.ProviderService):
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            providers.append(self)
+
+        def stop(self) -> None:
+            events.append("provider-stop")
+            super().stop()
+
+    class ObservedWindow(main_window.MainWindow):
+        def __init__(self, service) -> None:
+            super().__init__(service)
+            windows.append(self)
+
+        def apply_config(self, parsed, source) -> bool:
+            applications.append(parsed)
+            return super().apply_config(parsed, source)
+
+        def show(self) -> None:
+            events.append("show")
+            super().show()
+
+        def closeEvent(self, event) -> None:  # noqa: N802
+            events.append("window-close")
+            super().closeEvent(event)
+
+    with TemporaryDirectory(prefix=f"sdc-followup-startup-{mode}-") as temporary:
+        source = Path(temporary) / "profile.json"
+        target = "mds0" if succeeds else "descriptor.does.not.exist"
+        source.write_text('{"version":3,"actions":[{"label":"Startup action","target":"' + target + '"}]}', encoding="utf-8")
+
+        def load_once(path):
+            parsed = real_load(path)
+            if Path(path) == source:
+                loads.append(parsed)
+                source.unlink()
+            return parsed
+
+        def dialog_settings(_args):
+            return StartupSettings(f"followup-startup-{mode}", "127.0.0.1", str(source), False, device_config=load_once(source))
+
+        try:
+            with (
+                patch.object(run_toolbox, "QApplication", lambda _argv: ApplicationBoundary()),
+                patch.object(run_toolbox, "ProviderService", ObservedProvider),
+                patch.object(run_toolbox, "MainWindow", ObservedWindow),
+                patch.object(run_toolbox.config, "load_file", load_once),
+                patch.object(run_toolbox, "ask_how_to_start", dialog_settings),
+                patch.object(main_window.QMessageBox, "warning", lambda _parent, title, text: warnings.append((title, text))),
+                patch.object(main_window.QMessageBox, "critical", lambda _parent, title, text: warnings.append((title, text))),
+            ):
+                argv = [] if mode == "dialog" else ["--name", f"followup-startup-{mode}", "--config", str(source)]
+                if mode.startswith("smoke"):
+                    argv.append("--smoke-test")
+                result = run_toolbox.main(argv)
+            check(len(windows) == len(providers) == 1, f"{mode} startup constructs a real provider and consumer window")
+            pane = windows[0].network_pane
+            REPORT.check(
+                (result == 0 and "exec" in events and "show" in events) if succeeds else (result != 0 and "exec" not in events and "show" not in events),
+                f"{mode} startup {'runs the successful smoke loop' if succeeds else 'never shows or enters a success loop after failed config application'}",
+                f"status={result}, events={events}",
+            )
+            REPORT.check(
+                "window-close" in events and not windows[0].isVisible()
+                and pane._shutdown and pane._worker.wait(3.0) and pane.service._discovery is None
+                and events.count("provider-stop") == 1 and providers[0]._provider is None and providers[0]._discovery is None,
+                f"{mode} startup closes its window, consumer and provider",
+                f"events={events}, consumer_shutdown={pane._shutdown}",
+            )
+            check(len(loads) == 1 and applications == loads and applications[0] is loads[0] and not source.exists(), f"{mode} startup applies its actual single-parse snapshot even after its file is removed")
+            check(not warnings if succeeds else bool(warnings) and "descriptor.does.not.exist" in warnings[-1][1], f"{mode} startup reports config failure rather than an empty success")
+        finally:
+            for window in windows:
+                window.close()
+                window.network_pane._worker.wait(3.0)
+                window.provider_pane.bridge.close()
+                shiboken6.delete(window)
+            for provider in providers:
+                if provider._provider is not None:
+                    provider.stop()
 
 
 def check_console_startup_reuses_profile() -> None:
@@ -535,6 +634,7 @@ def check_main_window_applies_parsed_profile() -> None:
 
 
 def main() -> int:
+    _app = application()
     print("Application default tests")
     check(
         run_toolbox.parse_args([]).name == constants.DEFAULT_INSTANCE_NAME,
@@ -561,6 +661,8 @@ def main() -> int:
     check_console_startup_reuses_profile()
     check_console_apply_failure_stops_provider()
     check_main_window_applies_parsed_profile()
+    for mode in ("command-line", "dialog", "smoke-failure", "smoke-success"):
+        check_gui_profile_application_startup(mode)
     return REPORT.summary()
 
 
