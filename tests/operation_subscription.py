@@ -41,6 +41,7 @@ from sdc11073.xml_types.actions import Actions  # noqa: E402
 from sdctoolbox.consumer_service import ConsumerService, DiscoveredDevice  # noqa: E402
 from sdctoolbox.model import AlertSpec, MetricKind, MetricSpec, PatientInfo  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
+from sdctoolbox.sample_generation import SamplePublisher  # noqa: E402
 
 OPERATION_INVOKED = Actions.OperationInvokedReport.value
 EPISODIC_METRIC = Actions.EpisodicMetricReport.value
@@ -266,6 +267,49 @@ def check_waveform_operation_naming(report: Report) -> None:
             provider.stop()
 
 
+def check_waveform_without_determination_time(report: Report) -> None:
+    """BICEPS leaves DeterminationTime optional, and some peers omit it from their sample arrays."""
+    original_prepare = SamplePublisher.prepare
+
+    def prepare_without_time(self, handle, samples, *, determination_time):  # noqa: ANN001, ANN202
+        prepared = original_prepare(self, handle, samples, determination_time=determination_time)
+        prepared.entity.state.MetricValue.DeterminationTime = None
+        return prepared
+
+    block = [Decimal(1), Decimal(2), Decimal(3)]
+    provider = ProviderService(instance_name="untimed-waveform-provider")
+    service = ConsumerService()
+    remote = None
+    try:
+        provider.start()
+        handle = provider.add_metric(MetricSpec(label="Untimed wave", kind=MetricKind.WAVEFORM))
+        service.start()
+        device = next((d for d in service.scan(timeout=10, expected=99) if d.epr == provider.epr.urn), None)
+        report.require(device is not None, "provider is discoverable")
+        remote = service.connect(device)
+        blocks = CallbackRecorder(lambda payload: {key: list(state.MetricValue.Samples) for key, state in payload.items()})
+        remote.bind(waveform_by_handle=blocks)
+        cursor = blocks.cursor()
+        with patch.object(SamplePublisher, "prepare", prepare_without_time):
+            provider.set_samples(handle, block)
+        report.require(
+            provider.mdib.entities.by_handle(handle).state.MetricValue.DeterminationTime is None,
+            "the published block carries no DeterminationTime",
+        )
+        event = blocks.wait_for(lambda payload: handle in payload, after=cursor, timeout=5.0)
+        report.check(event is not None, "a waveform block without DeterminationTime reaches the consumer")
+        report.check(
+            event is not None and event.payload[handle] == block,
+            "its samples arrive intact",
+            str(event.payload if event is not None else None),
+        )
+    finally:
+        if remote is not None:
+            remote.close()
+        service.stop()
+        provider.stop()
+
+
 def check_deliberate_close_is_not_a_loss(report: Report) -> None:
     """Ending our own subscriptions must not look like the peer going away."""
     provider = ProviderService(instance_name="deliberate-close-provider")
@@ -397,6 +441,7 @@ def main() -> int:
     check_restricted_provider(report)
     check_partial_metric_feed_loss(report)
     check_waveform_operation_naming(report)
+    check_waveform_without_determination_time(report)
     check_deliberate_close_is_not_a_loss(report)
     return report.summary()
 

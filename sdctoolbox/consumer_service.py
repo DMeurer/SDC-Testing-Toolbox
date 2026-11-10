@@ -216,6 +216,15 @@ class _PeriodicConsumerMdibMethods(ConsumerMdibMethods):
         # on this helper for as long as the MDIB does.
         observableproperties.bind(self._sdc_client, **self._periodic_report_callbacks)
 
+    def _on_waveform_report(self, received_message_data: Any) -> None:
+        # BICEPS leaves @DeterminationTime optional, but sdc11073 adds the sample offsets to it and
+        # drops the whole block when it is missing, so a peer that omits it gets the arrival time.
+        arrived = str(int(time.time() * 1000))
+        for value in received_message_data.p_msg.msg_node.iter(pm.MetricValue.text):
+            if value.get("DeterminationTime") is None:
+                value.set("DeterminationTime", arrived)
+        super()._on_waveform_report(received_message_data)
+
     def _on_periodic_report(
         self,
         parser_name: str,
