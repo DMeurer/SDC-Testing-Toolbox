@@ -506,6 +506,7 @@ class RemoteDevice:
         self._closing = False
         self._lost_reason: str | None = None
         self._lost_listeners: list[Callable[[str], None]] = []
+        self._bound_callbacks: list[Callable[[Any], None]] = []
         status = getattr(consumer, "subscription_status", None)
         self._metric_report_actions = _metric_report_actions(consumer) if status is not None else set()
         if status is not None:
@@ -1017,8 +1018,11 @@ class RemoteDevice:
                 operation_by_handle=on_operation_state,
             )
 
-        Callbacks run on sdc11073 threads. Never touch Qt widgets from them.
+        Callbacks run on sdc11073 threads. Never touch Qt widgets from them. The device keeps
+        every callback alive until it is closed and released, because the library alone would
+        drop a lambda or a local function immediately and silently.
         """
+        self._bound_callbacks.extend(callbacks.values())
         observableproperties.bind(self._mdib, **callbacks)
 
     def close(self) -> None:

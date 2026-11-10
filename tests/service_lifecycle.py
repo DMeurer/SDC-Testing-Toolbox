@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import sys
 from contextlib import ExitStack
 from http.client import BadStatusLine, NotConnected
@@ -14,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 from script_support import Report  # noqa: E402
 from sdc11073.definitions_sdc import SdcV1Definitions  # noqa: E402
+from sdc11073.observableproperties import ObservableProperty  # noqa: E402
 from sdc11073.xml_types.actions import Actions  # noqa: E402
 
 from sdctoolbox import consumer_service as consumer_module  # noqa: E402
@@ -433,6 +435,21 @@ def metric_subscription_health() -> None:
     REPORT.check(remote.connection_lost_reason is None, "no invented metric-feed requirement for an operations-only peer")
 
 
+class ObservableMdib:
+    metrics_by_handle = ObservableProperty()
+
+
+def bound_callbacks_stay_alive() -> None:
+    """The library holds observers weakly, so an unreferenced lambda would be collected before its first report."""
+    mdib = ObservableMdib()
+    remote = RemoteDevice(SimpleNamespace(), mdib, "weakly bound peer")
+    seen: list[object] = []
+    remote.bind(metrics_by_handle=lambda payload: seen.append(payload))
+    gc.collect()
+    mdib.metrics_by_handle = {"metric": 1}
+    REPORT.check(seen == [{"metric": 1}], "a callback that nothing else references still receives notifications")
+
+
 def main() -> int:
     print("Service lifecycle fault injection")
     mdib_load_failure()
@@ -447,6 +464,7 @@ def main() -> int:
     http_consumer_rejects_https_endpoint()
     tls_alert_connection_diagnostics()
     metric_subscription_health()
+    bound_callbacks_stay_alive()
     return REPORT.summary()
 
 
