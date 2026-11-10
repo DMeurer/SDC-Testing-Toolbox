@@ -330,6 +330,7 @@ class ProviderService:
                 role_provider_components=RoleProviderComponents(role_provider_class=role_provider_factory),
                 ssl_context_container=self._tls_contexts,
                 alternative_hostname=(self.tls_config.server_name if self.tls_config is not None else None),
+                socket_timeout=constants.NOTIFICATION_TIMEOUT_SECONDS,
             )
 
             # No waveform provider configured, so the real-time sample loop must stay off.

@@ -7,7 +7,12 @@ attribute, rather than with whatever the toolbox happens to write.
 from __future__ import annotations
 
 import logging
+import socket
 import sys
+import threading
+import time
+import urllib.request
+import uuid
 from contextlib import contextmanager
 from decimal import Decimal
 from pathlib import Path
@@ -18,7 +23,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from script_support import Report  # noqa: E402
+from script_support import Report, wait_until  # noqa: E402
 from sdc11073.consumer.consumerimpl import SdcConsumer  # noqa: E402
 from sdc11073.definitions_sdc import SdcV1Definitions  # noqa: E402
 from sdc11073.xml_types import msg_types, pm_types  # noqa: E402
@@ -41,6 +46,9 @@ ASSOCIATED = pm_types.ContextAssociation.ASSOCIATED
 LATE = 0.011  # how far a timed wait typically overshoots on a desktop OS
 FAILED = msg_types.InvocationState.FAILED
 FINISHED = msg_types.InvocationState.FINISHED
+EVENTING = "http://schemas.xmlsoap.org/ws/2004/08/eventing"
+EPISODIC_METRIC_REPORT = "http://standards.ieee.org/downloads/11073/11073-20701-2018/StateEventService/EpisodicMetricReport"
+MAX_STALL = 6.0  # seconds; the provider's default is 18
 
 
 @contextmanager
@@ -62,6 +70,59 @@ def _final_outcome(future) -> tuple[msg_types.InvocationState, msg_types.Invocat
     """The last InvocationState of one remote invocation, with the error code and text it carried."""
     info = future.result(timeout=10).InvocationInfo
     return info.InvocationState, info.InvocationError, " ".join(text.text for text in info.InvocationErrorMessage)
+
+
+def _connect(consumer: ConsumerService, service: ProviderService):
+    """Connect the toolbox consumer to a provider of this process without a network scan."""
+    addresses = list(service._provider.get_xaddrs())  # noqa: SLF001
+    announced = SimpleNamespace(epr=service.epr.urn, x_addrs=addresses, types=[SdcV1Definitions.MedicalDeviceType])
+    return consumer.connect(DiscoveredDevice(service.epr.urn, tuple(addresses), (), service=announced))
+
+
+class _SilentEndpoint:
+    """A TCP endpoint that accepts connections and never answers, like a frozen consumer process."""
+
+    def __init__(self) -> None:
+        self._listener = socket.socket()
+        self._listener.bind(("127.0.0.1", 0))
+        self._listener.listen(8)
+        self.url = f"http://127.0.0.1:{self._listener.getsockname()[1]}/notify"
+        self._held: list[socket.socket] = []
+        threading.Thread(target=self._accept, daemon=True).start()
+
+    def _accept(self) -> None:
+        while True:
+            try:
+                connection, _ = self._listener.accept()
+            except OSError:
+                return
+            self._held.append(connection)
+
+    def close(self) -> None:
+        self._listener.close()
+        for connection in self._held:
+            connection.close()
+
+
+def _subscribe(address: str, action: str, notify_to: str) -> bool:
+    """Send a WS-Eventing Subscribe for one action with an arbitrary delivery endpoint."""
+    envelope = (
+        '<s12:Envelope xmlns:s12="http://www.w3.org/2003/05/soap-envelope" '
+        'xmlns:wsa="http://www.w3.org/2005/08/addressing" '
+        f'xmlns:wse="{EVENTING}">'
+        f"<s12:Header><wsa:To>{address}</wsa:To><wsa:Action>{EVENTING}/Subscribe</wsa:Action>"
+        f"<wsa:MessageID>urn:uuid:{uuid.uuid4()}</wsa:MessageID></s12:Header>"
+        f'<s12:Body><wse:Subscribe><wse:Delivery Mode="{EVENTING}/DeliveryModes/Push">'
+        f"<wse:NotifyTo><wsa:Address>{notify_to}</wsa:Address></wse:NotifyTo></wse:Delivery>"
+        "<wse:Expires>PT15S</wse:Expires>"
+        f'<wse:Filter Dialect="http://docs.oasis-open.org/ws-dd/ns/dpws/2009/01/Action">{action}</wse:Filter>'
+        "</wse:Subscribe></s12:Body></s12:Envelope>"
+    )
+    request = urllib.request.Request(
+        address, data=envelope.encode(), headers={"Content-Type": "application/soap+xml; charset=utf-8"},
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310 - a loopback test endpoint
+        return b"SubscribeResponse" in response.read()
 
 
 def check_limit_alarms_declare_the_limits_they_monitor(report: Report) -> None:
@@ -383,12 +444,7 @@ def check_the_consumer_logs_why_a_peer_refused(report: Report) -> None:
             ActionSpec(label="Broken", target_handle=constants.MDS_HANDLE, effects={number: "not a number"}),
         )
         consumer.start()
-        discovered = SimpleNamespace(
-            epr=service.epr.urn,
-            x_addrs=list(service._provider.get_xaddrs()),  # noqa: SLF001
-            types=[SdcV1Definitions.MedicalDeviceType],
-        )
-        remote = consumer.connect(DiscoveredDevice(service.epr.urn, tuple(discovered.x_addrs), (), service=discovered))
+        remote = _connect(consumer, service)
         consumer_log.addHandler(capture)
         consumer_log.setLevel(logging.INFO)
         refused_set = remote.set_value(number, Decimal(500))
@@ -415,6 +471,63 @@ def check_the_consumer_logs_why_a_peer_refused(report: Report) -> None:
         service.stop()
 
 
+def check_a_silent_subscriber_cannot_hold_up_the_provider(report: Report) -> None:
+    """A consumer that accepts a notification and never answers must cost seconds, not a subscription lifetime.
+
+    sdc11073 delivers notifications while it holds the MDIB lock, so every Get and Set waits for the
+    delivery timeout of the silent endpoint.
+    """
+    service = ProviderService(instance_name="silent-subscriber-conformance")
+    consumer = ConsumerService()
+    silent = _SilentEndpoint()
+    remote = None
+    try:
+        service.start()
+        metric = service.add_metric(MetricSpec(label="Level", kind=MetricKind.NUMBER, initial_value=Decimal(1)))
+        consumer.start()
+        remote = _connect(consumer, service)
+        base = service._provider.get_xaddrs()[0].rstrip("/")  # noqa: SLF001
+        report.require(
+            _subscribe(f"{base}/StateEvent", EPISODIC_METRIC_REPORT, silent.url),
+            "the silent endpoint is subscribed to metric reports",
+        )
+
+        updater = threading.Thread(target=lambda: service.set_value(metric, Decimal(2)))
+        updater.start()
+        time.sleep(0.3)  # the update is now waiting for the silent endpoint
+        started = time.monotonic()
+        try:
+            remote._consumer.client("Get").get_md_state([metric])  # noqa: SLF001
+            outcome = "answered"
+        except Exception as exc:  # noqa: BLE001 - the consumer giving up on the request is the symptom
+            outcome = type(exc).__name__
+        answered_after = time.monotonic() - started
+        updater.join(timeout=30)
+        report.check(
+            outcome == "answered" and answered_after < MAX_STALL,
+            "a GetMdState issued during the stall is answered within the delivery timeout",
+            f"{outcome} after {answered_after:.1f}s",
+        )
+        report.check(
+            wait_until(lambda: remote.metrics()[metric].value == Decimal(2), timeout=10),
+            "a healthy consumer still receives the update",
+        )
+
+        started = time.monotonic()
+        service.set_value(metric, Decimal(3))
+        report.check(time.monotonic() - started < 1.0, "the silent subscriber is dropped, so the next update is not held up")
+        report.check(
+            wait_until(lambda: remote.metrics()[metric].value == Decimal(3), timeout=10),
+            "a healthy consumer still receives the next update",
+        )
+    finally:
+        if remote is not None:
+            remote.close()
+        consumer.stop()
+        silent.close()
+        service.stop()
+
+
 def main() -> int:
     report = Report()
     check_limit_alarms_declare_the_limits_they_monitor(report)
@@ -423,6 +536,7 @@ def main() -> int:
     check_requests_of_the_wrong_kind_are_refused(report)
     check_failed_operations_say_why(report)
     check_the_consumer_logs_why_a_peer_refused(report)
+    check_a_silent_subscriber_cannot_hold_up_the_provider(report)
     return report.summary()
 
 

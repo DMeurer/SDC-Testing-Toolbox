@@ -104,6 +104,11 @@ MIN_GENERATED_WAVEFORM_SAMPLE_PERIOD = (
     Decimal(str(WAVEFORM_BLOCK_SECONDS)) / MAX_GENERATED_WAVEFORM_BLOCK_SAMPLES
 )
 
+# How long the provider waits for a subscriber to take a notification. The library delivers
+# notifications while holding the MDIB lock, so a subscriber that accepts the connection and
+# never answers blocks every other request for this long. The library default is 18 s.
+NOTIFICATION_TIMEOUT_SECONDS = 2
+
 # --------------------------------------------------------------------------------------
 # DPWS device metadata
 # --------------------------------------------------------------------------------------
