@@ -266,6 +266,35 @@ def check_waveform_operation_naming(report: Report) -> None:
             provider.stop()
 
 
+def check_deliberate_close_is_not_a_loss(report: Report) -> None:
+    """Ending our own subscriptions must not look like the peer going away."""
+    provider = ProviderService(instance_name="deliberate-close-provider")
+    service = ConsumerService()
+    remote = None
+    try:
+        provider.start()
+        service.start()
+        device = next((d for d in service.scan(timeout=10, expected=99) if d.epr == provider.epr.urn), None)
+        report.require(device is not None, "provider is discoverable")
+        remote = service.connect(device)
+        reasons: list[str] = []
+        remote.on_connection_lost(reasons.append)
+        with capture_warnings() as warnings:
+            remote.close()
+        report.check(
+            not reasons and remote.connection_lost_reason is None,
+            "closing a healthy connection does not notify the connection-lost listeners",
+            str(reasons),
+        )
+        report.check(not warnings, "closing a healthy connection logs no warning", "; ".join(warnings))
+        remote = None
+    finally:
+        if remote is not None:
+            remote.close()
+        service.stop()
+        provider.stop()
+
+
 def main() -> int:
     report = Report()
     print("OperationInvokedReport subscription")
@@ -368,6 +397,7 @@ def main() -> int:
     check_restricted_provider(report)
     check_partial_metric_feed_loss(report)
     check_waveform_operation_naming(report)
+    check_deliberate_close_is_not_a_loss(report)
     return report.summary()
 
 

@@ -486,6 +486,7 @@ class RemoteDevice:
         self.epr = epr
         self.peer_certificate = peer_certificate
         self._lock = threading.RLock()
+        self._closing = False
         self._lost_reason: str | None = None
         self._lost_listeners: list[Callable[[str], None]] = []
         status = getattr(consumer, "subscription_status", None)
@@ -530,6 +531,8 @@ class RemoteDevice:
                 logger.exception("connection-lost listener failed")
 
     def _on_subscription_status(self, status: dict[str, bool]) -> None:
+        if self._closing:
+            return  # our own unsubscribe ends every subscription; that is not the peer going away
         if not any(status.values()):
             self.mark_connection_lost(
                 "the device has no active report subscriptions (it shut down, restarted or became unreachable)",
@@ -1007,6 +1010,7 @@ class RemoteDevice:
         A lost peer is not sent Unsubscribe requests: they could only fail or wait for a
         timeout, and would leave a traceback per subscription in the log.
         """
+        self._closing = True
         try:
             self._consumer.stop_all(unsubscribe=self._lost_reason is None)
         except Exception:  # noqa: BLE001 - teardown must not mask the original problem
