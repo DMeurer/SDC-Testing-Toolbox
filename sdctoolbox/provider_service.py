@@ -29,7 +29,7 @@ from sdc11073.xml_types.xml_structure import DateOfBirthProperty
 
 from . import constants
 from .config import _unique_in
-from .handlers import apply_metric_value, make_activate_handler, make_set_handler
+from .handlers import ReasonedSetService, apply_metric_value, make_activate_handler, make_set_handler
 from .http_server import configure_request_handler
 from .mdib_io import NativeMdibConfig, mdib_bytes, parse_mdib
 from . import native_mdib as native
@@ -313,9 +313,8 @@ class ProviderService:
                 return native.SnapshotProduct(mdib, sco, log_prefix, self._handler,
                                               None if native_mode else self._activate_handler)
 
-            provider_components = None
-            if self.tls_config is not None or native_mode:
-                provider_components = provider_components_async_factory()
+            provider_components = provider_components_async_factory()
+            provider_components.hosted_services["Set"] = [ReasonedSetService]
             if native_mode:
                 provider_components.scopes_factory = native.scopes
             if self.tls_config is not None:

@@ -136,6 +136,14 @@ def _operation_is_enabled(state: Any) -> bool:
     return isinstance(mode, str) and mode == pm_types.OperatingMode.ENABLED
 
 
+def _failure_detail(info: Any) -> str:
+    """The error code and texts a peer gave for an invocation, as a log suffix."""
+    code = _enum_value(getattr(info, "InvocationError", None))
+    texts = ", ".join(text.text for text in info.InvocationErrorMessage or () if text.text)
+    detail = ": ".join(part for part in (code, texts) if part)
+    return f" ({detail})" if detail else ""
+
+
 def _seconds(duration: Any) -> Decimal | None:
     """A SamplePeriod as a number of seconds.
 
@@ -872,7 +880,7 @@ class RemoteDevice:
             metric_handle,
             operation_handle,
             info.InvocationState,
-            f" ({info.InvocationErrorMessage})" if info.InvocationErrorMessage else "",
+            _failure_detail(info),
         )
         if info.InvocationState in (msg_types.InvocationState.FINISHED, msg_types.InvocationState.FINISHED_MOD):
             self._reconcile_metric(metric_handle, value)
@@ -978,7 +986,7 @@ class RemoteDevice:
             "ran %s -> %s%s",
             action_handle,
             info.InvocationState,
-            f" ({info.InvocationErrorMessage})" if info.InvocationErrorMessage else "",
+            _failure_detail(info),
         )
         return info.InvocationState
 

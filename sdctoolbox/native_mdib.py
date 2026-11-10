@@ -10,13 +10,13 @@ from decimal import Decimal
 from urllib.parse import quote, urlencode
 
 from sdc11073.provider.baseproduct import BaseProduct
-from sdc11073.provider.operations import ExecuteResult
 from sdc11073.provider.scopesfactory import KEY_PURPOSE_SERVICE_PROVIDER
 from sdc11073.xml_types import msg_types
 from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types import pm_types
 from sdc11073.xml_types.wsd_types import ScopesType
 
+from .handlers import RefusedExecution, reporting_refusals
 from .model import (
     AlertSpec, MetricKind, MetricSpec, RemoteRange, coerce_metric_value, numeric_value_in_ranges,
 )
@@ -102,7 +102,7 @@ class SnapshotProduct(BaseProduct):
 
     def make_operation_instance(self, descriptor, operation_cls_getter):
         target = self._mdib.entities.by_handle(descriptor.OperationTarget)
-        handler = self._unsupported
+        handler = reporting_refusals(self._unsupported)
         if target is not None and (
             descriptor.NODETYPE == pm.SetValueOperationDescriptor and target.node_type == pm.NumericMetricDescriptor
             or descriptor.NODETYPE == pm.SetStringOperationDescriptor
@@ -118,9 +118,13 @@ class SnapshotProduct(BaseProduct):
                                operation_handler=handler)
 
     def _unsupported(self, params):
-        logger.warning("native operation %s has no executable business logic", params.operation_instance.handle)
-        return ExecuteResult(msg_types.InvocationState.FAILED, self._mdib.mdib_version_group,
-                             params.operation_instance.operation_target_handle)
+        handle = params.operation_instance.handle
+        logger.warning("native operation %s has no executable business logic", handle)
+        return RefusedExecution(
+            msg_types.InvocationState.FAILED, self._mdib.mdib_version_group,
+            params.operation_instance.operation_target_handle,
+            msg_types.InvocationError.OTHER, f"operation {handle!r} has no executable business logic here",
+        )
 
 
 def scopes(mdib) -> ScopesType:
