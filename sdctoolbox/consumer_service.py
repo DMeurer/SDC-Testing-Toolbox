@@ -419,92 +419,86 @@ def _subscription_summary(consumer: SdcConsumer) -> str:
     return "; ".join(parts) or "no subscriptions"
 
 
-def _ensure_operation_report_subscription(consumer: SdcConsumer) -> None:
-    """Make sure OperationInvokedReports are subscribed, with a dedicated subscription if needed.
+def _short_action(action: str) -> str:
+    return action.rsplit("/", 1)[-1]
 
-    start_all() subscribes once per hosted service with every action that service offers.
-    When the provider groups SetService with other services, one action it dislikes (often
-    a periodic report) gets the whole combined subscription rejected, and sdc11073 only
-    logs that. Subscribing to OperationInvokedReport alone usually succeeds.
+
+def _active_report_actions(consumer: SdcConsumer) -> set[str]:
+    return {
+        action
+        for subscription_filter, active in (getattr(consumer, "subscription_status", None) or {}).items()
+        if active
+        for action in subscription_filter.split()
+    }
+
+
+def _declared_reports(consumer: SdcConsumer) -> list[tuple[Any, Any]]:
+    """Every report the peer declares, each with the hosted service it is subscribed at."""
+    description = getattr(consumer, "host_description", None)
+    reports = []
+    for hosted in description.relationship.Hosted if description is not None else ():
+        for port_type in hosted.Types or ():
+            client = consumer.client(port_type.localname)
+            if client is not None:
+                reports.extend((hosted, key) for key in client.get_available_subscriptions())
+    return reports
+
+
+def _missing_reports(consumer: SdcConsumer) -> list[str]:
+    """Short names of the declared reports that no active subscription delivers."""
+    active = _active_report_actions(consumer)
+    return sorted(
+        {
+            _short_action(_action_uri(key.action))
+            for _hosted, key in _declared_reports(consumer)
+            if _action_uri(key.action) not in active
+        },
+    )
+
+
+def _ensure_report_subscriptions(consumer: SdcConsumer) -> None:
+    """Subscribe, one report at a time, to every declared report the combined subscriptions missed.
+
+    start_all() subscribes once per hosted service with every action that service offers. One
+    action the peer dislikes, or a limit on how many subscribers it serves, gets the whole
+    combined request refused, and sdc11073 only logs that. Requested alone, the reports are
+    usually accepted. Without OperationInvokedReport a provider may refuse every operation,
+    without EpisodicOperationalStateReport action buttons go stale, and without the waveform
+    or description reports the consumer silently shows an incomplete device.
     """
-    if _operation_reports_subscribed(consumer):
-        return
-    client = consumer.set_service_client
-    hosted = next(
-        (
-            candidate
-            for candidate in consumer.host_description.relationship.Hosted
-            if any(port_type.localname == "SetService" for port_type in candidate.Types or ())
-        ),
-        None,
-    )
-    logger.warning(
-        "no active OperationInvokedReport subscription after connecting (%s); "
-        "retrying with a dedicated subscription",
-        _subscription_summary(consumer),
-    )
-    if hosted is None:
-        logger.warning("provider metadata names no hosted SetService to subscribe at")
-        return
-    keys = list(client.get_available_subscriptions())
-    filter_type = eventing_types.FilterType()
-    filter_type.text = " ".join(_action_uri(key.action) for key in keys)
-    filter_type.Dialect = DeviceEventingFilterDialectURI.ACTION
-    try:
-        consumer.do_subscribe(hosted, filter_type, keys)
-    except Exception:
-        logger.exception("dedicated OperationInvokedReport subscription failed")
-        return
-    if _operation_reports_subscribed(consumer):
-        logger.info("dedicated OperationInvokedReport subscription is active")
-
-
-def _ensure_metric_report_subscription(consumer: SdcConsumer) -> None:
-    """Restore metric, alert and operation-state reports after a combined subscription fails.
-
-    OperationInvokedReport carries execution results, not enabled/disabled state.
-    Without EpisodicOperationalStateReport, action buttons can remain stale.
-    """
-    client = getattr(consumer, "state_event_service_client", None)
-    if client is None:
-        return
-    keys = [
-        key for key in client.get_available_subscriptions()
-        if _action_uri(key.action).rsplit("/", 1)[-1] in (
-            "EpisodicMetricReport", "PeriodicMetricReport",
-            "EpisodicOperationalStateReport", "EpisodicAlertReport",
-        )
-    ]
-    if not keys:
-        return
-    hosted = next(
-        (
-            candidate for candidate in consumer.host_description.relationship.Hosted
-            if any(port_type.localname == "StateEventService" for port_type in candidate.Types or ())
-        ),
-        None,
-    )
-    for key in keys:
+    for hosted, key in _declared_reports(consumer):
         action = _action_uri(key.action)
-        if any(
-            active and action in subscription_filter.split()
-            for subscription_filter, active in consumer.subscription_status.items()
-        ):
+        if action in _active_report_actions(consumer):
             continue
         logger.warning(
             "no active %s subscription (%s); retrying alone",
-            action.rsplit("/", 1)[-1], _subscription_summary(consumer),
+            _short_action(action),
+            _subscription_summary(consumer),
         )
-        if hosted is None:
-            logger.warning("provider metadata names no StateEventService to subscribe at")
-            return
         filter_type = eventing_types.FilterType()
         filter_type.text = action
         filter_type.Dialect = DeviceEventingFilterDialectURI.ACTION
         try:
             consumer.do_subscribe(hosted, filter_type, [key])
         except Exception:
-            logger.exception("dedicated %s subscription failed", action.rsplit("/", 1)[-1])
+            logger.exception("dedicated %s subscription failed", _short_action(action))
+    missing = _missing_reports(consumer)
+    if missing:
+        logger.warning("the device still refuses: %s", ", ".join(missing))
+
+
+def _ended_by_device(consumer: SdcConsumer) -> str:
+    """What the peer itself said when it ended its subscriptions; empty when it said nothing."""
+    manager = getattr(consumer, "subscription_mgr", None)
+    subscriptions = getattr(manager, "subscriptions", None) or {}
+    notes: list[str] = []
+    for subscription in list(subscriptions.values()):  # the manager's own thread may add entries meanwhile
+        status = str(getattr(subscription, "end_status", None) or "").rpartition("/")[2]
+        reason = getattr(subscription, "end_reason", None)
+        note = ": ".join(part for part in (status, str(getattr(reason, "text", reason) or "")) if part)
+        if note and note not in notes:
+            notes.append(note)
+    return "; ".join(notes)
 
 
 class RemoteDevice:
@@ -571,8 +565,11 @@ class RemoteDevice:
         if self._closing:
             return  # our own unsubscribe ends every subscription; that is not the peer going away
         if not any(status.values()):
+            said = _ended_by_device(self._consumer)
             self.mark_connection_lost(
-                "the device has no active report subscriptions (it shut down, restarted or became unreachable)",
+                f"the device ended its subscriptions ({said})"
+                if said
+                else "the device has no active report subscriptions (it shut down, restarted or became unreachable)",
             )
         elif self._metric_report_actions and not any(
             active and self._metric_report_actions.intersection(subscription_filter.split())
@@ -618,6 +615,16 @@ class RemoteDevice:
         (SDPi requires it), and sdc11073 only logs a failed or ended subscription.
         """
         return _operation_reports_subscribed(self._consumer)
+
+    def missing_reports(self) -> list[str]:
+        """Short names of the reports the peer declares but no active subscription delivers.
+
+        A peer can refuse a subscription without ending the connection, and the device then
+        shows up incomplete (for example without waveforms) with nothing to say why.
+        """
+        if getattr(self._consumer, "subscription_status", None) is None:
+            return []
+        return _missing_reports(self._consumer)
 
     def _require_operation_reports(self) -> None:
         if not self.operation_reports_subscribed():
@@ -1278,8 +1285,7 @@ class ConsumerService:
             )
         try:
             consumer.start_all()
-            _ensure_operation_report_subscription(consumer)
-            _ensure_metric_report_subscription(consumer)
+            _ensure_report_subscriptions(consumer)
             peer_certificate = (
                 self.tls_config.verify_peer_certificate(
                     consumer.binary_peer_certificate,

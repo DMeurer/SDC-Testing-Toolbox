@@ -386,7 +386,7 @@ def main() -> int:
         # must reconcile both kinds of controls from the provider rather than guessing that
         # the requested value became the reported one.
         with patch.object(SdcConsumer, "start_all", start_all_without_metric_reports), patch(
-            "sdctoolbox.consumer_service._ensure_metric_report_subscription",
+            "sdctoolbox.consumer_service._ensure_report_subscriptions",
         ):
             unreported = consumer.connect(device)
         try:

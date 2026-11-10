@@ -539,6 +539,142 @@ def http_error_answers() -> None:
         check(False, "a reset connection raises PeerConnectionLost")
 
 
+def new_consumer() -> consumer_module.SdcConsumer:
+    return consumer_module._WsdlSdcConsumer("http://127.0.0.1:1/device", SdcV1Definitions, None)
+
+
+def subscription_end_reasons() -> None:
+    """A peer that ends its subscriptions can say why; the connection-lost reason repeats it."""
+
+    def ended(status: str | None, reason: object = None) -> SimpleNamespace:
+        return SimpleNamespace(is_subscribed=False, end_status=status, end_reason=reason)
+
+    def lost_reason(subscriptions: dict | None) -> str | None:
+        consumer = new_consumer()
+        consumer._subscription_mgr = None if subscriptions is None else SimpleNamespace(subscriptions=subscriptions)
+        consumer.subscription_status = {"report": True}
+        remote = RemoteDevice(consumer, object(), "ending peer")
+        consumer.subscription_status = {"report": False}
+        return remote.connection_lost_reason
+
+    wse = "http://schemas.xmlsoap.org/ws/2004/08/eventing/"
+    reason = lost_reason({"a": ended(wse + "DeliveryFailure", SimpleNamespace(text="too many subscribers"))})
+    REPORT.check(
+        reason is not None and "DeliveryFailure" in reason and "too many subscribers" in reason,
+        "the connection-lost reason repeats the status and reason the peer sent",
+        str(reason),
+    )
+    reason = lost_reason({"a": ended(wse + "SourceCancelling"), "b": ended(wse + "SourceCancelling")})
+    REPORT.check(
+        reason is not None and reason.count("SourceCancelling") == 1,
+        "the same status from several subscriptions is named once",
+        str(reason),
+    )
+    reason = lost_reason({"a": ended(None, "plain text reason")})
+    REPORT.check(
+        reason is not None and "plain text reason" in reason,
+        "a reason that is not a language-tagged string is still repeated",
+        str(reason),
+    )
+    for subscriptions, description in (({"a": ended(None)}, "no end message"), (None, "no subscription manager")):
+        reason = lost_reason(subscriptions)
+        REPORT.check(
+            reason is not None and "no active report subscriptions" in reason,
+            f"without anything from the peer the generic reason remains: {description}",
+            str(reason),
+        )
+
+
+def peer_with_services(declared: dict[str, list[str]], *, active: tuple[str, ...] = (), refuse: tuple[str, ...] = ()):
+    """A consumer whose hosted services declare the given reports and whose peer refuses some of them.
+
+    sdc11073 swallows a refused Subscribe, so a refusal simply leaves the action out of subscription_status.
+    """
+    consumer = new_consumer()
+    consumer.host_description = SimpleNamespace(
+        relationship=SimpleNamespace(
+            Hosted=[SimpleNamespace(name=name, Types=[SimpleNamespace(localname=name)]) for name in declared],
+        ),
+    )
+    for name, actions in declared.items():
+        consumer._service_clients[name] = SimpleNamespace(
+            get_available_subscriptions=lambda actions=actions: [SimpleNamespace(action=action) for action in actions],
+        )
+    consumer.subscription_status = {action: True for action in active}
+    consumer.requests = []
+
+    def do_subscribe(hosted: SimpleNamespace, filter_type: SimpleNamespace, keys: list) -> None:
+        consumer.requests.append((hosted.name, filter_type.text, [key.action for key in keys]))
+        if filter_type.text not in refuse:
+            consumer.subscription_status = {**consumer.subscription_status, filter_type.text: True}
+
+    consumer.do_subscribe = do_subscribe
+    return consumer
+
+
+def refused_reports_are_retried_alone() -> None:
+    """One refused combined subscription must not leave the consumer without its waveforms or descriptor reports."""
+    op, metric, alert, component, wave, description = (
+        Actions.OperationInvokedReport.value,
+        Actions.EpisodicMetricReport.value,
+        Actions.EpisodicAlertReport.value,
+        Actions.EpisodicComponentReport.value,
+        Actions.Waveform.value,
+        Actions.DescriptionModificationReport.value,
+    )
+    declared = {
+        "SetService": [op],
+        "StateEventService": [metric, alert, component],
+        "Waveform": [wave],
+        "DescriptionEventService": [description],
+    }
+
+    consumer = peer_with_services(declared, active=(op, metric, alert, component, wave, description))
+    consumer_module._ensure_report_subscriptions(consumer)
+    REPORT.check(consumer.requests == [], "nothing is requested again when every declared report is subscribed")
+    REPORT.check(consumer_module._missing_reports(consumer) == [], "nothing is missing when every report is subscribed")
+
+    consumer = peer_with_services(declared, active=(op, metric), refuse=(component,))
+    consumer_module._ensure_report_subscriptions(consumer)
+    REPORT.check(
+        consumer.requests == [
+            ("StateEventService", alert, [alert]),
+            ("StateEventService", component, [component]),
+            ("Waveform", wave, [wave]),
+            ("DescriptionEventService", description, [description]),
+        ],
+        "each unsubscribed report is requested alone at the service that offers it",
+        str(consumer.requests),
+    )
+    REPORT.check(
+        consumer_module._missing_reports(consumer) == ["EpisodicComponentReport"],
+        "only the report the peer still refuses is reported missing",
+        str(consumer_module._missing_reports(consumer)),
+    )
+
+    consumer = peer_with_services(declared, active=(op, metric, alert, component, description))
+    consumer.do_subscribe = lambda *_args: (_ for _ in ()).throw(RuntimeError("socket closed"))
+    consumer_module._ensure_report_subscriptions(consumer)
+    REPORT.check(
+        consumer_module._missing_reports(consumer) == ["WaveformStream"],
+        "a failing retry is logged and the report stays missing",
+        str(consumer_module._missing_reports(consumer)),
+    )
+
+    remote = RemoteDevice(peer_with_services(declared, active=(op, metric)), object(), "partly subscribed peer")
+    REPORT.check(
+        remote.missing_reports() == sorted(
+            ["EpisodicAlertReport", "EpisodicComponentReport", "WaveformStream", "DescriptionModificationReport"],
+        ),
+        "the connection lists the reports it is not receiving",
+        str(remote.missing_reports()),
+    )
+    REPORT.check(
+        RemoteDevice(SimpleNamespace(), object(), "peer without services").missing_reports() == [],
+        "a connection without service information has nothing to report",
+    )
+
+
 def main() -> int:
     print("Service lifecycle fault injection")
     mdib_load_failure()
@@ -555,6 +691,8 @@ def main() -> int:
     metric_subscription_health()
     bound_callbacks_stay_alive()
     http_error_answers()
+    subscription_end_reasons()
+    refused_reports_are_retried_alone()
     return REPORT.summary()
 
 

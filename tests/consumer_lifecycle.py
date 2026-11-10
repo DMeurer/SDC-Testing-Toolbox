@@ -1389,6 +1389,29 @@ def connection_loss_clears_the_peer(app: QApplication, provider: ProviderService
     window.close()
 
 
+def refused_subscriptions_are_announced(app: QApplication, provider: ProviderService) -> None:
+    window, pane, _service = new_window(provider)
+    complete = controllable_peer("complete")
+    attach(pane, complete)
+    check(
+        pane.status_label.text() == "Connected to complete",
+        "a device that delivers every report is connected without a warning",
+    )
+    pane._on_disconnect()  # noqa: SLF001
+
+    partial = controllable_peer("partial")
+    partial.missing_reports = lambda: ["EpisodicComponentReport", "WaveformStream"]
+    attach(pane, partial)
+    text = pane.status_label.text()
+    check(
+        text.startswith("Connected to partial")
+        and "EpisodicComponentReport, WaveformStream" in text
+        and "refused" in text,
+        "the status names the reports the device refused",
+    )
+    window.close()
+
+
 def departure_of_connected_peer(app: QApplication, provider: ProviderService) -> None:
     window, pane, service = new_window(provider)
     remote = controllable_peer("leaving")
@@ -1537,6 +1560,7 @@ def main() -> int:
         technical_only_range_is_visible(app, provider)
         passive_discovery_and_connect_next(app, provider)
         connection_loss_clears_the_peer(app, provider)
+        refused_subscriptions_are_announced(app, provider)
         departure_of_connected_peer(app, provider)
         https_mismatch_reaches_gui(app, provider)
         tls_alert_reaches_gui(app, provider)
