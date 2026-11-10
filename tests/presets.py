@@ -27,11 +27,44 @@ from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 from sdctoolbox import config, constants  # noqa: E402
 from sdctoolbox.model import CODING_SYSTEMS, MetricKind  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
+from sdctoolbox.mdib_io import mdib_bytes, parse_mdib  # noqa: E402
+from sdc11073.xml_types import pm_qnames as pm  # noqa: E402
+from sdc11073.xml_types import msg_types  # noqa: E402
+from decimal import Decimal  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+
+def check_native_preset(report: Report, path: Path) -> None:
+    """Publish the original native graph and verify combined snapshot persistence."""
+    snapshot = config.load_file(path)
+    service = ProviderService(instance_name=f"preset-{path.stem}")
+    service.start(parse_mdib(snapshot.xml))
+    try:
+        report.check(service.native_mode, "loads as a native graph rather than a JSON conversion")
+        report.check(not service.generator_running, "keeps native sample blocks without inventing generators")
+        report.check(not service.mdib.context_states.objects, "contains no patient data")
+        restored = parse_mdib(mdib_bytes(service.mdib))
+        report.check(
+            {handle for handle, _ in restored.entities.items()} == {handle for handle, _ in service.mdib.entities.items()},
+            "exports and reloads description and state together without losing entities",
+        )
+        if path.name == "mdib-demo-infusion-pump.xml":
+            operation = service._provider.get_operation_by_handle("pump.set-rate")
+            result = operation.execute_operation(None, SimpleNamespace(argument=Decimal("3.5")))
+            report.check(result.invocation_state == msg_types.InvocationState.FINISHED
+                         and service.get_value("pump.rate") == Decimal("3.5"),
+                         "its imported set operation updates the existing metric")
+        report.check(bool(restored.entities.by_node_type(pm.MdsDescriptor)), "retains its native root containment")
+    finally:
+        service.stop()
 
 
 def check_preset(report: Report, path: Path) -> None:
     """Build one preset and look at what it produced."""
     print(f"\n{path.name}")
+    if path.suffix == ".xml":
+        check_native_preset(report, path)
+        return
 
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -228,7 +261,7 @@ def main() -> int:
     print("Shipped presets")
     print("=" * 74)
 
-    paths = sorted((ROOT / "presets").glob("*.json"))
+    paths = sorted(path for path in (ROOT / "presets").iterdir() if path.suffix in (".json", ".xml"))
     actual_files = {path.name for path in paths}
     report.check(
         actual_files == constants.SHIPPED_PRESET_FILES,
@@ -240,7 +273,7 @@ def main() -> int:
     for path in paths:
         check_preset(report, path)
 
-    check_nomenclature(report, paths)
+    check_nomenclature(report, [path for path in paths if path.suffix == ".json"])
 
     print("\nThe menu builds from these")
     listed = config.list_presets()

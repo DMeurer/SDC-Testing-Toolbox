@@ -28,6 +28,7 @@ from sdctoolbox.gui.main_window import MainWindow
 from sdctoolbox.gui.startup_dialog import StartupDialog, StartupSettings
 from sdctoolbox.network import normalize_ipv4
 from sdctoolbox.provider_service import ProviderService
+from sdctoolbox.mdib_io import NativeMdibConfig, parse_mdib
 from sdctoolbox.security import TlsConfig, TlsConfigError
 
 
@@ -151,7 +152,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 2
 
-    device = device_config.device if device_config is not None else None
+    native_config = isinstance(device_config, NativeMdibConfig)
+    device = device_config.device if device_config is not None and not native_config else None
     service = ProviderService(
         ip=settings.ip,
         instance_name=settings.name,
@@ -160,14 +162,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     window = None
     try:
-        service.start()
+        if native_config:
+            service.start(parse_mdib(device_config.xml))
+        else:
+            service.start()
         window = MainWindow(service)
-        if settings.config_path and device_config is not None:
+        if settings.config_path and device_config is not None and not native_config:
             if not window.apply_config(device_config, settings.config_path):
                 return 2
         window.show()
         if args.smoke_test:
-            bundled_files = {path.name for path in constants.PRESET_DIR.glob("*.json")}
+            bundled_files = {path.name for path in constants.PRESET_DIR.iterdir() if path.suffix.lower() in (".json", ".xml")}
             if bundled_files != constants.SHIPPED_PRESET_FILES:
                 msg = f"packaged presets differ: found {sorted(bundled_files)}"
                 raise RuntimeError(msg)

@@ -28,6 +28,8 @@ LINE_SEPARATORS = "\r\n\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 
 
 class ActionRemote:
+    epr = "urn:uuid:688e31cd-777a-4a56-9706-6b4149c95f20"
+
     def __init__(self, actions: dict[str, RemoteAction]) -> None:
         self._actions = actions
         self.invoked: list[str] = []
@@ -98,6 +100,9 @@ def theme_checks(report: Report, fixture: WindowFixture) -> None:
     error_label = QLabel("Theme validation error", window)
     mark_as_error(error_label)
     editor = QLineEdit("unsaved draft", window)
+    original_pane = window.network_pane
+    inactive_pane = window.network_tabs.add_connection()
+    window.network_tabs.setCurrentWidget(original_pane)
 
     def contrast(foreground, background) -> float:
         def luminance(colour) -> float:
@@ -120,6 +125,13 @@ def theme_checks(report: Report, fixture: WindowFixture) -> None:
                     f"{mode} mode updates existing {type(widget).__name__} backgrounds",
                 )
             report.check(editor.text() == "unsaved draft", "theme switches preserve draft text")
+            for pane in (window.provider_pane, original_pane, inactive_pane):
+                for table in (pane.table, pane.alert_table):
+                    report.check(
+                        (table.viewport().palette().color(QPalette.Base).lightness() < 128) == dark
+                        and (table.horizontalHeader().palette().color(QPalette.Window).lightness() < 128) == dark,
+                        f"{mode} mode updates table bodies and headers, including inactive tabs",
+                    )
             for label in (window.provider_pane.context_label, window.network_pane.context_label, error_label):
                 palette = label.palette()
                 report.check(
@@ -153,6 +165,7 @@ def theme_checks(report: Report, fixture: WindowFixture) -> None:
             widget.setPalette(palette)
         editor.deleteLater()
         error_label.deleteLater()
+        window.network_tabs.close_connection(window.network_tabs.indexOf(inactive_pane))
         pump(app)
 
 

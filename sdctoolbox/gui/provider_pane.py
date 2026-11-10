@@ -9,7 +9,9 @@ over the network. Both arrive through the MdibBridge, so the table looks the sam
 
 from __future__ import annotations
 
+from copy import deepcopy
 from decimal import Decimal
+from html import escape
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QSignalBlocker, Qt
@@ -24,13 +26,17 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types import pm_types
+from lxml import etree
 
 from ..model import MetricKind
+from ..mdib_io import mdib_bytes
 from .context_dialog import ContextDialog
 from .decimal_input import DecimalInputError, parse_decimal_input
 from .helpers import (
@@ -138,7 +144,7 @@ class ProviderPane(QWidget):
 
         # The same metrics, shown either as a control each or as one row each. Both are
         # always built; the View menu decides which is on top.
-        self.board = WidgetBoard(deletable=True)
+        self.board = WidgetBoard(deletable=not self.service.native_mode)
         self.board.value_requested.connect(self._on_widget_value_requested)
         self.board.delete_requested.connect(self._on_card_delete_requested)
         self.metric_stack = QStackedWidget()
@@ -244,6 +250,18 @@ class ProviderPane(QWidget):
         self._views.addWidget(alert_box)
         self._views.setStretchFactor(0, 3)
         self._views.setStretchFactor(1, 2)
+        self.native_tree = None
+        self._native_items = {}
+        self._native_state_items = {}
+        if self.service.native_mode:
+            self.native_tree = QTreeWidget()
+            self.native_tree.setHeaderLabels(["Handle", "Descriptor", "Current state"])
+            self.native_tree.setUniformRowHeights(True)
+            self.native_tree.setAccessibleName("Native MDIB containment")
+            self._views.insertWidget(0, self.native_tree)
+            for button in (self.new_button, self.context_button, self.new_alert_button):
+                button.setEnabled(False)
+                button.setToolTip("Native snapshots preserve their imported graph and context history")
 
         layout = QVBoxLayout(self)
         # TitledPanel already pads both panels. Without this the style's own 9px lands on
@@ -253,6 +271,11 @@ class ProviderPane(QWidget):
         layout.addLayout(buttons)
         layout.addWidget(self.transport_label)
         layout.addWidget(self.context_label)
+        if self.service.native_mode:
+            hint = QLabel("Native MDIB snapshot: scalar edits only. Alarms and samples retain their supplied state; "
+                          "generators and action behaviour are not inferred. Hover containment entries for XML.")
+            hint.setWordWrap(True)
+            layout.addWidget(hint)
         layout.addWidget(self.views, 1)
         layout.addWidget(self.actions_widget)
         layout.addWidget(self.editor_widget)
@@ -283,6 +306,8 @@ class ProviderPane(QWidget):
     def _refresh_board(self) -> None:
         """Rebuild the controls from the current metrics."""
         specs = self.service.list_metrics()
+        waveform_cards = {handle: self.board.card(handle) for handle, spec in specs.items()
+                          if spec.kind is MetricKind.WAVEFORM}
         self.board.set_metrics(
             [
                 from_spec(handle, spec, editable=True)
@@ -290,6 +315,10 @@ class ProviderPane(QWidget):
             ],
         )
         self.board.show_values({handle: self._displayable(handle, spec) for handle, spec in specs.items()})
+        if self.service.native_mode:
+            # Native snapshots have no incoming stream to seed a newly created waveform card.
+            self.board.append_samples({handle: self.service.get_samples(handle) for handle, card in waveform_cards.items()
+                                       if card is not self.board.card(handle)})
 
     def _on_card_delete_requested(self, handle: str) -> None:
         """A card's bin was clicked."""
@@ -335,7 +364,12 @@ class ProviderPane(QWidget):
                     self.table.setItem(row, column, item)
 
                 control = QTableWidgetItem()
-                if spec.kind.controllable:
+                if self.service.native_mode:
+                    control.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                    operation = self.service.operation_handle_for(handle)
+                    control.setText("enabled" if operation and self._control_enabled(handle) else "disabled" if operation else "n/a")
+                    control.setToolTip("Imported operation state; use the MDIB definition to change capabilities")
+                elif spec.kind.controllable:
                     enabled = self._control_enabled(handle)
                     control.setFlags(control.flags() | Qt.ItemIsUserCheckable)
                     control.setCheckState(Qt.Checked if enabled else Qt.Unchecked)
@@ -359,6 +393,51 @@ class ProviderPane(QWidget):
         self._on_selection_changed()
         self._columns.refit()
         self._refresh_board()
+        if self.native_tree is not None:
+            self._refresh_native_tree()
+
+    def _refresh_native_tree(self) -> None:
+        """Keep every imported entity inspectable, including ones without a metric card."""
+        self.native_tree.clear()
+        entities = dict(self.service.mdib.entities.items())
+        specs = self.service.list_metrics()
+        snapshot = etree.fromstring(mdib_bytes(self.service.mdib))[0]
+        descriptor_nodes = {}
+
+        def collect_descriptors(parent):
+            for child in parent:
+                if child.get("Handle") is not None:
+                    descriptor_nodes[child.get("Handle")] = child
+                    collect_descriptors(child)
+
+        collect_descriptors(snapshot.find(pm.MdDescription))
+        state_nodes = {node.get("Handle") or node.get("DescriptorHandle"): node for node in snapshot.find(pm.MdState)}
+        self._native_state_items = {}
+        self._native_items = {
+            handle: QTreeWidgetItem([handle, entity.node_type.localname, ""])
+            for handle, entity in entities.items()
+        }
+        for handle, entity in entities.items():
+            item = self._native_items[handle]
+            parent = self._native_items.get(entity.parent_handle)
+            if parent is None:
+                self.native_tree.addTopLevelItem(item)
+            else:
+                parent.addChild(item)
+            descriptor_node = descriptor_nodes.get(handle)
+            if descriptor_node is not None:
+                item.setToolTip(1, f"<pre>{escape(etree.tostring(descriptor_node, encoding='unicode'))}</pre>")
+            states = entity.states.values() if hasattr(entity, "states") else [entity.state]
+            for state in states:
+                state_handle = getattr(state, "Handle", handle)
+                node = state_nodes[state_handle]
+                child = QTreeWidgetItem([state_handle, state.NODETYPE.localname, ""])
+                child.setToolTip(1, f"<pre>{escape(etree.tostring(node, encoding='unicode'))}</pre>")
+                item.addChild(child)
+                self._native_state_items[state_handle] = child
+            if handle in specs:
+                item.setText(2, self._value_text(handle, specs[handle]))
+        self.native_tree.expandToDepth(1)
 
     def _displayable(self, handle: str, spec) -> object:  # noqa: ANN001 - a MetricSpec
         """What a card should be given: a block of samples, or a single value."""
@@ -409,6 +488,12 @@ class ProviderPane(QWidget):
     def _on_values_changed(self, states_by_handle: dict) -> None:
         """Update just the value cells. Cheaper than a rebuild and keeps the selection."""
         specs = self.service.list_metrics()
+        for handle in states_by_handle:
+            if handle in self._native_items and handle in specs:
+                self._native_items[handle].setText(2, self._value_text(handle, specs[handle]))
+                state = deepcopy(self.service.mdib.entities.by_handle(handle).state)
+                node = state.mk_state_node(pm.State, self.service.mdib.nsmapper)
+                self._native_state_items[handle].setToolTip(1, f"<pre>{escape(etree.tostring(node, encoding='unicode'))}</pre>")
         self.board.show_values(
             {
                 handle: self._displayable(handle, specs[handle])
@@ -538,6 +623,11 @@ class ProviderPane(QWidget):
             self.toggle_alert_button.setText("Clear" if present else "Raise")
             self.toggle_alert_button.setToolTip("")
         self._update_signal_buttons(handle, spec)
+        if self.service.native_mode:
+            for button in (self.remove_alert_button, self.toggle_alert_button, self.acknowledge_button,
+                           self.stop_latched_button, self.delegate_button):
+                button.setEnabled(False)
+                button.setToolTip("Imported alarm state has no toolbox simulation rule")
 
     def _update_signal_buttons(self, handle: str | None, spec: object | None) -> None:
         """Signal controls follow the selected alarm's current state and capabilities."""
@@ -741,7 +831,7 @@ class ProviderPane(QWidget):
         if self._refreshing:
             return
         handle = self.selected_handle()
-        self.remove_button.setEnabled(handle is not None)
+        self.remove_button.setEnabled(handle is not None and not self.service.native_mode)
         if handle is None:
             self._editor_definition = None
             self.editor_label.setText("Select a data source to change its value")
@@ -772,7 +862,7 @@ class ProviderPane(QWidget):
             self.value_edit.setPlaceholderText(spec.range_text() if spec.has_range else "")
         if spec.has_range:
             self.editor_label.setText(f"{spec.label} ({spec.range_text()}):")
-        self._set_editor_enabled(enabled=True)
+        self._set_editor_enabled(enabled=not (self.service.native_mode and spec.is_sample_array))
 
     def _set_editor_enabled(self, *, enabled: bool) -> None:
         self.editor_stack.setEnabled(enabled)

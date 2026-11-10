@@ -113,6 +113,13 @@ def make_set_handler(
             )
             if not numeric_value_in_ranges(value, ranges):
                 return _failed(mdib, f"{value} is outside the AllowedRange of {operation_handle!r}", target_handle)
+        else:
+            allowed = getattr(getattr(operation_entity.state, "AllowedValues", None), "Value", ())
+            if allowed and value not in allowed:
+                return _failed(mdib, f"value is not in the AllowedValues of {operation_handle!r}", target_handle)
+            maximum = getattr(operation_entity.descriptor, "MaxLength", None)
+            if maximum is not None and len(value) > maximum:
+                return _failed(mdib, f"value exceeds MaxLength of {operation_handle!r}", target_handle)
 
         apply_metric_value(target_entity.state, value)
 

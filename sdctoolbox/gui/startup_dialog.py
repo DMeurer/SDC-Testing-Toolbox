@@ -30,12 +30,13 @@ from PySide6.QtWidgets import (
 )
 
 from .. import config, constants
+from ..mdib_io import NativeMdibConfig
 from ..network import normalize_ipv4
 from ..security import TlsConfig, TlsConfigError
 from .no_wheel import NoWheelComboBox
 from .styling import constrain_dynamic_label, mark_as_error, mute
 
-CONFIG_FILE_FILTER = "SDC toolbox config (*.json);;All files (*)"
+CONFIG_FILE_FILTER = config.FILE_FILTER
 
 # Addresses in this range mean "no DHCP answered". They are never the right choice.
 LINK_LOCAL_PREFIX = "169.254."
@@ -49,7 +50,7 @@ class StartupSettings:
     ip: str
     config_path: str | None
     verbose: bool
-    device_config: config.DeviceConfig | None = None
+    device_config: config.DeviceConfig | NativeMdibConfig | None = None
     tls_config: TlsConfig | None = None
 
 

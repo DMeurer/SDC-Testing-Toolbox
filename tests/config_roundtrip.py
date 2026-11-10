@@ -2564,6 +2564,7 @@ def run_checks(report: Report, workdir: Path) -> None:
         preset_round_trips = []
         preset_paths = sorted((ROOT / "presets").glob("*.json"))
         preset_files = {preset_path.name for preset_path in preset_paths}
+        json_preset_files = {name for name in constants.SHIPPED_PRESET_FILES if name.endswith(".json")}
         for preset_path in preset_paths:
             preset_data = json.loads(preset_path.read_text(encoding="utf-8"))
             preset = config.parse(preset_data)
@@ -2605,9 +2606,9 @@ def run_checks(report: Report, workdir: Path) -> None:
             finally:
                 preset_service.stop()
         report.check(
-            preset_files == constants.SHIPPED_PRESET_FILES and all(preset_round_trips),
+            preset_files == json_preset_files and all(preset_round_trips),
             "canonical presets round-trip at the current version with version-3 signals intact",
-            f"{sum(preset_round_trips)} of {len(constants.SHIPPED_PRESET_FILES)}; "
+            f"{sum(preset_round_trips)} of {len(json_preset_files)}; "
             f"files {sorted(preset_files)}",
         )
 

@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Original synthetic demonstration snapshot. Not a clinical device or a live generator. -->
+<msg:GetMdibResponse
+    xmlns:msg="http://standards.ieee.org/downloads/11073/11073-10207-2017/message"
+    xmlns:pm="http://standards.ieee.org/downloads/11073/11073-10207-2017/participant"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    SequenceId="urn:uuid:621a975e-b78e-4e51-8446-107c0f6d4ad1" MdibVersion="0">
+  <msg:Mdib SequenceId="urn:uuid:621a975e-b78e-4e51-8446-107c0f6d4ad1" MdibVersion="0">
+    <pm:MdDescription>
+      <pm:Mds Handle="monitor">
+        <pm:Type Code="demo-monitor" CodingSystem="urn:sdc-testing-toolbox:private">
+          <pm:ConceptDescription Lang="en">MDIB demo monitor</pm:ConceptDescription>
+        </pm:Type>
+        <pm:AlertSystem Handle="monitor.alerts" SelfCheckPeriod="PT30S">
+          <pm:AlertCondition Handle="monitor.demo-event" Kind="Tec" Priority="Lo">
+            <pm:Type Code="demo-event" CodingSystem="urn:sdc-testing-toolbox:private">
+              <pm:ConceptDescription Lang="en">Synthetic demonstration event</pm:ConceptDescription>
+            </pm:Type>
+            <pm:Source>monitor.pulse</pm:Source>
+          </pm:AlertCondition>
+          <pm:AlertSignal Handle="monitor.demo-event.visual" ConditionSignaled="monitor.demo-event" Manifestation="Vis" Latching="false"/>
+        </pm:AlertSystem>
+        <pm:Vmd Handle="monitor.vitals">
+          <pm:Type Code="demo-vitals" CodingSystem="urn:sdc-testing-toolbox:private"><pm:ConceptDescription Lang="en">Synthetic vitals</pm:ConceptDescription></pm:Type>
+          <pm:Channel Handle="monitor.vitals.channel">
+            <pm:Metric Handle="monitor.pulse" xsi:type="pm:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
+              <pm:Type Code="demo-pulse" CodingSystem="urn:sdc-testing-toolbox:private"><pm:ConceptDescription Lang="en">Demo pulse rate</pm:ConceptDescription></pm:Type>
+              <pm:Unit Code="demo-beats-per-minute" CodingSystem="urn:sdc-testing-toolbox:private"><pm:ConceptDescription Lang="en">beats/min</pm:ConceptDescription></pm:Unit>
+              <pm:TechnicalRange Lower="30" Upper="200"/>
+            </pm:Metric>
+            <pm:Metric Handle="monitor.trace" xsi:type="pm:RealTimeSampleArrayMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="0.1" SamplePeriod="PT0.02S">
+              <pm:Type Code="demo-trace" CodingSystem="urn:sdc-testing-toolbox:private"><pm:ConceptDescription Lang="en">Synthetic sample trace</pm:ConceptDescription></pm:Type>
+              <pm:Unit Code="262656"/>
+            </pm:Metric>
+          </pm:Channel>
+        </pm:Vmd>
+      </pm:Mds>
+    </pm:MdDescription>
+    <pm:MdState>
+      <pm:State DescriptorHandle="monitor" xsi:type="pm:MdsState" ActivationState="On"/>
+      <pm:State DescriptorHandle="monitor.alerts" xsi:type="pm:AlertSystemState" ActivationState="On"/>
+      <pm:State DescriptorHandle="monitor.demo-event" xsi:type="pm:AlertConditionState" ActivationState="On" Presence="false"/>
+      <pm:State DescriptorHandle="monitor.demo-event.visual" xsi:type="pm:AlertSignalState" ActivationState="On" Presence="Off"/>
+      <pm:State DescriptorHandle="monitor.vitals" xsi:type="pm:VmdState" ActivationState="On"/>
+      <pm:State DescriptorHandle="monitor.vitals.channel" xsi:type="pm:ChannelState" ActivationState="On"/>
+      <pm:State DescriptorHandle="monitor.pulse" xsi:type="pm:NumericMetricState" ActivationState="On">
+        <pm:MetricValue Value="72"><pm:MetricQuality Validity="Vld"/></pm:MetricValue>
+      </pm:State>
+      <pm:State DescriptorHandle="monitor.trace" xsi:type="pm:RealTimeSampleArrayMetricState" ActivationState="On">
+        <pm:MetricValue Samples="0 0.2 0.7 1 0.3 -0.1 0 0.1"><pm:MetricQuality Validity="Vld"/></pm:MetricValue>
+      </pm:State>
+    </pm:MdState>
+  </msg:Mdib>
+</msg:GetMdibResponse>

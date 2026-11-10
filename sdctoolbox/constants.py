@@ -21,6 +21,8 @@ SHIPPED_PRESET_FILES = {
     "endoscopic-camera.json",
     "hf-generator.json",
     "infusion-pump.json",
+    "mdib-demo-monitor.xml",
+    "mdib-demo-infusion-pump.xml",
     "insufflator.json",
     "patient-monitor.json",
     "surgical-microscope.json",

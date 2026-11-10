@@ -246,6 +246,43 @@ provider> presets
 
 ## Presets
 
+### Native MDIB snapshots (XML)
+
+Presets can also be native BICEPS MDIB XML files. Choose a `[MDIB]` preset, import an
+`.xml` file, or start with `--config presets/mdib-demo-monitor.xml`. The two original
+synthetic XML presets are **MDIB demo monitor** and **MDIB demo infusion pump**;
+existing JSON presets remain available.
+
+An XML export is **one file containing both `MdDescription` and `MdState`**, including
+current sample blocks and all context states/history. Select **Native MDIB (*.xml)**
+in *File → Export config*, or use `export snapshot.xml` in the console. Combined
+`GetMdibResponse`, message `Mdib`, and participant `MdibContainer` inputs are accepted.
+Separate description/state files are not supported. Invalid XML, unsafe DTD/entity
+declarations, broken references and content the pinned library cannot preserve are
+rejected before provider replacement; failed writes preserve an existing export file.
+Duration fields must use the pinned library's SDPi-compatible hour/minute/second syntax
+(for example `PT5S`); calendar/day duration forms are currently rejected rather than changed.
+
+Native import replaces the whole MDIB and **restarts the provider**. Connected consumers
+must reconnect. The instance name/EPR, network binding and TLS settings remain local;
+imported patient/location states are not overwritten by toolbox defaults. A failed
+activation attempts to restore the previous provider and reports any recovery failure.
+
+The provider containment tree exposes the imported entities, with XML on hover. Supported
+scalar values can be edited locally, and compatible numeric/string set operations retain
+their own enabled state and allowed ranges/values. Other operations fail explicitly:
+an MDIB does not supply executable machinery/action logic. Alarms and sample blocks are
+snapshots; generators, automatic alarm rules, and action effects are **not inferred**.
+Graph-changing and context/alarm simulation controls are disabled in native mode. Load
+a JSON preset to return to the managed simulation workflow. Native snapshots cannot be
+exported through the reduced JSON profile format; use XML to avoid losing content.
+
+**Privacy:** full MDIB exports may include patient-identifying data and context history.
+Review them before sharing. Shipped XML demos contain no patient data. Development-only
+reference files are not presets and are not part of the application bundle.
+
+### Managed profiles (JSON)
+
 *File → Export config* writes device metadata, data-source definitions and scalar current values, alarm and action definitions, and currently associated patient/location contexts to a JSON file.
 It is not a full live-device snapshot: sample blocks, alert/signal state, control mode, generator state and context history are not exported.
 *File → Import config* validates descriptor references and generated section containment before changing the provider. Replacement removes tracked metrics, alarms and actions before rebuilding them; `replace=False` appends the profile while retaining the existing graph.

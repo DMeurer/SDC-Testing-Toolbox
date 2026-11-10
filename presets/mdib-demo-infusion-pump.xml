@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Original synthetic demonstration snapshot. Set operations change values only, not machinery. -->
+<msg:GetMdibResponse
+    xmlns:msg="http://standards.ieee.org/downloads/11073/11073-10207-2017/message"
+    xmlns:pm="http://standards.ieee.org/downloads/11073/11073-10207-2017/participant"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    SequenceId="urn:uuid:47ff43f9-e016-4564-9c38-33b0815cb066" MdibVersion="0">
+  <msg:Mdib SequenceId="urn:uuid:47ff43f9-e016-4564-9c38-33b0815cb066" MdibVersion="0">
+    <pm:MdDescription>
+      <pm:Mds Handle="pump">
+        <pm:Type Code="demo-infusion-pump" CodingSystem="urn:sdc-testing-toolbox:private">
+          <pm:ConceptDescription Lang="en">MDIB demo infusion pump</pm:ConceptDescription>
+        </pm:Type>
+        <pm:AlertSystem Handle="pump.alerts" SelfCheckPeriod="PT30S">
+          <pm:AlertCondition Handle="pump.demo-occlusion" Kind="Tec" Priority="Me">
+            <pm:Type Code="demo-occlusion" CodingSystem="urn:sdc-testing-toolbox:private"><pm:ConceptDescription Lang="en">Synthetic occlusion indicator</pm:ConceptDescription></pm:Type>
+            <pm:Source>pump.rate</pm:Source>
+          </pm:AlertCondition>
+          <pm:AlertSignal Handle="pump.demo-occlusion.visual" ConditionSignaled="pump.demo-occlusion" Manifestation="Vis" Latching="false"/>
+        </pm:AlertSystem>
+        <pm:Sco Handle="pump.sco">
+          <pm:Operation Handle="pump.set-rate" xsi:type="pm:SetValueOperationDescriptor" OperationTarget="pump.rate"/>
+          <pm:Operation Handle="pump.set-mode" xsi:type="pm:SetStringOperationDescriptor" OperationTarget="pump.mode" MaxLength="6"/>
+        </pm:Sco>
+        <pm:Vmd Handle="pump.delivery">
+          <pm:Type Code="demo-delivery" CodingSystem="urn:sdc-testing-toolbox:private"><pm:ConceptDescription Lang="en">Synthetic delivery controls</pm:ConceptDescription></pm:Type>
+          <pm:Channel Handle="pump.controls">
+            <pm:Metric Handle="pump.rate" xsi:type="pm:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Cont" Resolution="0.1">
+              <pm:Type Code="demo-infusion-rate" CodingSystem="urn:sdc-testing-toolbox:private"><pm:ConceptDescription Lang="en">Demo delivery rate</pm:ConceptDescription></pm:Type>
+              <pm:Unit Code="demo-ml-per-hour" CodingSystem="urn:sdc-testing-toolbox:private"><pm:ConceptDescription Lang="en">mL/h</pm:ConceptDescription></pm:Unit>
+              <pm:TechnicalRange Lower="0" Upper="50" StepWidth="0.1"/>
+            </pm:Metric>
+            <pm:Metric Handle="pump.mode" xsi:type="pm:EnumStringMetricDescriptor" MetricCategory="Set" MetricAvailability="Cont">
+              <pm:Type Code="demo-pump-mode" CodingSystem="urn:sdc-testing-toolbox:private"><pm:ConceptDescription Lang="en">Demo pump mode</pm:ConceptDescription></pm:Type>
+              <pm:Unit Code="262656"/>
+              <pm:AllowedValue><pm:Value>IDLE</pm:Value></pm:AllowedValue>
+              <pm:AllowedValue><pm:Value>RUN</pm:Value></pm:AllowedValue>
+              <pm:AllowedValue><pm:Value>PAUSED</pm:Value></pm:AllowedValue>
+            </pm:Metric>
+          </pm:Channel>
+        </pm:Vmd>
+      </pm:Mds>
+    </pm:MdDescription>
+    <pm:MdState>
+      <pm:State DescriptorHandle="pump" xsi:type="pm:MdsState" ActivationState="On"/>
+      <pm:State DescriptorHandle="pump.alerts" xsi:type="pm:AlertSystemState" ActivationState="On"/>
+      <pm:State DescriptorHandle="pump.demo-occlusion" xsi:type="pm:AlertConditionState" ActivationState="On" Presence="false"/>
+      <pm:State DescriptorHandle="pump.demo-occlusion.visual" xsi:type="pm:AlertSignalState" ActivationState="On" Presence="Off"/>
+      <pm:State DescriptorHandle="pump.sco" xsi:type="pm:ScoState"/>
+      <pm:State DescriptorHandle="pump.set-rate" xsi:type="pm:SetValueOperationState" OperatingMode="En"><pm:AllowedRange Lower="0" Upper="50" StepWidth="0.1"/></pm:State>
+      <pm:State DescriptorHandle="pump.set-mode" xsi:type="pm:SetStringOperationState" OperatingMode="En"><pm:AllowedValues><pm:Value>IDLE</pm:Value><pm:Value>RUN</pm:Value><pm:Value>PAUSED</pm:Value></pm:AllowedValues></pm:State>
+      <pm:State DescriptorHandle="pump.delivery" xsi:type="pm:VmdState" ActivationState="On"/>
+      <pm:State DescriptorHandle="pump.controls" xsi:type="pm:ChannelState" ActivationState="On"/>
+      <pm:State DescriptorHandle="pump.rate" xsi:type="pm:NumericMetricState" ActivationState="On"><pm:MetricValue Value="2.5"><pm:MetricQuality Validity="Vld"/></pm:MetricValue></pm:State>
+      <pm:State DescriptorHandle="pump.mode" xsi:type="pm:EnumStringMetricState" ActivationState="On"><pm:MetricValue Value="IDLE"><pm:MetricQuality Validity="Vld"/></pm:MetricValue></pm:State>
+    </pm:MdState>
+  </msg:Mdib>
+</msg:GetMdibResponse>

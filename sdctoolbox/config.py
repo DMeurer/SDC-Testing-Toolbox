@@ -52,6 +52,7 @@ from .model import (
 )
 
 if TYPE_CHECKING:
+    from .mdib_io import NativeMdibConfig
     from .provider_service import ProviderService
 
 # Version 3 adds per-alert signal manifestation and latching settings. Earlier profiles remain
@@ -60,6 +61,9 @@ CONFIG_VERSION = 3
 LEGACY_CONFIG_VERSION = 1
 
 FILE_SUFFIX = ".sdcprofile.json"
+JSON_FILE_FILTER = "SDC toolbox config (*.json)"
+MDIB_FILE_FILTER = "Native MDIB (*.xml)"
+FILE_FILTER = f"{JSON_FILE_FILTER};;{MDIB_FILE_FILTER};;All files (*)"
 
 _TOP_LEVEL_KEYS = {"version", "name", "description", "device", "metrics", "alerts", "actions", "contexts"}
 _METRIC_KEYS = {
@@ -109,6 +113,18 @@ _FIXED_DESCRIPTOR_HANDLES = {
 
 class ConfigError(Exception):
     """A config file could not be read, or does not describe a usable device."""
+
+
+def export_path(filename: str | Path, selected_filter: str) -> Path:
+    """Respect an explicit export format without silently changing a conflicting suffix."""
+    target = Path(filename)
+    suffix = {JSON_FILE_FILTER: ".json", MDIB_FILE_FILTER: ".xml"}.get(selected_filter)
+    if suffix is not None:
+        if target.suffix and target.suffix.lower() != suffix:
+            raise ConfigError(f"filename suffix {target.suffix!r} conflicts with the selected {suffix} format")
+        if not target.suffix:
+            target = target.with_suffix(suffix)
+    return target
 
 
 _JSON_TYPE_NAMES = {
@@ -180,7 +196,7 @@ class Preset:
     def summary(self) -> str:
         """What the file contains, for a menu entry or a dropdown."""
         parts = [f"{self.metrics} data source(s)", f"{self.alerts} alarm(s)"]
-        return ", ".join(parts)
+        return ("Native MDIB; " if self.path.suffix.lower() == ".xml" else "") + ", ".join(parts)
 
 
 def list_presets(directory: str | Path | None = None) -> list[Preset]:
@@ -210,6 +226,21 @@ def list_presets(directory: str | Path | None = None) -> list[Preset]:
                 alerts=len(device.alerts),
             ),
         )
+    from .mdib_io import parse_mdib
+    from .native_mdib import label
+
+    for path in sorted(folder.glob("*.xml")):
+        try:
+            mdib = parse_mdib(path.read_bytes())
+        except (OSError, ConfigError):
+            continue
+        descriptors = list(mdib.descriptions.objects)
+        root = next(descriptor for descriptor in descriptors if descriptor.parent_handle is None)
+        found.append(Preset(
+            path=path, name=f"{label(root)} [MDIB]", description="Native combined MDIB snapshot; loading restarts the provider.",
+            metrics=sum(descriptor.is_metric_descriptor for descriptor in descriptors),
+            alerts=sum(descriptor.is_alert_condition_descriptor for descriptor in descriptors),
+        ))
     found.sort(key=lambda preset: preset.name.lower())
     return found
 
@@ -472,6 +503,8 @@ def to_dict(service: ProviderService, *, include_values: bool = True) -> dict[st
     :param include_values: record each metric's current value as its initial_value, so that
         reloading the file reproduces what is on screen rather than an empty device.
     """
+    if getattr(service, "native_mode", False):
+        raise ConfigError("native MDIB state cannot be exported as a JSON profile; export an .xml MDIB instead")
     metrics = []
     for handle, spec in sorted(service.list_metrics().items()):
         entry = metric_to_dict(handle, spec)
@@ -511,6 +544,10 @@ def to_dict(service: ProviderService, *, include_values: bool = True) -> dict[st
 def save(service: ProviderService, path: str | Path, *, include_values: bool = True) -> Path:
     """Atomically replace a profile, preserving the old file if writing fails."""
     target = Path(path)
+    if target.suffix.lower() == ".xml":
+        from .mdib_io import save_mdib
+
+        return save_mdib(service, target)
     payload = json.dumps(to_dict(service, include_values=include_values), indent=2) + "\n"
     temporary = None
     try:
@@ -903,9 +940,13 @@ def parse(data: Any) -> DeviceConfig:
     )
 
 
-def load_file(path: str | Path) -> DeviceConfig:
+def load_file(path: str | Path) -> DeviceConfig | NativeMdibConfig:
     """Read and validate a config file without touching any provider."""
     source = Path(path)
+    if source.suffix.lower() == ".xml":
+        from .mdib_io import load_mdib_file
+
+        return load_mdib_file(source)
     try:
         text = source.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
@@ -985,7 +1026,7 @@ def _resolve_metric_handles(
 
 def apply_to(
     service: ProviderService,
-    device: DeviceConfig,
+    device: DeviceConfig | NativeMdibConfig,
     *,
     replace: bool = True,
 ) -> tuple[int, int]:
@@ -999,6 +1040,12 @@ def apply_to(
         compensated back to the pre-import graph.
     """
     try:
+        from .mdib_io import NativeMdibConfig
+
+        if isinstance(device, NativeMdibConfig):
+            if not replace:
+                raise ConfigError("native MDIB import replaces the whole device; append is not supported")
+            return service.replace_mdib(device)
         return service.import_profile(device, replace=replace)
     except Exception as exc:
         msg = str(exc) or type(exc).__name__
