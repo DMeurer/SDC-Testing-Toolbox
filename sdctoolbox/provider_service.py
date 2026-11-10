@@ -1760,6 +1760,7 @@ class ProviderService:
             state.BindingStartTime = time.time()
 
             with self.mdib.context_state_transaction() as mgr:
+                state.BindingMdibVersion = mgr.new_mdib_version
                 mgr.disassociate_all(entity.handle, ignored_handle=state.Handle)
                 mgr.write_entity(entity, [state.Handle])
             logger.info("patient is now %s", info.summary() or "unset")
