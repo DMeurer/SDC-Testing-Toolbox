@@ -24,6 +24,7 @@ from sdc11073.consumer.consumerimpl import SdcConsumer, default_components_facto
 from sdc11073.definitions_sdc import SdcV1Definitions
 from sdc11073.mdib import ConsumerMdib
 from sdc11073.mdib.consumermdibxtra import ConsumerMdibMethods
+from sdc11073.pysoap.soapclient import HTTPReturnCodeError
 from sdc11073.wsdiscovery import WSDiscovery
 from sdc11073.xml_types import eventing_types, msg_types, pm_types
 from sdc11073.xml_types import pm_qnames as pm
@@ -364,6 +365,24 @@ def _error_text(exc: BaseException) -> str:
     return f"{exc.__class__.__name__}: {text}" if text else exc.__class__.__name__
 
 
+def _http_error_text(error: HTTPReturnCodeError) -> str:
+    """Say what a peer's HTTP error answer contained; the library's exception has an empty str()."""
+    text = f"HTTP {error.status} {error.reason}".strip()
+    try:
+        fault = error.soap_fault  # None when the peer sent no parsable fault
+        reason = next((item.text for item in fault.Reason.Text if item.text), None)
+        codes = [
+            str(getattr(code, "value", code)).rpartition("}")[2]
+            for code in (fault.Code.Value, getattr(fault.Code.Subcode, "Value", None))
+            if code is not None
+        ]
+    except Exception:  # noqa: BLE001 - a malformed fault must not hide the status line
+        return text
+    if reason:
+        text = f"{text}: {reason}"
+    return f"{text} ({', '.join(codes)})" if codes else text
+
+
 def _action_uri(action: object) -> str:
     # sdc11073's Actions is a str-mixin Enum; str() of one yields "Actions.X", not the URI.
     return str(getattr(action, "value", action))
@@ -576,6 +595,10 @@ class RemoteDevice:
             future = request()
         except ConsumerError:
             raise
+        except HTTPReturnCodeError as exc:
+            # The peer answered, so it is still there; it only refused this request.
+            msg = f"the device refused the request: {_http_error_text(exc)}"
+            raise ConsumerError(msg) from exc
         except (OSError, HTTPException) as exc:
             reason = f"the device could not be reached ({_error_text(exc)})"
             self.mark_connection_lost(reason)
@@ -1273,6 +1296,9 @@ class ConsumerService:
             except Exception:
                 logger.exception("error while rolling back consumer connection to %s", device.epr)
             cause = exc.__cause__ or exc
+            if isinstance(exc, HTTPReturnCodeError):
+                msg = f"the device answered with an error: {_http_error_text(exc)}"
+                raise ConsumerError(msg) from exc
             if self.tls_config is None and isinstance(exc, HTTPException) and isinstance(cause, BadStatusLine):
                 # A complete TLS alert identifies the protocol; a connection reset does not.
                 line = cause.line

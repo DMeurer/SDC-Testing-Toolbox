@@ -15,13 +15,22 @@ sys.path.insert(0, str(ROOT))
 
 from script_support import Report  # noqa: E402
 from sdc11073.definitions_sdc import SdcV1Definitions  # noqa: E402
+from lxml import etree  # noqa: E402
 from sdc11073.observableproperties import ObservableProperty  # noqa: E402
+from sdc11073.pysoap.soapclient import HTTPReturnCodeError  # noqa: E402
+from sdc11073.pysoap.soapenvelope import Fault  # noqa: E402
 from sdc11073.xml_types.actions import Actions  # noqa: E402
 
 from sdctoolbox import consumer_service as consumer_module  # noqa: E402
 from sdctoolbox import provider_service as provider_module  # noqa: E402
 from sdctoolbox import sample_generation as sample_module  # noqa: E402
-from sdctoolbox.consumer_service import ConsumerService, DiscoveredDevice, RemoteDevice  # noqa: E402
+from sdctoolbox.consumer_service import (  # noqa: E402
+    ConsumerError,
+    ConsumerService,
+    DiscoveredDevice,
+    PeerConnectionLost,
+    RemoteDevice,
+)
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 
 REPORT = Report()
@@ -450,6 +459,86 @@ def bound_callbacks_stay_alive() -> None:
     REPORT.check(seen == [{"metric": 1}], "a callback that nothing else references still receives notifications")
 
 
+SOAP_FAULT = (
+    '<s12:Fault xmlns:s12="http://www.w3.org/2003/05/soap-envelope"'
+    ' xmlns:wse="http://schemas.xmlsoap.org/ws/2004/08/eventing">'
+    "<s12:Code><s12:Value>s12:Sender</s12:Value>"
+    "<s12:Subcode><s12:Value>wse:InvalidMessage</s12:Value></s12:Subcode></s12:Code>"
+    '<s12:Reason><s12:Text xml:lang="en">The message is not valid and cannot be processed</s12:Text></s12:Reason>'
+    "</s12:Fault>"
+)
+
+
+def http_error(status: int, reason: str, *, with_fault: bool) -> HTTPReturnCodeError:
+    fault = Fault.from_node(etree.fromstring(SOAP_FAULT)) if with_fault else None
+    return HTTPReturnCodeError(status, reason, fault)
+
+
+def http_error_answers() -> None:
+    """A peer that answers with an HTTP error is reachable: say what it answered, never call it gone."""
+    check = REPORT.check  # record every failed expectation instead of stopping at the first
+    for with_fault in (True, False):
+        error = http_error(400, "Bad Request", with_fault=with_fault)
+        label = "with a SOAP fault" if with_fault else "without a SOAP fault"
+
+        consumer = Tracker()
+
+        class FakeConsumerMdib:
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def init_mdib(self) -> None:
+                raise error
+
+        with (
+            patch.object(consumer_module, "_WsdlSdcConsumer") as factory,
+            patch.object(consumer_module, "ConsumerMdib", FakeConsumerMdib),
+        ):
+            factory.from_wsd_service.return_value = consumer
+            try:
+                ConsumerService().connect(DiscoveredDevice("peer", (), (), service=SimpleNamespace(x_addrs=[])))
+            except ConsumerError as exc:
+                text = str(exc)
+                check("400" in text and "Bad Request" in text, f"connect names the HTTP status {label}")
+                check(
+                    ("The message is not valid" in text and "InvalidMessage" in text) is with_fault,
+                    f"connect repeats the fault's reason and code only when there is one {label}",
+                )
+                check(exc.__cause__ is error, f"connect keeps the original error as the cause {label}")
+            except Exception as exc:  # noqa: BLE001
+                check(False, f"connect raised {type(exc).__name__} instead of ConsumerError {label}")
+            else:
+                check(False, f"connect succeeded despite the HTTP error {label}")
+        check(consumer.stop_count == 1, f"connect rolls the consumer back once {label}")
+
+        remote = RemoteDevice(SimpleNamespace(), object(), f"answering peer {label}")
+
+        def refuse(error: HTTPReturnCodeError = error) -> None:
+            raise error
+
+        try:
+            remote._send(refuse, 1.0)
+        except PeerConnectionLost:
+            check(False, f"an HTTP error answer is not a lost connection {label}")
+        except ConsumerError as exc:
+            check("400" in str(exc) and "Bad Request" in str(exc), f"the request error names the HTTP status {label}")
+        else:
+            check(False, f"the request error is raised {label}")
+        check(remote.connection_lost_reason is None, f"an HTTP error answer leaves the connection alive {label}")
+
+    remote = RemoteDevice(SimpleNamespace(), object(), "unreachable peer")
+
+    def unreachable() -> None:
+        raise ConnectionResetError("connection reset by peer")
+
+    try:
+        remote._send(unreachable, 1.0)
+    except PeerConnectionLost:
+        check(remote.connection_lost_reason is not None, "a reset connection still marks the peer as lost")
+    else:
+        check(False, "a reset connection raises PeerConnectionLost")
+
+
 def main() -> int:
     print("Service lifecycle fault injection")
     mdib_load_failure()
@@ -465,6 +554,7 @@ def main() -> int:
     tls_alert_connection_diagnostics()
     metric_subscription_health()
     bound_callbacks_stay_alive()
+    http_error_answers()
     return REPORT.summary()
 
 
