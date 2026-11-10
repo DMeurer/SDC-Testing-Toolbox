@@ -67,6 +67,42 @@ def stretched_empty_columns(board) -> list[int]:
     ]
 
 
+def menu_key_checks(report: Report, fixture: WindowFixture) -> None:
+    """Only a complete bare-Alt gesture may reveal an unpinned menu."""
+    window, app = fixture.window, fixture.app
+    original_pinned = window.always_show_menu
+    editor = QLineEdit("keyboard target", window)
+    editor.show()
+    window.activateWindow()
+    try:
+        window.set_always_show_menu(False)
+        for key in (Qt.Key_F11, Qt.Key_X, Qt.Key_Left):
+            editor.setFocus()
+            QTest.keyClick(editor, key, Qt.AltModifier)
+            pump(app)
+            report.check(window.menuBar().isHidden(),
+                         f"Alt+{key.name} does not act like bare Alt, including child-consumed keys")
+            window.menuBar().hide()
+        QTest.keyClick(editor, Qt.Key_Alt, Qt.ControlModifier)
+        pump(app)
+        report.check(window.menuBar().isHidden(), "Ctrl+Alt does not reveal the menu")
+        QTest.keyClick(editor, Qt.Key_Alt)
+        pump(app)
+        report.check(window.menuBar().isVisible(), "bare Alt still reveals the unpinned menu")
+        QTest.keyClick(window.menuBar(), Qt.Key_Alt)
+        pump(app)
+        report.check(window.menuBar().isHidden(), "a second bare Alt hides it again")
+        window.set_always_show_menu(True)
+        QTest.keyClick(editor, Qt.Key_Alt)
+        pump(app)
+        report.check(window.menuBar().isVisible(), "bare Alt never hides a pinned menu")
+    finally:
+        window.set_always_show_menu(original_pinned)
+        editor.close()
+        editor.deleteLater()
+        pump(app)
+
+
 def theme_checks(report: Report, fixture: WindowFixture) -> None:
     window = fixture.window
     assert window is not None
@@ -360,6 +396,7 @@ def main() -> int:
         window = fixture.window
         assert window is not None
 
+        menu_key_checks(report, fixture)
         theme_checks(report, fixture)
 
         report.check(window.splitter.count() == 2, "split view contains both panels")
