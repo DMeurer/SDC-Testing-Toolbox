@@ -344,6 +344,10 @@ class ProviderService:
             if initialize_contexts:
                 self.set_location(LocationInfo(**constants.DEFAULT_LOCATION))
                 self.set_patient(DEFAULT_PATIENT)
+            else:
+                # Only set_location() publishes the device, and a native snapshot keeps its own
+                # contexts, so without this the provider would never answer a Probe or Resolve.
+                self._provider.publish()
 
             if self._sco is None and not native_mode:
                 msg = "no SCO registry was created - the bootstrap MDIB is missing its Sco element"

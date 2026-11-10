@@ -16,9 +16,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lxml import etree
 from mdib_test_support import EXT, MSG, PM, XSI, original_mdib
+from script_support import wait_until
 from sdc11073.xml_types import pm_types
 from sdc11073.xml_types import msg_types
 
+from sdctoolbox.consumer_service import ConsumerService
 from sdctoolbox.provider_service import ProviderService
 from sdctoolbox.model import MetricKind, MetricSpec
 
@@ -183,6 +185,28 @@ class NativeProviderTests(unittest.TestCase):
 
     def start_native(self, data: bytes | None = None) -> None:
         self.service.start(self.io.parse_mdib(data or original_mdib()))
+
+    def assert_discoverable(self) -> None:
+        epr = self.service.epr.urn
+        consumer = ConsumerService()
+        self.addCleanup(consumer.stop)
+        consumer.start()
+
+        def probed() -> bool:
+            consumer.probe()
+            return any(device.epr == epr for device in consumer.known_devices())
+
+        self.assertTrue(wait_until(probed, timeout=8.0, interval=1.0), "the provider must answer a Probe")
+
+    def test_native_start_is_discoverable(self) -> None:
+        self.start_native()
+        self.assert_discoverable()
+
+    def test_native_replacement_is_discoverable_again(self) -> None:
+        self.service.start()
+        self.service.replace_mdib(self.io.NativeMdibConfig(original_mdib()))
+        self.assertTrue(self.service.native_mode)
+        self.assert_discoverable()
 
     def test_native_start_preserves_graph_state_contexts_and_does_not_generate(self) -> None:
         self.start_native()
