@@ -269,6 +269,35 @@ class OperationReportsMissing(ConsumerError):
     """The peer is there, but without an OperationInvokedReport subscription it refuses operations."""
 
 
+_WSDL_NS = "{http://schemas.xmlsoap.org/wsdl/}"
+
+
+def _declared_notifications(wsdl: Any, port_type_name: str) -> dict[str, str | None] | None:
+    """The notifications a port type declares, each with the soapAction of its binding.
+
+    A notification is a one-way operation with an output and no input. None means the WSDL
+    has no such port type.
+    """
+    port_type = wsdl.find(f"{_WSDL_NS}portType[@name='{port_type_name}']")
+    if port_type is None:
+        return None
+    soap_actions: dict[str | None, str] = {}
+    for binding in wsdl.findall(f"{_WSDL_NS}binding"):
+        if binding.get("type", "").rpartition(":")[2] != port_type_name:
+            continue
+        for operation in binding.findall(f"{_WSDL_NS}operation"):
+            for child in operation:
+                if child.get("soapAction"):
+                    soap_actions[operation.get("name")] = child.get("soapAction")
+    return {
+        operation.get("name"): soap_actions.get(operation.get("name"))
+        for operation in port_type.findall(f"{_WSDL_NS}operation")
+        if operation.get("name")
+        and operation.find(f"{_WSDL_NS}input") is None
+        and operation.find(f"{_WSDL_NS}output") is not None
+    }
+
+
 class _WsdlSdcConsumer(SdcConsumer):
     """Limit subscriptions before start_all groups actions by hosted service."""
 
@@ -279,24 +308,35 @@ class _WsdlSdcConsumer(SdcConsumer):
 
     def _mk_hosted_services(self, host_description: Any) -> None:
         super()._mk_hosted_services(host_description)
-        ns = "{http://schemas.xmlsoap.org/wsdl/}"
         for hosted in self.hosted_services.values():
             if hosted.wsdl_node is None:
                 continue
             for name, client in hosted.services.items():
-                port_type = hosted.wsdl_node.find(f"{ns}portType[@name='{name}']")
-                if port_type is None:
+                declared = _declared_notifications(hosted.wsdl_node, name)
+                if declared is None:
                     continue
                 # get_available_subscriptions() lists library capabilities, not peer support.
-                notifications = {
-                    _action_uri(getattr(self.sdc_definitions.Actions, operation.get("name"), ""))
-                    for operation in port_type.findall(f"{ns}operation")
-                    if operation.find(f"{ns}input") is None and operation.find(f"{ns}output") is not None
+                # Operation names differ between implementations (sdc11073 declares Waveform
+                # where others declare WaveformStream), so the binding's soapAction counts too.
+                declared_actions = {
+                    action
+                    for operation, soap_action in declared.items()
+                    for action in (_action_uri(getattr(self.sdc_definitions.Actions, operation, "")), soap_action)
+                    if action
                 }
                 client.notifications = tuple(
                     key for key in client.get_available_subscriptions()
-                    if _action_uri(key.action) in notifications
+                    if _action_uri(key.action) in declared_actions
                 )
+                subscribed = {_action_uri(key.action) for key in client.notifications}
+                for operation, soap_action in declared.items():
+                    named = _action_uri(getattr(self.sdc_definitions.Actions, operation, ""))
+                    if named not in subscribed and soap_action not in subscribed:
+                        logger.warning(
+                            "the peer declares the notification %s.%s, which this consumer cannot subscribe to",
+                            name,
+                            operation,
+                        )
 
 
 def _error_text(exc: BaseException) -> str:
