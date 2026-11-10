@@ -1178,6 +1178,13 @@ class ProviderService:
                         else None
                     ),
                 )
+                # The attribute names the limits that are switched off, so an upper-only alarm is "LoOff".
+                if spec.lower_limit is not None and spec.upper_limit is not None:
+                    entity.state.MonitoredAlertLimits = pm_types.AlertConditionMonitoredLimits.ALL_ON
+                elif spec.upper_limit is not None:
+                    entity.state.MonitoredAlertLimits = pm_types.AlertConditionMonitoredLimits.LOW_OFF
+                else:
+                    entity.state.MonitoredAlertLimits = pm_types.AlertConditionMonitoredLimits.HIGH_OFF
 
             signal_entities = []
             handles = {live_handle for live_handle, _ in self.mdib.entities.items()} | {handle}
