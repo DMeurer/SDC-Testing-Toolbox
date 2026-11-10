@@ -263,14 +263,14 @@ class SamplePlot(QWidget):
         now = time.monotonic()
         elapsed = now - self._last_tick
         self._last_tick = now
-        self._credit += elapsed / self._sample_period
+        self._credit = min(len(self._pending), self._credit + elapsed / self._sample_period)
         due = int(self._credit)
         self._credit -= due
 
         # If the buffer has run long, take the excess as well. Otherwise a peer sending a
         # little faster than it declared would push the trace further behind every second
         # until it was showing minutes-old data.
-        backlog_limit = int(MAX_BACKLOG_SECONDS / self._sample_period)
+        backlog_limit = int(min(len(self._pending), MAX_BACKLOG_SECONDS / self._sample_period))
         excess = len(self._pending) - backlog_limit
         if excess > 0:
             due += excess

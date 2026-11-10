@@ -550,6 +550,17 @@ class RemoteDevice:
         """The consumer-side MDIB."""
         return self._mdib
 
+    @property
+    def friendly_name(self) -> str | None:
+        """The first usable localized DPWS device name, when the peer advertises one."""
+        host = getattr(self._consumer, "host_description", None)
+        device = getattr(host, "this_device", None)
+        for name in _sequence(getattr(device, "FriendlyName", None)):
+            text = getattr(name, "text", None)
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+        return None
+
     def metrics(self, handles: Iterable[str] | None = None) -> dict[str, RemoteMetric]:
         """Build defensive snapshots of the requested metrics on the peer.
 
@@ -576,6 +587,8 @@ class RemoteDevice:
 
                 metric_allowed_values = _string_values(getattr(descriptor, "AllowedValue", None), "Value")
                 metric_value = getattr(state, "MetricValue", None)
+                unit = getattr(descriptor, "Unit", None)
+                unit_system = getattr(unit, "CodingSystem", None)
 
                 technical_ranges = _ranges(getattr(descriptor, "TechnicalRange", None))
                 technical_lower, technical_upper = _first_bounds(technical_ranges)
@@ -596,7 +609,7 @@ class RemoteDevice:
                     node_type_name=getattr(node_type, "localname", str(node_type)),
                     kind=kind,
                     label=_first_text(getattr(descriptor, "Type", None)),
-                    unit_label=_first_text(getattr(descriptor, "Unit", None)),
+                    unit_label=_first_text(unit),
                     type_code=getattr(getattr(descriptor, "Type", None), "Code", None),
                     allowed_values=metric_allowed_values,
                     operation_allowed_values=(
@@ -623,6 +636,12 @@ class RemoteDevice:
                         selected_operation.handle if selected_operation is not None else None
                     ),
                     controllable_now=selected_operation is not None,
+                    validity=_enum_value(getattr(getattr(metric_value, "MetricQuality", None), "Validity", None)),
+                    activation=_enum_value(getattr(state, "ActivationState", None)),
+                    unit_code=getattr(unit, "Code", None),
+                    unit_coding_system=(
+                        constants.CODING_SYSTEM_MDC if unit is not None and unit_system is None else unit_system
+                    ),
                 )
             return result
 

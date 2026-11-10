@@ -66,6 +66,8 @@ from sdctoolbox.model import (  # noqa: E402
     MetricSpec,
     PatientInfo,
     PatientMeasurement,
+    RemoteMetric,
+    RemoteRange,
     WaveformShape,
     fixed_point_decimal,
 )
@@ -3733,6 +3735,90 @@ def check_foreign_consumer_operations(report: Report) -> None:
     )
 
 
+def check_remote_metadata(report: Report) -> None:
+    print("\n13a. Optional peer metadata and advertised names")
+    missing = object()
+    value = Decimal("18.12345678901234567890123456789")
+    entity = SimpleNamespace(
+        node_type=pm.NumericMetricDescriptor,
+        descriptor=SimpleNamespace(Unit=pm_types.CodedValue("266048")),
+        state=SimpleNamespace(
+            ActivationState=pm_types.ComponentActivation.STANDBY,
+            MetricValue=SimpleNamespace(Value=value, MetricQuality=SimpleNamespace(Validity=pm_types.MeasurementValidity.INVALID)),
+        ),
+    )
+    remote = RemoteDevice(SimpleNamespace(), SimpleNamespace(entities={"pressure": entity}), "urn:metadata")
+    metric = remote.metrics()["pressure"]
+    report.check(
+        getattr(metric, "unit_code", missing) == "266048"
+        and getattr(metric, "unit_coding_system", missing) == constants.CODING_SYSTEM_MDC
+        and getattr(metric, "validity", missing) == "Inv"
+        and getattr(metric, "activation", missing) == "StndBy"
+        and metric.value == value,
+        "snapshots retain raw unit identity, quality, activation, and exact values",
+    )
+    for unit, code, system in (
+        (SimpleNamespace(Code="foreign", CodingSystem="urn:foreign:units"), "foreign", "urn:foreign:units"),
+        (SimpleNamespace(Code="raw", CodingSystem="not a URI"), "raw", "not a URI"),
+        (SimpleNamespace(Code="", CodingSystem=""), "", ""),
+        (SimpleNamespace(Code="omitted"), "omitted", constants.CODING_SYSTEM_MDC),
+        (None, None, None),
+    ):
+        entity.descriptor.Unit = unit
+        metric = remote.metrics()["pressure"]
+        report.check(
+            getattr(metric, "unit_code", missing) == code and getattr(metric, "unit_coding_system", missing) == system,
+            f"raw unit metadata preserves absent, omitted, or explicit system {system!r}",
+        )
+    entity.descriptor = SimpleNamespace()
+    for state in (None, SimpleNamespace(), SimpleNamespace(MetricValue=None), SimpleNamespace(MetricValue=SimpleNamespace()),
+                  SimpleNamespace(MetricValue=SimpleNamespace(MetricQuality=None))):
+        entity.state = state
+        metric = remote.metrics()["pressure"]
+        report.check(
+            all(getattr(metric, field, missing) is None for field in ("unit_code", "unit_coding_system", "validity", "activation")),
+            "absent unit, state, value, or quality remains optional",
+        )
+    entity.state = SimpleNamespace(ActivationState="foreign activation", MetricValue=SimpleNamespace(MetricQuality=SimpleNamespace(Validity="foreign validity")))
+    metric = remote.metrics()["pressure"]
+    report.check(
+        getattr(metric, "validity", missing) == "foreign validity" and getattr(metric, "activation", missing) == "foreign activation",
+        "foreign quality and activation strings are not normalized or rejected",
+    )
+    ranges = (RemoteRange(Decimal("1"), Decimal("2")),)
+    legacy = RemoteMetric(
+        "old", "NumericMetricDescriptor", MetricKind.NUMBER, "Old", "mm", "type", ("A",), Decimal("0.1"),
+        Decimal("1"), Decimal("2"), Decimal("0"), Decimal("3"), value, (Decimal("4"),), Decimal("0.2"),
+        "Hz", Decimal("5"), Decimal("6"), "channel", ("set.old",), "set.old", True, ("B",), ranges, ranges,
+    )
+    report.check(
+        legacy.value == value and legacy.samples == (Decimal("4"),) and legacy.parent_handle == "channel"
+        and legacy.selected_operation_handle == "set.old" and legacy.controllable_now
+        and legacy.operation_allowed_values == ("B",) and legacy.allowed_ranges == ranges and legacy.technical_ranges == ranges
+        and all(getattr(legacy, field, missing) is None for field in ("validity", "activation", "unit_code", "unit_coding_system")),
+        "all old positional snapshot arguments retain their meanings with optional metadata appended",
+    )
+    for consumer, expected in (
+        (SimpleNamespace(), None),
+        (SimpleNamespace(host_description=None), None),
+        (SimpleNamespace(host_description=SimpleNamespace()), None),
+        (SimpleNamespace(host_description=SimpleNamespace(this_device=None)), None),
+        (SimpleNamespace(host_description=SimpleNamespace(this_device=SimpleNamespace())), None),
+        (SimpleNamespace(host_description=SimpleNamespace(this_device=SimpleNamespace(FriendlyName=[]))), None),
+        (SimpleNamespace(host_description=SimpleNamespace(this_device=SimpleNamespace(FriendlyName=[None, SimpleNamespace(text=" \n"), SimpleNamespace(text=42)]))), None),
+        (SimpleNamespace(host_description=SimpleNamespace(this_device=SimpleNamespace(FriendlyName=[SimpleNamespace(), SimpleNamespace(text=""), SimpleNamespace(text=" First usable "), SimpleNamespace(text="Later")]))), "First usable"),
+    ):
+        peer = RemoteDevice(consumer, SimpleNamespace(), "urn:names")
+        report.check(getattr(peer, "friendly_name", missing) == expected, "the real friendly-name getter chooses the first usable localized DPWS text", repr(expected))
+    try:
+        peer.friendly_name = "replacement"
+    except AttributeError:
+        read_only = True
+    else:
+        read_only = False
+    report.check(read_only, "advertised friendly names are read-only")
+
+
 def check_periodic_consumer_routing(report: Report) -> None:
     print("\n14. Periodic consumer report routing")
 
@@ -3849,6 +3935,7 @@ def main() -> int:
         check_contexts(report, service)
         check_presets(report)
         check_foreign_consumer_operations(report)
+        check_remote_metadata(report)
         check_periodic_consumer_routing(report)
     finally:
         service.stop()

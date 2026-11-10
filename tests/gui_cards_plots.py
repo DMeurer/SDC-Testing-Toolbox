@@ -150,6 +150,9 @@ def check_exact_plot_painting(report: Report) -> None:
             clock.return_value = 10.025
             paced._on_frame()  # noqa: SLF001
             report.check(list(paced._samples) == values[:2] and list(paced._pending) == values[2:], "pacing reveals only the samples due at the declared period")  # noqa: SLF001
+            clock.return_value = 10.031
+            paced._on_frame()  # noqa: SLF001
+            report.check(list(paced._samples) == values, "fractional pacing credit carries into the next frame")  # noqa: SLF001
         paced.flush()
         report.check(list(paced._samples) == values and not paced._timer.isActive(), "flush preserves exact paced samples and stops its timer")  # noqa: SLF001
     finally:
@@ -178,11 +181,67 @@ def check_exact_plot_painting(report: Report) -> None:
             plot.deleteLater()
 
 
+def check_delayed_plot_pacing(report: Report) -> None:
+    values = [Decimal("1000000000000000000000000000000.1"), Decimal("1000000000000000000000000000000.2")]
+    later = [Decimal("1000000000000000000000000000000.3")]
+    for period in (Decimal("1e-307"), Decimal("1e-310")):
+        plot = PaintProbe(sample_period=period)
+        try:
+            with patch.object(plot_module.time, "monotonic", return_value=100.0) as clock:
+                plot.add_samples(values)
+                try:
+                    plot._on_frame()  # noqa: SLF001 - exercise backlog conversion before time advances
+                    clock.return_value = 130.0
+                    plot._on_frame()  # noqa: SLF001
+                    plot._on_frame()  # noqa: SLF001 - an empty frame stops pacing
+                    report.check(
+                        list(plot._samples) == values and not plot._pending and not plot._timer.isActive(),  # noqa: SLF001
+                        f"a delayed frame at period {period} drains exact received samples and stops",
+                    )
+                    clock.return_value = 160.0
+                    plot.add_samples(later)
+                    plot._on_frame()  # noqa: SLF001
+                    clock.return_value = 190.0
+                    plot._on_frame()  # noqa: SLF001
+                    plot._on_frame()  # noqa: SLF001
+                    report.check(
+                        list(plot._samples) == values + later and not plot._pending  # noqa: SLF001
+                        and not plot._timer.isActive() and plot._credit == 0.0,  # noqa: SLF001
+                        f"a later block at period {period} retains exact continuity without poisoned credit",
+                    )
+                except (OverflowError, ValueError) as exc:
+                    report.check(False, f"delayed pacing at period {period} stays bounded by received samples", f"{type(exc).__name__}: {exc}")
+        finally:
+            plot.clear()
+            plot.deleteLater()
+
+    for scrolling in (True, False):
+        plot = PaintProbe(scrolling=scrolling, sample_period=Decimal("0.1"))
+        try:
+            plot.add_samples(values)
+            pending, target = list(plot._pending), list(plot._target)  # noqa: SLF001
+            plot.add_samples([])
+            report.check(
+                list(plot._pending) == pending and list(plot._target) == target,  # noqa: SLF001
+                f"an empty {'waveform' if scrolling else 'distribution'} block retains in-flight samples",
+            )
+            plot.flush()
+            plot.add_samples([])
+            report.check(
+                list(plot._samples) == values and not plot._timer.isActive(),  # noqa: SLF001
+                f"an empty {'waveform' if scrolling else 'distribution'} block retains the settled trace",
+            )
+        finally:
+            plot.clear()
+            plot.deleteLater()
+
+
 def main() -> int:
     report = Report()
     app = application()
     print("GUI cards and plots (offscreen)")
     check_exact_plot_painting(report)
+    check_delayed_plot_pacing(report)
     with WindowFixture("gui-cards-plots") as fixture:
         app = fixture.app
         service = fixture.service
