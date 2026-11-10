@@ -187,8 +187,10 @@ def check_partial_metric_feed_loss(report: Report) -> None:
         end(PERIODIC_METRIC)
         report.check(remote.connection_lost_reason is None, "loss of an optional periodic action keeps episodic metrics live")
         end(EPISODIC_METRIC)
+        # sdc11073 stores the new subscription status before it calls the observers, so the listener may still be running.
         report.check(
-            remote.operation_reports_subscribed() and bool(reasons) and remote.connection_lost_reason is not None,
+            wait_until(lambda: bool(reasons) and remote.connection_lost_reason is not None, timeout=5)
+            and remote.operation_reports_subscribed(),
             "ending the metric feed reports data loss even while OperationInvokedReport remains active",
         )
         remote._consumer.stop_all()  # this peer is reachable; explicitly clean up its remaining subscriptions
