@@ -70,6 +70,8 @@ EXPECTED_PRESET_FILES = {
     "hf-generator.json",
     "infusion-pump.json",
     "insufflator.json",
+    "mdib-demo-infusion-pump.xml",
+    "mdib-demo-monitor.xml",
     "operating-table.json",
     "patient-monitor.json",
     "surgical-microscope.json",
@@ -368,7 +370,7 @@ def main() -> int:
     actual_files = {path.name for path in paths}
     report.check(
         constants.SHIPPED_PRESET_FILES == EXPECTED_PRESET_FILES,
-        "the manifest includes seven device profiles and two focused examples",
+        "the manifest includes seven device profiles, two focused examples and two native-MDIB examples",
     )
     report.check(
         actual_files == EXPECTED_PRESET_FILES,
