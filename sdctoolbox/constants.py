@@ -22,8 +22,10 @@ SHIPPED_PRESET_FILES = {
     "hf-generator.json",
     "infusion-pump.json",
     "insufflator.json",
+    "operating-table.json",
     "patient-monitor.json",
     "surgical-microscope.json",
+    "ventilation-pressure.json",
     "ventilator.json",
 }
 
