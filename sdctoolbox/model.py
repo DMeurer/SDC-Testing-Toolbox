@@ -1333,6 +1333,10 @@ class RemoteMetric:
     # fields above intentionally cannot represent.
     allowed_ranges: tuple[RemoteRange, ...] = field(default_factory=tuple)
     technical_ranges: tuple[RemoteRange, ...] = field(default_factory=tuple)
+    validity: str | None = None
+    activation: str | None = None
+    unit_code: str | None = None
+    unit_coding_system: str | None = None
 
     @property
     def controllable(self) -> bool:

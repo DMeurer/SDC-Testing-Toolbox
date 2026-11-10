@@ -116,13 +116,16 @@ class ConsumerTabs(QTabWidget):
             return
         number = pane.property("connectionNumber")
         status = " ".join(status.split())
-        epr = getattr(pane.remote, "epr", None)
-        caption = " ".join((epr or status.removeprefix("Connected to ")).split())
+        epr = " ".join((getattr(pane.remote, "epr", None) or "").split())
+        friendly_name = getattr(pane.remote, "friendly_name", None)
+        caption = " ".join((friendly_name or epr or status.removeprefix("Connected to ")).split())
         title = QFontMetrics(self.font()).elidedText(f"{number} · {caption[:80]}", Qt.ElideRight, 200)
         self.setTabText(index, title.replace("&", "&&"))
         detail = status[:1024]
-        if epr and caption not in status:
-            detail = f"{caption[:512]} — {status[:512]}"
+        if friendly_name:
+            detail = f"{caption[:256]} — {status[:768]}"
+        if epr and epr not in detail:
+            detail = f"{epr[:512]} — {detail[:512]}"
         self.setTabToolTip(index, f"<qt>{escape(f'Connection {number}: {detail}')}</qt>")
         bar = self.tabBar()
         button = bar.tabButton(index, QTabBar.RightSide) or bar.tabButton(index, QTabBar.LeftSide)

@@ -36,6 +36,7 @@ from .. import config
 from ..mdib_io import NativeMdibConfig
 from .consumer_pane import ConsumerPane
 from .consumer_tabs import ConsumerTabs
+from .menu_keys import BareAltTracker
 from .no_wheel import NoWheelTabBar
 from .provider_pane import ProviderPane
 from .styling import is_dark, set_dark_mode
@@ -123,6 +124,7 @@ class MainWindow(QMainWindow):
         # Remembered across a trip through tab mode so the divider comes back where it was.
         self._splitter_sizes: list[int] = []
 
+        self._alt_key = BareAltTracker(self)
         self._build_menus()
         self.set_split_view(enabled=True)
         self.set_use_widgets(enabled=True)
@@ -462,7 +464,7 @@ class MainWindow(QMainWindow):
 
     def keyReleaseEvent(self, event) -> None:  # noqa: ANN001, N802 - Qt naming
         """Alt on its own reveals the menu bar; Escape puts it away."""
-        if event.key() == Qt.Key_Alt and not (event.modifiers() & ~Qt.AltModifier):
+        if event.key() == Qt.Key_Alt and self._alt_key.is_bare and not event.isAutoRepeat():
             self.toggle_menu_bar()
             event.accept()
             return

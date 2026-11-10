@@ -292,7 +292,7 @@ Both `replace=True` replacement and `replace=False` append are transactional for
 *File → Load preset* lists the ready-made devices in `presets/`, so the ones that ship with the tool need no file dialog.
 The same list appears in the startup window. Loading a profile with malformed field types or other schema errors raises `ConfigError`; `list_presets` catches those strict validation failures, invalid JSON and unreadable files and skips those entries, so one malformed preset does not interrupt discovery.
 Explicit profile versions must be JSON integers from 1 through the current format version, 3; preset discovery skips files outside that range. Profiles without a version predate versioning and are intentionally read with legacy version 1 semantics.
-The seven shipped presets are canonical current-schema profiles, not legacy compatibility fixtures. They are kept at profile format version 3 with explicit alert signal definitions. Tests for older readable formats use synthetic profile data instead of holding a shipped preset back on an earlier schema.
+The seven realistic-device presets and two focused examples are canonical current-schema profiles, not legacy compatibility fixtures. They are kept at profile format version 3 with explicit alert signal definitions where alarms are present. Tests for older readable formats use synthetic profile data instead of holding a shipped preset back on an earlier schema.
 
 Any of them can also be loaded at startup:
 
@@ -318,6 +318,24 @@ For a profile that imports successfully, recorded handles make its defined metri
 | `surgical-microscope` | Robotic scope, after an Aesculap Aeos | Six axes, fixpoint and free modes, ICG fluorescence, and *Home axes* — none of which is a value you write           |
 | `endoscopic-camera`   | Camera and light source               | Image profiles, and a *White balance now* action with nothing to type                                               |
 | `insufflator`         | Laparoscopic insufflator              | Nine metrics, one more than the infusion pump; the first preset this project had                                    |
+
+### Focused numeric examples
+
+Two smaller profiles complement the seven realistic devices above. Both publish read-only
+numeric measurements with coded units and declared containment, without alarms or actions:
+
+- **Operating Table** (`operating-table.json`): Height **780 mm** (500–1100 mm, resolution 1 mm),
+  Trendelenburg **−8°** and Lateral Angle **7.6°** (both −30° to 30°, resolution 0.1°).
+  The table metric types use the toolbox's private coding namespace; their units use MDC codes.
+- **Ventilation Pressure** (`ventilation-pressure.json`): **18 cmH₂O** (0–40 cmH₂O,
+  resolution 1 cmH₂O), with MDC pressure type and unit codes.
+
+Select either name in the startup config dropdown or *File → Load preset*, or load it directly:
+
+```powershell
+.venv\Scripts\python.exe run_toolbox.py --config presets\operating-table.json
+.venv\Scripts\python.exe run_toolbox.py --config presets\ventilation-pressure.json
+```
 
 ### What the presets are actually demonstrating
 

@@ -108,8 +108,9 @@ class MultiProvider(unittest.TestCase):
         self.addCleanup(self.fake_service.stop)
         self.addCleanup(self.fake_bridge.stop)
 
-    def attach(self, pane, epr="peer"):
+    def attach(self, pane, epr="peer", *, friendly_name=None):
         remote = controllable_peer(epr)
+        remote.friendly_name = friendly_name
         pane._on_connected(remote, pane._generation)
         return remote
 
@@ -468,6 +469,62 @@ class MultiProvider(unittest.TestCase):
             document.setHtml(tabs.tabToolTip(0))
             self.assertEqual(document.toPlainText(), "Connection 1: Connected to urn:<b>literal peer</b>&identity")
 
+    def test_advertised_tab_names_keep_numbered_identity_and_epr_tooltips(self) -> None:
+        with self.window() as (window, tabs, owned):
+            first = window.network_pane
+            second = tabs.add_connection()
+            owned.append(second)
+            for pane, epr in ((first, "urn:peer-one"), (second, "urn:peer-two")):
+                self.attach(pane, epr, friendly_name="Table & Lamp")
+            self.assertEqual(tabs.tabText(0), "1 · Table && Lamp")
+            self.assertEqual(tabs.tabText(1), "2 · Table && Lamp")
+            for index, epr in enumerate(("urn:peer-one", "urn:peer-two")):
+                self.assertIn(epr, tabs.tabToolTip(index))
+                self.assertIn("Connected to", tabs.tabToolTip(index))
+            first._on_scan_finished([])
+            self.assertEqual(tabs.tabText(0), "1 · Table && Lamp")
+            self.assertIn("urn:peer-one", tabs.tabToolTip(0))
+            self.assertIn("No devices found", tabs.tabToolTip(0))
+            first._on_disconnect()
+            self.assertNotIn("Table", tabs.tabText(0))
+            self.assertIn("Not connected", tabs.tabToolTip(0))
+            self.assertEqual(tabs.tabText(1), "2 · Table && Lamp")
+
+    def test_long_literal_name_cannot_displace_ordinary_epr_or_status(self) -> None:
+        with self.window() as (window, tabs, _owned):
+            pane = window.network_pane
+            epr = "urn:uuid:12345678-1234-5678-90ab-123456789abc"
+            name = "<b>& peer</b>\n" * 1000
+            self.attach(pane, epr, friendly_name=name)
+            title = tabs.tabText(0)
+            self.assertTrue(title.startswith("1 · <b>"), title)
+            self.assertIn("&&", title)
+            self.assertNotIn("\n", title)
+            self.assertLessEqual(len(title), 80)
+            pane._on_scan_finished([])
+            tooltip = tabs.tabToolTip(0)
+            document = QTextDocument()
+            document.setHtml(tooltip)
+            detail = document.toPlainText()
+            self.assertIn("<b>& peer</b>", detail)
+            self.assertIn(epr, detail)
+            self.assertIn("No devices found", detail)
+            self.assertLessEqual(len(detail), 1100)
+            self.assertNotIn("<b>", tooltip)
+
+    def test_truncated_status_keeps_complete_ordinary_epr(self) -> None:
+        with self.window() as (window, tabs, _owned):
+            pane = window.network_pane
+            epr = "urn:uuid:12345678-1234-5678-90ab-123456789abc"
+            self.attach(pane, epr, friendly_name="Peer table")
+            pane._set_status("Read failed: " + "detail " * 1000 + epr)
+            document = QTextDocument()
+            document.setHtml(tabs.tabToolTip(0))
+            detail = document.toPlainText()
+            self.assertIn(epr, detail, "a trailing ordinary EPR must survive status truncation")
+            self.assertIn("Read failed:", detail)
+            self.assertLessEqual(len(detail), 1100)
+
     def test_scanning_a_connected_tab_keeps_its_peer_identity(self) -> None:
         with self.window() as (window, tabs, _owned):
             remote = self.attach(window.network_pane, "urn:peer-one")
@@ -699,8 +756,8 @@ class MultiProvider(unittest.TestCase):
     def test_two_real_providers_hidden_backend_and_writes_are_independent(self) -> None:
         self.fake_service.stop()
         self.fake_bridge.stop()
-        peer = ProviderService(ip="127.0.0.1", instance_name="multi-provider-peer")
-        other = ProviderService(ip="127.0.0.1", instance_name="multi-provider-other")
+        peer = ProviderService(ip="127.0.0.1", instance_name="multi-provider-peer", friendly_name="Table")
+        other = ProviderService(ip="127.0.0.1", instance_name="multi-provider-other", friendly_name="Pressure")
         try:
             peer.start()
             other.start()
@@ -721,6 +778,9 @@ class MultiProvider(unittest.TestCase):
                     pane.device_list.setCurrentRow(next(i for i, d in enumerate(pane.devices) if d.epr == provider.epr.urn))
                     pane.connect_button.click()
                     self.assertTrue(wait_for(self.app, lambda: pane.remote is not None, 30))
+                    self.assertEqual(getattr(pane.remote, "friendly_name", None), provider.friendly_name)
+                    self.assertIn(provider.friendly_name, tabs.tabText(tabs.indexOf(pane)))
+                    self.assertIn(provider.epr.urn, tabs.tabToolTip(tabs.indexOf(pane)))
                 remotes = [pane.remote for pane in panes]
                 self.assertIsNot(remotes[0], remotes[1])
                 for pane in panes:

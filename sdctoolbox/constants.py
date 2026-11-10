@@ -24,8 +24,10 @@ SHIPPED_PRESET_FILES = {
     "mdib-demo-monitor.xml",
     "mdib-demo-infusion-pump.xml",
     "insufflator.json",
+    "operating-table.json",
     "patient-monitor.json",
     "surgical-microscope.json",
+    "ventilation-pressure.json",
     "ventilator.json",
 }
 
