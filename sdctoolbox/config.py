@@ -49,6 +49,7 @@ from .model import (
     patient_measurement_wire_value,
     slugify,
     validate_decimal,
+    validate_xml_text,
 )
 
 if TYPE_CHECKING:
@@ -746,7 +747,12 @@ def _device_from_dict(data: Any) -> tuple[DeviceInfo | None, str]:
     _check_keys(data, known, "device")
     _check_types(data, {name: str for name in known}, "device")
     values = {key: value for key, value in data.items() if key != "instance_name"}
-    return DeviceInfo(**values), data.get("instance_name") or ""
+    instance_name = data.get("instance_name") or ""
+    try:
+        validate_xml_text(instance_name, "device instance_name")
+        return DeviceInfo(**values), instance_name
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
 
 
 def _required_coding_from_json(raw: Any, field: str) -> Coding:
@@ -906,6 +912,13 @@ def parse(data: Any) -> DeviceConfig:
             f"supported versions are {LEGACY_CONFIG_VERSION} through {CONFIG_VERSION}"
         )
         raise ConfigError(msg)
+
+    # Never announced, but listed in the preset menu, and a profile refuses text XML cannot carry everywhere else.
+    for key in ("name", "description"):
+        try:
+            validate_xml_text(data.get(key, ""), f"top level.{key}")
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
 
     device, instance_name = _device_from_dict(data.get("device"))
     metrics = [metric_from_dict(entry) for entry in data.get("metrics", [])]

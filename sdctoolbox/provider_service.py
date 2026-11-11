@@ -56,6 +56,7 @@ from .model import (
     patient_info_from_biceps,
     patient_measurement_wire_value,
     slugify,
+    validate_xml_text,
 )
 from .sample_generation import DemoSampleGenerator, SampleGeneratorSnapshot, domain_step
 from .sdc11073_v3_adapter import Sdc11073V3Adapter, Sdc11073V3Snapshot
@@ -188,6 +189,11 @@ class ProviderService:
             device: DeviceInfo | None = None,
             tls_config: TlsConfig | None = None,
     ) -> None:
+        # Both end up in ThisDevice. Text XML cannot carry made the provider start and answer
+        # discovery, and then fail every connect, so refuse it before anything exists.
+        validate_xml_text(instance_name, "instance name")
+        if friendly_name is not None:
+            validate_xml_text(friendly_name, "friendly name")
         self.ip = ip
         self.instance_name = instance_name
         # A preset describing a ventilator should announce itself as one. sdc11073 takes

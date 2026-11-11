@@ -18,6 +18,7 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import fields
 from decimal import Decimal
 from itertools import pairwise, permutations
 from pathlib import Path
@@ -2423,6 +2424,67 @@ SCHEMA_BAD_FILES = [
 ]
 
 
+UNENCODABLE_TEXT = {
+    "a control character": "bad\x0btext",
+    "a NUL": "bad\x00text",
+    "a lone surrogate": "bad\ud800text",
+    "a non-character": "bad\ufffetext",
+}
+
+
+def check_profile_text_xml_preflight(report: Report) -> None:
+    """The device block is announced as ThisModel and ThisDevice, so it must be text XML can carry.
+
+    It used to be accepted: the provider started and answered discovery, then failed every connect.
+    """
+    names = [field.name for field in fields(DeviceInfo)] + ["instance_name"]
+    targets = [(f"device.{name}", name, lambda text, name=name: {"device": {name: text}}) for name in names]
+    targets += [(key, key, lambda text, key=key: {key: text}) for key in ("name", "description")]
+    for label, key, payload in targets:
+        problems = []
+        for kind, text in UNENCODABLE_TEXT.items():
+            try:
+                config.parse(payload(text))
+            except config.ConfigError as exc:
+                if key not in str(exc):
+                    problems.append(f"{kind}: {exc}")
+            except Exception as exc:  # noqa: BLE001 - a malformed file must only expose ConfigError
+                problems.append(f"{kind}: {type(exc).__name__}")
+            else:
+                problems.append(f"{kind}: accepted")
+        report.check(not problems, f"{label} refuses text that XML cannot carry", "; ".join(problems))
+
+    ordinary = "Klinik M\u00fcnchen \u6771\u4eac \u202e <a&b]]>\"' " + "x" * 5000
+    accepted = config.parse({
+        "name": ordinary,
+        "description": ordinary,
+        "device": {name: ordinary for name in names},
+    })
+    report.check(
+        accepted.device is not None
+        and accepted.device.friendly_name == ordinary
+        and accepted.instance_name == ordinary,
+        "text that XML can carry is kept as it is",
+    )
+
+    for description, build in (
+        ("an instance name", lambda: ProviderService(instance_name="bad\x0btext")),
+        ("an instance name with a lone surrogate", lambda: ProviderService(instance_name="bad\ud800text")),
+        ("a friendly name", lambda: ProviderService(friendly_name="bad\x0btext")),
+        ("a model name", lambda: DeviceInfo(model_name="bad\x00text")),
+    ):
+        try:
+            build()
+        except ValueError as exc:
+            report.check(
+                "XML" in str(exc),
+                f"{description} that XML cannot carry is refused before a provider exists",
+                str(exc)[:80],
+            )
+        else:
+            report.check(False, f"{description} that XML cannot carry is refused", "it was accepted")  # noqa: FBT003
+
+
 def check_import_edge_cases(report: Report, workdir: Path) -> None:
     """Files that editors and shells write must not end in an uncaught exception or a baffling refusal."""
     deep = workdir / "deep.json"
@@ -2744,6 +2806,7 @@ def run_checks(report: Report, workdir: Path) -> None:
     check_import_edge_cases(report, workdir)
 
     print("\n12. Audit regressions: atomic saves, XML preflight, duplicate alarms, and patient detach")
+    check_profile_text_xml_preflight(report)
     regressions = ProviderService(instance_name="config-write-regressions")
     regressions.start()
     try:
