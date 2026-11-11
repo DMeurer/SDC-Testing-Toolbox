@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import gc
 import sys
+import threading
+import time
+from concurrent.futures import Future
 from contextlib import ExitStack
 from http.client import BadStatusLine, NotConnected
 from pathlib import Path
@@ -637,6 +640,48 @@ def new_consumer() -> consumer_module.SdcConsumer:
     return consumer_module._WsdlSdcConsumer("http://127.0.0.1:1/device", SdcV1Definitions, None)
 
 
+def an_operation_waiting_for_its_result_notices_a_lost_connection() -> None:
+    """A request in flight must not keep its caller waiting for the whole timeout once the peer is known to be gone."""
+    remote = RemoteDevice(SimpleNamespace(), object(), "peer that went away")
+    pending: Future = Future()
+    timer = threading.Timer(0.3, remote.mark_connection_lost, args=("the device could not be reached",))
+    timer.start()
+    started = time.monotonic()
+    try:
+        remote._send(lambda: pending, 10.0)
+    except PeerConnectionLost as exc:
+        waited = time.monotonic() - started
+        REPORT.check(waited < 2.0, "a lost connection ends the wait for the result", f"{waited:.2f} s of 10 s")
+        REPORT.check("the device could not be reached" in str(exc), "the error says why", str(exc))
+    except ConsumerError as exc:
+        REPORT.check(False, "a lost connection is reported as a lost connection", f"{type(exc).__name__}: {exc}")
+    else:
+        REPORT.check(False, "a request whose peer went away does not succeed")
+    finally:
+        timer.cancel()
+
+    remote = RemoteDevice(SimpleNamespace(), object(), "slow peer")
+    answer: Future = Future()
+    threading.Timer(0.6, answer.set_result, args=("final report",)).start()
+    started = time.monotonic()
+    REPORT.check(remote._send(lambda: answer, 5.0) == "final report", "the final result is returned when it arrives")
+    REPORT.check(time.monotonic() - started < 2.0, "and as soon as it arrives", f"{time.monotonic() - started:.2f} s")
+
+    remote = RemoteDevice(SimpleNamespace(), object(), "peer that never reports")
+    started = time.monotonic()
+    try:
+        remote._send(lambda: Future(), 0.6)
+    except PeerConnectionLost as exc:
+        REPORT.check(False, "a missing final report alone is not a lost connection", str(exc))
+    except ConsumerError as exc:
+        waited = time.monotonic() - started
+        REPORT.check("no final result within 0.6 s" in str(exc), "a missing final report is named as such", str(exc))
+        REPORT.check(0.5 <= waited < 1.5, "after the timeout the caller asked for", f"{waited:.2f} s")
+    else:
+        REPORT.check(False, "a request without a final report does not succeed")
+    REPORT.check(remote.connection_lost_reason is None, "and leaves the connection alone")
+
+
 def subscription_end_reasons() -> None:
     """A peer that ends its subscriptions can say why; the connection-lost reason repeats it.
 
@@ -831,6 +876,7 @@ def main() -> int:
     metric_subscription_health()
     bound_callbacks_stay_alive()
     http_error_answers()
+    an_operation_waiting_for_its_result_notices_a_lost_connection()
     subscription_end_reasons()
     refused_reports_are_retried_alone()
     return REPORT.summary()

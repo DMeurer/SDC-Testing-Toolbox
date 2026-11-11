@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from concurrent.futures import TimeoutError as FutureTimeoutError
+from concurrent.futures import wait as wait_for_futures
 from copy import copy
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -59,6 +59,8 @@ PROBE_SEND_SECONDS = 0.01
 # still there, and one not heard from for STALE_AFTER_SECONDS (crashed, no Bye) drops off.
 BACKGROUND_PROBE_SECONDS = 30.0
 STALE_AFTER_SECONDS = 2.5 * BACKGROUND_PROBE_SECONDS
+# An operation that waits for its result looks this often at whether the peer was declared lost.
+LOST_CHECK_SECONDS = 0.25
 
 # Descriptor node types we recognize as metrics, mapped to our own kind enum.
 METRIC_NODE_TYPES = {
@@ -615,13 +617,16 @@ class RemoteDevice:
             reason = f"the device could not be reached ({_error_text(exc)})"
             self.mark_connection_lost(reason)
             raise PeerConnectionLost(f"connection lost: {reason}") from exc
-        try:
-            return future.result(timeout=timeout)
-        except FutureTimeoutError as exc:
+        deadline = time.monotonic() + timeout
+        while True:
+            done, _ = wait_for_futures([future], timeout=max(0.0, min(deadline - time.monotonic(), LOST_CHECK_SECONDS)))
+            if done:
+                return future.result()
             if self._lost_reason is not None:
-                raise PeerConnectionLost(f"connection lost: {self._lost_reason}") from exc
-            msg = f"the device accepted the request but sent no final result within {timeout:g} s"
-            raise ConsumerError(msg) from exc
+                raise PeerConnectionLost(f"connection lost: {self._lost_reason}")
+            if time.monotonic() >= deadline:
+                msg = f"the device accepted the request but sent no final result within {timeout:g} s"
+                raise ConsumerError(msg)
 
     def operation_reports_subscribed(self) -> bool:
         """Whether an active subscription delivers this peer's OperationInvokedReports.
