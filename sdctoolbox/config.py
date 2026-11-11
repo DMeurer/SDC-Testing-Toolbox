@@ -213,7 +213,7 @@ def list_presets(directory: str | Path | None = None) -> list[Preset]:
     found = []
     for path in sorted(folder.glob("*.json")):
         try:
-            data = json.loads(path.read_text(encoding="utf-8"), parse_float=Decimal)
+            data = json.loads(path.read_text(encoding="utf-8-sig"), parse_float=Decimal)
             device = parse(data)
         except (OSError, UnicodeError, ValueError, RecursionError, ConfigError):
             continue
@@ -948,12 +948,15 @@ def load_file(path: str | Path) -> DeviceConfig | NativeMdibConfig:
 
         return load_mdib_file(source)
     try:
-        text = source.read_text(encoding="utf-8")
+        text = source.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeError) as exc:
         msg = f"cannot read {source}: {exc}"
         raise ConfigError(msg) from exc
     try:
         data = json.loads(text, parse_float=Decimal)
+    except RecursionError as exc:
+        msg = f"{source} is nested too deeply to read"
+        raise ConfigError(msg) from exc
     except ValueError as exc:
         msg = f"{source} is not valid JSON: {exc}"
         raise ConfigError(msg) from exc

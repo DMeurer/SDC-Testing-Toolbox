@@ -2423,6 +2423,41 @@ SCHEMA_BAD_FILES = [
 ]
 
 
+def check_import_edge_cases(report: Report, workdir: Path) -> None:
+    """Files that editors and shells write must not end in an uncaught exception or a baffling refusal."""
+    deep = workdir / "deep.json"
+    deep.write_text("[" * 200_000, encoding="utf-8")
+    try:
+        config.load_file(deep)
+    except config.ConfigError as exc:
+        report.check("nested" in str(exc), "a deeply nested file is refused with a usable message", str(exc)[:80])
+    except Exception as exc:  # noqa: BLE001 - the GUI and the console only handle ConfigError
+        report.check(False, "a deeply nested file is refused with ConfigError", type(exc).__name__)  # noqa: FBT003
+    else:
+        report.check(False, "a deeply nested file is refused", "it was accepted")  # noqa: FBT003
+
+    document = {"name": "From a BOM file", "metrics": [{"label": "From a BOM file", "kind": "number"}]}
+    signed = workdir / "bom.json"
+    signed.write_bytes(b"\xef\xbb\xbf" + json.dumps(document).encode("utf-8"))
+    try:
+        loaded = config.load_file(signed)
+    except config.ConfigError as exc:
+        report.check(False, "a file that starts with a UTF-8 byte order mark is read", str(exc)[:80])  # noqa: FBT003
+    else:
+        report.check(
+            [spec.label for spec in loaded.metrics] == ["From a BOM file"],
+            "a file that starts with a UTF-8 byte order mark is read",
+        )
+
+    presets = workdir / "bom-presets"
+    presets.mkdir()
+    (presets / "bom.json").write_bytes(signed.read_bytes())
+    report.check(
+        [preset.name for preset in config.list_presets(presets)] == ["From a BOM file"],
+        "a preset that starts with a UTF-8 byte order mark is listed",
+    )
+
+
 def run_checks(report: Report, workdir: Path) -> None:
     path = workdir / f"reference{config.FILE_SUFFIX}"
 
@@ -2706,6 +2741,7 @@ def run_checks(report: Report, workdir: Path) -> None:
         report.check("cannot read" in str(exc), "missing file reported clearly", str(exc)[:60])
     else:
         report.check(False, "missing file reported clearly", "it was accepted")  # noqa: FBT003
+    check_import_edge_cases(report, workdir)
 
     print("\n12. Audit regressions: atomic saves, XML preflight, duplicate alarms, and patient detach")
     regressions = ProviderService(instance_name="config-write-regressions")
