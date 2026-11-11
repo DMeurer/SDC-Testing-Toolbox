@@ -559,7 +559,8 @@ This is a focused SDC learning fixture, not an IEEE 11073 conformance claim. IEE
 
 The pull-request workflow runs the manifest-selected deterministic and policy suites once on
 Linux and once on Windows through `tests/run_suites.py`. Qt jobs use
-`QT_QPA_PLATFORM=offscreen`; Linux installs `libegl1` before importing PySide6:
+`QT_QPA_PLATFORM=offscreen`; Linux installs `libegl1` before importing PySide6, plus
+`requirements-build.txt` because its licensing and import-bootstrap suites load the build tooling:
 
 | Suite | Covers |
 |-------|--------|
