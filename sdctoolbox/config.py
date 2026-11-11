@@ -8,7 +8,7 @@ replaces tracked metrics, alerts, and actions by default, or appends them with `
 from __future__ import annotations
 
 import json
-import tempfile
+import uuid
 from dataclasses import dataclass, field, fields
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -542,6 +542,24 @@ def to_dict(service: ProviderService, *, include_values: bool = True) -> dict[st
     return payload
 
 
+def write_atomically(target: Path, data: str | bytes) -> None:
+    """Replace target in one step, keeping the old file whole if writing fails.
+
+    The temporary file is created by hand because tempfile treats a refused create as a name
+    clash on Windows and retries about two billion times, which froze a save into a folder
+    the user may not write to. Here a refused create is raised as it is, at once.
+    """
+    binary = isinstance(data, bytes)
+    temporary = target.parent / f".sdctoolbox-{uuid.uuid4().hex[:8]}.tmp"
+    output = temporary.open("xb" if binary else "x", encoding=None if binary else "utf-8")
+    try:
+        with output:
+            output.write(data)
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def save(service: ProviderService, path: str | Path, *, include_values: bool = True) -> Path:
     """Atomically replace a profile, preserving the old file if writing fails."""
     target = Path(path)
@@ -550,17 +568,7 @@ def save(service: ProviderService, path: str | Path, *, include_values: bool = T
 
         return save_mdib(service, target)
     payload = json.dumps(to_dict(service, include_values=include_values), indent=2) + "\n"
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=target.parent, suffix=".tmp", delete=False,
-        ) as output:
-            temporary = Path(output.name)
-            output.write(payload)
-        temporary.replace(target)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+    write_atomically(target, payload)
     return target
 
 

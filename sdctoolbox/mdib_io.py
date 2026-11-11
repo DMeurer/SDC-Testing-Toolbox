@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import tempfile
 from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass
@@ -22,7 +21,7 @@ from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types import pm_types
 from sdc11073.xml_types.dataconverters import TimestampConverter
 
-from .config import ConfigError
+from .config import ConfigError, write_atomically
 
 if TYPE_CHECKING:
     from .provider_service import ProviderService
@@ -243,13 +242,5 @@ def save_mdib(service: ProviderService, path: str | Path) -> Path:
         payload = mdib_bytes(service.mdib)
     except (etree.LxmlError, ValueError, TypeError) as exc:
         raise ConfigError(f"cannot serialize native MDIB: {exc}") from exc
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="wb", dir=target.parent, suffix=".tmp", delete=False) as output:
-            temporary = Path(output.name)
-            output.write(payload)
-        temporary.replace(target)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+    write_atomically(target, payload)
     return target

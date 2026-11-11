@@ -14,6 +14,7 @@ import errno
 import io
 import json
 import logging
+import os
 import sys
 import tempfile
 import threading
@@ -2520,6 +2521,47 @@ def check_import_edge_cases(report: Report, workdir: Path) -> None:
     )
 
 
+def check_refused_create_is_not_retried(report: Report, service: ProviderService, workdir: Path) -> None:
+    """Saving where files cannot be created must fail at once, not retry for days.
+
+    Windows reports a refused create like a name clash, so tempfile tries about two billion
+    names; an export into a drive root froze the window that asked for it.
+    """
+    attempts: list[str] = []
+
+    def refusing(real):  # noqa: ANN001, ANN202
+        def opener(file, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+            if isinstance(file, str | bytes | os.PathLike) and Path(os.fsdecode(file)).parent == workdir:
+                attempts.append(os.fsdecode(file))
+                raise PermissionError(errno.EACCES, "injected: files cannot be created here", os.fsdecode(file))
+            return real(file, *args, **kwargs)
+
+        return opener
+
+    before = set(workdir.iterdir())
+    for suffix in (config.FILE_SUFFIX, ".xml"):
+        target = workdir / f"refused{suffix}"
+        attempts.clear()
+        # bounded, or the unfixed code would go on for about 2 billion attempts
+        with (
+            patch.object(os, "open", refusing(os.open)),
+            patch.object(io, "open", refusing(io.open)),
+            patch.object(tempfile, "TMP_MAX", 20),
+        ):
+            try:
+                config.save(service, target)
+            except OSError as exc:
+                outcome = type(exc).__name__
+            else:
+                outcome = "saved"
+        report.check(
+            outcome == "PermissionError" and len(attempts) == 1,
+            f"a {suffix} save into a folder that refuses new files fails at once with the real reason",
+            f"{outcome} after {len(attempts)} attempt(s)",
+        )
+        report.check(set(workdir.iterdir()) == before, f"a refused {suffix} save leaves nothing behind")
+
+
 def run_checks(report: Report, workdir: Path) -> None:
     path = workdir / f"reference{config.FILE_SUFFIX}"
 
@@ -2811,6 +2853,7 @@ def run_checks(report: Report, workdir: Path) -> None:
     regressions.start()
     try:
         check_atomic_save(report, regressions, workdir)
+        check_refused_create_is_not_retried(report, regressions, workdir)
         check_location_xml_validation(report, regressions)
         check_control_capability_roundtrip(report, regressions)
         check_descriptor_text_preflight(report, regressions)
