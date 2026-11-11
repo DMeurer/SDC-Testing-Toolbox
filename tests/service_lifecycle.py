@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 from concurrent.futures import Future
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from http.client import BadStatusLine, NotConnected
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 from script_support import Report  # noqa: E402
 from sdc11073.consumer.subscription import ConsumerSubscriptionManager  # noqa: E402
 from sdc11073.definitions_sdc import SdcV1Definitions  # noqa: E402
+from sdc11073.exceptions import ValidationError  # noqa: E402
 from lxml import etree  # noqa: E402
 from sdc11073.namespaces import default_ns_helper  # noqa: E402
 from sdc11073.observableproperties import ObservableProperty  # noqa: E402
@@ -402,6 +403,150 @@ def consumer_connection_failure(*, stage: str, tls: bool = False) -> None:
             raises(message, lambda: service.connect(device))
     check(consumer.stop_count == 1, f"consumer {stage} failure closes the consumer exactly once")
     check(not consumer.active, f"consumer {stage} failure leaves no active consumer")
+
+
+class SchemaTracker(Tracker):
+    binary_peer_certificate = b""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        super().__init__()
+        self.error = error
+
+    def start(self, *_args, **_kwargs) -> None:
+        super().start()
+        if self.error is not None:
+            raise self.error
+
+    start_all = start
+
+
+EMPTY_SCHEMA = (
+    "Element '{http://www.w3.org/2003/05/soap-envelope}Envelope': "
+    "No matching global declaration available for the validation root, line 1"
+)
+
+
+def schema_error(detail: str) -> ValidationError:
+    """What sdc11073 raises: no text of its own, the lxml error as its cause."""
+    error = ValidationError("document invalid", None)
+    error.__cause__ = etree.DocumentInvalid(detail)
+    return error
+
+
+def failure_of(function) -> Exception | None:
+    try:
+        function()
+    except Exception as exc:  # noqa: BLE001 - the checks look at whatever was raised
+        return exc
+    return None
+
+
+@contextmanager
+def scripted_consumers(errors: list[Exception | None], *, pause: float = 0.0):
+    """Build fake consumers: the nth one fails its start with errors[n], the others fail at the MDIB."""
+    built: list[SchemaTracker] = []
+    state = {"building": 0, "most": 0}
+    guard = threading.Lock()
+
+    class ConsumerFactory:
+        def __new__(cls, *_args, **_kwargs) -> SchemaTracker:
+            with guard:
+                state["building"] += 1
+                state["most"] = max(state["most"], state["building"])
+                consumer = SchemaTracker(errors[len(built)] if len(built) < len(errors) else None)
+                built.append(consumer)
+            time.sleep(pause)
+            with guard:
+                state["building"] -= 1
+            return consumer
+
+        @staticmethod
+        def from_wsd_service(*_args, **_kwargs) -> SchemaTracker:
+            return ConsumerFactory()
+
+    class FakeConsumerMdib:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def init_mdib(self) -> None:
+            raise RuntimeError("consumer MDIB init failed")
+
+    with (
+        patch.object(consumer_module, "_WsdlSdcConsumer", ConsumerFactory),
+        patch.object(consumer_module, "ConsumerMdib", FakeConsumerMdib),
+    ):
+        yield built, state
+
+
+def a_consumer_with_an_empty_schema_is_built_again() -> None:
+    """Racing constructions can leave a consumer whose schema has no declarations; its first request then fails.
+
+    sdc11073 reports that as a ValidationError without any text, so connect() tries once more and otherwise says what happened.
+    """
+    service = ConsumerService()
+    device = DiscoveredDevice("peer", (), (), service=SimpleNamespace(x_addrs=[]))
+
+    with scripted_consumers([schema_error(EMPTY_SCHEMA)]) as (built, _):
+        error = failure_of(lambda: service.connect(device))
+    REPORT.check(
+        isinstance(error, RuntimeError) and str(error) == "consumer MDIB init failed",
+        "after an empty schema the connection is attempted again with a new consumer",
+        repr(error),
+    )
+    REPORT.check(
+        [consumer.stop_count for consumer in built] == [1, 1],
+        "both consumers were built and each was stopped once",
+        str([consumer.stop_count for consumer in built]),
+    )
+
+    with scripted_consumers([schema_error(EMPTY_SCHEMA), schema_error(EMPTY_SCHEMA)]) as (built, _):
+        error = failure_of(lambda: service.connect(device))
+    REPORT.check(
+        isinstance(error, ConsumerError) and "XML schema" in str(error) and "No matching global declaration" in str(error),
+        "a second empty schema is reported with the reason instead of an empty ValidationError",
+        repr(error),
+    )
+    REPORT.check(len(built) == 2, "the connection is attempted twice, not more often", str(len(built)))
+
+    with scripted_consumers([schema_error("Element '{urn:peer}Reply': This element is not expected.")]) as (built, _):
+        error = failure_of(lambda: service.connect(device))
+    REPORT.check(
+        isinstance(error, ConsumerError) and "This element is not expected" in str(error),
+        "a message the peer got wrong is reported with the reason",
+        repr(error),
+    )
+    REPORT.check(len(built) == 1, "a message the peer got wrong is not retried", str(len(built)))
+
+
+def consumers_are_built_one_at_a_time() -> None:
+    """Two consumers compiling their schema validators at the same moment can leave one without declarations."""
+    for tls in (False, True):
+        mode = "TLS" if tls else "plain"
+        if tls:
+            service = ConsumerService(
+                tls_config=SimpleNamespace(server_name="peer", verify_peer_certificate=lambda *_args: None)
+            )
+            service._tls_contexts = object()
+            device = DiscoveredDevice("peer", ("https://127.0.0.1:1/peer",), (), service=SimpleNamespace(x_addrs=[]))
+        else:
+            service = ConsumerService()
+            device = DiscoveredDevice("peer", (), (), service=SimpleNamespace(x_addrs=[]))
+        workers = 4
+        start = threading.Barrier(workers)
+        results: list[Exception | None] = []
+
+        def attempt() -> None:
+            start.wait()
+            results.append(failure_of(lambda: service.connect(device)))
+
+        with scripted_consumers([], pause=0.05) as (built, state):
+            threads = [threading.Thread(target=attempt) for _ in range(workers)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        REPORT.check(len(built) == workers, f"{mode}: every connection built its own consumer", str(len(built)))
+        REPORT.check(state["most"] == 1, f"{mode}: at most one consumer is under construction at a time", str(state["most"]))
 
 
 def http_consumer_rejects_https_endpoint() -> None:
@@ -871,6 +1016,8 @@ def main() -> int:
     consumer_connection_failure(stage="start")
     consumer_connection_failure(stage="construct")
     consumer_connection_failure(stage="init")
+    a_consumer_with_an_empty_schema_is_built_again()
+    consumers_are_built_one_at_a_time()
     http_consumer_rejects_https_endpoint()
     tls_alert_connection_diagnostics()
     metric_subscription_health()

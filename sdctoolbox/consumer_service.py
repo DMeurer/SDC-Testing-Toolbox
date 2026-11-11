@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 from sdc11073 import observableproperties
 from sdc11073.consumer.consumerimpl import SdcConsumer, default_components_factory
 from sdc11073.definitions_sdc import SdcV1Definitions
+from sdc11073.exceptions import ValidationError
 from sdc11073.mdib import ConsumerMdib
 from sdc11073.mdib.consumermdibxtra import ConsumerMdibMethods
 from sdc11073.pysoap.soapclient import HTTPReturnCodeError
@@ -61,6 +62,11 @@ BACKGROUND_PROBE_SECONDS = 30.0
 STALE_AFTER_SECONDS = 2.5 * BACKGROUND_PROBE_SECONDS
 # An operation that waits for its result looks this often at whether the peer was declared lost.
 LOST_CHECK_SECONDS = 0.25
+# Every consumer compiles its XML schema validators when it is built. When two compile at the
+# same moment, libxml2 can skip an import without an error and leave one validator without any
+# declarations, so every request of that consumer then fails validation. Builds take turns.
+_CONSUMER_BUILD_LOCK = threading.Lock()
+_EMPTY_SCHEMA_MESSAGE = "No matching global declaration"
 
 # Descriptor node types we recognize as metrics, mapped to our own kind enum.
 METRIC_NODE_TYPES = {
@@ -1287,6 +1293,20 @@ class ConsumerService:
 
     def connect(self, device: DiscoveredDevice) -> RemoteDevice:
         """Connect to a discovered provider and load its MDIB."""
+        try:
+            try:
+                return self._connect_once(device)
+            except ValidationError as exc:
+                if _EMPTY_SCHEMA_MESSAGE not in _error_text(exc):
+                    raise
+                logger.warning("a consumer for %s was built without usable schemas, building another", device.epr)
+                return self._connect_once(device)
+        except ValidationError as exc:
+            # sdc11073's ValidationError carries no text; the reason is on its lxml cause.
+            msg = f"a message was rejected by the XML schema validation ({_error_text(exc)})"
+            raise ConsumerError(msg) from exc
+
+    def _connect_once(self, device: DiscoveredDevice) -> RemoteDevice:
         if self.tls_config is not None:
             provider_address = next((address for address in device.x_addrs if address.startswith("https://")), None)
             if provider_address is None:
@@ -1305,20 +1325,22 @@ class ConsumerService:
                     "Enable TLS and configure certificates in the startup settings."
                 )
                 raise ConsumerError(msg)
-            consumer = _WsdlSdcConsumer.from_wsd_service(service, ssl_context_container=None)
+            with _CONSUMER_BUILD_LOCK:
+                consumer = _WsdlSdcConsumer.from_wsd_service(service, ssl_context_container=None)
         else:
             # The factory does not expose force_ssl_connect in sdc11073 3.0.0. Constructing
             # the same SDC-v1 consumer directly keeps a failed TLS handshake from retrying HTTP.
             components = default_components_factory()
             components.soap_client_class = partial(VerifiedSoapClient, tls_config=self.tls_config)
-            consumer = _WsdlSdcConsumer(
-                provider_address,
-                SdcV1Definitions,
-                self._tls_contexts,
-                force_ssl_connect=True,
-                alternative_hostname=self.tls_config.server_name,
-                components=components,
-            )
+            with _CONSUMER_BUILD_LOCK:
+                consumer = _WsdlSdcConsumer(
+                    provider_address,
+                    SdcV1Definitions,
+                    self._tls_contexts,
+                    force_ssl_connect=True,
+                    alternative_hostname=self.tls_config.server_name,
+                    components=components,
+                )
         try:
             consumer.start_all()
             _ensure_report_subscriptions(consumer)
