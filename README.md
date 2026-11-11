@@ -151,6 +151,9 @@ sudo ufw allow SDC-Testing-Toolbox
 A firewalld reload drops rules that were added without `--permanent`. Add `--zone=<zone>` if
 the network interface is not in the default zone.
 
+Uninstalling does not delete ufw rules, so the ports stay open afterwards. Remove the rule
+first with `sudo ufw delete allow SDC-Testing-Toolbox`.
+
 The AppImage cannot install system files. Copy the definitions first, either from this
 repository's `packaging/linux/` or from the AppImage (`--appimage-extract` puts them in
 `squashfs-root/usr/share/sdc-testing-toolbox/firewall/`):
