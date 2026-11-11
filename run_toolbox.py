@@ -26,6 +26,7 @@ from sdc11073.loghelper import basic_logging_setup
 from sdctoolbox import config, constants
 from sdctoolbox.gui.main_window import MainWindow
 from sdctoolbox.gui.startup_dialog import StartupDialog, StartupSettings
+from sdctoolbox.model import validate_xml_text
 from sdctoolbox.network import normalize_ipv4
 from sdctoolbox.provider_service import ProviderService
 from sdctoolbox.mdib_io import NativeMdibConfig, parse_mdib
@@ -40,6 +41,15 @@ def ipv4_argument(value: str) -> str:
         raise argparse.ArgumentTypeError("must be a valid IPv4 address") from exc
 
 
+def instance_name_argument(value: str) -> str:
+    """Refuse a name XML cannot carry here, where the alternative is a traceback at startup."""
+    try:
+        validate_xml_text(value, "instance name")
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    return value
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
@@ -48,7 +58,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=ipv4_argument,
         help="interface to bind discovery to",
     )
-    parser.add_argument("--name", default=constants.DEFAULT_INSTANCE_NAME, help="instance name, decides the EPR")
+    parser.add_argument(
+        "--name",
+        default=constants.DEFAULT_INSTANCE_NAME,
+        type=instance_name_argument,
+        help="instance name, decides the EPR",
+    )
     parser.add_argument("--config", help="config file to load on startup")
     parser.add_argument("--verbose", action="store_true", help="show sdc11073 logging")
     parser.add_argument("--tls-cert", help="local PEM certificate or certificate chain")

@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 
 from .. import config, constants
 from ..mdib_io import NativeMdibConfig
+from ..model import validate_xml_text
 from ..network import normalize_ipv4
 from ..security import TlsConfig, TlsConfigError
 from .no_wheel import NoWheelComboBox
@@ -308,6 +309,11 @@ class StartupDialog(QDialog):
         name = self.name_edit.text().strip()
         if not name:
             self._fail("Give the device a name. It decides the EPR other devices see.")
+            return
+        try:
+            validate_xml_text(name, "device name")
+        except ValueError as exc:
+            self._fail(str(exc))
             return
 
         try:

@@ -110,6 +110,29 @@ def check_invalid_ip_precedes_construction() -> None:
     )
 
 
+def check_invalid_name_is_reported() -> None:
+    unusable = "bad\x01name"
+    code, stderr = parse_failure(["--name", unusable])
+    check(
+        code == 2 and "argument --name: instance name contains characters not allowed in XML 1.0" in stderr,
+        "the graphical entry point rejects a name XML cannot carry with a --name error",
+    )
+
+    shown: list[str] = []
+    accepted: list[bool] = []
+    dialog = SimpleNamespace(
+        error_label=SimpleNamespace(hide=lambda: None),
+        name_edit=SimpleNamespace(text=lambda: unusable),
+        _fail=shown.append,
+        accept=lambda: accepted.append(True),
+    )
+    StartupDialog._on_accept(dialog)
+    check(
+        len(shown) == 1 and "device name contains characters" in shown[0] and not accepted,
+        "the startup dialog explains a name XML cannot carry instead of starting with it",
+    )
+
+
 def check_gui_startup_reuses_profile(*, interactive: bool) -> None:
     events: list[object] = []
     load_calls: list[Path] = []
@@ -655,6 +678,7 @@ def main() -> int:
     check_ip_arguments()
     check_tls_arguments()
     check_invalid_ip_precedes_construction()
+    check_invalid_name_is_reported()
     check_startup_dialog_retains_profile()
     check_gui_startup_reuses_profile(interactive=False)
     check_gui_startup_reuses_profile(interactive=True)

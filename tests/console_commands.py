@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import sys
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -103,6 +103,15 @@ class ConsoleCommandsTest(unittest.TestCase):
         )
         self.assertIn("no such handle", output)
         self.assertEqual(self.provider.get_value("m.number"), Decimal(8))
+
+    def test_unusable_instance_name_is_reported_not_raised(self) -> None:
+        errors = io.StringIO()
+        with redirect_stderr(errors):
+            code = console.run_provider(
+                SimpleNamespace(config=None, ip=constants.DEFAULT_IP, name="bad\x01name"),
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("instance name contains characters not allowed in XML 1.0", errors.getvalue())
 
 
 if __name__ == "__main__":
