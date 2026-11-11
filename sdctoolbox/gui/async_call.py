@@ -69,10 +69,22 @@ class AsyncCall(QObject):
     managed_finished = Signal(object, object)
     managed_failed = Signal(object, str)
 
-    def __init__(self, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        parent: QObject | None = None,
+        *,
+        expected_errors: tuple[type[Exception], ...] = (),
+    ) -> None:
+        """``expected_errors`` are failures the owner reports to the user itself.
+
+        They are logged as one warning line; anything else keeps its full traceback, since
+        that is a bug worth reading.
+        """
         super().__init__(parent)
+        self._expected_errors = expected_errors
         self._lock = threading.RLock()
         self._threads: dict[object, threading.Thread] = {}
+        self._cleanup_threads: dict[threading.Thread, object] = {}
         self._resources: dict[object, _ResourceUse] = {}
         self._retired_resources: weakref.WeakSet[object] = weakref.WeakSet()
         self._pending_results: dict[int, tuple[Any, Callable[[Any], None]]] = {}
@@ -127,32 +139,41 @@ class AsyncCall(QObject):
             try:
                 result = function(*args, **kwargs)
             except Exception as exc:  # noqa: BLE001 - the whole point is to report anything
-                logger.exception("background call failed")
+                if isinstance(exc, self._expected_errors):
+                    logger.warning("background call failed: %s", exc)
+                else:
+                    logger.exception("background call failed")
                 error = exc
             finally:
-                retirements: list[tuple[object, Callable[[], None]]] = []
-                with self._lock:
-                    self._threads.pop(key, None)
-                    if resource is not None:
-                        use = self._resources[resource]
-                        use.users -= 1
-                        if use.users == 0 and use.closer is not None:
-                            retirement = (use.resource, use.closer)
-                            self._resources.pop(resource)
-                            retirements.append(retirement)
-                    emit = not self._closed
-                    if emit and error is None and discard_result is not None:
-                        self._pending_results[id(result)] = result, discard_result
-                for retirement in retirements:
-                    self._close_resource(retirement[1])
-                if emit:
-                    if error is None:
-                        self.managed_finished.emit(key, result)
-                    else:
-                        message = str(error) or error.__class__.__name__
-                        self.managed_failed.emit(key, message)
-                elif error is None and discard_result is not None:
-                    self._close_resource(lambda: discard_result(result))
+                try:
+                    closer = None
+                    with self._lock:
+                        if resource is not None:
+                            use = self._resources[resource]
+                            use.users -= 1
+                            if use.users == 0 and use.closer is not None:
+                                closer = use.closer
+                                self._resources.pop(resource)
+                    if closer is not None:
+                        self._close_resource(closer)
+                    # Cleanup can outlive the Qt owner; recheck shutdown and emit atomically.
+                    with self._lock:
+                        emit = not self._closed
+                        if emit:
+                            if error is None and discard_result is not None:
+                                self._pending_results[id(result)] = result, discard_result
+                            self._threads.pop(key)
+                            if error is None:
+                                self.managed_finished.emit(key, result)
+                            else:
+                                message = str(error) or error.__class__.__name__
+                                self.managed_failed.emit(key, message)
+                    if not emit and error is None and discard_result is not None:
+                        self._close_resource(lambda: discard_result(result))
+                finally:
+                    with self._lock:
+                        if self._threads.get(key) is threading.current_thread():
+                            self._threads.pop(key)
 
         thread = threading.Thread(target=worker, daemon=True)
         with self._lock:
@@ -196,13 +217,12 @@ class AsyncCall(QObject):
         resource: Annotated[object, "hashable and supports weak references"],
         closer: Callable[[], None],
     ) -> None:
-        """Close a weak-referenceable resource now or after its managed calls finish.
+        """Close a resource off the caller's thread, after its managed calls finish.
 
         A resource that is unhashable or does not support weak references raises
         :class:`TypeError` before ``closer`` is registered or called.
         """
         _validate_managed_resource(resource)
-        retirement: tuple[object, Callable[[], None]] | None = None
         with self._lock:
             use = self._resources.get(resource)
             if self._resource_is_retired(resource) or (
@@ -210,16 +230,13 @@ class AsyncCall(QObject):
             ):
                 return
             retired_resource = resource if use is None else use.resource
-            self._retired_resources.add(retired_resource)
-            if use is None:
-                retirement = (retired_resource, closer)
+            if use is None or use.users == 0:
+                self._start_cleanup(retired_resource, closer)
+                if use is not None:
+                    self._resources.pop(resource)
             else:
                 use.closer = closer
-                if use.users == 0:
-                    self._resources.pop(resource)
-                    retirement = (retired_resource, closer)
-        if retirement is not None:
-            self._close_resource(retirement[1])
+            self._retired_resources.add(retired_resource)
 
     def claim_result(self, result: object) -> bool:
         """Transfer a managed result from the worker to its signal recipient."""
@@ -231,17 +248,16 @@ class AsyncCall(QObject):
         with self._lock:
             self._closed = True
             self._cancelled.set()
-            pending = list(self._pending_results.values())
-            self._pending_results.clear()
-        for result, discard in pending:
-            self._close_resource(lambda result=result, discard=discard: discard(result))
+            for identity, (result, discard) in list(self._pending_results.items()):
+                self._start_cleanup(result, lambda result=result, discard=discard: discard(result))
+                self._pending_results.pop(identity)
         return self.wait(timeout)
 
     def wait(self, timeout: float | None = None) -> bool:
         """Wait for current workers, returning whether all completed in time."""
         deadline = None if timeout is None else time.monotonic() + timeout
         with self._lock:
-            threads = list(self._threads.values())
+            threads = [*self._threads.values(), *self._cleanup_threads]
         current = threading.current_thread()
         for thread in threads:
             if thread is current:
@@ -251,7 +267,26 @@ class AsyncCall(QObject):
             )
             thread.join(remaining)
         with self._lock:
-            return not self._threads
+            return not self._threads and not self._cleanup_threads
+
+    def _start_cleanup(self, resource: object, closer: Callable[[], None]) -> None:
+        """Keep standalone cleanup and its resource alive even after callbacks stop."""
+
+        def cleanup() -> None:
+            try:
+                self._close_resource(closer)
+            finally:
+                with self._lock:
+                    self._cleanup_threads.pop(threading.current_thread())
+
+        thread = threading.Thread(target=cleanup, daemon=True)
+        with self._lock:
+            self._cleanup_threads[thread] = resource
+            try:
+                thread.start()
+            except BaseException:
+                self._cleanup_threads.pop(thread)
+                raise
 
     def _resource_is_retired(self, resource: object) -> bool:
         return resource in self._retired_resources

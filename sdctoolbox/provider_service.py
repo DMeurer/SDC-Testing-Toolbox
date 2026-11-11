@@ -9,25 +9,37 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import uuid
 from copy import deepcopy
 from dataclasses import dataclass
 from decimal import Decimal
+from functools import partial
 from typing import TYPE_CHECKING
 
 from sdc11073.location import SdcLocation
 from sdc11073.mdib import ProviderMdib, mdibbase
 from sdc11073.provider import SdcProvider
-from sdc11073.provider.baseproduct import BaseProduct
 from sdc11073.provider.operations import ActivateOperation
-from sdc11073.provider.providerimpl import RoleProviderComponents
-from sdc11073.wsdiscovery import WSDiscovery
+from sdc11073.provider.porttypes.getserviceimpl import GetService
+from sdc11073.provider.providerimpl import RoleProviderComponents, provider_components_async_factory
 from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types import pm_types
 from sdc11073.xml_types.dpws_types import ThisDeviceType, ThisModelType
 from sdc11073.xml_types.xml_structure import DateOfBirthProperty
 
-from . import constants
-from .handlers import apply_metric_value, make_activate_handler, make_set_handler
+from . import constants, ports
+from .config import _unique_in
+from .handlers import (
+    ReasonedSetService,
+    VersionedGetService,
+    apply_metric_value,
+    make_activate_handler,
+    make_set_handler,
+)
+from .http_server import configure_request_handler
+from .mdib_io import NativeMdibConfig, mdib_bytes, parse_mdib
+from . import native_mdib as native
+from .ports import RangeWSDiscovery
 from .model import (
     DEFAULT_PATIENT,
     ActionSpec,
@@ -44,10 +56,11 @@ from .model import (
     patient_info_from_biceps,
     patient_measurement_wire_value,
     slugify,
+    validate_xml_text,
 )
 from .sample_generation import DemoSampleGenerator, SampleGeneratorSnapshot, domain_step
 from .sdc11073_v3_adapter import Sdc11073V3Adapter, Sdc11073V3Snapshot
-from .security import CertificateInfo, TlsConfig
+from .security import CertificateInfo, TlsConfig, VerifiedSoapClientAsync
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -57,6 +70,8 @@ if TYPE_CHECKING:
     from .config import DeviceConfig
 
 logger = logging.getLogger("sdctoolbox.provider")
+
+ports.install()
 
 
 @dataclass
@@ -176,6 +191,11 @@ class ProviderService:
             device: DeviceInfo | None = None,
             tls_config: TlsConfig | None = None,
     ) -> None:
+        # Both end up in ThisDevice. Text XML cannot carry made the provider start and answer
+        # discovery, and then fail every connect, so refuse it before anything exists.
+        validate_xml_text(instance_name, "instance name")
+        if friendly_name is not None:
+            validate_xml_text(friendly_name, "friendly name")
         self.ip = ip
         self.instance_name = instance_name
         # A preset describing a ventilator should announce itself as one. sdc11073 takes
@@ -186,8 +206,11 @@ class ProviderService:
         self.epr = constants.epr_for(instance_name)
         self.tls_config = tls_config
         self._tls_contexts = None
+        self._native_mode = False
+        self._restarting = False
+        self._lifecycle_lock = threading.RLock()
 
-        self._discovery: WSDiscovery | None = None
+        self._discovery: RangeWSDiscovery | None = None
         self._provider: SdcProvider | None = None
         self._mdib: ProviderMdib | None = None
         self._sco: AbstractScoOperationsRegistry | None = None
@@ -233,8 +256,17 @@ class ProviderService:
             raise RuntimeError(msg)
         return self._mdib
 
-    def start(self) -> None:
+    @property
+    def native_mode(self) -> bool:
+        """Whether the live graph came from a native snapshot rather than a managed profile."""
+        return self._native_mode
+
+    def start(self, native_mdib: ProviderMdib | None = None) -> None:
         """Bring the provider up and announce it on the network."""
+        self._start_graph(native_mdib, native_mode=native_mdib is not None, initialize_contexts=native_mdib is None)
+
+    def _start_graph(self, mdib: ProviderMdib | None, *, native_mode: bool, initialize_contexts: bool = False) -> None:
+        """Activate an existing graph without resetting its imported states."""
         if self._discovery is not None or self._provider is not None or self._mdib is not None:
             msg = "provider is already started"
             raise RuntimeError(msg)
@@ -242,10 +274,23 @@ class ProviderService:
         try:
             # Validate key, certificate, CA bundle, and TLS policy before any listener exists.
             self._tls_contexts = self.tls_config.create_contexts() if self.tls_config is not None else None
-            self._discovery = WSDiscovery(self.ip)
+            self._discovery = RangeWSDiscovery(self.ip)
             self._discovery.start()
 
-            self._mdib = ProviderMdib.from_mdib_file(str(constants.BOOTSTRAP_MDIB_PATH))
+            self._native_mode = native_mode
+            self._mdib = mdib if mdib is not None else ProviderMdib.from_mdib_file(str(constants.BOOTSTRAP_MDIB_PATH))
+            mdib = self._mdib
+            mdib.sequence_id = uuid.uuid4().urn
+            if native_mode:
+                self._specs = native.metric_specs(mdib)
+                self._alerts = native.alert_specs(mdib)
+                for entity in mdib.entities.by_node_type(pm.AlertSignalDescriptor):
+                    self._alert_signals.setdefault(entity.descriptor.ConditionSignaled, []).append(entity.handle)
+                for handle, entity in mdib.entities.items():
+                    if entity.node_type in (pm.SetValueOperationDescriptor, pm.SetStringOperationDescriptor):
+                        target = entity.descriptor.OperationTarget
+                        if target not in self._operations or entity.state.OperatingMode == pm_types.OperatingMode.ENABLED:
+                            self._operations[target] = handle
             # The handler tells us which metric it touched once its transaction has closed, so a
             # value written by a remote consumer raises a limit alarm exactly as a local edit
             # does. It cannot be done from a metrics observable: sdc11073 fires those while
@@ -253,7 +298,7 @@ class ProviderService:
             self._handler = make_set_handler(
                 self._mdib,
                 coerce_value=self._coerce_value,
-                on_applied=self._on_metric_applied,
+                on_applied=None if native_mode else self._on_metric_applied,
                 execution_lock=self._lock,
             )
             self._activate_handler = make_activate_handler(
@@ -280,7 +325,21 @@ class ProviderService:
             # factory to capture the registry instance instead of reaching into private state.
             def role_provider_factory(mdib, sco, log_prefix):  # noqa: ANN001, ANN202
                 self._sco = sco
-                return BaseProduct(mdib, sco, log_prefix)
+                return native.SnapshotProduct(mdib, sco, log_prefix, self._handler,
+                                              None if native_mode else self._activate_handler)
+
+            provider_components = provider_components_async_factory()
+            provider_components.hosted_services["Set"] = [ReasonedSetService]
+            provider_components.hosted_services["Get"] = [
+                VersionedGetService if port_type is GetService else port_type
+                for port_type in provider_components.hosted_services["Get"]
+            ]
+            # sdc11073 hosts it but answers both of its operations with a 500 "not implemented".
+            provider_components.hosted_services.pop("ContainmentTree", None)
+            if native_mode:
+                provider_components.scopes_factory = native.scopes
+            if self.tls_config is not None:
+                provider_components.soap_client_class = partial(VerifiedSoapClientAsync, tls_config=self.tls_config)
 
             self._provider = SdcProvider(
                 ws_discovery=self._discovery,
@@ -288,20 +347,30 @@ class ProviderService:
                 this_model=this_model,
                 this_device=this_device,
                 device_mdib_container=self._mdib,
+                components=provider_components,
                 role_provider_components=RoleProviderComponents(role_provider_class=role_provider_factory),
                 ssl_context_container=self._tls_contexts,
                 alternative_hostname=(self.tls_config.server_name if self.tls_config is not None else None),
+                socket_timeout=constants.NOTIFICATION_TIMEOUT_SECONDS,
             )
 
             # No waveform provider configured, so the real-time sample loop must stay off.
             self._provider.start_all(start_rtsample_loop=False)
-            if self._sco is not None:
+            if self._tls_contexts is not None:
+                configure_request_handler(self._provider._http_server)  # noqa: SLF001 - library has no server factory hook
+            if native_mode or self._sco is not None:
                 self._adapter = Sdc11073V3Adapter(self._mdib)
+            if self._sco is not None:
                 self._adapter.bind(self._provider, self._sco)
-            self.set_location(LocationInfo(**constants.DEFAULT_LOCATION))
-            self.set_patient(DEFAULT_PATIENT)
+            if initialize_contexts:
+                self.set_location(LocationInfo(**constants.DEFAULT_LOCATION))
+                self.set_patient(DEFAULT_PATIENT)
+            else:
+                # Only set_location() publishes the device, and a native snapshot keeps its own
+                # contexts, so without this the provider would never answer a Probe or Resolve.
+                self._provider.publish()
 
-            if self._sco is None:
+            if self._sco is None and not native_mode:
                 msg = "no SCO registry was created - the bootstrap MDIB is missing its Sco element"
                 raise RuntimeError(msg)
         except Exception:
@@ -312,6 +381,60 @@ class ProviderService:
             raise
 
         logger.info("provider %r up on %s, EPR %s", self.instance_name, self.ip, self.epr.urn)
+
+    def _require_managed(self) -> None:
+        if self.native_mode:
+            raise ValueError("native MDIB snapshots support scalar edits, not toolbox graph/context/behaviour changes")
+
+    def replace_mdib(self, config: NativeMdibConfig) -> tuple[int, int]:
+        """Validate before restarting; restore the previous provider on activation failure."""
+        return self._replace_graph(parse_mdib(config.xml), native_mode=True)
+
+    def _replace_graph(self, candidate: ProviderMdib, *, native_mode: bool, after_start=None) -> tuple[int, int]:
+        with self._lifecycle_lock:
+            running = self.generator_running
+            self.stop_generator()
+            names = ("_operations", "_specs", "_alerts", "_alert_truths", "_alert_signals", "_actions",
+                     "_sections", "_pending_alert_sources", "_mds_mode_before_demo")
+            try:
+                with self._lock:
+                    self._restarting = True
+                    previous_xml = mdib_bytes(self.mdib)
+                    previous_mode = self.native_mode
+                    bookkeeping = {name: deepcopy(getattr(self, name)) for name in names}
+                    generator = self._sample_generator.snapshot()
+            except Exception:
+                self._restarting = False
+                if running:
+                    self.start_generator()
+                raise
+            try:
+                self.stop()
+                self._start_graph(candidate, native_mode=native_mode, initialize_contexts=not native_mode)
+                with self._lock:
+                    self._restarting = False
+                    if after_start is not None:
+                        after_start()
+                return len(self.list_metrics()), len(self.list_alerts())
+            except Exception as error:
+                try:
+                    self.stop()
+                    for name, value in bookkeeping.items():
+                        setattr(self, name, value)
+                    # Native projections are rebuilt by startup; managed rules remain saved.
+                    if previous_mode:
+                        self._operations.clear()
+                        self._alert_signals.clear()
+                    self._start_graph(parse_mdib(previous_xml), native_mode=previous_mode)
+                    self._sample_generator.restore(generator)
+                    self._restarting = False
+                    if running:
+                        self.start_generator()
+                except Exception as recovery_error:
+                    raise RuntimeError(f"import failed: {error}; recovery also failed: {recovery_error}") from error
+                raise
+            finally:
+                self._restarting = False
 
     def stop(self) -> None:
         """Take the provider off the network."""
@@ -508,6 +631,12 @@ class ProviderService:
 
     def import_profile(self, device: DeviceConfig, *, replace: bool = True) -> tuple[int, int]:
         """Preflight, apply, and if needed compensate one profile as an indivisible operation."""
+        if self.native_mode:
+            if not replace:
+                raise ValueError("cannot append a JSON profile to a native MDIB; replace the device instead")
+            candidate = ProviderMdib.from_mdib_file(str(constants.BOOTSTRAP_MDIB_PATH))
+            return self._replace_graph(candidate, native_mode=False,
+                                       after_start=lambda: self.import_profile(device, replace=True))
         was_running = self.generator_running
         if was_running:
             # The worker takes _lock. Join before taking the import gate to avoid shutdown deadlock.
@@ -649,6 +778,20 @@ class ProviderService:
 
         descriptors.update(section_handles)
         for spec in device.metrics:
+            spec.validate_text()
+            for name in ("resolution", "minimum", "maximum", "domain_minimum", "domain_maximum"):
+                value = getattr(spec, name)
+                if value is not None:
+                    fixed_point_decimal(value, name)
+            if spec.is_sample_array:
+                if spec.kind is MetricKind.WAVEFORM:
+                    spec.waveform_cycle_sample_count()
+                    spec.generated_waveform_block_sample_count()
+                spec.generated_sample_range()
+            if spec.kind is MetricKind.DISTRIBUTION:
+                domain_step(spec)
+            if spec.initial_value is not None:
+                coerce_metric_value(spec, spec.initial_value)
             if spec.handle is None:
                 raise ValueError(f"metrics[{spec.label}]: metric handle was not resolved during parsing")
             self._claim_profile_handle(descriptors, spec.handle, f"metrics[{spec.label}]")
@@ -662,23 +805,30 @@ class ProviderService:
                 self._adapter.validate_descriptor_type(operation, operation_type)
 
         for spec in device.alerts:
+            spec.validate_text()
+            for name in ("lower_limit", "upper_limit"):
+                value = getattr(spec, name)
+                if value is not None:
+                    fixed_point_decimal(value, name)
             if spec.source_handle not in metrics:
                 raise ValueError(
                     f"alerts[{spec.label}]: watches {spec.source_handle!r}, which is not a metric available after import",
                 )
             if spec.has_limits and metric_specs[spec.source_handle].kind is not MetricKind.NUMBER:
                 raise ValueError(f"alerts[{spec.label}]: a limit alarm requires a numeric scalar source")
-            handle = spec.handle or constants.ALERT_HANDLE_PREFIX + spec.slug
+            handle = spec.handle or _unique_in(descriptors, constants.ALERT_HANDLE_PREFIX + spec.slug)
             handle = self._claim_profile_handle(descriptors, handle, f"alerts[{spec.label}]")
             alert_type = pm.LimitAlertConditionDescriptor if spec.has_limits else pm.AlertConditionDescriptor
             self._adapter.validate_descriptor_type(handle, alert_type)
             for signal in spec.signals:
                 signal_handle = constants.SIGNAL_HANDLE_PREFIX + spec.slug + "." + signal.manifestation.value.lower()
+                signal_handle = _unique_in(descriptors, signal_handle)
                 signal_handle = self._claim_profile_handle(descriptors, signal_handle, f"alerts[{spec.label}] signal")
                 self._adapter.validate_descriptor_type(signal_handle, pm.AlertSignalDescriptor)
 
         normalized_effects = []
         for spec in device.actions:
+            spec.validate_text()
             if spec.target_handle not in descriptors:
                 raise ValueError(f"actions[{spec.label}]: target {spec.target_handle!r} is not available after import")
             effects = {}
@@ -693,8 +843,10 @@ class ProviderService:
             handle = self._claim_profile_handle(descriptors, handle, f"actions[{spec.label}]")
             self._adapter.validate_descriptor_type(handle, pm.ActivateOperationDescriptor)
 
-        if device.location is not None and device.location.is_empty():
-            raise ValueError("contexts.location: an explicit location needs at least one detail")
+        if device.location is not None:
+            device.location.validate_text()
+            if device.location.is_empty():
+                raise ValueError("contexts.location: an explicit location needs at least one detail")
         if device.patient is not None:
             if device.patient.sex:
                 pm_types.Sex(device.patient.sex)
@@ -727,7 +879,16 @@ class ProviderService:
         The descriptor is written inside a descriptor transaction, which makes sdc11073 emit
         a DescriptionModificationReport, so connected consumers see the new metric appear.
         """
+        self._require_managed()
         with self._lock:
+            # Mutable specs must validate before even a lazy section can be published.
+            spec.validate_text()
+            for name in ("resolution", "minimum", "maximum", "domain_minimum", "domain_maximum"):
+                value = getattr(spec, name)
+                if value is not None:
+                    fixed_point_decimal(value, name)
+            if spec.initial_value is not None:
+                coerce_metric_value(spec, spec.initial_value)
             if spec.is_sample_array:
                 # MetricSpec is mutable, so repeat this preflight immediately before any
                 # lazy section, descriptor, bookkeeping, or generator mutation.
@@ -780,6 +941,7 @@ class ProviderService:
 
     def remove_metric(self, handle: str) -> None:
         """Delete a data source and everything that depends on it."""
+        self._require_managed()
         with self._lock:
             metric_entity = self.mdib.entities.by_handle(handle)
             section_entities = []
@@ -875,19 +1037,22 @@ class ProviderService:
     def set_value(self, handle: str, value: Decimal | str) -> None:
         """Set the current value of one of our own metrics."""
         with self._lock:
+            if self._restarting:
+                raise ValueError("provider replacement is in progress")
             spec = self._specs.get(handle)
             entity = self.mdib.entities.by_handle(handle)
             if spec is None or entity is None:
                 msg = f"no metric with handle {handle!r}"
                 raise KeyError(msg)
-            normalized = coerce_metric_value(spec, value, handle)
+            normalized = self._coerce_value(handle, value)
             apply_metric_value(entity.state, normalized)
             with self.mdib.metric_state_transaction() as mgr:
                 mgr.write_entity(entity)
 
         # Outside the transaction on purpose: writing the alarm state needs a transaction of
         # its own, and the metric one still holds the lock until the with block closes.
-        self._evaluate_alerts({handle})
+        if not self.native_mode:
+            self._evaluate_alerts({handle})
 
     def get_value(self, handle: str):  # noqa: ANN201 - the value type depends on the metric kind
         """Read back the current value of one of our own metrics.
@@ -913,6 +1078,7 @@ class ProviderService:
         operation descriptor and emits a DescriptionModificationReport. On later calls it
         merely flips OperatingMode back to En.
         """
+        self._require_managed()
         with self._lock:
             spec = self._specs.get(handle)
             if spec is None:
@@ -957,6 +1123,7 @@ class ProviderService:
         an internal dict and leaves its descriptor advertised to consumers, which would show
         an editor with nothing behind it.
         """
+        self._require_managed()
         with self._lock:
             operation_handle = self._operations.get(handle)
             if operation_handle is None:
@@ -976,7 +1143,9 @@ class ProviderService:
         the source metric from then on. Without them it stays a plain AlertCondition that
         only ``set_alert_presence`` moves.
         """
+        self._require_managed()
         with self._lock:
+            spec.validate_text()
             source = self.mdib.entities.by_handle(spec.source_handle)
             if source is None:
                 msg = f"no metric with handle {spec.source_handle!r} to watch"
@@ -1030,13 +1199,23 @@ class ProviderService:
                         else None
                     ),
                 )
+                # The attribute names the limits that are switched off, so an upper-only alarm is "LoOff".
+                if spec.lower_limit is not None and spec.upper_limit is not None:
+                    entity.state.MonitoredAlertLimits = pm_types.AlertConditionMonitoredLimits.ALL_ON
+                elif spec.upper_limit is not None:
+                    entity.state.MonitoredAlertLimits = pm_types.AlertConditionMonitoredLimits.LOW_OFF
+                else:
+                    entity.state.MonitoredAlertLimits = pm_types.AlertConditionMonitoredLimits.HIGH_OFF
 
             signal_entities = []
+            handles = {live_handle for live_handle, _ in self.mdib.entities.items()} | {handle}
             for signal_spec in spec.signals:
                 manifestation = signal_spec.manifestation
-                signal_handle = self._unique_handle(
+                signal_handle = _unique_in(
+                    handles,
                     f"{constants.SIGNAL_HANDLE_PREFIX}{spec.slug}.{manifestation.value.lower()}",
                 )
+                handles.add(signal_handle)
                 signal = self.mdib.entities.new_entity(
                     pm.AlertSignalDescriptor,
                     signal_handle,
@@ -1071,6 +1250,7 @@ class ProviderService:
 
     def remove_alert(self, handle: str) -> None:
         """Delete an alarm condition together with its signals."""
+        self._require_managed()
         with self._lock:
             signal_handles = sorted(self._alert_signals.get(handle, []))
             dependent_handles = {handle, *signal_handles}
@@ -1103,6 +1283,7 @@ class ProviderService:
         Limit-condition truth is always derived from its numeric source and cannot be
         overridden manually.
         """
+        self._require_managed()
         with self._lock:
             spec = self._alerts.get(handle)
             if spec is None:
@@ -1147,6 +1328,7 @@ class ProviderService:
 
     def acknowledge_alert(self, handle: str) -> int:
         """Acknowledge each currently generated ``On`` signal of a present condition."""
+        self._require_managed()
         with self._lock:
             if handle not in self._alert_signals:
                 msg = f"no alarm with handle {handle!r}"
@@ -1160,6 +1342,7 @@ class ProviderService:
 
     def stop_latched_signals(self, handle: str) -> int:
         """Deliberately stop signals that are currently latching after a cleared condition."""
+        self._require_managed()
         with self._lock:
             if handle not in self._alert_signals:
                 msg = f"no alarm with handle {handle!r}"
@@ -1174,6 +1357,7 @@ class ProviderService:
         The legacy method name describes the learning scenario, not a complete Clause 6
         handoff. This only writes ``Location`` and derives local system-signal activation.
         """
+        self._require_managed()
         with self._lock:
             entity = self.mdib.entities.by_handle(signal_handle)
             if entity is None:
@@ -1202,7 +1386,7 @@ class ProviderService:
             return
 
         with self._lock:
-            if self._mdib is None:
+            if self._mdib is None or self.native_mode or self._restarting:
                 return
             self._pending_alert_sources.update(source_handles)
             if not self._alert_evaluator_lock.acquire(blocking=False):
@@ -1499,7 +1683,7 @@ class ProviderService:
 
     def get_location(self) -> LocationInfo:
         """Where this device says it is."""
-        state = self._associated_context_state(constants.LOCATION_CONTEXT_HANDLE)
+        state = self._native_context_state(pm.LocationContextDescriptor) if self.native_mode else self._associated_context_state(constants.LOCATION_CONTEXT_HANDLE)
         detail = getattr(state, "LocationDetail", None) if state is not None else None
         if detail is None:
             return LocationInfo()
@@ -1519,7 +1703,9 @@ class ProviderService:
         state by hand: a location is also a WS-Discovery scope, so changing it has to
         re-announce the device or consumers would keep filtering on the old one.
         """
+        self._require_managed()
         with self._lock:
+            info.validate_text()
             if self._provider is None:
                 msg = "provider is not started"
                 raise RuntimeError(msg)
@@ -1537,7 +1723,7 @@ class ProviderService:
 
     def get_patient(self) -> PatientInfo:
         """Who the device says it is attached to."""
-        state = self._associated_context_state(constants.PATIENT_CONTEXT_HANDLE)
+        state = self._native_context_state(pm.PatientContextDescriptor) if self.native_mode else self._associated_context_state(constants.PATIENT_CONTEXT_HANDLE)
         core = getattr(state, "CoreData", None) if state is not None else None
         return patient_info_from_biceps(core)
 
@@ -1548,6 +1734,7 @@ class ProviderService:
         overwritten, so the MDIB keeps the history of who was attached when. That is why
         this cannot simply write over one state the way a metric does.
         """
+        self._require_managed()
         if info.is_empty():
             self.clear_patient()
             return
@@ -1594,12 +1781,14 @@ class ProviderService:
             state.BindingStartTime = time.time()
 
             with self.mdib.context_state_transaction() as mgr:
+                state.BindingMdibVersion = mgr.new_mdib_version
                 mgr.disassociate_all(entity.handle, ignored_handle=state.Handle)
                 mgr.write_entity(entity, [state.Handle])
             logger.info("patient is now %s", info.summary() or "unset")
 
     def clear_patient(self) -> None:
         """Detach whoever is currently associated, without putting anyone in their place."""
+        self._require_managed()
         with self._lock:
             entity = self.mdib.entities.by_handle(constants.PATIENT_CONTEXT_HANDLE)
             if entity is None:
@@ -1607,6 +1796,11 @@ class ProviderService:
             with self.mdib.context_state_transaction() as mgr:
                 disassociated = mgr.disassociate_all(entity.handle)
             logger.info("detached %d patient context state(s)", len(disassociated))
+
+    def _native_context_state(self, node_type):
+        states = [state for entity in self.mdib.entities.by_node_type(node_type)
+                  for state in entity.states.values() if state.ContextAssociation == pm_types.ContextAssociation.ASSOCIATED]
+        return states[0] if len(states) == 1 else None
 
     def _associated_context_state(self, descriptor_handle: str):  # noqa: ANN202 - an sdc11073 state
         """The currently associated state of a context, or None when there is none.
@@ -1637,6 +1831,7 @@ class ProviderService:
         else lands in metric_updates and leaves as an EpisodicMetricReport. So a waveform
         needs the rt transaction and a distribution must not use it.
         """
+        self._require_managed()
         with self._lock:
             spec = self._specs.get(handle)
             if spec is None:
@@ -1657,6 +1852,7 @@ class ProviderService:
 
     def start_generator(self) -> None:
         """Begin generating samples for every unpinned sample-array metric."""
+        self._require_managed()
         if self._profile_import_active:
             self._generator_start_deferred = True
             return
@@ -1688,7 +1884,9 @@ class ProviderService:
         to "take this value". Registering it with the SCO creates the descriptor and emits
         the report, the same route a set operation takes.
         """
+        self._require_managed()
         with self._lock:
+            spec.validate_text()
             if self.mdib.entities.by_handle(spec.target_handle) is None:
                 msg = f"no descriptor with handle {spec.target_handle!r} for action {spec.label!r} to act on"
                 raise KeyError(msg)
@@ -1710,6 +1908,7 @@ class ProviderService:
 
     def remove_action(self, handle: str) -> None:
         """Delete an action and every action that transitively targets it."""
+        self._require_managed()
         with self._lock:
             if handle not in self._actions:
                 return
@@ -1739,6 +1938,7 @@ class ProviderService:
         Deliberately routed through the same effects the remote path uses, so a button here
         and an invocation over the network cannot drift apart.
         """
+        self._require_managed()
         _, alert_error = self._execute_action_effects(handle)
         if alert_error is not None:
             raise alert_error.with_traceback(alert_error.__traceback__)
@@ -1751,6 +1951,8 @@ class ProviderService:
         self._alert_evaluator_lock.acquire()
         try:
             with self._lock:
+                if self._restarting:
+                    raise ValueError("provider replacement is in progress")
                 spec = self._actions.get(operation_handle)
                 if spec is None:
                     msg = f"no action with handle {operation_handle!r}"
@@ -1880,6 +2082,10 @@ class ProviderService:
         return target
 
     def _coerce_value(self, handle: str, value: object) -> Decimal | str:
+        if self._restarting:
+            raise ValueError("provider replacement is in progress")
+        if self.native_mode:
+            return native.coerce_value(self.mdib, handle, value, self._specs.get(handle))
         spec = self._specs.get(handle)
         if spec is None:
             msg = f"no metric with handle {handle!r}"

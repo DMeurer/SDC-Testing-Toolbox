@@ -10,13 +10,13 @@
 ## Install
 
 ```powershell
-.venv\Scripts\python.exe -m pip install -r helpers\requirements.txt
+.venv\Scripts\python.exe -m pip install -r "helpers\Coding Systems\requirements.txt"
 ```
 
 ## Export the local standards
 
 ```powershell
-.venv\Scripts\python.exe helpers\export_11073_tables.py `
+.venv\Scripts\python.exe "helpers\Coding Systems\export_11073_tables.py" `
   --input "C:\Users\yourname\somefolderslike\ISO-IEEE-11073\CodingSystems" `
   --output helpers\output
 ```

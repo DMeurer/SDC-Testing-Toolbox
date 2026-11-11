@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=SDC Testing Toolbox
+Comment=A desktop tool for understanding IEEE 11073 SDC
+Exec=sdc-testing-toolbox
+Icon=sdc-testing-toolbox
+Terminal=false
+Categories=Development;Network;
+StartupWMClass=SDC-Testing-Toolbox

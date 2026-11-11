@@ -24,7 +24,9 @@ import sys
 import tempfile
 import threading
 import time
+from concurrent.futures import Future
 from contextlib import contextmanager
+from copy import deepcopy
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,18 +38,22 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from script_support import Report  # noqa: E402
+from mdib_test_support import PM, original_mdib  # noqa: E402
 from sdc11073 import observableproperties  # noqa: E402
 from sdc11073.consumer.consumerimpl import SdcConsumer  # noqa: E402
 from sdc11073.definitions_sdc import SdcV1Definitions  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 from sdc11073.mdib import ConsumerMdib  # noqa: E402
+from sdc11073.pysoap.msgreader import MessageReader  # noqa: E402
 from sdc11073.xml_types import msg_types, pm_types  # noqa: E402
 from sdc11073.xml_types import pm_qnames as pm  # noqa: E402
+from sdc11073.xml_types.dataconverters import DecimalConverter  # noqa: E402
 
 from sdctoolbox import config, constants  # noqa: E402
 from sdctoolbox.consumer_service import (  # noqa: E402
     RemoteDevice,
     _PeriodicConsumerMdibMethods,
+    _TolerantConsumerMdib,
 )
 from sdctoolbox.handlers import make_activate_handler  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
@@ -64,7 +70,10 @@ from sdctoolbox.model import (  # noqa: E402
     MetricSpec,
     PatientInfo,
     PatientMeasurement,
+    RemoteMetric,
+    RemoteRange,
     WaveformShape,
+    fixed_point_decimal,
 )
 from sdctoolbox.provider_service import (  # noqa: E402
     ProviderService,
@@ -540,6 +549,156 @@ def check_demo_mode_lifecycle(report: Report, service: ProviderService) -> None:
         "removing the final generated sample source restores the prior non-demo mode",
     )
     service._set_mds_operating_mode(pm_types.MdsOperatingMode.NORMAL)  # noqa: SLF001
+
+
+def check_wire_validity_recovery(report: Report, service: ProviderService) -> None:
+    """Successful writes repair the real nested quality, not an unserialized shadow field."""
+    service.stop_generator()
+    handles = []
+    try:
+        for kind, initial, requested in (
+            (MetricKind.NUMBER, Decimal("1"), Decimal("2")),
+            (MetricKind.TEXT, "before", "after"),
+            (MetricKind.CHOICE, "A", "B"),
+            (MetricKind.WAVEFORM, None, None),
+            (MetricKind.DISTRIBUTION, None, None),
+        ):
+            with patch.object(service, "start_generator", lambda: None):
+                handle = service.add_metric(MetricSpec(
+                    label=f"Validity {kind.value}", kind=kind, initial_value=initial,
+                    controllable=kind.controllable,
+                    allowed_values=("A", "B") if kind is MetricKind.CHOICE else (),
+                ))
+            handles.append(handle)
+            modes = ("manual", "generated") if kind in (MetricKind.WAVEFORM, MetricKind.DISTRIBUTION) else ("local", "registered")
+            for mode in modes:
+                entity = service.mdib.entities.by_handle(handle)
+                if entity.state.MetricValue is None:
+                    entity.state.mk_metric_value()
+                entity.state.MetricValue.MetricQuality.Validity = pm_types.MeasurementValidity.INVALID
+                transaction = service.mdib.rt_sample_state_transaction if kind is MetricKind.WAVEFORM else service.mdib.metric_state_transaction
+                with transaction() as manager:
+                    manager.write_entity(entity)
+                if mode == "local":
+                    service.set_value(handle, requested)
+                elif mode == "registered":
+                    operation = service._sco._registered_operations[service.operation_handle_for(handle)]  # noqa: SLF001
+                    params = SimpleNamespace(operation_instance=operation, operation_request=SimpleNamespace(argument=requested))
+                    result = service._handler(params)  # noqa: SLF001
+                    report.check(result.invocation_state is msg_types.InvocationState.FINISHED, f"{kind.value} registered write succeeds")
+                elif mode == "manual":
+                    service.set_samples(handle, [Decimal("5")] * DISTRIBUTION_BINS)
+                else:
+                    service._sample_generator.pinned.discard(handle)  # noqa: SLF001
+                    service._publish_one_block()  # noqa: SLF001
+                node = service.mdib.reconstruct_mdib_with_context_states()[0]
+                validity = node.xpath(
+                    "//*[@DescriptorHandle=$handle]/*[local-name()='MetricValue']/*[local-name()='MetricQuality']/@Validity",
+                    handle=handle,
+                )
+                report.check(validity == ["Vld"], f"{mode} {kind.value} write serializes MetricQuality/@Validity=Vld", repr(validity))
+    finally:
+        for handle in handles:
+            service.remove_metric(handle)
+
+
+def check_manual_sample_bounds(report: Report, service: ProviderService) -> None:
+    """Manual blocks obey live advertised bounds without imposing sample-step divisibility."""
+    service.stop_generator()
+
+    def snapshot() -> tuple:
+        return (
+            etree.tostring(service.mdib.reconstruct_mdib_with_context_states()[0], method="c14n"),
+            service.mdib.mdib_version, service.mdib.mdstate_version, service.mdib.mddescription_version,
+            service._sample_generator.snapshot(),  # noqa: SLF001
+        )
+
+    for kind in (MetricKind.WAVEFORM, MetricKind.DISTRIBUTION):
+        for case, minimum, maximum, low, high in (
+            ("bounded", Decimal("0"), Decimal("10"), Decimal("0"), Decimal("10")),
+            ("default", None, None, Decimal("0"), Decimal("100")),
+            ("minimum only", Decimal("5"), None, Decimal("5"), Decimal("105")),
+            ("maximum only", None, Decimal("-5"), Decimal("-105"), Decimal("-5")),
+        ):
+            with patch.object(service, "start_generator", lambda: None):
+                handle = service.add_metric(MetricSpec(
+                    label=f"Manual {kind.value} {case}", kind=kind,
+                    minimum=minimum, maximum=maximum, resolution=Decimal("3"),
+                ))
+            try:
+                service._publish_one_block()  # noqa: SLF001 - populate source clocks and phases without a worker
+                descriptor = service.mdib.entities.by_handle(handle).descriptor
+                bounds = descriptor.TechnicalRange[0]
+                report.check((bounds.Lower, bounds.Upper) == (low, high), f"{kind.value} {case} advertises expected finite bounds")
+                bad_blocks = (
+                    ([Decimal("99")] * DISTRIBUTION_BINS,)
+                    if case == "bounded"
+                    else ([low - 1] * DISTRIBUTION_BINS, [high + 1] * DISTRIBUTION_BINS)
+                )
+                for bad in bad_blocks:
+                    before = snapshot()
+                    try:
+                        service.set_samples(handle, bad)
+                    except ValueError:
+                        rejected = True
+                    else:
+                        rejected = False
+                    report.check(rejected and snapshot() == before, f"{kind.value} {case} rejects {bad[0]} without changing samples, versions, or generator bookkeeping")
+
+                endpoint_block = [low, high] * (DISTRIBUTION_BINS // 2)
+                service.set_samples(handle, endpoint_block)
+                report.check(service.get_samples(handle) == endpoint_block, f"{kind.value} {case} accepts both endpoints without step divisibility")
+                before = snapshot()
+                try:
+                    service.set_samples(handle, [*endpoint_block[:-1], high + 1])
+                except ValueError:
+                    rejected = True
+                else:
+                    rejected = False
+                report.check(rejected and snapshot() == before, f"{kind.value} {case} rejects a late invalid sample before any part of the block commits")
+
+                entity = service.mdib.entities.by_handle(handle)
+                entity.descriptor.TechnicalRange = [pm_types.Range(lower=Decimal("2"), upper=Decimal("4"), step_width=Decimal("3"))]
+                with service.mdib.descriptor_transaction() as manager:
+                    manager.write_entity(entity)
+                service.set_samples(handle, [Decimal("2.5")] * DISTRIBUTION_BINS)
+                report.check(service.get_samples(handle) == [Decimal("2.5")] * DISTRIBUTION_BINS, f"{kind.value} accepts in-range samples off the advertised step")
+                before = snapshot()
+                try:
+                    service.set_samples(handle, [Decimal("5")] * DISTRIBUTION_BINS)
+                except ValueError:
+                    rejected = True
+                else:
+                    rejected = False
+                report.check(
+                    rejected and snapshot() == before,
+                    f"{kind.value} uses the current advertised range, not stale spec bounds",
+                )
+                if case == "bounded":
+                    for ranges, accepted, bad in (
+                        ([pm_types.Range(lower=Decimal("200"), step_width=Decimal("3"))], Decimal("200.5"), Decimal("199.5")),
+                        ([pm_types.Range(upper=Decimal("-200"), step_width=Decimal("3"))], Decimal("-200.5"), Decimal("-199.5")),
+                        ([pm_types.Range(Decimal("0"), Decimal("1")), pm_types.Range(Decimal("10"), Decimal("11"))], Decimal("10.5"), Decimal("5")),
+                        ([], Decimal("500"), None),
+                    ):
+                        entity = service.mdib.entities.by_handle(handle)
+                        entity.descriptor.TechnicalRange = ranges
+                        with service.mdib.descriptor_transaction() as manager:
+                            manager.write_entity(entity)
+                        block = [accepted] * DISTRIBUTION_BINS
+                        service.set_samples(handle, block)
+                        report.check(service.get_samples(handle) == block, f"{kind.value} accepts {accepted} within live open/union/unbounded ranges")
+                        if bad is not None:
+                            before = snapshot()
+                            try:
+                                service.set_samples(handle, [bad] * DISTRIBUTION_BINS)
+                            except ValueError:
+                                rejected = True
+                            else:
+                                rejected = False
+                            report.check(rejected and snapshot() == before, f"{kind.value} rejects {bad} outside live open/union bounds without writes")
+            finally:
+                service.remove_metric(handle)
 
 
 def check_sample_publication_semantics(report: Report, service: ProviderService) -> None:  # noqa: PLR0915
@@ -1266,6 +1425,241 @@ def check_metric_value_validation(report: Report, service: ProviderService) -> N
         service.remove_metric(handle)
 
 
+def check_xml_write_validation(report: Report, service: ProviderService) -> None:
+    """Invalid XML must fail before a scalar or any action effect commits."""
+    broken = "broken\x01"
+    number = service.add_metric(MetricSpec(label="XML number", kind=MetricKind.NUMBER, initial_value=Decimal("2")))
+    text = service.add_metric(MetricSpec(label="XML text", kind=MetricKind.TEXT, initial_value="old"))
+    choice_spec = MetricSpec(label="XML choice", kind=MetricKind.CHOICE, allowed_values=("old",))
+    choice = service.add_metric(choice_spec)
+    service.set_value(choice, "old")
+    # Specs stay mutable; membership alone must not make an XML control character safe.
+    choice_spec.allowed_values = ("old", broken)
+    action = service.add_action(
+        ActionSpec(label="XML effects", target_handle=constants.MDS_HANDLE, effects={number: "3", text: broken}),
+    )
+    operation = service._sco._registered_operations[action]  # noqa: SLF001
+    params = SimpleNamespace(operation_instance=operation, operation_request=SimpleNamespace(argument=None))
+    writes = (
+        ("local text", lambda: service.set_value(text, broken)),
+        ("local choice", lambda: service.set_value(choice, broken)),
+        ("local action", lambda: service.run_action(action)),
+        ("remote action", lambda: service._activate_handler(params)),  # noqa: SLF001
+    )
+    try:
+        for description, write in writes:
+            before_version = service.mdib.mdib_version
+            before_values = tuple(service.get_value(handle) for handle in (number, text, choice))
+            try:
+                result = write()
+            except ValueError:
+                rejected = True
+            else:
+                rejected = getattr(result, "invocation_state", None) is msg_types.InvocationState.FAILED
+            report.check(rejected, f"{description} rejects XML-invalid text")
+            report.check(
+                service.mdib.mdib_version == before_version
+                and tuple(service.get_value(handle) for handle in (number, text, choice)) == before_values,
+                f"rejected {description} leaves all values and the MDIB version unchanged",
+            )
+            try:
+                service.mdib.reconstruct_mdib_with_context_states()
+            except ValueError:
+                readable = False
+            else:
+                readable = True
+            report.check(readable, f"the MDIB remains readable after {description}")
+            # Repair a failing baseline so later cases independently demonstrate the defect.
+            for handle, value in zip((number, text, choice), before_values, strict=True):
+                if service.get_value(handle) != value:
+                    service.set_value(handle, value)
+    finally:
+        service.remove_action(action)
+        for handle in (number, text, choice):
+            service.remove_metric(handle)
+
+
+def check_operation_ranges(report: Report, service: ProviderService) -> None:
+    """A real enabled SetValue must obey the current range union, including steps."""
+    metric = service.add_metric(
+        MetricSpec(
+            label="Live operation ranges",
+            kind=MetricKind.NUMBER,
+            minimum=Decimal("-1E+100"),
+            maximum=Decimal("1E+100"),
+            resolution=Decimal("0.1"),
+            controllable=True,
+            initial_value=Decimal("2"),
+        ),
+    )
+    operation_handle = service.operation_handle_for(metric)
+    operation = service._sco._registered_operations[operation_handle]  # noqa: SLF001
+    cases = (
+        (
+            (pm_types.Range(Decimal("0"), Decimal("10"), Decimal("1")),),
+            (("1.5", False), ("0", True), ("10", True), ("11", False)),
+        ),
+        (
+            (
+                pm_types.Range(Decimal("0"), Decimal("2"), Decimal("1")),
+                pm_types.Range(Decimal("10"), Decimal("20"), Decimal("2")),
+            ),
+            (("5", False), ("12", True), ("13", False), ("20", True)),
+        ),
+        (
+            (pm_types.Range(upper=Decimal("0"), step_width=Decimal("0.5")),),
+            (("-0.25", False), ("-0.5", True), ("0.5", False)),
+        ),
+        ((pm_types.Range(lower=Decimal("10"), step_width=Decimal("2")),), (("11", False), ("12", True))),
+        (
+            (pm_types.Range(Decimal("-1E+100"), Decimal("1E+100"), Decimal("1")),),
+            (("1E+99", True), ("0.00000000000000001", False)),
+        ),
+        ((), (("1.5", True),)),
+        ((pm_types.Range(step_width=Decimal("0.5")),), (("1.25", True),)),
+    )
+    try:
+        for ranges, values in cases:
+            entity = service.mdib.entities.by_handle(operation_handle)
+            entity.state.AllowedRange = list(ranges)
+            with service.mdib.operational_state_transaction() as manager:
+                manager.write_entity(entity)
+            for raw, allowed in values:
+                before = (
+                    service.get_value(metric),
+                    service.mdib.entities.by_handle(metric).state.StateVersion,
+                    service.mdib.mdib_version,
+                    service.mdib.mdstate_version,
+                )
+                params = SimpleNamespace(
+                    operation_instance=operation, operation_request=SimpleNamespace(argument=Decimal(raw)),
+                )
+                result = service._handler(params)  # noqa: SLF001 - exercise the registered provider boundary
+                expected = msg_types.InvocationState.FINISHED if allowed else msg_types.InvocationState.FAILED
+                report.check(
+                    result.invocation_state is expected,
+                    f"live AllowedRange {'accepts' if allowed else 'rejects'} {raw}", str(ranges),
+                )
+                after = (
+                    service.get_value(metric),
+                    service.mdib.entities.by_handle(metric).state.StateVersion,
+                    service.mdib.mdib_version,
+                    service.mdib.mdstate_version,
+                )
+                report.check(
+                    service.get_value(metric) == Decimal(raw) if allowed else after == before,
+                    f"SetValue {raw} {'stores the exact value' if allowed else 'changes neither value nor state/MDIB versions'}",
+                )
+    finally:
+        service.remove_metric(metric)
+
+
+def check_lossless_decimal_writes(report: Report, service: ProviderService) -> None:
+    """Every decimal write path must reject, rather than silently truncate, fractions."""
+    for raw in ("0E-999999", "1E-17", "-1E-16", "12345678901234567.1", "1.0000000000000000000", "1E+100"):
+        value = Decimal(raw)
+        report.check(
+            Decimal(DecimalConverter.to_xml(fixed_point_decimal(value, "test value"))) == value,
+            f"representable decimal {raw} stays lossless",
+        )
+    for raw in ("1E-19", "1E-18", "-1E-17", "0.123456789012345678", "-12345678901234567.1"):
+        try:
+            fixed_point_decimal(Decimal(raw), "test value")
+        except ValueError:
+            rejected = True
+        else:
+            rejected = False
+        report.check(rejected, f"fixed_point_decimal rejects lossy {raw}")
+
+    for field in ("resolution", "minimum", "maximum", "initial_value"):
+        before = service.mdib.mdib_version
+        try:
+            MetricSpec(label="Lossy scalar", kind=MetricKind.NUMBER, **{field: Decimal("1E-19")})
+        except ValueError:
+            rejected = True
+        else:
+            rejected = False
+        report.check(rejected and service.mdib.mdib_version == before, f"lossy scalar {field} is rejected before mutation")
+
+        spec = MetricSpec(label=f"Mutated lossless {field}", kind=MetricKind.NUMBER, section=f"Lossless {field}")
+        setattr(spec, field, Decimal("1E-19"))
+        before_handles = {handle for handle, _ in service.mdib.entities.items()}
+        before_sections = service.sections()
+        before = service.mdib.mdib_version
+        try:
+            service.add_metric(spec)
+        except ValueError:
+            rejected = True
+        else:
+            rejected = False
+        report.check(
+            rejected and service.mdib.mdib_version == before
+            and {handle for handle, _ in service.mdib.entities.items()} == before_handles
+            and service.sections() == before_sections,
+            f"a mutated lossy scalar {field} is rejected before creating a section or metric",
+        )
+        for handle in set(service.list_metrics()) - before_handles:
+            service.remove_metric(handle)
+        service._remove_empty_sections()  # noqa: SLF001 - also clean an interrupted baseline creation
+
+    number = service.add_metric(MetricSpec(label="Lossless scalar write", kind=MetricKind.NUMBER, initial_value=Decimal("7")))
+    try:
+        before = service.mdib.mdib_version
+        try:
+            service.set_value(number, Decimal("1E-19"))
+        except ValueError:
+            rejected = True
+        else:
+            rejected = False
+        report.check(
+            rejected and service.get_value(number) == Decimal("7") and service.mdib.mdib_version == before,
+            "a lossy scalar write preserves the prior value and version",
+        )
+        for kind in (MetricKind.WAVEFORM, MetricKind.DISTRIBUTION):
+            handle = service.add_metric(MetricSpec(label=f"Lossless {kind.value}", kind=kind))
+            service.stop_generator()
+            try:
+                samples = [Decimal("1E-17")] * (DISTRIBUTION_BINS if kind is MetricKind.DISTRIBUTION else 2)
+                service.set_samples(handle, samples)
+                before = service.mdib.mdib_version
+                bad_samples = [*samples[:-1], Decimal("1E-19")]
+                try:
+                    service.set_samples(handle, bad_samples)
+                except ValueError:
+                    rejected = True
+                else:
+                    rejected = False
+                report.check(
+                    rejected and service.get_samples(handle) == samples and service.mdib.mdib_version == before,
+                    f"a lossy manual {kind.value} block preserves samples and version",
+                )
+                spec = service.list_metrics()[handle]
+                spec.minimum = spec.maximum = Decimal("1E-19")
+                try:
+                    if kind is MetricKind.WAVEFORM:
+                        service._next_block(handle, spec)  # noqa: SLF001
+                    else:
+                        distribution_samples(spec, 0.0)
+                except ValueError:
+                    rejected = True
+                else:
+                    rejected = False
+                report.check(rejected, f"direct {kind.value} generation rejects a mutated lossy range")
+                service._sample_generator.pinned.discard(handle)  # noqa: SLF001 - exercise generated publication
+                before = service.mdib.mdib_version
+                service._publish_one_block()  # noqa: SLF001
+                report.check(
+                    service.get_samples(handle) == samples
+                    and service.mdib.mdib_version == before
+                    and handle in service._sample_generator.quarantined,  # noqa: SLF001
+                    f"a lossy generated {kind.value} range is quarantined without publication",
+                )
+            finally:
+                service.remove_metric(handle)
+    finally:
+        service.remove_metric(number)
+
+
 def check_action_execution(report: Report, service: ProviderService) -> None:
     print("\n6a. Shared local and remote action execution")
 
@@ -1690,11 +2084,11 @@ def check_decimal_boundaries(report: Report, service: ProviderService) -> None:
                 kind=MetricKind.DISTRIBUTION,
                 section="Uncreated decimal section",
                 domain_minimum=Decimal("0"),
-                domain_maximum=Decimal("1e-20"),
+                domain_maximum=Decimal("1e-17"),
             ),
         )
     except ValueError as exc:
-        wire_zero_rejected = "zero StepWidth on the wire" in str(exc)
+        wire_zero_rejected = "StepWidth" in str(exc)
     else:
         wire_zero_rejected = False
     report.check(
@@ -2849,10 +3243,10 @@ def check_contexts(report: Report, service: ProviderService) -> None:
 
     first = patient_entity("PC.first", "First")
     second = patient_entity("PC.second", "Second")
-    remote = RemoteDevice.__new__(RemoteDevice)
-    remote._lock = threading.RLock()  # noqa: SLF001 - fixture for the public read API
-    remote._mdib = SimpleNamespace(  # noqa: SLF001 - fixture for the public read API
-        entities=SimpleNamespace(by_node_type=lambda _: [second, first]),
+    remote = RemoteDevice(
+        SimpleNamespace(),
+        SimpleNamespace(entities=SimpleNamespace(by_node_type=lambda _: [second, first])),
+        "urn:provider-core:patient-contexts",
     )
     contexts = remote.patient_contexts()
     report.check(
@@ -2909,23 +3303,49 @@ def check_presets(report: Report) -> None:
 def check_foreign_consumer_operations(report: Report) -> None:
     print("\n13. Foreign consumer operation selection")
 
+    class Consumer(SimpleNamespace):
+        subscription_status = observableproperties.ObservableProperty()
+
     class SetClient:
-        def __init__(self) -> None:
+        def __init__(self, entities) -> None:
+            self.entities = entities
             self.calls = []
             self.activate_results = {}
+            self.states = {
+                handle: deepcopy(entity.state)
+                for handle, entity in entities.items()
+                if getattr(entity.state, "is_metric_state", False)
+            }
+
+        def get_available_subscriptions(self):
+            return [SimpleNamespace(action=SdcV1Definitions.Actions.OperationInvokedReport)]
+
+        def _set_value(self, handle, value):
+            target = self.entities[handle].descriptor.OperationTarget
+            state = self.states[target]
+            state.MetricValue.Value = value
+            state.StateVersion += 1
+            return self._future()
+
+        def get_md_state(self, handles):
+            return SimpleNamespace(
+                mdib_version_group=self.mdib.mdib_version_group,
+                result=SimpleNamespace(MdState=SimpleNamespace(State=[deepcopy(self.states[h]) for h in handles])),
+            )
 
         def _future(self, state=msg_types.InvocationState.FINISHED):
             info = SimpleNamespace(InvocationState=state, InvocationErrorMessage=None)
-            result = SimpleNamespace(InvocationInfo=info)
-            return SimpleNamespace(result=lambda timeout: result)
+            future = Future()
+            future.set_result(SimpleNamespace(InvocationInfo=info))
+            return future
 
         def set_numeric_value(self, handle, value):
             self.calls.append(("number", handle, value))
-            return self._future()
+            return self._set_value(handle, value)
 
         def set_string(self, handle, value):
             self.calls.append(("string", handle, value))
-            return self._future()
+            return self._set_value(handle, value)
 
         def activate(self, handle, arguments):
             self.calls.append(("activate", handle, arguments))
@@ -2946,7 +3366,9 @@ def check_foreign_consumer_operations(report: Report) -> None:
             ],
             Resolution=resolution,
         )
-        state = SimpleNamespace(MetricValue=SimpleNamespace(Value=None))
+        data_model = SdcV1Definitions.data_model
+        state = data_model.mk_state_container(data_model.mk_descriptor_container(node_type, handle, None))
+        state.mk_metric_value()
         return SimpleNamespace(
             node_type=copied_qname(node_type),
             descriptor=descriptor,
@@ -2986,11 +3408,21 @@ def check_foreign_consumer_operations(report: Report) -> None:
         )
 
     def remote_for(entities):
-        client = SetClient()
-        remote = RemoteDevice.__new__(RemoteDevice)
-        remote._lock = threading.RLock()
-        remote._mdib = SimpleNamespace(entities=entities)
-        remote._consumer = SimpleNamespace(set_service_client=client)
+        client = SetClient(entities)
+        consumer = Consumer(
+            set_service_client=client,
+            sdc_definitions=SdcV1Definitions,
+            log_prefix="",
+            msg_reader=None,
+            client=lambda service: client if service == "Get" else None,
+        )
+        consumer.subscription_status = {SdcV1Definitions.Actions.OperationInvokedReport.value: True}
+        mdib = ConsumerMdib(consumer)
+        mdib.entities = entities
+        for handle in client.states:
+            mdib.states.add_object(entities[handle].state)
+        client.mdib = mdib
+        remote = RemoteDevice(consumer, mdib, "urn:provider-core:foreign-operations")
         return remote, client
 
     cases = (
@@ -3015,6 +3447,7 @@ def check_foreign_consumer_operations(report: Report) -> None:
     )
     selections = []
     invocations = []
+    readbacks = []
     for kind, metric_type, compatible_type, incompatible_type in cases:
         for enabled_first in (False, True):
             metric_handle = f"metric.{kind.value}.{'enabled' if enabled_first else 'disabled'}-first"
@@ -3049,9 +3482,13 @@ def check_foreign_consumer_operations(report: Report) -> None:
                 and metric.allowed_ranges[0].step_width == Decimal("0.5")
             )
             value = Decimal("15") if kind is MetricKind.NUMBER else "value"
-            remote.set_value(metric_handle, value)
+            result = remote.set_value(metric_handle, value)
             method = "number" if kind is MetricKind.NUMBER else "string"
-            invocations.append(client.calls == [(method, enabled_handle, value)])
+            invocations.append(
+                result is msg_types.InvocationState.FINISHED
+                and client.calls == [(method, enabled_handle, value)],
+            )
+            readbacks.append(remote.metrics()[metric_handle].value == value)
 
     report.check(
         all(selections),
@@ -3062,6 +3499,11 @@ def check_foreign_consumer_operations(report: Report) -> None:
         all(invocations),
         "the operations advertised as usable are the operations invoked",
         str(invocations),
+    )
+    report.check(
+        all(readbacks),
+        "successful foreign metric operations reconcile their values through GetMdState",
+        str(readbacks),
     )
 
     remote_resolutions = []
@@ -3121,6 +3563,7 @@ def check_foreign_consumer_operations(report: Report) -> None:
     report.check(
         rejected_choice is msg_types.InvocationState.FAILED
         and accepted_choice is msg_types.InvocationState.FINISHED
+        and remote.metrics()[choice_handle].value == "operation-a"
         and choice_client.calls == [("string", choice_operation, "operation-a")],
         "operation AllowedValues gate SetString transport independently of descriptor values",
     )
@@ -3297,6 +3740,90 @@ def check_foreign_consumer_operations(report: Report) -> None:
     )
 
 
+def check_remote_metadata(report: Report) -> None:
+    print("\n13a. Optional peer metadata and advertised names")
+    missing = object()
+    value = Decimal("18.12345678901234567890123456789")
+    entity = SimpleNamespace(
+        node_type=pm.NumericMetricDescriptor,
+        descriptor=SimpleNamespace(Unit=pm_types.CodedValue("266048")),
+        state=SimpleNamespace(
+            ActivationState=pm_types.ComponentActivation.STANDBY,
+            MetricValue=SimpleNamespace(Value=value, MetricQuality=SimpleNamespace(Validity=pm_types.MeasurementValidity.INVALID)),
+        ),
+    )
+    remote = RemoteDevice(SimpleNamespace(), SimpleNamespace(entities={"pressure": entity}), "urn:metadata")
+    metric = remote.metrics()["pressure"]
+    report.check(
+        getattr(metric, "unit_code", missing) == "266048"
+        and getattr(metric, "unit_coding_system", missing) == constants.CODING_SYSTEM_MDC
+        and getattr(metric, "validity", missing) == "Inv"
+        and getattr(metric, "activation", missing) == "StndBy"
+        and metric.value == value,
+        "snapshots retain raw unit identity, quality, activation, and exact values",
+    )
+    for unit, code, system in (
+        (SimpleNamespace(Code="foreign", CodingSystem="urn:foreign:units"), "foreign", "urn:foreign:units"),
+        (SimpleNamespace(Code="raw", CodingSystem="not a URI"), "raw", "not a URI"),
+        (SimpleNamespace(Code="", CodingSystem=""), "", ""),
+        (SimpleNamespace(Code="omitted"), "omitted", constants.CODING_SYSTEM_MDC),
+        (None, None, None),
+    ):
+        entity.descriptor.Unit = unit
+        metric = remote.metrics()["pressure"]
+        report.check(
+            getattr(metric, "unit_code", missing) == code and getattr(metric, "unit_coding_system", missing) == system,
+            f"raw unit metadata preserves absent, omitted, or explicit system {system!r}",
+        )
+    entity.descriptor = SimpleNamespace()
+    for state in (None, SimpleNamespace(), SimpleNamespace(MetricValue=None), SimpleNamespace(MetricValue=SimpleNamespace()),
+                  SimpleNamespace(MetricValue=SimpleNamespace(MetricQuality=None))):
+        entity.state = state
+        metric = remote.metrics()["pressure"]
+        report.check(
+            all(getattr(metric, field, missing) is None for field in ("unit_code", "unit_coding_system", "validity", "activation")),
+            "absent unit, state, value, or quality remains optional",
+        )
+    entity.state = SimpleNamespace(ActivationState="foreign activation", MetricValue=SimpleNamespace(MetricQuality=SimpleNamespace(Validity="foreign validity")))
+    metric = remote.metrics()["pressure"]
+    report.check(
+        getattr(metric, "validity", missing) == "foreign validity" and getattr(metric, "activation", missing) == "foreign activation",
+        "foreign quality and activation strings are not normalized or rejected",
+    )
+    ranges = (RemoteRange(Decimal("1"), Decimal("2")),)
+    legacy = RemoteMetric(
+        "old", "NumericMetricDescriptor", MetricKind.NUMBER, "Old", "mm", "type", ("A",), Decimal("0.1"),
+        Decimal("1"), Decimal("2"), Decimal("0"), Decimal("3"), value, (Decimal("4"),), Decimal("0.2"),
+        "Hz", Decimal("5"), Decimal("6"), "channel", ("set.old",), "set.old", True, ("B",), ranges, ranges,
+    )
+    report.check(
+        legacy.value == value and legacy.samples == (Decimal("4"),) and legacy.parent_handle == "channel"
+        and legacy.selected_operation_handle == "set.old" and legacy.controllable_now
+        and legacy.operation_allowed_values == ("B",) and legacy.allowed_ranges == ranges and legacy.technical_ranges == ranges
+        and all(getattr(legacy, field, missing) is None for field in ("validity", "activation", "unit_code", "unit_coding_system")),
+        "all old positional snapshot arguments retain their meanings with optional metadata appended",
+    )
+    for consumer, expected in (
+        (SimpleNamespace(), None),
+        (SimpleNamespace(host_description=None), None),
+        (SimpleNamespace(host_description=SimpleNamespace()), None),
+        (SimpleNamespace(host_description=SimpleNamespace(this_device=None)), None),
+        (SimpleNamespace(host_description=SimpleNamespace(this_device=SimpleNamespace())), None),
+        (SimpleNamespace(host_description=SimpleNamespace(this_device=SimpleNamespace(FriendlyName=[]))), None),
+        (SimpleNamespace(host_description=SimpleNamespace(this_device=SimpleNamespace(FriendlyName=[None, SimpleNamespace(text=" \n"), SimpleNamespace(text=42)]))), None),
+        (SimpleNamespace(host_description=SimpleNamespace(this_device=SimpleNamespace(FriendlyName=[SimpleNamespace(), SimpleNamespace(text=""), SimpleNamespace(text=" First usable "), SimpleNamespace(text="Later")]))), "First usable"),
+    ):
+        peer = RemoteDevice(consumer, SimpleNamespace(), "urn:names")
+        report.check(getattr(peer, "friendly_name", missing) == expected, "the real friendly-name getter chooses the first usable localized DPWS text", repr(expected))
+    try:
+        peer.friendly_name = "replacement"
+    except AttributeError:
+        read_only = True
+    else:
+        read_only = False
+    report.check(read_only, "advertised friendly names are read-only")
+
+
 def check_periodic_consumer_routing(report: Report) -> None:
     print("\n14. Periodic consumer report routing")
 
@@ -3377,6 +3904,170 @@ def check_periodic_consumer_routing(report: Report) -> None:
     )
 
 
+def check_missing_single_states(report: Report) -> None:
+    print("\n15. Peer MDIB without some single states")
+
+    # The fixture already leaves the SCO, VMD, channel and SystemContext without a state;
+    # dropping two operation states as well covers both operation readers.
+    dropped = {"demo.action", "demo.set"}
+    root = etree.fromstring(original_mdib())
+    for state in root.iter(f"{{{PM}}}State"):
+        if state.get("DescriptorHandle") in dropped:
+            state.getparent().remove(state)
+    descriptors, states = MessageReader(
+        SdcV1Definitions, None, logging.getLogger("missing-states"), validate=False,
+    ).read_mdib_xml(etree.tostring(root))
+    stated = {state.DescriptorHandle for state in states}
+    expected_missing = sorted(
+        descriptor.Handle
+        for descriptor in descriptors
+        if not descriptor.is_context_descriptor and descriptor.Handle not in stated
+    )
+    report.check(
+        set(dropped) <= set(expected_missing) and "demo.sco" in expected_missing,
+        "the fixture omits states for operations and containers",
+        ", ".join(expected_missing),
+    )
+
+    def peer_client():  # noqa: ANN202 - minimal SdcConsumer stand-in
+        get_service = SimpleNamespace(
+            get_mdib=lambda: SimpleNamespace(
+                result=(deepcopy(descriptors), deepcopy(states)),
+                mdib_version_group=SimpleNamespace(
+                    mdib_version=17,
+                    sequence_id="urn:uuid:11111111-1111-1111-1111-111111111111",
+                    instance_id=3,
+                ),
+            ),
+        )
+        return SimpleNamespace(
+            sdc_definitions=SdcV1Definitions,
+            log_prefix="missing-states",
+            msg_reader=None,
+            client=lambda name: get_service if name == "Get" else None,
+        )
+
+    stock = ConsumerMdib(peer_client())
+    stock.reload_all()
+    try:
+        stock.entities.items()
+        stock_error = None
+    except KeyError as exc:
+        stock_error = exc
+    report.check(
+        stock_error is not None and str(stock_error).strip("'") in expected_missing,
+        "the stock entity getter fails on the whole MDIB (proves the check below means something)",
+        repr(stock_error),
+    )
+
+    class Capture(logging.Handler):
+        def __init__(self) -> None:
+            super().__init__(logging.WARNING)
+            self.messages: list[str] = []
+
+        def emit(self, record: logging.LogRecord) -> None:
+            self.messages.append(record.getMessage())
+
+    consumer_logger = logging.getLogger("sdctoolbox.consumer")
+    capture = Capture()
+    previous_propagate = consumer_logger.propagate
+    consumer_logger.addHandler(capture)
+    consumer_logger.propagate = False
+    try:
+        mdib = _TolerantConsumerMdib(peer_client())
+        mdib.reload_all()
+    finally:
+        consumer_logger.removeHandler(capture)
+        consumer_logger.propagate = previous_propagate
+
+    warnings = [message for message in capture.messages if "no state" in message]
+    report.check(
+        len(warnings) == 1 and all(handle in warnings[0] for handle in expected_missing),
+        "loading the MDIB warns once and names every descriptor without a state",
+        warnings[0] if warnings else str(capture.messages),
+    )
+
+    try:
+        entities = dict(mdib.entities.items())
+        walk_error = None
+    except Exception as exc:  # noqa: BLE001 - any failure here is the regression
+        entities = {}
+        walk_error = exc
+    report.check(
+        walk_error is None and set(entities) == {descriptor.Handle for descriptor in descriptors},
+        "every descriptor is still reachable through entities.items()",
+        repr(walk_error) if walk_error else f"{len(entities)} entities",
+    )
+    report.check(
+        len(mdib.entities) == len(descriptors),
+        "len(entities) counts stateless descriptors too",
+    )
+    report.check(
+        all(entities[handle].state is None for handle in expected_missing if handle in entities),
+        "a descriptor without a state gets an entity whose state is None",
+    )
+    report.check(
+        entities.get("demo.rate") is not None
+        and entities["demo.rate"].state is not None
+        and entities["demo.rate"].state.MetricValue.Value == Decimal("12.5"),
+        "descriptors with a state keep it",
+    )
+    report.check(
+        mdib.entities.by_handle("demo.sco") is not None
+        and mdib.entities.by_handle("demo.sco").state is None
+        and {entity.handle for entity in mdib.entities.by_parent_handle("demo.sco")}
+        == {"demo.set", "demo.disabled", "demo.mode.set", "demo.action"}
+        and [entity.handle for entity in mdib.entities.by_node_type(pm.ActivateOperationDescriptor)]
+        == ["demo.action"],
+        "by_handle, by_parent_handle and by_node_type also tolerate missing states",
+    )
+    patient = mdib.entities.by_handle("demo.patient")
+    report.check(
+        patient is not None and patient.is_multi_state and set(patient.states) == {"demo.history", "demo.current"},
+        "context descriptors keep their multi-state entities",
+    )
+
+    remote = RemoteDevice(SimpleNamespace(), mdib, "urn:provider-core:missing-states")
+    try:
+        metrics = remote.metrics()
+        actions = remote.actions()
+        alerts = remote.alerts()
+        patients = remote.patient_contexts()
+        remote_error = None
+    except Exception as exc:  # noqa: BLE001 - any failure here is the regression
+        metrics, actions, alerts, patients = {}, {}, {}, {}
+        remote_error = exc
+    report.check(
+        remote_error is None and set(metrics) == {"demo.rate", "demo.mode", "demo.wave"},
+        "RemoteDevice.metrics() lists the peer metrics",
+        repr(remote_error) if remote_error else ", ".join(sorted(metrics)),
+    )
+    rate = metrics.get("demo.rate")
+    report.check(
+        rate is not None
+        and set(rate.operation_handles) == {"demo.set", "demo.disabled"}
+        and not rate.controllable_now,
+        "a set operation without a state is listed but not offered as enabled",
+        str(rate and (rate.operation_handles, rate.controllable_now)),
+    )
+    mode = metrics.get("demo.mode")
+    report.check(
+        mode is not None and mode.selected_operation_handle == "demo.mode.set",
+        "an operation that does have a state still controls its metric",
+    )
+    action = actions.get("demo.action")
+    report.check(
+        action is not None and not action.enabled,
+        "an ActivateOperation without a state is listed as disabled",
+        str(action),
+    )
+    report.check(
+        "demo.alarm" in alerts and set(patients) == {"demo.patient"},
+        "alerts and patient contexts are unaffected",
+        f"{sorted(alerts)} {sorted(patients)}",
+    )
+
+
 def main() -> int:
     basic_logging_setup(level=logging.ERROR)
     report = Report()
@@ -3391,12 +4082,17 @@ def main() -> int:
         check_rollback(report, service)
         check_sample_arrays(report, service)
         check_demo_mode_lifecycle(report, service)
+        check_wire_validity_recovery(report, service)
+        check_manual_sample_bounds(report, service)
         check_sample_publication_semantics(report, service)
         check_alarm_rollback(report, service)
         check_metric_removal_dependencies(report, service)
         check_section_removal(report, service)
         check_section_handle_types(report, service)
         check_metric_value_validation(report, service)
+        check_xml_write_validation(report, service)
+        check_operation_ranges(report, service)
+        check_lossless_decimal_writes(report, service)
         check_action_execution(report, service)
         check_decimal_boundaries(report, service)
         check_concurrent_alert_evaluation(report, service)
@@ -3408,7 +4104,9 @@ def main() -> int:
         check_contexts(report, service)
         check_presets(report)
         check_foreign_consumer_operations(report)
+        check_remote_metadata(report)
         check_periodic_consumer_routing(report)
+        check_missing_single_states(report)
     finally:
         service.stop()
 

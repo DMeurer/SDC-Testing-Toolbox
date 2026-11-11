@@ -14,20 +14,26 @@ the EPR, so restarting under the same name keeps that device's identity on the n
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
 import os
+import signal
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QCoreApplication, QTimer
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 from sdc11073.loghelper import basic_logging_setup
 
 from sdctoolbox import config, constants
 from sdctoolbox.gui.main_window import MainWindow
 from sdctoolbox.gui.startup_dialog import StartupDialog, StartupSettings
+from sdctoolbox.model import validate_xml_text
 from sdctoolbox.network import normalize_ipv4
 from sdctoolbox.provider_service import ProviderService
+from sdctoolbox.mdib_io import NativeMdibConfig, parse_mdib
 from sdctoolbox.security import TlsConfig, TlsConfigError
 
 
@@ -39,6 +45,15 @@ def ipv4_argument(value: str) -> str:
         raise argparse.ArgumentTypeError("must be a valid IPv4 address") from exc
 
 
+def instance_name_argument(value: str) -> str:
+    """Refuse a name XML cannot carry here, where the alternative is a traceback at startup."""
+    try:
+        validate_xml_text(value, "instance name")
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    return value
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
@@ -47,22 +62,43 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=ipv4_argument,
         help="interface to bind discovery to",
     )
-    parser.add_argument("--name", default=constants.DEFAULT_INSTANCE_NAME, help="instance name, decides the EPR")
+    parser.add_argument(
+        "--name",
+        default=constants.DEFAULT_INSTANCE_NAME,
+        type=instance_name_argument,
+        help="instance name, decides the EPR",
+    )
     parser.add_argument("--config", help="config file to load on startup")
     parser.add_argument("--verbose", action="store_true", help="show sdc11073 logging")
     parser.add_argument("--tls-cert", help="local PEM certificate or certificate chain")
     parser.add_argument("--tls-key", help="local PEM private key")
     parser.add_argument("--tls-ca", help="trusted PEM CA certificate bundle")
     parser.add_argument("--tls-peer-fingerprint", help="optional SHA-256 pin for connected peers")
-    parser.add_argument("--tls-server-name", help="optional DNS name in the peer certificate SAN")
+    parser.add_argument("--tls-server-name", help="optional local DNS name to advertise for the provider and event callbacks")
+    parser.add_argument("--tls-trusted-dir", help="folder of trusted PEM certificates, self-signed ones included")
+    parser.add_argument(
+        "--tls-allow-self-signed",
+        action="store_true",
+        help="accept valid self-signed peer certificates (lab only)",
+    )
+    parser.add_argument(
+        "--tls-no-hostname-check",
+        action="store_true",
+        help="do not require the peer certificate to name the advertised host or IP",
+    )
     parser.add_argument("--smoke-test", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
 def settings_from_args(args: argparse.Namespace) -> StartupSettings:
     """Turn parsed arguments into the same shape the dialog produces."""
-    tls_values = (args.tls_cert, args.tls_key, args.tls_ca)
-    tls_options = (args.tls_peer_fingerprint, args.tls_server_name)
+    tls_values = (args.tls_cert, args.tls_key, args.tls_ca, args.tls_trusted_dir)
+    tls_options = (
+        args.tls_peer_fingerprint,
+        args.tls_server_name,
+        args.tls_allow_self_signed,
+        args.tls_no_hostname_check,
+    )
     if any(tls_values):
         tls_config = TlsConfig.from_paths(
             args.tls_cert,
@@ -71,9 +107,12 @@ def settings_from_args(args: argparse.Namespace) -> StartupSettings:
             private_key_password=os.getenv("SDC_TOOLBOX_TLS_KEY_PASSWORD"),
             peer_fingerprint=args.tls_peer_fingerprint,
             server_name=args.tls_server_name,
+            trusted_folder=args.tls_trusted_dir,
+            allow_self_signed=args.tls_allow_self_signed,
+            verify_hostname=not args.tls_no_hostname_check,
         )
     elif any(tls_options):
-        raise TlsConfigError("TLS peer options require --tls-cert, --tls-key, and --tls-ca")
+        raise TlsConfigError("TLS peer options require --tls-cert and --tls-key")
     else:
         tls_config = None
     return StartupSettings(
@@ -96,7 +135,42 @@ def ask_how_to_start(args: argparse.Namespace) -> StartupSettings | None:
     return dialog.settings()
 
 
+def configure_application_identity() -> None:
+    """Name the application the way the installed Linux desktop entry expects."""
+    QCoreApplication.setApplicationName(constants.APP_NAME)
+    QGuiApplication.setDesktopFileName(constants.DESKTOP_ID)
+
+
+@contextlib.contextmanager
+def closing_on_ctrl_c() -> Iterator[None]:
+    """Make Ctrl+C in the console close every window, as the close button would.
+
+    Python's default handler raises KeyboardInterrupt in whatever Python code Qt calls next,
+    and PySide reports and swallows exceptions from such callbacks, so the toolbox never quit.
+    Python also runs handlers only between bytecodes, so an idle Qt loop needs a timer to wake it.
+    """
+
+    def close_windows(_signum: int, _frame: object) -> None:
+        # A second Ctrl+C interrupts a shutdown that hangs instead of closing windows again.
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+        app = QCoreApplication.instance()
+        if app is not None:
+            app.closeAllWindows()
+
+    previous = signal.signal(signal.SIGINT, close_windows)
+    wake = QTimer()
+    if QCoreApplication.instance() is not None:
+        wake.timeout.connect(lambda: None)
+        wake.start(200)
+    try:
+        yield
+    finally:
+        wake.stop()
+        signal.signal(signal.SIGINT, previous)
+
+
 def main(argv: list[str] | None = None) -> int:
+    configure_application_identity()
     argv = sys.argv[1:] if argv is None else argv
     args = parse_args(argv)
 
@@ -106,7 +180,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if interactive:
         app = QApplication(sys.argv)
-        settings = ask_how_to_start(args)
+        with closing_on_ctrl_c():
+            settings = ask_how_to_start(args)
         if settings is None:
             return 0
     else:
@@ -132,21 +207,27 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 2
 
-    device = device_config.device if device_config is not None else None
+    native_config = isinstance(device_config, NativeMdibConfig)
+    device = device_config.device if device_config is not None and not native_config else None
     service = ProviderService(
         ip=settings.ip,
         instance_name=settings.name,
         device=device,
         tls_config=settings.tls_config,
     )
+    window = None
     try:
-        service.start()
+        if native_config:
+            service.start(parse_mdib(device_config.xml))
+        else:
+            service.start()
         window = MainWindow(service)
-        if settings.config_path and device_config is not None:
-            window.apply_config(device_config, settings.config_path)
+        if settings.config_path and device_config is not None and not native_config:
+            if not window.apply_config(device_config, settings.config_path):
+                return 2
         window.show()
         if args.smoke_test:
-            bundled_files = {path.name for path in constants.PRESET_DIR.glob("*.json")}
+            bundled_files = {path.name for path in constants.PRESET_DIR.iterdir() if path.suffix.lower() in (".json", ".xml")}
             if bundled_files != constants.SHIPPED_PRESET_FILES:
                 msg = f"packaged presets differ: found {sorted(bundled_files)}"
                 raise RuntimeError(msg)
@@ -163,7 +244,8 @@ def main(argv: list[str] | None = None) -> int:
                 if preset.path.resolve() != startup_path:
                     config.load_file(preset.path)
             QTimer.singleShot(1000, window.close)
-        return app.exec()
+        with closing_on_ctrl_c():
+            return app.exec()
     except Exception as exc:  # noqa: BLE001 - a crash here should still say why
         if args.smoke_test:
             detail = f"smoke test failed: {exc}"
@@ -174,7 +256,11 @@ def main(argv: list[str] | None = None) -> int:
         QMessageBox.critical(None, "SDC testing toolbox", str(exc))
         raise
     finally:
-        service.stop()
+        try:
+            if window is not None:
+                window.close()
+        finally:
+            service.stop()
 
 
 if __name__ == "__main__":

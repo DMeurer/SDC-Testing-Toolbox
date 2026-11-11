@@ -6,12 +6,14 @@ import gc
 import os
 import sys
 import threading
-import time
 import weakref
 from collections.abc import Iterable
+from dataclasses import replace
 from decimal import Decimal
+from http.client import BadStatusLine, NotConnected
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -29,6 +31,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from script_support import Report, wait_until  # noqa: E402
 from sdc11073.xml_types import msg_types  # noqa: E402
 
+from sdctoolbox import consumer_service as consumer_service_module  # noqa: E402
 from sdctoolbox.consumer_service import DiscoveredDevice  # noqa: E402
 from sdctoolbox.gui import consumer_pane as consumer_module  # noqa: E402
 from sdctoolbox.gui.async_call import AsyncCall  # noqa: E402
@@ -59,6 +62,9 @@ class FakeBridge(QObject):
     def __init__(self, _mdib, parent=None) -> None:  # noqa: ANN001
         super().__init__(parent)
 
+    def close(self) -> None:
+        pass
+
 
 class BlockingCall:
     def __init__(self, result=None) -> None:  # noqa: ANN001
@@ -88,9 +94,25 @@ class FakeRemote:
         self.context_values: dict[str, object] = {}
         self.metrics_count = 0
         self.metrics_requests: list[frozenset[str] | None] = []
+        self.lost_listeners: list = []
+        self.lost_reason: str | None = None
+        self.last_invocation_detail = ""
 
     def close(self) -> None:
         self.close_count += 1
+
+    def on_connection_lost(self, listener) -> None:  # noqa: ANN001
+        self.lost_listeners.append(listener)
+
+    def mark_connection_lost(self, reason: str) -> None:
+        """Like the real one: listeners run on the thread that noticed, here a foreign one."""
+        if self.lost_reason is not None:
+            return
+        self.lost_reason = reason
+        for listener in self.lost_listeners:
+            thread = threading.Thread(target=listener, args=(reason,))
+            thread.start()
+            thread.join()
 
     def set_value(self, *_args) -> object:
         return self.set_call()
@@ -149,9 +171,32 @@ class FakeConsumerService:
         self.scan_call = BlockingCall([])
         self.connect_call = BlockingCall()
         self.stop_count = 0
+        self.tls_config = None
+        self.probe_count = 0
+        self.known: list[DiscoveredDevice] = []
+        self.listener = None
 
     def start(self) -> None:
         pass
+
+    def set_discovery_listener(self, listener) -> None:  # noqa: ANN001
+        self.listener = listener
+
+    def set_departure_listener(self, listener) -> None:  # noqa: ANN001
+        self.departure_listener = listener
+
+    def probe(self) -> None:
+        self.probe_count += 1
+
+    def known_devices(self) -> list[DiscoveredDevice]:
+        return list(self.known)
+
+    def announce(self, *devices: DiscoveredDevice) -> None:
+        """Simulate discovery traffic arriving on sdc11073's networking thread."""
+        self.known = list(devices)
+        thread = threading.Thread(target=self.listener)
+        thread.start()
+        thread.join()
 
     def stop(self) -> None:
         self.stop_count += 1
@@ -254,7 +299,7 @@ def close_with_queued_connection(app: QApplication, provider: ProviderService) -
     pane._on_connect()  # noqa: SLF001
     check(service.connect_call.entered.wait(1.0), "connect result is queued for the GUI")
     # Do not pump Qt here: the test needs the queued completion to remain pending.
-    time.sleep(0.02)
+    check(pane._worker.wait(1.0), "connect finishes with its result still queued")  # noqa: SLF001
     window.close()
     check(remote.close_count == 1, "queued connection closes once during window close")
     check(service.stop_count == 1, "queued connection does not delay discovery close")
@@ -272,7 +317,7 @@ def async_resources_retire_once() -> None:
         close_count += 1
 
     worker.retire(resource, close_resource)
-    check(close_count == 1, "an unused resource closes immediately")
+    check(worker.wait(1.0) and close_count == 1, "an unused resource closes off-thread")
     check(
         not worker._resources,  # noqa: SLF001
         "an unused retired resource leaves no active bookkeeping",
@@ -572,7 +617,10 @@ def retired_remote_graph_is_collectable(
 
     attach(pane, remote)
     pane._on_disconnect()  # noqa: SLF001
-    check(remote.close_count == 1, "disconnect closes an idle remote exactly once")
+    check(
+        pane._worker.wait(1.0) and remote.close_count == 1,  # noqa: SLF001
+        "disconnect closes an idle remote exactly once",
+    )
     del remote, mdib, nested
     for _ in range(3):
         app.processEvents()
@@ -664,7 +712,7 @@ def peer_restart_requires_manual_reconnect(app: QApplication, provider: Provider
 
     check(pane._generation == generation + 1, "peer restart retires the current session")  # noqa: SLF001
     check(pane.remote is None and pane.bridge is None, "peer restart disconnects instead of reloading")
-    check(remote.close_count == 1, "restarted peer connection closes once")
+    check(wait_for(app, lambda: remote.close_count == 1), "restarted peer connection closes once")
     check(
         pane.tree.topLevelItemCount() == 0
         and pane.table.rowCount() == 0
@@ -782,7 +830,7 @@ def failed_reconnect_clears_peer_ui(
         pane._generation == generation + 1,  # noqa: SLF001
         "replacement connection advances the session generation",
     )
-    check(old.close_count == 1, "old peer is closed before replacement work continues")
+    check(wait_for(app, lambda: old.close_count == 1), "the retired old peer closes during replacement work")
     check(
         remote_ui_is_empty(),
         "old peer data is cleared while replacement connection is pending",
@@ -1155,6 +1203,335 @@ def choice_controls_use_operation_allowed_values(
     check(remote.close_count == 1 and service.stop_count == 1, "choice-domain session resources close once")
 
 
+def metric_reports_update_selected_editor(app: QApplication, provider: ProviderService) -> None:
+    window, pane, _service = new_window(provider)
+    remote = FakeRemote("reported-choice")
+    remote.metric_values = {
+        "mode": RemoteMetric(
+            handle="mode",
+            node_type_name="EnumStringMetricDescriptor",
+            kind=MetricKind.CHOICE,
+            allowed_values=("OFF", "ON"),
+            value="OFF",
+            operation_handles=("set.mode",),
+            selected_operation_handle="set.mode",
+            controllable_now=True,
+        ),
+    }
+    attach(pane, remote)
+    pane.select_handle("mode")
+    check(pane.choice_box.currentText() == "OFF", "selected editor starts with the reported value")
+
+    remote.metric_values["mode"] = replace(remote.metric_values["mode"], value="ON")
+    pane.bridge.metrics_changed.emit({"mode": object()})
+    pump(app)
+    check(
+        pane.choice_box.currentText() == "ON"
+        and pane.table.item(0, consumer_module.COL_VALUE).text() == "ON"
+        and pane.board.card("mode").control.box.currentText() == "ON",
+        "a metric report updates the table editor, value cell, and card together",
+    )
+
+    remote.metric_values["mode"] = replace(remote.metric_values["mode"], value="OFF")
+    pane._on_set_finished(msg_types.InvocationState.FINISHED_MOD)  # noqa: SLF001
+    check(pane.choice_box.currentText() == "OFF", "the completed operation refreshes the editor from the MDIB")
+
+    for kind, original, requested, reported in (
+        (MetricKind.NUMBER, Decimal(1), "3", Decimal(2)),
+        (MetricKind.TEXT, "old", "requested", "actual"),
+    ):
+        remote.metric_values["field"] = RemoteMetric(
+            handle="field",
+            node_type_name="NumericMetricDescriptor" if kind is MetricKind.NUMBER else "StringMetricDescriptor",
+            kind=kind,
+            value=original,
+            operation_handles=("set.field",),
+            selected_operation_handle="set.field",
+            controllable_now=True,
+        )
+        pane.refresh()
+        pane.select_handle("field")
+        pane.value_edit.setFocus()
+        pane.value_edit.setText(requested)
+        remote.metric_values["field"] = replace(remote.metric_values["field"], value=reported)
+        pane.bridge.metrics_changed.emit({"field": object()})
+        pump(app)
+        check(pane.value_edit.text() == requested, f"a metric report preserves a focused {kind.value} edit")
+        pane._invoked_handle = "field"  # noqa: SLF001 - complete the simulated request
+        pane._on_set_finished(msg_types.InvocationState.FINISHED_MOD)  # noqa: SLF001
+        check(pane.value_edit.text() == str(reported), f"a completed {kind.value} set shows the reported value")
+
+    window.close()
+
+
+def technical_only_range_is_visible(app: QApplication, provider: ProviderService) -> None:
+    window, pane, _service = new_window(provider)
+    remote = FakeRemote("technical-only")
+    remote.metric_values = {
+        "numeric.ch0.vmd0": RemoteMetric(
+            handle="numeric.ch0.vmd0",
+            node_type_name="NumericMetricDescriptor",
+            kind=MetricKind.NUMBER,
+            value=Decimal("32"),
+            resolution=Decimal("0.1"),
+            technical_ranges=(RemoteRange(Decimal("1"), Decimal("100"), Decimal("1")),),
+            operation_handles=("set.numeric",),
+            selected_operation_handle="set.numeric",
+            controllable_now=True,
+        ),
+    }
+    attach(pane, remote)
+    metric = remote.metric_values["numeric.ch0.vmd0"]
+    control = pane.board.card(metric.handle).control
+    check(
+        control.__class__.__name__ == "SliderWidget"
+        and control.low_label.text() == "1"
+        and control.high_label.text() == "100",
+        "a bounded TechnicalRange can supply the remote numeric slider's display bounds",
+    )
+    pane.select_handle(metric.handle)
+    row = next(row for row in range(pane.table.rowCount()) if pane.table.item(row, 0).text() == metric.handle)
+    check(
+        pane.table.item(row, consumer_module.COL_RANGE).text() == "technical: 1 to 100 (step 1)"
+        and not metric.allowed_ranges and not metric.has_range
+        and metric.numeric_value_allowed(Decimal("35.5")),
+        "the table labels the technical range without treating it as an AllowedRange",
+    )
+    window.close()
+
+
+def http_device(epr: str) -> DiscoveredDevice:
+    return DiscoveredDevice(epr, (f"http://127.0.0.1/{epr}",), (), service=object())
+
+
+def passive_discovery_and_connect_next(app: QApplication, provider: ProviderService) -> None:
+    window, pane, service = new_window(provider)
+    check(service.probe_count == 1, "opening the pane probes once for providers already running")
+
+    known = http_device("known")
+    service.announce(known)
+    check(
+        wait_for(app, lambda: [device.epr for device in pane.devices] == ["known"]),
+        "a Hello from the networking thread reaches the list without a scan",
+    )
+    check(pane.device_list.currentRow() == 0, "the first announced device is selected")
+
+    pane.connect_next_box.setChecked(True)
+    service.announce()  # Bye
+    check(wait_for(app, lambda: not pane.devices), "a Bye removes the device from the list")
+    service.announce(known)
+    pump(app)
+    check(
+        not service.connect_call.entered.is_set() and pane.connect_next_box.isChecked(),
+        "a returning EPR seen earlier this session does not trigger Connect next",
+    )
+
+    secure_only = DiscoveredDevice("secure-only", ("https://127.0.0.1/secure",), (), service=object())
+    service.announce(known, secure_only)
+    pump(app)
+    check(
+        not service.connect_call.entered.is_set() and pane.connect_next_box.isChecked(),
+        "a new device without a matching transport is skipped",
+    )
+
+    remote = FakeRemote("fresh")
+    service.connect_call.result = remote
+    service.connect_call.release.set()
+    fresh = http_device("fresh")
+    service.announce(known, secure_only, fresh)
+    check(wait_for(app, service.connect_call.entered.is_set), "a new EPR triggers Connect next")
+    check(not pane.connect_next_box.isChecked(), "Connect next unticks itself after firing")
+    check(wait_for(app, lambda: pane.remote is remote), "Connect next attaches the new device")
+    check(pane._selected_device() is fresh, "the auto-connected device is selected")  # noqa: SLF001
+
+    window.close()
+    pump(app)
+    check(service.listener is None, "closing the pane detaches the discovery listener")
+    check(remote.close_count == 1 and service.stop_count == 1, "connect-next session resources close once")
+
+
+def controllable_peer(epr: str, value: Decimal = Decimal(7)) -> FakeRemote:
+    remote = FakeRemote(epr)
+    remote.mdib.entities = {
+        "mds": SimpleNamespace(node_type=SimpleNamespace(localname="MdsDescriptor"), parent_handle=None),
+    }
+    remote.metric_values = {
+        "metric": RemoteMetric(
+            handle="metric",
+            node_type_name="NumericMetricDescriptor",
+            kind=MetricKind.NUMBER,
+            label="Peer metric",
+            value=value,
+            operation_handles=("set.metric",),
+            controllable_now=True,
+        ),
+    }
+    return remote
+
+
+def connection_loss_clears_the_peer(app: QApplication, provider: ProviderService) -> None:
+    window, pane, _service = new_window(provider)
+    remote = controllable_peer("vanishing")
+    attach(pane, remote)
+    check(pane.board.handles == ["metric"] and pane.tree.topLevelItemCount() == 1, "lost-peer state starts populated")
+
+    remote.mark_connection_lost("the device ended all subscriptions")
+    check(wait_for(app, lambda: pane.remote is None), "a loss noticed on another thread disconnects the pane")
+    check(wait_for(app, lambda: remote.close_count == 1), "the lost connection closes once")
+    check(
+        not pane.board.handles and pane.tree.topLevelItemCount() == 0 and pane.table.rowCount() == 0,
+        "a lost peer's widgets, tree and table are removed",
+    )
+    check(
+        pane.status_label.text().startswith("Connection lost: the device ended all subscriptions"),
+        "the status names the reason the connection was lost",
+    )
+    check(pane.disconnect_button.isEnabled() is False, "disconnect is off once the connection is gone")
+    window.close()
+
+
+def refused_subscriptions_are_announced(app: QApplication, provider: ProviderService) -> None:
+    window, pane, _service = new_window(provider)
+    complete = controllable_peer("complete")
+    attach(pane, complete)
+    check(
+        pane.status_label.text() == "Connected to complete",
+        "a device that delivers every report is connected without a warning",
+    )
+    pane._on_disconnect()  # noqa: SLF001
+
+    partial = controllable_peer("partial")
+    partial.missing_reports = lambda: ["EpisodicComponentReport", "WaveformStream"]
+    attach(pane, partial)
+    text = pane.status_label.text()
+    check(
+        text.startswith("Connected to partial")
+        and "EpisodicComponentReport, WaveformStream" in text
+        and "refused" in text,
+        "the status names the reports the device refused",
+    )
+    window.close()
+
+
+def departure_of_connected_peer(app: QApplication, provider: ProviderService) -> None:
+    window, pane, service = new_window(provider)
+    remote = controllable_peer("leaving")
+    attach(pane, remote)
+
+    def depart(epr: str) -> None:
+        thread = threading.Thread(target=service.departure_listener, args=(epr,))
+        thread.start()
+        thread.join()
+
+    depart("someone-else")
+    pump(app)
+    check(pane.remote is remote, "a Bye from another provider leaves the connection alone")
+    depart("leaving")
+    check(wait_for(app, lambda: pane.remote is None), "a Bye from the connected provider ends the connection")
+    check(
+        "announced it is shutting down" in pane.status_label.text(),
+        "the status says the device announced its shutdown",
+    )
+    window.close()
+
+
+def https_mismatch_reaches_gui(app: QApplication, provider: ProviderService) -> None:
+    window, pane, service = new_window(provider)
+    service.connect = consumer_service_module.ConsumerService().connect
+    address = "https://127.0.0.1:1/device"
+    pane.devices = [DiscoveredDevice("secure-peer", (address,), (), service=SimpleNamespace(x_addrs=[address]))]
+    pane.device_list.addItem("secure-peer")
+    pane.device_list.setCurrentRow(0)
+    try:
+        with patch("sdctoolbox.gui.async_call.logger.exception") as traceback_log:
+            pane._on_connect()  # noqa: SLF001
+            check(
+                wait_for(app, lambda: pane.status_label.text().startswith("Could not connect:")),
+                "HTTPS mismatch is reported in the GUI",
+            )
+            message = pane.status_label.text()
+            check(
+                "requires HTTPS" in message and "configured for HTTP" in message
+                and "Enable TLS" in message and "certificates" in message,
+                "GUI explains the transport mismatch and how to configure TLS",
+            )
+            check(pane.remote is None and not pane.disconnect_button.isEnabled(), "HTTPS mismatch leaves the GUI disconnected")
+            traceback_log.assert_not_called()
+    finally:
+        window.close()
+
+
+def tls_alert_reaches_gui(app: QApplication, provider: ProviderService) -> None:
+    window, pane, service = new_window(provider)
+    service.connect = consumer_service_module.ConsumerService().connect
+    address = "http://127.0.0.1:1/device"
+    pane.devices = [DiscoveredDevice("misadvertised-peer", (address,), (), service=SimpleNamespace(x_addrs=[address]))]
+    pane.device_list.addItem("misadvertised-peer")
+    pane.device_list.setCurrentRow(0)
+    failure = NotConnected()
+    failure.__cause__ = BadStatusLine("\x15\x03\x03\x00\x02\x02\x16")
+    consumer = SimpleNamespace(start_all=Mock(side_effect=failure), stop_all=Mock())
+    try:
+        with (
+            patch.object(consumer_service_module._WsdlSdcConsumer, "from_wsd_service", return_value=consumer),
+            patch("sdctoolbox.gui.async_call.logger.exception") as traceback_log,
+        ):
+            pane._on_connect()  # noqa: SLF001
+            check(
+                wait_for(app, lambda: pane.status_label.text().startswith("Could not connect:")),
+                "misadvertised HTTP failure reaches the GUI",
+            )
+            message = pane.status_label.text()
+            check(
+                "TLS alert" in message and "HTTP request" in message
+                and "advertised" in message and "Enable TLS" in message,
+                "GUI explains a TLS alert from an endpoint advertised as HTTP",
+            )
+            check(pane.remote is None and not pane.disconnect_button.isEnabled(), "TLS alert leaves the GUI disconnected")
+            traceback_log.assert_not_called()
+            consumer.stop_all.assert_called_once()
+    finally:
+        window.close()
+
+
+def failed_set_restores_device_value(app: QApplication, provider: ProviderService) -> None:
+    window, pane, _service = new_window(provider)
+    remote = controllable_peer("stubborn", Decimal(7))
+    attach(pane, remote)
+    control = pane.board.card("metric").control
+    control.edit.setFocus()
+    control.edit.setText("9")
+
+    remote.set_call.error = consumer_service_module.ConsumerError("the device could not be reached")
+    remote.set_call.release.set()
+    control._on_typed()  # noqa: SLF001 - Enter in the field
+    check(
+        wait_for(app, lambda: pane.invocation_label.text().startswith("failed:")),
+        "a failed set is reported in the pane",
+    )
+    check(control.edit.text() == "7", "a failed set puts the device's value back into the card")
+
+    remote.set_call.error = None
+    remote.set_call.result = msg_types.InvocationState.FAILED
+    remote.last_invocation_detail = "Inv: the value is above the maximum"
+    control.edit.setText("11")
+    control._on_typed()  # noqa: SLF001
+    check(wait_for(app, lambda: pane.invocation_label.text().startswith("refused")), "a refused set is reported")
+    check(
+        "above the maximum" in pane.invocation_label.text(),
+        f"a refused set tells the user why the device refused it: {pane.invocation_label.text()!r}",
+    )
+    check(control.edit.text() == "7", "a refused set puts the device's value back into the card")
+
+    remote.set_call.result = msg_types.InvocationState.FINISHED_MOD
+    remote.metric_values["metric"] = replace(remote.metric_values["metric"], value=Decimal(10))
+    control.edit.setText("12")
+    control._on_typed()  # noqa: SLF001
+    check(wait_for(app, lambda: pane.invocation_label.text().startswith("accepted")), "an accepted set is reported")
+    check(control.edit.text() == "10", "an accepted set shows what the device actually holds")
+    window.close()
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     provider = ProviderService(instance_name="consumer-lifecycle")
@@ -1185,6 +1562,15 @@ def main() -> int:
         refresh_snapshot_and_editor_lookups_are_scoped(app, provider)
         table_editor_enforces_complete_allowed_domain(app, provider)
         choice_controls_use_operation_allowed_values(app, provider)
+        metric_reports_update_selected_editor(app, provider)
+        technical_only_range_is_visible(app, provider)
+        passive_discovery_and_connect_next(app, provider)
+        connection_loss_clears_the_peer(app, provider)
+        refused_subscriptions_are_announced(app, provider)
+        departure_of_connected_peer(app, provider)
+        https_mismatch_reaches_gui(app, provider)
+        tls_alert_reaches_gui(app, provider)
+        failed_set_restores_device_value(app, provider)
     finally:
         consumer_module.ConsumerService = old_service
         consumer_module.MdibBridge = old_bridge

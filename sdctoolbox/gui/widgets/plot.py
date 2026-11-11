@@ -16,12 +16,13 @@ from __future__ import annotations
 import math
 import time
 from collections import deque
-from decimal import Decimal
+from decimal import Decimal, localcontext
 
 from PySide6.QtCore import QPointF, Qt, QTimer
 from PySide6.QtGui import QPainter, QPalette, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget
 
+from ...model import MAX_DECIMAL_WIRE_CHARS
 from ..styling import muted_colour
 
 # How many samples a scrolling plot keeps. At the default 0.1s period that is half a minute
@@ -83,14 +84,14 @@ class SamplePlot(QWidget):
         self.setMinimumHeight(PLOT_HEIGHT)
         self.setAutoFillBackground(False)
 
-        self._fixed_low = float(minimum) if minimum is not None else None
-        self._fixed_high = float(maximum) if maximum is not None else None
-        self._samples: deque[float] = deque(maxlen=HISTORY if scrolling else None)
+        self._fixed_low = minimum if minimum is not None and minimum.is_finite() else None
+        self._fixed_high = maximum if maximum is not None and maximum.is_finite() else None
+        self._samples: deque[Decimal] = deque(maxlen=HISTORY if scrolling else None)
 
         # Seconds between two samples, from the descriptor. Without it there is no way to
         # know how fast to reveal, so a plot that has none shows blocks as they arrive.
         self._sample_period = float(sample_period) if sample_period else 0.0
-        self._pending: deque[float] = deque()
+        self._pending: deque[Decimal] = deque()
         # Fractional samples carried between frames, so a rate that does not divide evenly
         # into the frame interval does not round down to nothing every time.
         self._credit = 0.0
@@ -99,8 +100,8 @@ class SamplePlot(QWidget):
         self._last_tick = 0.0
 
         # Where a distribution's bars are heading, where they set off from, and when.
-        self._target: list[float] = []
-        self._tween_from: list[float] = []
+        self._target: list[Decimal] = []
+        self._tween_from: list[Decimal] = []
         self._tween_started = 0.0
 
         self._timer = QTimer(self)
@@ -111,18 +112,18 @@ class SamplePlot(QWidget):
 
     @property
     def samples(self) -> list[float]:
-        """What is currently drawn. Mid-move for a distribution, so not always the block."""
-        return list(self._samples)
+        """A float snapshot for callers; painting keeps the exact buffered samples."""
+        return [float(sample) for sample in self._samples]
 
     @property
     def pending(self) -> list[float]:
         """Received but not yet revealed. Empty unless the plot is pacing."""
-        return list(self._pending)
+        return [float(sample) for sample in self._pending]
 
     @property
     def target(self) -> list[float]:
         """The block a distribution's bars are moving towards."""
-        return list(self._target)
+        return [float(sample) for sample in self._target]
 
     @property
     def paced(self) -> bool:
@@ -141,12 +142,12 @@ class SamplePlot(QWidget):
         towards the new block, because each one is a whole picture of the same domain.
         """
         try:
-            values = [float(sample) for sample in samples]
-        except (TypeError, ValueError):
+            values = [sample if isinstance(sample, Decimal) else Decimal(str(sample)) for sample in samples]
+        except (ArithmeticError, TypeError, ValueError):
             # A peer may publish something that is not a number at all. Showing the last
             # good trace beats blanking the card.
             return
-        if not values:
+        if not values or any(not value.is_finite() for value in values):
             return
 
         if self.tweening:
@@ -164,7 +165,7 @@ class SamplePlot(QWidget):
             self._last_tick = time.monotonic()
             self._timer.start()
 
-    def _retarget(self, values: list[float]) -> None:
+    def _retarget(self, values: list[Decimal]) -> None:
         """Aim a distribution's bars at a new block, starting from wherever they are now.
 
         Re-aiming mid-move rather than queueing: the newest block is the truth, and a
@@ -240,10 +241,13 @@ class SamplePlot(QWidget):
         eased = (1.0 - math.cos(progress * math.pi)) / 2.0
 
         self._samples.clear()
-        self._samples.extend(
-            start + (end - start) * eased
-            for start, end in zip(self._tween_from, self._target)
-        )
+        with localcontext() as context:
+            context.prec = MAX_DECIMAL_WIRE_CHARS * 2 + 32
+            fraction = Decimal(str(eased))
+            self._samples.extend(
+                start + (end - start) * fraction
+                for start, end in zip(self._tween_from, self._target)
+            )
         if progress >= 1.0:
             self._tween_from = list(self._target)
             self._timer.stop()
@@ -259,14 +263,14 @@ class SamplePlot(QWidget):
         now = time.monotonic()
         elapsed = now - self._last_tick
         self._last_tick = now
-        self._credit += elapsed / self._sample_period
+        self._credit = min(len(self._pending), self._credit + elapsed / self._sample_period)
         due = int(self._credit)
         self._credit -= due
 
         # If the buffer has run long, take the excess as well. Otherwise a peer sending a
         # little faster than it declared would push the trace further behind every second
         # until it was showing minutes-old data.
-        backlog_limit = int(MAX_BACKLOG_SECONDS / self._sample_period)
+        backlog_limit = int(min(len(self._pending), MAX_BACKLOG_SECONDS / self._sample_period))
         excess = len(self._pending) - backlog_limit
         if excess > 0:
             due += excess
@@ -279,7 +283,7 @@ class SamplePlot(QWidget):
 
     # -- painting ------------------------------------------------------------------
 
-    def _bounds(self) -> tuple[float, float]:
+    def _bounds(self) -> tuple[Decimal, Decimal]:
         """The vertical extent to draw, preferring the declared range over the data.
 
         Using the declared TechnicalRange keeps the trace still: scaling to whatever
@@ -289,11 +293,13 @@ class SamplePlot(QWidget):
         if self._fixed_low is not None and self._fixed_high is not None and self._fixed_high > self._fixed_low:
             return self._fixed_low, self._fixed_high
         if not self._samples:
-            return 0.0, 1.0
+            return Decimal(0), Decimal(1)
         low, high = min(self._samples), max(self._samples)
         if high <= low:
             # A constant signal still needs a height, or it divides by zero and vanishes.
-            return low - 0.5, high + 0.5
+            with localcontext() as context:
+                context.prec = MAX_DECIMAL_WIRE_CHARS * 2 + 32
+                return low - Decimal("0.5"), high + Decimal("0.5")
         return low, high
 
     def paintEvent(self, event) -> None:  # noqa: ANN001, N802 - Qt naming
@@ -319,19 +325,21 @@ class SamplePlot(QWidget):
             painter.drawText(self.rect(), Qt.AlignCenter, "waiting for samples")
             return
 
-        low, high = self._bounds()
-        span = high - low
+        # Remove the offset before converting to pixels: floats can merge distinct readings.
+        with localcontext() as context:
+            context.prec = MAX_DECIMAL_WIRE_CHARS * 2 + 32
+            low, high = self._bounds()
+            span = high - low
+            fractions = [float(min(Decimal(1), max(Decimal(0), (value - low) / span))) for value in self._samples]
 
-        def y_for(value: float) -> float:
-            fraction = (value - low) / span
-            fraction = min(1.0, max(0.0, fraction))
+        def y_for(fraction: float) -> float:
             # Screen y grows downwards, so the top of the box is the high value.
             return MARGIN + (1.0 - fraction) * (height - 1)
 
         # A line at the middle of the range, so a flat trace still has something to sit
         # against and an eye can judge amplitude.
         painter.setPen(QPen(frame, 1, Qt.DotLine))
-        middle = y_for(low + span / 2.0)
+        middle = y_for(0.5)
         painter.drawLine(QPointF(MARGIN, middle), QPointF(MARGIN + width - 1, middle))
 
         count = len(self._samples)
@@ -340,17 +348,17 @@ class SamplePlot(QWidget):
 
         if self.scrolling:
             polygon = QPolygonF(
-                [QPointF(MARGIN + index * step, y_for(value)) for index, value in enumerate(self._samples)],
+                [QPointF(MARGIN + index * step, y_for(fraction)) for index, fraction in enumerate(fractions)],
             )
             painter.drawPolyline(polygon)
         else:
             # A distribution is a set of readings across a domain, not a continuous signal,
             # so bars say what it is more honestly than a line joining the tops.
-            base = y_for(low)
+            base = y_for(0.0)
             bar = max(1.0, step * 0.6)
-            for index, value in enumerate(self._samples):
+            for index, fraction in enumerate(fractions):
                 x = MARGIN + index * step
-                painter.drawLine(QPointF(x, base), QPointF(x, y_for(value)))
+                painter.drawLine(QPointF(x, base), QPointF(x, y_for(fraction)))
                 if bar > 2:  # noqa: PLR2004
-                    painter.drawLine(QPointF(x + 1, base), QPointF(x + 1, y_for(value)))
+                    painter.drawLine(QPointF(x + 1, base), QPointF(x + 1, y_for(fraction)))
         painter.end()

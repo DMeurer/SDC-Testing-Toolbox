@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import ipaddress
+import socket
 import ssl
 import sys
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -50,6 +52,7 @@ def issue_certificate(
     *,
     ca: bool = False,
     ip_name: str | None = None,
+    dns_name: str | None = None,
     expired: bool = False,
 ) -> x509.Certificate:  # noqa: ANN001
     now = datetime.now(UTC)
@@ -63,11 +66,13 @@ def issue_certificate(
         .not_valid_after(now - timedelta(days=1) if expired else now + timedelta(days=30))
         .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True)
     )
+    names = []
     if ip_name is not None:
-        builder = builder.add_extension(
-            x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address(ip_name))]),
-            critical=False,
-        )
+        names.append(x509.IPAddress(ipaddress.ip_address(ip_name)))
+    if dns_name is not None:
+        names.append(x509.DNSName(dns_name))
+    if names:
+        builder = builder.add_extension(x509.SubjectAlternativeName(names), critical=False)
     if not ca:
         builder = builder.add_extension(
             x509.ExtendedKeyUsage([ExtendedKeyUsageOID.CLIENT_AUTH, ExtendedKeyUsageOID.SERVER_AUTH]),
@@ -93,6 +98,134 @@ def make_tls_configurations(directory: Path) -> tuple[TlsConfig, TlsConfig]:
         write_key(key_path, key)
         configurations.append(TlsConfig.from_paths(certificate_path, key_path, ca_path))
     return tuple(configurations)  # type: ignore[return-value]
+
+
+def self_signed_identity(
+    directory: Path, name: str, ip_name: str | None = "127.0.0.1", *, dns_name: str | None = None,
+) -> tuple[Path, Path, x509.Certificate]:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)])
+    certificate = issue_certificate(name, key, subject, key, ip_name=ip_name, dns_name=dns_name)
+    certificate_path = directory / f"{name}.pem"
+    key_path = directory / f"{name}-key.pem"
+    write_certificate(certificate_path, certificate)
+    write_key(key_path, key)
+    return certificate_path, key_path, certificate
+
+
+def handshake(server: TlsConfig, client: TlsConfig, server_hostname: str = "127.0.0.1") -> str | None:
+    """Run one TLS handshake over loopback. None on success, else the client-side error."""
+    server_contexts = server.create_contexts()
+    client_contexts = client.create_contexts()
+    listener = socket.create_server(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+
+    def serve() -> None:
+        try:
+            connection, _ = listener.accept()
+            with server_contexts.server_context.wrap_socket(connection, server_side=True) as tls:
+                tls.recv(1)
+        except (OSError, ssl.SSLError):
+            pass
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        with (
+            socket.create_connection(("127.0.0.1", port), timeout=5) as raw,
+            client_contexts.client_context.wrap_socket(raw, server_hostname=server_hostname) as tls,
+        ):
+            client.verify_peer_certificate(tls.getpeercert(binary_form=True), server_hostname)
+            tls.sendall(b"x")
+    except (OSError, ssl.SSLError, TlsConfigError) as exc:
+        return str(exc) or type(exc).__name__
+    finally:
+        listener.close()
+        thread.join(5)
+    return None
+
+
+def relaxed_policy_checks(report: Report, temporary: Path) -> None:
+    print("Relaxed certificate policies")
+    alpha_cert, alpha_key, _ = self_signed_identity(temporary, "alpha")
+    beta_cert, beta_key, _ = self_signed_identity(temporary, "beta")
+    wrong_cert, wrong_key, _ = self_signed_identity(temporary, "wrong-ip", ip_name="10.9.8.7")
+
+    try:
+        TlsConfig.from_paths(alpha_cert, alpha_key, None)
+    except TlsConfigError:
+        needs_trust = True
+    else:
+        needs_trust = False
+    report.check(needs_trust, "TLS without CA, folder, or self-signed permission is rejected")
+
+    lenient_alpha = TlsConfig.from_paths(alpha_cert, alpha_key, None, allow_self_signed=True)
+    lenient_beta = TlsConfig.from_paths(beta_cert, beta_key, None, allow_self_signed=True)
+    report.check(handshake(lenient_alpha, lenient_beta) is None, "self-signed peers connect when allowed")
+
+    folder = temporary / "trusted"
+    folder.mkdir()
+    (folder / "alpha.pem").write_bytes(alpha_cert.read_bytes())
+    (folder / "beta.crt").write_bytes(beta_cert.read_bytes())
+    (folder / "alpha-key.pem").write_bytes(alpha_key.read_bytes())  # non-certificates are skipped
+    folder_alpha = TlsConfig.from_paths(alpha_cert, alpha_key, None, trusted_folder=folder)
+    folder_beta = TlsConfig.from_paths(beta_cert, beta_key, None, trusted_folder=folder)
+    report.check(
+        folder_alpha.create_contexts().server_context.verify_mode == ssl.CERT_REQUIRED,
+        "trusted folder keeps mutual authentication",
+    )
+    report.check(handshake(folder_alpha, folder_beta) is None, "self-signed certificates in the trusted folder connect")
+
+    stranger = TlsConfig.from_paths(wrong_cert, wrong_key, None, trusted_folder=folder)
+    trust_only_beta = TlsConfig.from_paths(beta_cert, beta_key, None, trusted_folder=folder, verify_hostname=False)
+    report.check(handshake(stranger, trust_only_beta) is not None, "a certificate outside the trusted folder is refused")
+
+    (folder / "wrong-ip.pem").write_bytes(wrong_cert.read_bytes())
+    strict_beta = TlsConfig.from_paths(beta_cert, beta_key, None, trusted_folder=folder)
+    report.check(handshake(stranger, strict_beta) is not None, "trusted peer naming another IP fails the hostname check")
+    loose_beta = TlsConfig.from_paths(beta_cert, beta_key, None, trusted_folder=folder, verify_hostname=False)
+    report.check(handshake(stranger, loose_beta) is None, "disabled hostname check accepts a trusted peer naming another IP")
+
+    wrong_self_signed = TlsConfig.from_paths(wrong_cert, wrong_key, None, allow_self_signed=True)
+    report.check(
+        handshake(wrong_self_signed, lenient_beta) is not None,
+        "self-signed mode still checks the advertised IP",
+    )
+    loose_self_signed = TlsConfig.from_paths(beta_cert, beta_key, None, allow_self_signed=True, verify_hostname=False)
+    report.check(
+        handshake(wrong_self_signed, loose_self_signed) is None,
+        "self-signed mode with disabled hostname check accepts any IP",
+    )
+
+    empty = temporary / "empty"
+    empty.mkdir()
+    try:
+        TlsConfig.from_paths(alpha_cert, alpha_key, None, trusted_folder=empty).create_contexts()
+    except TlsConfigError:
+        empty_rejected = True
+    else:
+        empty_rejected = False
+    report.check(empty_rejected, "an empty trusted folder as the only trust source is rejected")
+
+
+def advertised_dns_checks(report: Report, temporary: Path) -> None:
+    alpha_cert, alpha_key, _ = self_signed_identity(temporary, "alpha.lab", None, dns_name="alpha.lab")
+    _, _, beta = self_signed_identity(temporary, "beta.lab", None, dns_name="beta.lab")
+    config = TlsConfig.from_paths(alpha_cert, alpha_key, None, allow_self_signed=True, server_name="alpha.lab")
+    peer_der = beta.public_bytes(serialization.Encoding.DER)
+    try:
+        peer = config.verify_peer_certificate(peer_der, "beta.lab")
+    except TlsConfigError as exc:
+        report.check(False, "local advertised DNS never replaces the remote verification endpoint", str(exc))
+    else:
+        report.check(peer.dns_names == ("beta.lab",), "local advertised DNS never replaces the remote verification endpoint")
+    try:
+        config.verify_peer_certificate(peer_der, "gamma.lab")
+    except TlsConfigError:
+        rejected = True
+    else:
+        rejected = False
+    report.check(rejected, "self-signed DNS verification still rejects a certificate for another remote endpoint")
 
 
 def main() -> int:
@@ -163,6 +296,9 @@ def main() -> int:
         else:
             invalid_fingerprint_rejected = False
         report.check(invalid_fingerprint_rejected, "invalid fingerprint syntax is rejected")
+
+        relaxed_policy_checks(report, temporary)
+        advertised_dns_checks(report, temporary)
     return report.summary()
 
 

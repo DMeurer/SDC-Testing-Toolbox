@@ -31,3 +31,8 @@ diagnostics/*.log.err
 INSTRUCTIONS.md
 PLANNING.md
 *-FINDINGS.md
+!AUDIT-FINDINGS.md
+
+# Local agent planning and review output
+/.superpowers/
+/docs/superpowers/

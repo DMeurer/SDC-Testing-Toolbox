@@ -103,7 +103,7 @@ def main() -> int:
                 state = mgr.get_state(handle)
                 state.mk_metric_value()
                 state.MetricValue.Value = Decimal("0")
-                state.MetricValue.Validity = pm_types.MeasurementValidity.VALID
+                state.MetricValue.MetricQuality.Validity = pm_types.MeasurementValidity.VALID
                 state.ActivationState = pm_types.ComponentActivation.ON
 
         deadline = time.monotonic() + args.seconds

@@ -11,14 +11,17 @@ AsyncCall rather than on the GUI thread.
 
 from __future__ import annotations
 
+import logging
 import re
+import threading
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -38,12 +41,11 @@ from PySide6.QtWidgets import (
 )
 from sdc11073.xml_types import msg_types
 
-from ..consumer_service import ConsumerService
+from ..consumer_service import BACKGROUND_PROBE_SECONDS, ConsumerError, ConsumerService
 from ..model import MetricKind
 from .async_call import AsyncCall
 from .decimal_input import DecimalInputError, parse_decimal_input
 from .helpers import (
-    NO_VALUE,
     sample_count_text,
     select_table_row,
     selected_table_value,
@@ -59,12 +61,15 @@ from .styling import (
 )
 from .table_columns import TableColumns
 from .widgets import WidgetBoard, from_remote_metric
+from .widgets.controls import show_choice_value
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from ..consumer_service import DiscoveredDevice, RemoteDevice
     from ..model import RemoteMetric
+
+logger = logging.getLogger("sdctoolbox.gui.consumer")
 
 COLUMNS = ["Handle", "Label", "Kind", "Value", "Range", "Unit", "Writable"]
 COL_HANDLE, COL_LABEL, COL_KIND, COL_VALUE, COL_RANGE, COL_UNIT, COL_WRITABLE = range(len(COLUMNS))
@@ -127,8 +132,25 @@ def _set_action_button_caption(button: QPushButton, caption: str) -> None:
 FINISHED_STATES = (msg_types.InvocationState.FINISHED, msg_types.InvocationState.FINISHED_MOD)
 
 
+def _device_item(device: DiscoveredDevice) -> QListWidgetItem:
+    secure = bool(device.x_addrs and device.x_addrs[0].startswith("https://"))
+    suffix = " [HTTPS]" if secure else " [HTTP]"
+    item = QListWidgetItem(device.epr + suffix)
+    location = device.location_scope
+    if location:
+        item.setToolTip(location)
+    return item
+
+
 class ConsumerPane(QWidget):
     """Find SDC providers, inspect what they publish, and drive the parts that allow it."""
+
+    # Emitted from sdc11073's networking thread; Qt queues it onto the GUI thread.
+    discovery_changed = Signal()
+    provider_departed = Signal(str)
+    # (remote, reason). Emitted from whichever thread noticed; queued like the above.
+    connection_lost = Signal(object, str)
+    status_changed = Signal(str)
 
     def __init__(
         self,
@@ -143,13 +165,23 @@ class ConsumerPane(QWidget):
         self.service.start()
 
         self.devices: list[DiscoveredDevice] = []
+        # Every EPR listed this session. "Connect next" only reacts to one outside this set,
+        # so a known device restarting under the same name does not trigger it.
+        self._seen_eprs: set[str] = set()
+        self._listed_snapshot: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
+        # The metric the in-flight set targets, so its card can show the device's answer.
+        self._invoked_handle: str | None = None
         self.remote: RemoteDevice | None = None
         self.bridge: MdibBridge | None = None
         self._generation = 0
         self._shutdown = False
+        self._health_lock = threading.RLock()
+        self._editor_definition = None
+        self._choice_dirty = False
 
         self._build_ui()
         self._wire_async()
+        self._wire_discovery()
         self._update_buttons()
 
     # -- construction --------------------------------------------------------------
@@ -161,6 +193,11 @@ class ConsumerPane(QWidget):
         self.connect_button.clicked.connect(self._on_connect)
         self.disconnect_button = QPushButton("Disconnect")
         self.disconnect_button.clicked.connect(self._on_disconnect)
+        self.connect_next_box = QCheckBox("Connect next new device")
+        self.connect_next_box.setToolTip(
+            "Connect to the next provider that appears whose EPR has not been seen\n"
+            "since this window opened, then untick. A known device restarting does not count.",
+        )
 
         self.status_label = QLabel("Not connected")
         constrain_dynamic_label(self.status_label, max_lines=3)
@@ -177,6 +214,7 @@ class ConsumerPane(QWidget):
         top.addWidget(self.scan_button)
         top.addWidget(self.connect_button)
         top.addWidget(self.disconnect_button)
+        top.addWidget(self.connect_next_box)
         top.addStretch(1)
 
         # What the peer says it can be told to *do*, as opposed to the values it holds.
@@ -250,6 +288,7 @@ class ConsumerPane(QWidget):
         self.value_edit = QLineEdit()
         self.value_edit.returnPressed.connect(self._on_apply)
         self.choice_box = NoWheelComboBox()
+        self.choice_box.activated.connect(self._on_choice_edited)
         self.editor_stack = QStackedWidget()
         self.editor_stack.addWidget(self.value_edit)
         self.editor_stack.addWidget(self.choice_box)
@@ -295,13 +334,16 @@ class ConsumerPane(QWidget):
         layout.addLayout(editor)
 
     def _wire_async(self) -> None:
-        self._worker = AsyncCall(self)
+        # Consumer errors carry a message for the user and are shown in the pane, so they
+        # need no traceback on the console.
+        self._worker = AsyncCall(self, expected_errors=(ConsumerError,))
         self._worker.managed_finished.connect(self._on_work_finished)
         self._worker.managed_failed.connect(self._on_work_failed)
 
     def _advance_generation(self) -> int:
-        self._generation += 1
-        return self._generation
+        with self._health_lock:
+            self._generation += 1
+            return self._generation
 
     def _work_key(self, operation: str, remote: RemoteDevice | None = None) -> tuple:
         return operation, self._generation, remote
@@ -315,37 +357,92 @@ class ConsumerPane(QWidget):
 
     # -- discovery -----------------------------------------------------------------
 
+    def _wire_discovery(self) -> None:
+        """Keep the device list live from Hello/Bye/ProbeMatch traffic.
+
+        One probe now finds providers that were already running (they will not say Hello
+        again), a slow background probe keeps entries fresh, and a short refresh tick lets
+        providers that vanished without a Bye age out of the list.
+        """
+        self.discovery_changed.connect(self._refresh_devices)
+        self.service.set_discovery_listener(self.discovery_changed.emit)
+        self.provider_departed.connect(self._on_provider_departed)
+        self.service.set_departure_listener(self.provider_departed.emit)
+        self.connection_lost.connect(self._on_connection_lost)
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setInterval(1000)
+        self._refresh_timer.timeout.connect(self._refresh_devices)
+        self._refresh_timer.start()
+        self._probe_timer = QTimer(self)
+        self._probe_timer.setInterval(int(BACKGROUND_PROBE_SECONDS * 1000))
+        self._probe_timer.timeout.connect(self._background_probe)
+        self._probe_timer.start()
+        self._background_probe()
+
+    def _background_probe(self) -> None:
+        if self._shutdown:
+            return
+        try:
+            self.service.probe()
+        except Exception:  # noqa: BLE001 - a lost probe is retried by the next tick
+            logger.exception("background discovery probe failed")
+
+    def _refresh_devices(self) -> None:
+        """Mirror what discovery knows into the list, and act on "Connect next"."""
+        if self._shutdown:
+            return
+        devices = self.service.known_devices()
+        new_devices = [device for device in devices if device.epr not in self._seen_eprs]
+        self._seen_eprs.update(device.epr for device in devices)
+
+        snapshot = [(device.epr, device.x_addrs, device.scopes) for device in devices]
+        if snapshot != self._listed_snapshot:
+            self._listed_snapshot = snapshot
+            selected = self._selected_device()
+            self.devices = devices
+            self.device_list.clear()
+            for device in devices:
+                self.device_list.addItem(_device_item(device))
+            rows = [row for row, device in enumerate(devices) if selected is not None and device.epr == selected.epr]
+            if rows:
+                self.device_list.setCurrentRow(rows[0])
+            elif devices:
+                self.device_list.setCurrentRow(0)
+
+        if self.connect_next_box.isChecked():
+            candidate = next((device for device in new_devices if self._reachable(device)), None)
+            if candidate is not None:
+                self.connect_next_box.setChecked(False)
+                self.device_list.setCurrentRow(self.devices.index(candidate))
+                self._on_connect()
+                return
+        self._update_buttons()
+
+    def _reachable(self, device: DiscoveredDevice) -> bool:
+        """Whether this consumer's transport matches an address the provider advertises."""
+        scheme = "https://" if self.service.tls_config is not None else "http://"
+        return any(address.startswith(scheme) for address in device.x_addrs)
+
     def _on_scan(self) -> None:
         if self._shutdown:
             return
         self._set_status("Searching\u2026")
-        self.device_list.clear()
-        self.devices = []
         key = self._work_key("scan")
         self._worker.start_managed(
             key,
             self.service,
             self.service.scan,
-            timeout=8.0,
+            timeout=3.0,
             expected=99,
             cancel_event=self._worker.cancellation_event,
         )
         self._update_buttons()
 
-    def _on_scan_finished(self, devices: list) -> None:
-        self.devices = devices
-        self.device_list.clear()
-        for device in devices:
-            secure = bool(device.x_addrs and device.x_addrs[0].startswith("https://"))
-            suffix = " [HTTPS]" if secure else " [HTTP]"
-            item = QListWidgetItem(device.epr + suffix)
-            location = device.location_scope
-            if location:
-                item.setToolTip(location)
-            self.device_list.addItem(item)
-        if devices:
-            self.device_list.setCurrentRow(0)
-            self._set_status(f"Found {len(devices)} device(s)")
+    def _on_scan_finished(self, _devices: list) -> None:
+        # The scan filled discovery's cache; the live list reads from that same source.
+        self._refresh_devices()
+        if self.devices:
+            self._set_status(f"Found {len(self.devices)} device(s)")
         else:
             self._set_status("No devices found")
         self._update_buttons()
@@ -377,13 +474,19 @@ class ConsumerPane(QWidget):
         self._update_buttons()
 
     def _on_connected(self, remote: RemoteDevice, generation: int) -> None:
-        if self._shutdown or generation != self._generation:
-            remote.close()
-            return
-        self.remote = remote
+        with self._health_lock:
+            if self._shutdown or generation != self._generation:
+                self._worker.retire(remote, remote.close)
+                return
+            self.remote = remote
         self.bridge = MdibBridge(remote.mdib, self)
         def current() -> bool:
             return not self._shutdown and generation == self._generation and self.remote is remote
+
+        def on_connection_lost(reason: str) -> None:
+            with self._health_lock:
+                if current():
+                    self.connection_lost.emit(remote, reason)
 
         self.bridge.metrics_changed.connect(self._on_metrics_changed)
         for signal in (
@@ -406,7 +509,10 @@ class ConsumerPane(QWidget):
         self.bridge.peer_restarted.connect(
             lambda: self._on_peer_restarted() if current() else None,
         )
-        self._set_status(f"Connected to {remote.epr}")
+        remote.on_connection_lost(on_connection_lost)
+        if not current():
+            return
+        self._set_status(f"Connected to {remote.epr}{self._missing_reports_note(remote)}")
         certificate = getattr(remote, "peer_certificate", None)
         if certificate is None:
             self.security_label.setText("Transport: HTTP (lab only)")
@@ -426,17 +532,29 @@ class ConsumerPane(QWidget):
         self._set_status("Not connected")
         self._update_buttons()
 
+    @staticmethod
+    def _missing_reports_note(remote: RemoteDevice) -> str:
+        """Tell the user when the device refused subscriptions, so an incomplete view is not a mystery."""
+        missing = getattr(remote, "missing_reports", list)()
+        if not missing:
+            return ""
+        return f". Not receiving {', '.join(missing)}: the device refused those subscriptions"
+
     def _teardown_remote(self) -> None:
         if self.bridge is not None:
+            self.bridge.close()
             self.bridge.deleteLater()
             self.bridge = None
-        if self.remote is not None:
-            remote = self.remote
-            self.remote = None
-            self._worker.retire(remote, remote.close)
+        with self._health_lock:
+            if self.remote is not None:
+                remote = self.remote
+                self._worker.retire(remote, remote.close)
+                self.remote = None
 
     def _reset_remote_ui(self) -> None:
         """Clear every view and control derived from the current peer."""
+        self._editor_definition = None
+        self._choice_dirty = False
         self.tree.clear()
         self.table.clearSelection()
         self.table.setRowCount(0)
@@ -448,7 +566,7 @@ class ConsumerPane(QWidget):
         self.security_label.clear()
         self.refresh_actions()
 
-        self.value_edit.clear()
+        self.value_edit.setText("")
         self.value_edit.setPlaceholderText("")
         self.choice_box.clear()
         self.editor_stack.setCurrentIndex(EDITOR_TEXT)
@@ -461,6 +579,21 @@ class ConsumerPane(QWidget):
         self._teardown_remote()
         self._reset_remote_ui()
         self._set_status(f"Could not connect: {message}")
+
+    def _on_provider_departed(self, epr: str) -> None:
+        """A provider said goodbye. If it is the connected one, the connection is over."""
+        if self.remote is not None and self.remote.epr == epr:
+            self.remote.mark_connection_lost("the device announced it is shutting down")
+
+    def _on_connection_lost(self, remote: RemoteDevice, reason: str) -> None:
+        """Drop everything shown for a peer that is gone, and say why."""
+        if self._shutdown or remote is not self.remote:
+            return
+        self._advance_generation()
+        self._teardown_remote()
+        self._reset_remote_ui()
+        self._set_status(f"Connection lost: {reason}. Reconnect once the device is back.")
+        self._update_buttons()
 
     def _on_peer_restarted(self) -> None:
         """The far end restarted, so everything we cached about it is worthless."""
@@ -513,35 +646,41 @@ class ConsumerPane(QWidget):
     def _rebuild_table(self, metrics: dict[str, RemoteMetric]) -> None:
         selected = self.selected_handle()
 
-        self.table.setRowCount(len(metrics))
-        for row, (handle, metric) in enumerate(sorted(metrics.items())):
-            writable, tooltip = self._writable_text(metric)
-            cells = {
-                COL_HANDLE: handle,
-                COL_LABEL: metric.label or "",
-                COL_KIND: metric.kind.value if metric.kind else metric.node_type_name,
-                COL_VALUE: _value_text(metric),
-                COL_RANGE: metric.domain_text() or metric.range_text(),
-                COL_UNIT: metric.unit_label or "",
-                COL_WRITABLE: writable,
-            }
-            for column, text in cells.items():
-                item = QTableWidgetItem(text)
-                if column == COL_VALUE:
-                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                if column == COL_WRITABLE and writable != "yes":
-                    item.setForeground(muted_colour(self))
-                if column == COL_WRITABLE:
-                    item.setToolTip(tooltip)
-                if column == COL_LABEL and not metric.label:
-                    # A foreign device may publish no concept description at all. Show the
-                    # code instead of an empty cell, so the row is still identifiable.
-                    item.setText(metric.type_code or "")
-                    item.setForeground(muted_colour(self))
-                self.table.setItem(row, column, item)
+        with QSignalBlocker(self.table):
+            self.table.clearSelection()
+            self.table.setCurrentItem(None)
+            self.table.setRowCount(len(metrics))
+            for row, (handle, metric) in enumerate(sorted(metrics.items())):
+                writable, tooltip = self._writable_text(metric)
+                cells = {
+                    COL_HANDLE: handle,
+                    COL_LABEL: metric.label or "",
+                    COL_KIND: metric.kind.value if metric.kind else metric.node_type_name,
+                    COL_VALUE: _value_text(metric),
+                    COL_RANGE: metric.domain_text() or metric.range_text() or (
+                        "technical: " + "; ".join(range_.text() for range_ in metric.technical_ranges)
+                        if metric.technical_ranges else ""
+                    ),
+                    COL_UNIT: metric.unit_label or "",
+                    COL_WRITABLE: writable,
+                }
+                for column, text in cells.items():
+                    item = QTableWidgetItem(text)
+                    if column == COL_VALUE:
+                        item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    if column == COL_WRITABLE and writable != "yes":
+                        item.setForeground(muted_colour(self))
+                    if column == COL_WRITABLE:
+                        item.setToolTip(tooltip)
+                    if column == COL_LABEL and not metric.label:
+                        # A foreign device may publish no concept description at all. Show the
+                        # code instead of an empty cell, so the row is still identifiable.
+                        item.setText(metric.type_code or "")
+                        item.setForeground(muted_colour(self))
+                    self.table.setItem(row, column, item)
 
-        if selected is not None:
-            self.select_handle(selected)
+            if selected is not None:
+                self.select_handle(selected)
         self._columns.refit()
 
     @staticmethod
@@ -576,6 +715,14 @@ class ConsumerPane(QWidget):
             item = self.table.item(row, COL_VALUE)
             if item is not None:
                 item.setText(_value_text(metric))
+        selected = self.selected_handle()
+        if selected is not None and selected in metrics:
+            metric = metrics[selected]
+            if self.editor_stack.currentIndex() == EDITOR_CHOICE:
+                if not self._choice_dirty and not self.choice_box.view().isVisible():
+                    show_choice_value(self.choice_box, metric.value)
+            elif not (self.value_edit.hasFocus() or self.value_edit.isModified()):
+                self.value_edit.setText("" if metric.value is None else str(metric.value))
 
     def _on_waveforms_changed(self, blocks_by_handle: dict) -> None:
         """A block arrived from the peer.
@@ -634,9 +781,29 @@ class ConsumerPane(QWidget):
         self.invocation_label.setText("waiting\u2026")
         remote = self.remote
         key = self._work_key("invoke", remote)
-        if not self._worker.start_managed(key, remote, remote.set_value, handle, value):
+        if self._worker.start_managed(key, remote, remote.set_value, handle, value):
+            self._invoked_handle = handle
+        else:
             self.invocation_label.setText("busy, try again")
+            self._restore_device_value(handle)
         self._update_buttons()
+
+    def _restore_device_value(self, handle: str | None) -> None:
+        """Put what the device actually holds back into the controls that requested a change."""
+        if handle is None or self.remote is None:
+            return
+        metric = self.remote.metrics((handle,)).get(handle)
+        card = self.board.card(handle)
+        if metric is not None and card is not None:
+            card.control.restore_value(_displayable(metric))
+        if metric is not None and self.selected_handle() == handle:
+            # A completed request wins over a focused text editor, just as it does for a
+            # card. Ordinary metric reports still leave an unfinished edit alone.
+            self._choice_dirty = False
+            if self.editor_stack.currentIndex() == EDITOR_CHOICE:
+                show_choice_value(self.choice_box, metric.value)
+            else:
+                self.value_edit.setText("" if metric.value is None else str(metric.value))
 
     def refresh_actions(self) -> None:
         """Rebuild the buttons for the peer's actions."""
@@ -683,7 +850,9 @@ class ConsumerPane(QWidget):
         self.invocation_label.setText("waiting\u2026")
         remote = self.remote
         key = self._work_key("invoke", remote)
-        if not self._worker.start_managed(key, remote, remote.run_action, handle):
+        if self._worker.start_managed(key, remote, remote.run_action, handle):
+            self._invoked_handle = None
+        else:
             self.invocation_label.setText("busy, try again")
         self._update_buttons()
 
@@ -738,6 +907,9 @@ class ConsumerPane(QWidget):
         """Restore the selection to a given handle, if it is still there."""
         select_table_row(self.table, COL_HANDLE, handle)
 
+    def _on_choice_edited(self, _index: int) -> None:
+        self._choice_dirty = True
+
     def _on_selection_changed(self) -> None:
         self.invocation_label.setText("")
         handle = self.selected_handle()
@@ -748,22 +920,29 @@ class ConsumerPane(QWidget):
         )
 
         if metric is None:
+            self._editor_definition = None
+            self._choice_dirty = False
+            self.value_edit.setModified(False)
             self.editor_label.setText("Connect to a device to control it")
             self._set_editor_enabled(enabled=False)
             return
 
+        definition = (from_remote_metric(metric), metric.selected_operation_handle)
+        same_definition = definition == self._editor_definition
+        self._editor_definition = definition
+        if not same_definition:
+            self._choice_dirty = False
         allowed_values = metric.operation_allowed_values or metric.allowed_values
         if metric.kind is MetricKind.CHOICE and allowed_values:
             self.editor_stack.setCurrentIndex(EDITOR_CHOICE)
-            self.choice_box.clear()
-            self.choice_box.addItems(list(allowed_values))
-            if metric.value is not None:
-                index = self.choice_box.findText(str(metric.value))
-                if index >= 0:
-                    self.choice_box.setCurrentIndex(index)
+            if not same_definition or not (self._choice_dirty or self.choice_box.view().isVisible()):
+                self.choice_box.clear()
+                self.choice_box.addItems(list(allowed_values))
+                show_choice_value(self.choice_box, metric.value)
         else:
             self.editor_stack.setCurrentIndex(EDITOR_TEXT)
-            self.value_edit.setText("" if metric.value is None else str(metric.value))
+            if not same_definition or not (self.value_edit.hasFocus() or self.value_edit.isModified()):
+                self.value_edit.setText("" if metric.value is None else str(metric.value))
             self.value_edit.setPlaceholderText(metric.range_text())
 
         caption = metric.label or handle
@@ -790,6 +969,8 @@ class ConsumerPane(QWidget):
 
         allowed_values = metric.operation_allowed_values or metric.allowed_values
         if metric.kind is MetricKind.CHOICE and allowed_values:
+            if self.choice_box.currentIndex() < 0:
+                return
             value: Decimal | str = self.choice_box.currentText()
         elif metric.kind is MetricKind.NUMBER:
             raw = self.value_edit.text().strip()
@@ -808,22 +989,33 @@ class ConsumerPane(QWidget):
         self.invocation_label.setText("waiting\u2026")
         remote = self.remote
         key = self._work_key("invoke", remote)
-        self._worker.start_managed(key, remote, remote.set_value, handle, value)
+        if self._worker.start_managed(key, remote, remote.set_value, handle, value):
+            self._invoked_handle = handle
         self._update_buttons()
 
     def _on_set_finished(self, state: Any) -> None:
         if state in FINISHED_STATES:
             self.invocation_label.setText(f"accepted ({state})")
         else:
-            self.invocation_label.setText(f"refused ({state})")
+            reason = self.remote.last_invocation_detail if self.remote is not None else ""
+            self.invocation_label.setText(f"refused ({state}) - {reason}" if reason else f"refused ({state})")
         self.refresh_values()
+        self._restore_device_value(self._invoked_handle)
 
     def _on_set_failed(self, message: str) -> None:
         self.invocation_label.setText(f"failed: {message}")
+        self._restore_device_value(self._invoked_handle)
 
     def _on_work_finished(self, key: tuple, result: object) -> None:
+        if self._shutdown:
+            return
         operation, generation, remote = key
         if operation == "connect":
+            if generation != self._generation:
+                # Keep the queued result owned until off-thread retirement is accepted.
+                self._worker.retire(result, result.close)
+                self._worker.claim_result(result)
+                return
             if not self._worker.claim_result(result):
                 return
             self._on_connected(result, generation)
@@ -852,6 +1044,7 @@ class ConsumerPane(QWidget):
 
     def _set_status(self, text: str) -> None:
         self.status_label.setText(text)
+        self.status_changed.emit(text)
 
     def _invocation_busy(self) -> bool:
         return self.remote is not None and self._worker.busy_for(
@@ -875,11 +1068,17 @@ class ConsumerPane(QWidget):
     # -- teardown ------------------------------------------------------------------
 
     def shutdown(self) -> None:
-        """Disconnect and stop discovery. Called when the window closes."""
-        if self._shutdown:
-            return
-        self._shutdown = True
-        self._advance_generation()
-        self._teardown_remote()
-        self._worker.retire(self.service, self.service.stop)
-        self._worker.close(timeout=0.25)
+        """Suppress callbacks and retire transports; retry any interrupted handoffs."""
+        with self._health_lock:
+            if not self._shutdown:
+                self._shutdown = True
+                self.service.set_discovery_listener(None)
+                self.service.set_departure_listener(None)
+                self._refresh_timer.stop()
+                self._probe_timer.stop()
+                self._advance_generation()
+        try:
+            self._teardown_remote()
+            self._worker.retire(self.service, self.service.stop)
+        finally:
+            self._worker.close(timeout=0.25)

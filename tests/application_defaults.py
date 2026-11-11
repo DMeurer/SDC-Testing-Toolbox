@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import _thread
 import contextlib
 import io
+import signal
 import sys
+import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -16,7 +19,11 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(TESTS))
 
 from acceptance_provider import PEER_INSTANCE
+from gui_test_support import application
 from script_support import Report
+import shiboken6
+from PySide6.QtCore import QMetaObject, Qt
+from PySide6.QtWidgets import QDialog, QWidget
 
 import run_toolbox
 from examples import console
@@ -74,7 +81,7 @@ def check_tls_arguments() -> None:
     else:
         error = ""
     check(
-        error == "TLS peer options require --tls-cert, --tls-key, and --tls-ca",
+        error == "TLS peer options require --tls-cert and --tls-key",
         "TLS peer policy requires a complete local mTLS identity",
     )
 
@@ -105,6 +112,29 @@ def check_invalid_ip_precedes_construction() -> None:
         and "argument --ip: must be a valid IPv4 address" in stderr.getvalue()
         and not constructions,
         "invalid --ip exits before QApplication or ProviderService construction",
+    )
+
+
+def check_invalid_name_is_reported() -> None:
+    unusable = "bad\x01name"
+    code, stderr = parse_failure(["--name", unusable])
+    check(
+        code == 2 and "argument --name: instance name contains characters not allowed in XML 1.0" in stderr,
+        "the graphical entry point rejects a name XML cannot carry with a --name error",
+    )
+
+    shown: list[str] = []
+    accepted: list[bool] = []
+    dialog = SimpleNamespace(
+        error_label=SimpleNamespace(hide=lambda: None),
+        name_edit=SimpleNamespace(text=lambda: unusable),
+        _fail=shown.append,
+        accept=lambda: accepted.append(True),
+    )
+    StartupDialog._on_accept(dialog)
+    check(
+        len(shown) == 1 and "device name contains characters" in shown[0] and not accepted,
+        "the startup dialog explains a name XML cannot carry instead of starting with it",
     )
 
 
@@ -146,6 +176,9 @@ def check_gui_startup_reuses_profile(*, interactive: bool) -> None:
 
         def show(self) -> None:
             events.append("show")
+
+        def close(self) -> None:
+            events.append("close")
 
     originals = (
         run_toolbox.QApplication,
@@ -261,6 +294,100 @@ def check_startup_dialog_retains_profile() -> None:
         and settings.config_path == str(source),
         "startup dialog retains the exact profile object it validates",
     )
+
+
+def check_gui_profile_application_startup(mode: str) -> None:
+    """Use real parsing, profile preflight, window and transports; control only modal UI/exec."""
+    app = application()
+    events, windows, providers, warnings, loads, applications = [], [], [], [], [], []
+    succeeds = mode == "smoke-success"
+    real_load = run_toolbox.config.load_file
+
+    class ApplicationBoundary:
+        def exec(self) -> int:
+            events.append("exec")
+            return app.exec() if mode.startswith("smoke") else 0
+
+    class ObservedProvider(run_toolbox.ProviderService):
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            providers.append(self)
+
+        def stop(self) -> None:
+            events.append("provider-stop")
+            super().stop()
+
+    class ObservedWindow(main_window.MainWindow):
+        def __init__(self, service) -> None:
+            super().__init__(service)
+            windows.append(self)
+
+        def apply_config(self, parsed, source) -> bool:
+            applications.append(parsed)
+            return super().apply_config(parsed, source)
+
+        def show(self) -> None:
+            events.append("show")
+            super().show()
+
+        def closeEvent(self, event) -> None:  # noqa: N802
+            events.append("window-close")
+            super().closeEvent(event)
+
+    with TemporaryDirectory(prefix=f"sdc-followup-startup-{mode}-") as temporary:
+        source = Path(temporary) / "profile.json"
+        target = "mds0" if succeeds else "descriptor.does.not.exist"
+        source.write_text('{"version":3,"actions":[{"label":"Startup action","target":"' + target + '"}]}', encoding="utf-8")
+
+        def load_once(path):
+            parsed = real_load(path)
+            if Path(path) == source:
+                loads.append(parsed)
+                source.unlink()
+            return parsed
+
+        def dialog_settings(_args):
+            return StartupSettings(f"followup-startup-{mode}", "127.0.0.1", str(source), False, device_config=load_once(source))
+
+        try:
+            with (
+                patch.object(run_toolbox, "QApplication", lambda _argv: ApplicationBoundary()),
+                patch.object(run_toolbox, "ProviderService", ObservedProvider),
+                patch.object(run_toolbox, "MainWindow", ObservedWindow),
+                patch.object(run_toolbox.config, "load_file", load_once),
+                patch.object(run_toolbox, "ask_how_to_start", dialog_settings),
+                patch.object(main_window.QMessageBox, "warning", lambda _parent, title, text: warnings.append((title, text))),
+                patch.object(main_window.QMessageBox, "critical", lambda _parent, title, text: warnings.append((title, text))),
+            ):
+                argv = [] if mode == "dialog" else ["--name", f"followup-startup-{mode}", "--config", str(source)]
+                if mode.startswith("smoke"):
+                    argv.append("--smoke-test")
+                result = run_toolbox.main(argv)
+            check(len(windows) == len(providers) == 1, f"{mode} startup constructs a real provider and consumer window")
+            pane = windows[0].network_pane
+            REPORT.check(
+                (result == 0 and "exec" in events and "show" in events) if succeeds else (result != 0 and "exec" not in events and "show" not in events),
+                f"{mode} startup {'runs the successful smoke loop' if succeeds else 'never shows or enters a success loop after failed config application'}",
+                f"status={result}, events={events}",
+            )
+            REPORT.check(
+                "window-close" in events and not windows[0].isVisible()
+                and pane._shutdown and pane._worker.wait(3.0) and pane.service._discovery is None
+                and events.count("provider-stop") == 1 and providers[0]._provider is None and providers[0]._discovery is None,
+                f"{mode} startup closes its window, consumer and provider",
+                f"events={events}, consumer_shutdown={pane._shutdown}",
+            )
+            check(len(loads) == 1 and applications == loads and applications[0] is loads[0] and not source.exists(), f"{mode} startup applies its actual single-parse snapshot even after its file is removed")
+            check(not warnings if succeeds else bool(warnings) and "descriptor.does.not.exist" in warnings[-1][1], f"{mode} startup reports config failure rather than an empty success")
+        finally:
+            for window in windows:
+                window.close()
+                window.network_pane._worker.wait(3.0)
+                window.provider_pane.bridge.close()
+                shiboken6.delete(window)
+            for provider in providers:
+                if provider._provider is not None:
+                    provider.stop()
 
 
 def check_console_startup_reuses_profile() -> None:
@@ -534,7 +661,112 @@ def check_main_window_applies_parsed_profile() -> None:
     )
 
 
+class CtrlCPress:
+    """Deliver SIGINT from another thread, as a console Ctrl+C does, while Qt waits for events.
+
+    The caller calls done() once the event loop is over. If that has not happened 10 s after the
+    press, a queued C++ closeAllWindows ends the loop and sets forced, so a broken handler fails
+    the check instead of hanging the suite.
+    """
+
+    def __init__(self, app) -> None:
+        self.forced = False
+        self._finished = threading.Event()
+        threading.Thread(target=self._press, args=(app,), daemon=True).start()
+
+    def _press(self, app) -> None:
+        if self._finished.wait(0.3):
+            return
+        _thread.interrupt_main()
+        if not self._finished.wait(10):
+            self.forced = True
+            QMetaObject.invokeMethod(app, "closeAllWindows", Qt.QueuedConnection)
+
+    def done(self) -> None:
+        self._finished.set()
+
+
+def check_ctrl_c_closes_the_toolbox(*, in_startup_dialog: bool) -> None:
+    app = application()
+    events: list[str] = []
+    presses: list[CtrlCPress] = []
+    previous_handler = signal.getsignal(signal.SIGINT)
+
+    def press_then(run_loop):
+        presses.append(CtrlCPress(app))
+        try:
+            return run_loop()
+        finally:
+            presses[-1].done()
+
+    class ApplicationBoundary:
+        def exec(self) -> int:
+            return press_then(app.exec)
+
+    class Dialog(QDialog):
+        def __init__(self, **_kwargs: object) -> None:
+            super().__init__()
+
+        def exec(self) -> int:
+            self.show()
+            return press_then(super().exec)
+
+    class FakeProvider:
+        def __init__(self, **_kwargs: object) -> None:
+            events.append("provider")
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            events.append("provider-stop")
+
+    class Window(QWidget):
+        def __init__(self, _service: FakeProvider) -> None:
+            super().__init__()
+
+        def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
+            # A second Ctrl+C during shutdown must interrupt it rather than be swallowed.
+            if signal.getsignal(signal.SIGINT) is signal.default_int_handler:
+                events.append("window-close")
+            super().closeEvent(event)
+
+    argv = [] if in_startup_dialog else ["--name", "ctrl-c-check", "--ip", "127.0.0.1"]
+    with (
+        patch.object(run_toolbox, "QApplication", lambda _argv: ApplicationBoundary()),
+        patch.object(run_toolbox, "StartupDialog", Dialog),
+        patch.object(run_toolbox, "ProviderService", FakeProvider),
+        patch.object(run_toolbox, "MainWindow", Window),
+        patch.object(run_toolbox, "basic_logging_setup", lambda **_kwargs: None),
+    ):
+        try:
+            result: object = run_toolbox.main(argv)
+        except KeyboardInterrupt:
+            result = "KeyboardInterrupt"
+
+    phase = "startup dialog" if in_startup_dialog else "main window"
+    if in_startup_dialog:
+        closed_like_the_button = events == []
+    else:
+        closed_like_the_button = (
+            events[:2] == ["provider", "window-close"] and events[-1] == "provider-stop"
+        )
+    REPORT.check(
+        result == 0
+        and len(presses) == 1
+        and not presses[0].forced
+        and closed_like_the_button,
+        f"Ctrl+C in the {phase} closes the toolbox like its close button",
+        f"result={result!r}, forced={[press.forced for press in presses]}, events={events}",
+    )
+    check(
+        signal.getsignal(signal.SIGINT) is previous_handler,
+        f"Ctrl+C handling in the {phase} restores the previous SIGINT handler",
+    )
+
+
 def main() -> int:
+    _app = application()
     print("Application default tests")
     check(
         run_toolbox.parse_args([]).name == constants.DEFAULT_INSTANCE_NAME,
@@ -555,12 +787,17 @@ def main() -> int:
     check_ip_arguments()
     check_tls_arguments()
     check_invalid_ip_precedes_construction()
+    check_invalid_name_is_reported()
     check_startup_dialog_retains_profile()
     check_gui_startup_reuses_profile(interactive=False)
     check_gui_startup_reuses_profile(interactive=True)
     check_console_startup_reuses_profile()
     check_console_apply_failure_stops_provider()
     check_main_window_applies_parsed_profile()
+    for mode in ("command-line", "dialog", "smoke-failure", "smoke-success"):
+        check_gui_profile_application_startup(mode)
+    check_ctrl_c_closes_the_toolbox(in_startup_dialog=True)
+    check_ctrl_c_closes_the_toolbox(in_startup_dialog=False)
     return REPORT.summary()
 
 

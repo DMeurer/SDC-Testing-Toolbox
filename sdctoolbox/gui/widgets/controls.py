@@ -6,11 +6,12 @@ specific control gets the chance to claim a metric before a more general one.
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from typing import Any
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtWidgets import (
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -18,7 +19,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ...model import SAMPLE_ARRAY_KINDS, MetricKind
+from ...model import MAX_DECIMAL_WIRE_CHARS, SAMPLE_ARRAY_KINDS, MetricKind
 from ..decimal_input import DecimalInputError, parse_decimal_input
 from ..helpers import NO_VALUE, value_text
 from ..no_wheel import NoWheelComboBox, NoWheelSlider
@@ -40,6 +41,13 @@ def _trim(value: Decimal) -> str:
     if "." in text:
         text = text.rstrip("0").rstrip(".")
     return text or "0"
+
+
+def show_choice_value(box: QComboBox, value: object) -> None:
+    """Display even a missing or non-writable current value without offering it as a write."""
+    with QSignalBlocker(box):
+        box.setPlaceholderText(value_text(value))
+        box.setCurrentIndex(-1 if value is None else box.findText(str(value)))
 
 
 class SampleArrayWidget(MetricWidget):
@@ -123,6 +131,7 @@ class ChoiceWidget(MetricWidget):
     def build(self) -> None:
         self.box = NoWheelComboBox()
         self.box.addItems(list(self.spec.allowed_values))
+        show_choice_value(self.box, None)
         self.box.activated.connect(self._on_activated)
 
         layout = QVBoxLayout(self)
@@ -135,13 +144,9 @@ class ChoiceWidget(MetricWidget):
         self.request(self.box.itemText(index))
 
     def show_value(self, value: Any) -> None:
-        if value is None or self.busy_editing():
+        if self.busy_editing():
             return
-        index = self.box.findText(str(value))
-        if index >= 0:
-            self.box.blockSignals(True)
-            self.box.setCurrentIndex(index)
-            self.box.blockSignals(False)
+        show_choice_value(self.box, value)
 
     def set_editable(self, editable: bool) -> None:  # noqa: FBT001
         self.box.setEnabled(editable)
@@ -157,7 +162,7 @@ class SliderWidget(MetricWidget):
 
     @classmethod
     def matches(cls, spec: WidgetSpec) -> bool:
-        ranges = spec.control_ranges
+        ranges = spec.slider_ranges
         if (
             spec.kind is not MetricKind.NUMBER
             or len(ranges) != 1
@@ -170,8 +175,10 @@ class SliderWidget(MetricWidget):
     @staticmethod
     def _steps(spec: WidgetSpec) -> int | None:
         """How many slider positions the range needs, or None if that is unreasonable."""
-        allowed_range = spec.control_ranges[0]
-        span = allowed_range.upper - allowed_range.lower
+        allowed_range = spec.slider_ranges[0]
+        with localcontext() as context:
+            context.prec = MAX_DECIMAL_WIRE_CHARS * 2 + 32
+            span = allowed_range.upper - allowed_range.lower
         if span <= 0:
             return None
         resolution = allowed_range.step_width or spec.resolution or Decimal("1")
@@ -190,7 +197,7 @@ class SliderWidget(MetricWidget):
         return steps
 
     def build(self) -> None:
-        self._range = self.spec.control_ranges[0]
+        self._range = self.spec.slider_ranges[0]
         self._resolution = self._range.step_width or self.spec.resolution or Decimal("1")
         self._include_upper = self._range.step_width is None
         self._steps = self._steps(self.spec) or 1
@@ -230,7 +237,9 @@ class SliderWidget(MetricWidget):
     def _position_to_value(self, position: int) -> Decimal:
         if self._include_upper and position >= self._steps:
             return self._range.upper
-        value = self._range.lower + Decimal(position) * self._resolution
+        with localcontext() as context:
+            context.prec = MAX_DECIMAL_WIRE_CHARS * 2 + 32
+            value = self._range.lower + Decimal(position) * self._resolution
         return min(value, self._range.upper)
 
     def _value_to_position(self, value: Decimal) -> int:
@@ -238,7 +247,9 @@ class SliderWidget(MetricWidget):
             return 0
         if value >= self._range.upper:
             return self._steps
-        offset = (value - self._range.lower) / self._resolution
+        with localcontext() as context:
+            context.prec = MAX_DECIMAL_WIRE_CHARS * 2 + 32
+            offset = (value - self._range.lower) / self._resolution
         return max(0, min(self._steps, int(offset)))
 
     def _on_moved(self, position: int) -> None:
@@ -252,7 +263,12 @@ class SliderWidget(MetricWidget):
         self.request(self._position_to_value(self.slider.value()))
 
     def show_value(self, value: Any) -> None:
-        if not isinstance(value, Decimal) or self.busy_editing():
+        if self.busy_editing():
+            return
+        if value is None:
+            self.readout.setText(NO_VALUE)
+            return
+        if not isinstance(value, Decimal):
             return
         self.slider.blockSignals(True)
         self.slider.setValue(self._value_to_position(value))
@@ -334,7 +350,9 @@ class StepperWidget(MetricWidget):
             self._show_error(str(exc))
             return
         try:
-            target = base + delta
+            with localcontext() as context:
+                context.prec = MAX_DECIMAL_WIRE_CHARS * 2 + 32
+                target = base + delta
             ranges = self.spec.control_ranges
             if len(ranges) == 1:
                 if ranges[0].lower is not None:
@@ -366,10 +384,13 @@ class StepperWidget(MetricWidget):
         self.request(value)
 
     def show_value(self, value: Any) -> None:
-        if value is None or self.busy_editing():
+        if self.busy_editing():
             return
         self._clear_error()
-        self.edit.setText(_trim(value) if isinstance(value, Decimal) else str(value))
+        if value is None:
+            self.edit.clear()
+        else:
+            self.edit.setText(_trim(value) if isinstance(value, Decimal) else str(value))
 
     def set_editable(self, editable: bool) -> None:  # noqa: FBT001
         self.edit.setReadOnly(not editable)
@@ -377,7 +398,7 @@ class StepperWidget(MetricWidget):
             button.setEnabled(editable)
 
     def busy_editing(self) -> bool:
-        return self.edit.hasFocus()
+        return self.edit.hasFocus() or self.edit.isModified()
 
 
 class TextWidget(MetricWidget):
@@ -414,7 +435,7 @@ class TextWidget(MetricWidget):
         self.apply.setEnabled(editable)
 
     def busy_editing(self) -> bool:
-        return self.edit.hasFocus()
+        return self.edit.hasFocus() or self.edit.isModified()
 
 
 class ReadoutWidget(MetricWidget):

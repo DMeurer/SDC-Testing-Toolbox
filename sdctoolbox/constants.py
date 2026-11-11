@@ -21,9 +21,13 @@ SHIPPED_PRESET_FILES = {
     "endoscopic-camera.json",
     "hf-generator.json",
     "infusion-pump.json",
+    "mdib-demo-monitor.xml",
+    "mdib-demo-infusion-pump.xml",
     "insufflator.json",
+    "operating-table.json",
     "patient-monitor.json",
     "surgical-microscope.json",
+    "ventilation-pressure.json",
     "ventilator.json",
 }
 
@@ -80,6 +84,10 @@ CODE_DIMENSIONLESS = "262656"
 # Windows, while the sdc11073 tutorial hard-codes "Loopback Pseudo-Interface 1".
 DEFAULT_IP = "127.0.0.1"
 
+# Every port peers connect to (HTTP listeners, the WS-Discovery reply socket) is bound in this
+# range, so the shipped firewall definitions can open exactly it. Discovery itself stays on 3702.
+PORT_RANGE = range(21073, 21173)
+
 # EPRs are derived from this namespace plus an instance name, so restarting an instance
 # with the same name keeps its identity.
 EPR_NAMESPACE = uuid.UUID("{7c2e4a10-6b3d-4f8e-9c21-0d5a8e3f1b47}")
@@ -100,6 +108,11 @@ MIN_GENERATED_WAVEFORM_SAMPLE_PERIOD = (
     Decimal(str(WAVEFORM_BLOCK_SECONDS)) / MAX_GENERATED_WAVEFORM_BLOCK_SAMPLES
 )
 
+# How long the provider waits for a subscriber to take a notification. The library delivers
+# notifications while holding the MDIB lock, so a subscriber that accepts the connection and
+# never answers blocks every other request for this long. The library default is 18 s.
+NOTIFICATION_TIMEOUT_SECONDS = 2
+
 # --------------------------------------------------------------------------------------
 # DPWS device metadata
 # --------------------------------------------------------------------------------------
@@ -109,6 +122,15 @@ MANUFACTURER_URL = "https://d-meurer.com"
 MODEL_NAME = "Fictional SDC Device"
 MODEL_NUMBER = "0.1"
 FIRMWARE_VERSION = "0.1"
+
+# --------------------------------------------------------------------------------------
+# Desktop identity
+# --------------------------------------------------------------------------------------
+
+# The window class Linux desktops match against the installed desktop entry's
+# StartupWMClass, and that entry's file name, so the dock shows the icon.
+APP_NAME = "SDC-Testing-Toolbox"
+DESKTOP_ID = "sdc-testing-toolbox"
 
 
 def epr_for(instance_name: str) -> uuid.UUID:

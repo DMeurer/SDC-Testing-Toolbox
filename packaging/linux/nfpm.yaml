@@ -1,0 +1,108 @@
+# nfpm template; build_packages.py fills the placeholders with absolute paths and versions.
+name: sdc-testing-toolbox
+arch: amd64
+platform: linux
+version: ${version}
+version_schema: none
+release: "${release}"
+section: devel
+priority: optional
+maintainer: "Dominik Meurer <50107525+DMeurer@users.noreply.github.com>"
+description: "A desktop tool for understanding IEEE 11073 SDC: create data sources with a few clicks, publish them on the network, discover other SDC devices, subscribe to their data sources and remote-control them."
+homepage: https://github.com/DMeurer/SDC-Testing-Toolbox
+license: GPL-3.0-only
+
+deb:
+  compression: xz
+rpm:
+  compression: xz
+
+scripts:
+  preremove: ${packaging}/preremove.sh
+
+contents:
+  - src: ${bundle}
+    dst: /opt/sdc-testing-toolbox
+    type: tree
+  - src: /opt/sdc-testing-toolbox/SDC-Testing-Toolbox
+    dst: /usr/bin/sdc-testing-toolbox
+    type: symlink
+  - src: ${packaging}/sdc-testing-toolbox.desktop
+    dst: /usr/share/applications/sdc-testing-toolbox.desktop
+    file_info:
+      mode: 0644
+  - src: ${packaging}/sdc-testing-toolbox.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/sdc-testing-toolbox.svg
+    file_info:
+      mode: 0644
+  # Firewall definitions only; the user decides whether to enable them.
+  - src: ${packaging}/firewalld/sdc-testing-toolbox.xml
+    dst: /usr/lib/firewalld/services/sdc-testing-toolbox.xml
+    file_info:
+      mode: 0644
+  - src: ${packaging}/ufw/sdc-testing-toolbox
+    dst: /etc/ufw/applications.d/sdc-testing-toolbox
+    type: config|noreplace
+    file_info:
+      mode: 0644
+  - src: ${bundle}/LICENSE
+    dst: /usr/share/doc/sdc-testing-toolbox/copyright
+    packager: deb
+    file_info:
+      mode: 0644
+  - src: ${bundle}/LICENSE
+    dst: /usr/share/licenses/sdc-testing-toolbox/LICENSE
+    type: license
+    packager: rpm
+    file_info:
+      mode: 0644
+
+overrides:
+  # Libraries the bundle needs from the host (measured with readelf/ldd on the
+  # built bundle); everything else ships inside /opt/sdc-testing-toolbox.
+  deb:
+    depends:
+      - libc6 (>= 2.35)
+      - libcom-err2
+      - libdrm2
+      - libegl1
+      - libexpat1
+      - libfontconfig1
+      - libfreetype6
+      - libfribidi0
+      - libgcc-s1
+      - libgl1
+      - libgpg-error0
+      - libharfbuzz0b
+      - libstdc++6
+      - libuuid1
+      - libwayland-client0
+      - libwayland-cursor0
+      - libwayland-egl1
+      - libx11-6
+      - libx11-xcb1
+      - libxcb1
+      - zlib1g
+  rpm:
+    depends:
+      - libc.so.6(GLIBC_2.35)(64bit)
+      - libcom_err.so.2()(64bit)
+      - libdrm.so.2()(64bit)
+      - libEGL.so.1()(64bit)
+      - libexpat.so.1()(64bit)
+      - libfontconfig.so.1()(64bit)
+      - libfreetype.so.6()(64bit)
+      - libfribidi.so.0()(64bit)
+      - libgcc_s.so.1()(64bit)
+      - libGL.so.1()(64bit)
+      - libgpg-error.so.0()(64bit)
+      - libharfbuzz.so.0()(64bit)
+      - libstdc++.so.6()(64bit)
+      - libuuid.so.1()(64bit)
+      - libwayland-client.so.0()(64bit)
+      - libwayland-cursor.so.0()(64bit)
+      - libwayland-egl.so.1()(64bit)
+      - libX11.so.6()(64bit)
+      - libX11-xcb.so.1()(64bit)
+      - libxcb.so.1()(64bit)
+      - libz.so.1()(64bit)

@@ -16,22 +16,144 @@ import logging
 import sys
 import tempfile
 import time
+from decimal import Decimal
 from pathlib import Path
+
+from lxml import etree
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from script_support import Report  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
+from sdc11073.mdib.descriptorcontainers import NumericMetricDescriptorContainer  # noqa: E402
+from sdc11073.mdib.statecontainers import NumericMetricStateContainer  # noqa: E402
+from sdc11073.xml_types import pm_qnames as pm, pm_types  # noqa: E402
 
 from sdctoolbox import config, constants  # noqa: E402
 from sdctoolbox.model import CODING_SYSTEMS, MetricKind  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
+from sdctoolbox.mdib_io import mdib_bytes, parse_mdib  # noqa: E402
+from sdc11073.xml_types import pm_qnames as pm  # noqa: E402
+from sdc11073.xml_types import msg_types  # noqa: E402
+from decimal import Decimal  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+
+def check_native_preset(report: Report, path: Path) -> None:
+    """Publish the original native graph and verify combined snapshot persistence."""
+    snapshot = config.load_file(path)
+    service = ProviderService(instance_name=f"preset-{path.stem}")
+    service.start(parse_mdib(snapshot.xml))
+    try:
+        report.check(service.native_mode, "loads as a native graph rather than a JSON conversion")
+        report.check(not service.generator_running, "keeps native sample blocks without inventing generators")
+        report.check(not service.mdib.context_states.objects, "contains no patient data")
+        restored = parse_mdib(mdib_bytes(service.mdib))
+        report.check(
+            {handle for handle, _ in restored.entities.items()} == {handle for handle, _ in service.mdib.entities.items()},
+            "exports and reloads description and state together without losing entities",
+        )
+        if path.name == "mdib-demo-infusion-pump.xml":
+            operation = service._provider.get_operation_by_handle("pump.set-rate")
+            result = operation.execute_operation(None, SimpleNamespace(argument=Decimal("3.5")))
+            report.check(result.invocation_state == msg_types.InvocationState.FINISHED
+                         and service.get_value("pump.rate") == Decimal("3.5"),
+                         "its imported set operation updates the existing metric")
+        report.check(bool(restored.entities.by_node_type(pm.MdsDescriptor)), "retains its native root containment")
+    finally:
+        service.stop()
+
+
+EXPECTED_PRESET_FILES = {
+    "endoscopic-camera.json",
+    "hf-generator.json",
+    "infusion-pump.json",
+    "insufflator.json",
+    "mdib-demo-infusion-pump.xml",
+    "mdib-demo-monitor.xml",
+    "operating-table.json",
+    "patient-monitor.json",
+    "surgical-microscope.json",
+    "ventilation-pressure.json",
+    "ventilator.json",
+}
+
+
+def check_focused_profile(report: Report, path: Path, service: ProviderService) -> None:
+    """The small numeric examples retain their exact semantics on the wire."""
+    if path.stem == "operating-table":
+        section, channel, vmd = "Position", "ch.position", "vmd.position"
+        expected = [
+            ("m.height", "Height", "780", "500", "1100", "1", "263442", "mm", "table_height", constants.CODING_SYSTEM_PRIVATE),
+            ("m.trendelenburg", "Trendelenburg", "-8", "-30", "30", "0.1", "262880", "°", "table_trendelenburg", constants.CODING_SYSTEM_PRIVATE),
+            ("m.lateral_angle", "Lateral Angle", "7.6", "-30", "30", "0.1", "262880", "°", "table_lateral_angle", constants.CODING_SYSTEM_PRIVATE),
+        ]
+    elif path.stem == "ventilation-pressure":
+        section, channel, vmd = "Pressure", "ch.pressure", "vmd.pressure"
+        expected = [
+            ("m.ventilation_pressure", "Ventilation Pressure", "18", "0", "40", "1", "266048", "cmH₂O", "151956", constants.CODING_SYSTEM_MDC),
+        ]
+    else:
+        return
+
+    specs = service.list_metrics()
+    report.check(
+        set(specs) == {row[0] for row in expected}
+        and all(spec.kind is MetricKind.NUMBER and not spec.controllable for spec in specs.values())
+        and not service.list_alerts()
+        and not service.list_actions()
+        and not service.mdib.entities.by_node_type(pm.SetValueOperationDescriptor),
+        "focused profile has only its read-only numeric metrics, without alarms or actions",
+    )
+    report.check(service.sections() == {section: channel}, "focused profile keeps its declared section")
+    node = etree.fromstring(etree.tostring(service.mdib.reconstruct_mdib_with_context_states()[0]))
+    for handle, label, value, lower, upper, resolution, unit_code, unit_label, type_code, type_system in expected:
+        descriptors = node.xpath(".//*[@Handle=$handle]", handle=handle)
+        states = node.xpath(".//*[@DescriptorHandle=$handle]", handle=handle)
+        if not report.check(len(descriptors) == len(states) == 1, f"{handle} serializes one descriptor and state"):
+            continue
+        descriptor_node = descriptors[0]
+        parent = descriptor_node.getparent()
+        descriptor = NumericMetricDescriptorContainer.from_node(descriptor_node, parent.get("Handle"))
+        state = NumericMetricStateContainer.from_node(states[0], descriptor)
+        report.check(
+            descriptor_node.tag == pm.Metric
+            and descriptor_node.get("{http://www.w3.org/2001/XMLSchema-instance}type", "").split(":")[-1] == "NumericMetricDescriptor"
+            and descriptor.parent_handle == channel
+            and parent.getparent().get("Handle") == vmd
+            and parent.getparent().getparent().get("Handle") == constants.MDS_HANDLE,
+            f"{handle} serializes under its declared Channel and VMD",
+        )
+        report.check(
+            descriptor.Type.Code == type_code
+            and descriptor.Type.CodingSystem == type_system
+            and [text.text for text in descriptor.Type.ConceptDescription] == [label]
+            and descriptor.Unit.Code == unit_code
+            and descriptor.Unit.CodingSystem == constants.CODING_SYSTEM_MDC
+            and [text.text for text in descriptor.Unit.ConceptDescription] == [unit_label]
+            and specs[handle].unit_label == unit_label
+            and descriptor.MetricCategory == pm_types.MetricCategory.MEASUREMENT
+            and descriptor.Resolution == Decimal(resolution)
+            and [(r.Lower, r.Upper, r.StepWidth) for r in descriptor.TechnicalRange]
+            == [(Decimal(lower), Decimal(upper), Decimal(resolution))],
+            f"{handle} parses its exact type, literal unit, resolution and technical range",
+        )
+        report.check(
+            state.MetricValue is not None
+            and state.MetricValue.Value == Decimal(value)
+            and state.MetricValue.MetricQuality.Validity == pm_types.MeasurementValidity.VALID
+            and state.ActivationState == pm_types.ComponentActivation.ON,
+            f"{handle} parses its exact initial value with valid, active state",
+        )
 
 
 def check_preset(report: Report, path: Path) -> None:
     """Build one preset and look at what it produced."""
     print(f"\n{path.name}")
+    if path.suffix == ".xml":
+        check_native_preset(report, path)
+        return
 
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -73,11 +195,27 @@ def check_preset(report: Report, path: Path) -> None:
         )
 
         sections = service.sections()
+        declared_sections = {spec.section for spec in device.metrics}
         report.check(
-            len(sections) >= 2,  # noqa: PLR2004
-            "has a containment tree with parts, not one flat channel",
+            bool(declared_sections) and "" not in declared_sections and set(sections) == declared_sections,
+            "builds every nonempty declared section, without flattening containment",
             ", ".join(sorted(sections)),
         )
+        wrong_parents = []
+        for spec in device.metrics:
+            entity = service.mdib.entities.by_handle(spec.handle)
+            channel = service.mdib.entities.by_handle(sections.get(spec.section, ""))
+            vmd = service.mdib.entities.by_handle(channel.parent_handle) if channel is not None else None
+            if (
+                entity is None or channel is None or vmd is None
+                or entity.parent_handle != channel.handle
+                or channel.node_type != pm.ChannelDescriptor
+                or vmd.node_type != pm.VmdDescriptor
+                or vmd.parent_handle != constants.MDS_HANDLE
+            ):
+                wrong_parents.append(spec.handle)
+        report.check(not wrong_parents, "every metric belongs to its declared Channel and VMD", str(wrong_parents))
+        check_focused_profile(report, path, service)
 
         # Every descriptor has to serialise, and a mandatory field missing only shows up
         # when it does. Reading them all back is the cheap way to force that.
@@ -228,19 +366,23 @@ def main() -> int:
     print("Shipped presets")
     print("=" * 74)
 
-    paths = sorted((ROOT / "presets").glob("*.json"))
+    paths = sorted(path for path in (ROOT / "presets").iterdir() if path.suffix in (".json", ".xml"))
     actual_files = {path.name for path in paths}
     report.check(
-        actual_files == constants.SHIPPED_PRESET_FILES,
+        constants.SHIPPED_PRESET_FILES == EXPECTED_PRESET_FILES,
+        "the manifest includes seven device profiles, two focused examples and two native-MDIB examples",
+    )
+    report.check(
+        actual_files == EXPECTED_PRESET_FILES,
         "the exact canonical preset inventory is shipped",
-        f"missing {sorted(constants.SHIPPED_PRESET_FILES - actual_files)}, "
-        f"extra {sorted(actual_files - constants.SHIPPED_PRESET_FILES)}",
+        f"missing {sorted(EXPECTED_PRESET_FILES - actual_files)}, "
+        f"extra {sorted(actual_files - EXPECTED_PRESET_FILES)}",
     )
 
-    for path in paths:
-        check_preset(report, path)
+    for name in sorted(EXPECTED_PRESET_FILES):
+        check_preset(report, ROOT / "presets" / name)
 
-    check_nomenclature(report, paths)
+    check_nomenclature(report, [path for path in paths if path.suffix == ".json"])
 
     print("\nThe menu builds from these")
     listed = config.list_presets()

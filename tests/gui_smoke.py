@@ -49,10 +49,12 @@ from sdc11073.xml_types import pm_types  # noqa: E402
 import run_toolbox  # noqa: E402
 from sdctoolbox import constants  # noqa: E402
 from sdctoolbox.constants import CODE_DIMENSIONLESS, epr_for  # noqa: E402
+from sdctoolbox.consumer_service import RemoteDevice  # noqa: E402
 from sdctoolbox.gui.consumer_pane import COL_RANGE as COL_R_RANGE  # noqa: E402
 from sdctoolbox.gui.consumer_pane import COL_VALUE as COL_R_VALUE  # noqa: E402
 from sdctoolbox.gui.consumer_pane import COL_WRITABLE as COL_R_WRITABLE  # noqa: E402
 from sdctoolbox.gui.context_dialog import ContextDialog  # noqa: E402
+from sdctoolbox.gui.helpers import NO_VALUE  # noqa: E402
 from sdctoolbox.gui.main_window import MainWindow  # noqa: E402
 from sdctoolbox.gui.new_alert_dialog import NewAlertDialog  # noqa: E402
 from sdctoolbox.gui.new_metric_dialog import NewMetricDialog  # noqa: E402
@@ -66,7 +68,6 @@ from sdctoolbox.gui.provider_pane import (  # noqa: E402
     COL_RANGE,
     COL_UNIT,
     COL_VALUE,
-    NO_VALUE,
 )
 from sdctoolbox.gui.startup_dialog import LINK_LOCAL_PREFIX, StartupDialog  # noqa: E402
 from sdctoolbox.gui.styling import mute  # noqa: E402
@@ -296,8 +297,8 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             "and every entry is loadable, so none of the shipped presets is broken",
         )
         report.check(
-            view_items == ["Always show &menu bar", "Use &widgets if possible", "&Split view"],
-            "View has all three toggles",
+            view_items == ["Always show &menu bar", "Use &widgets if possible", "&Split view", "&Dark mode"],
+            "View has all four toggles, including the theme",
             str(view_items),
         )
         report.check(
@@ -1418,18 +1419,21 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         # literally and must not let it dictate the splitter's minimum width.
         consumer = window.network_pane
         consumer_minimum_before = consumer.minimumSizeHint().width()
-        consumer.remote = SimpleNamespace(
-            patient_contexts=lambda: {
-                "PC.foreign": PatientInfo(
-                    given_name="<b>Foreign</b>",
-                    race=Coding(
-                        code="foreign-race",
-                        system="private",
-                        label="<img src=not-found width=10000 height=1>",
-                    ),
-                ),
-            },
+        consumer.remote = RemoteDevice(
+            SimpleNamespace(stop_all=lambda **_kwargs: None),
+            SimpleNamespace(entities={}),
+            "foreign-context-view",
         )
+        consumer.remote.patient_contexts = lambda: {
+            "PC.foreign": PatientInfo(
+                given_name="<b>Foreign</b>",
+                race=Coding(
+                    code="foreign-race",
+                    system="private",
+                    label="<img src=not-found width=10000 height=1>",
+                ),
+            ),
+        }
         consumer._refresh_contexts()  # noqa: SLF001 - exercise peer context presentation
         pump(app)
         report.check(
@@ -1681,7 +1685,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             if peer_row is not None:
                 consumer.device_list.setCurrentRow(peer_row)
                 pump(app)
-                report.check(consumer.connect_button.isEnabled(), "connect becomes available")
+                report.check(wait_for(app, consumer.connect_button.isEnabled), "connect becomes available")
 
                 consumer._on_connect()  # noqa: SLF001
                 connected = wait_for(app, lambda: consumer.remote is not None, timeout=40)

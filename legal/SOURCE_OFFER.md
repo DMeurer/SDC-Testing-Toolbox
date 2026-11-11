@@ -24,7 +24,7 @@ Matching unmodified upstream source archives are available from:
 
 For a public release, the release maintainer must upload the toolbox source
 archive and mirror the exact PySide6/Shiboken6 and Qt source archives named by
-the inventory next to both binary artifacts. Binary release publication is
+the inventory next to every binary artifact. Binary release publication is
 blocked until those source assets exist and their SHA-256 hashes are added to
 the release notes. Keep those assets available for as long as the binaries are
 offered. Merely linking this general upstream index is not the release step.
@@ -44,3 +44,11 @@ replace the applicable shared libraries and plugins, and run
 `./SDC-Testing-Toolbox --smoke-test` on Linux. No signing key, password, or
 installation authorization is required by this project. On platforms that add
 independent security controls, users must follow those platform procedures.
+
+The Linux `.deb` and `.rpm` packages install the same bundle to
+`/opt/sdc-testing-toolbox`. Replacing libraries there needs administrator
+rights, as does any change under `/opt`; test the result with
+`/opt/sdc-testing-toolbox/SDC-Testing-Toolbox --smoke-test`. To relink the
+AppImage, run it with `--appimage-extract`, replace the libraries under
+`squashfs-root/usr/lib/sdc-testing-toolbox/`, and run
+`squashfs-root/AppRun --smoke-test`.

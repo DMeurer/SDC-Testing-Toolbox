@@ -17,8 +17,8 @@ py -3.12 -m venv .venv
 ```
 
 Python 3.12 is the project's tested interpreter and is selected explicitly on Windows and in
-CI. The pinned runtime dependencies declare support for Python 3.10 through 3.14, so Ubuntu
-22.04's default Python 3.10 is also suitable. `requirements.txt` and
+CI. Use Python 3.12 for source installs and builds; Ubuntu 22.04's default Python 3.10 cannot
+run this project's code even though some dependencies support it. `requirements.txt` and
 `requirements-build.txt` pin direct dependencies only; pip still resolves transitive
 dependencies at install time, so they are not a complete reproducible lock.
 
@@ -43,16 +43,20 @@ source/relinking instructions, and collected license texts. The inventory is
 generated from installed distributions and PyInstaller analysis for each
 native build; it is not a static lock file.
 
+For Linux source builds, first install Python 3.12 with its `venv` support from a trusted
+Python distributor. It must be available as `python3.12`; the system's `python3` on Ubuntu
+22.04 is not a substitute. The commands below install the remaining native libraries.
+
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  python3 python3-venv binutils libbrotli1 libdbus-1-3 libegl1 \
+  binutils libbrotli1 libdbus-1-3 libegl1 \
   libfontconfig1 libfreetype6 libgl1 \
   libglib2.0-0 libgtk-3-0 libx11-xcb1 libxcb-cursor0 libxcb-icccm4 \
   libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
   libxcb-render0 libxcb-shape0 libxcb-shm0 libxcb-sync1 libxcb-xfixes0 \
   libxcb-xkb1 libxkbcommon-x11-0 libxkbcommon0
-python3 -m venv .venv
+python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt -r requirements-build.txt
 .venv/bin/python -m PyInstaller --clean --noconfirm SDC-Testing-Toolbox.spec
 tar -C dist -czf dist/SDC-Testing-Toolbox-linux-x86_64.tar.gz SDC-Testing-Toolbox
@@ -60,15 +64,110 @@ tar -C dist -czf dist/SDC-Testing-Toolbox-linux-x86_64.tar.gz SDC-Testing-Toolbo
 
 The workflow's Linux archive targets x86-64 desktop distributions with glibc 2.35 or newer
 because it is built on Ubuntu 22.04. A local build inherits its build host's glibc baseline.
-The archive contains application-specific shared libraries as separate files, while normal desktop system
-libraries remain host dependencies. Keep the bundle together after extracting it; the
-executable is `SDC-Testing-Toolbox/SDC-Testing-Toolbox`.
+The archive contains application-specific shared libraries as separate files. Common desktop
+libraries come from the host instead, among them glibc, the C++ runtime,
+fontconfig and FreeType, X11/xcb, the Wayland client libraries and OpenGL/EGL. The `depends`
+lists in `packaging/linux/nfpm.yaml` name all of them for each package manager. Keep the bundle
+together after extracting it; the executable is `SDC-Testing-Toolbox/SDC-Testing-Toolbox`.
+
+The same bundle also becomes a `.deb`, an `.rpm` and an AppImage (see
+[Install on Linux](#install-on-linux)). After the PyInstaller step, run:
+
+```bash
+.venv/bin/python packaging/linux/build_packages.py
+```
+
+It writes the three files to `dist/`. The first run downloads the pinned packaging tools
+(nfpm, appimagetool and the AppImage runtime) into `build/packaging-tools` and refuses any
+download whose SHA-256 does not match. It also refuses to package a bundle that needs a newer
+glibc than the packages declare.
 
 The `Build application` GitHub Actions workflow performs both native builds, smoke-tests the
 actual packaged applications, validates the final archives' legal payloads, and uploads Windows
-and Linux archives as release candidates. Run it
-manually when an artifact is needed; it also runs for pull requests to `develop` and version
-tags.
+and Linux archives as release candidates. On Linux it also builds the `.deb`, `.rpm` and
+AppImage, validates their legal payloads, and installs each one in clean containers of six
+distributions. Run it manually when an artifact is needed; it also runs for pull requests to
+`develop` and version tags.
+
+## Install on Linux
+
+The `Build application` workflow uploads the Linux packages as the
+`SDC-Testing-Toolbox-linux-packages` artifact. They are not signed and not published in a
+package repository.
+
+The CI matrix installs and starts them on clean Ubuntu 22.04, Ubuntu 24.04, Debian 12, Fedora (latest),
+openSUSE Tumbleweed and AlmaLinux 10 containers: each distribution's native package, plus the
+AppImage on all six. Other x86-64 distributions with glibc 2.35 or newer are expected to work
+but are not tested.
+
+The packages install the application to `/opt/sdc-testing-toolbox`, add the
+`sdc-testing-toolbox` command and a desktop menu entry, and pull in the host libraries listed
+above. Replace `<version>` and `<release>` with the values in the downloaded filename:
+
+```bash
+# Debian and Ubuntu
+sudo apt install ./sdc-testing-toolbox_<version>-<release>_amd64.deb
+sudo apt purge sdc-testing-toolbox
+
+# Fedora and AlmaLinux
+sudo dnf install ./sdc-testing-toolbox-<version>-<release>.x86_64.rpm
+sudo dnf remove sdc-testing-toolbox
+
+# openSUSE
+sudo zypper install --allow-unsigned-rpm ./sdc-testing-toolbox-<version>-<release>.x86_64.rpm
+sudo zypper remove sdc-testing-toolbox
+```
+
+The AppImage needs no installation, but it expects the same host libraries. These are normally
+available on a full desktop; minimal installations may need to install them:
+
+```bash
+chmod +x SDC-Testing-Toolbox-<version>-<release>-x86_64.AppImage
+./SDC-Testing-Toolbox-<version>-<release>-x86_64.AppImage
+```
+
+Without FUSE, for example in a container, pass `--appimage-extract-and-run` as the first
+argument, or set `APPIMAGE_EXTRACT_AND_RUN=1`.
+
+### Firewall
+
+The toolbox uses WS-Discovery on UDP 3702 and normally binds every other port that peers connect to in
+21073–21172, TCP and UDP. Installing a package does not open them and does not touch the
+firewall. It only installs a firewalld service and a ufw application profile, which you
+switch on yourself. Uninstalling removes the service from every firewalld zone and policy
+first, because firewalld otherwise discards its whole configuration once the service file is
+gone:
+
+```bash
+# firewalld (Fedora, openSUSE, AlmaLinux): the first reload picks up the new service
+sudo firewall-cmd --reload
+sudo firewall-cmd --permanent --add-service=sdc-testing-toolbox
+sudo firewall-cmd --reload
+
+# ufw (Ubuntu, Debian)
+sudo ufw allow SDC-Testing-Toolbox
+```
+
+A firewalld reload drops rules that were added without `--permanent`. Add `--zone=<zone>` if
+the network interface is not in the default zone.
+
+Uninstalling does not delete ufw rules, so the ports stay open afterwards. Remove the rule
+first with `sudo ufw delete allow SDC-Testing-Toolbox`.
+
+The AppImage cannot install system files. Copy the definitions first, either from this
+repository's `packaging/linux/` or from the AppImage (`--appimage-extract` puts them in
+`squashfs-root/usr/share/sdc-testing-toolbox/firewall/`):
+
+```bash
+sudo cp packaging/linux/firewalld/sdc-testing-toolbox.xml /etc/firewalld/services/
+sudo cp packaging/linux/ufw/sdc-testing-toolbox /etc/ufw/applications.d/
+```
+
+If every port in the range is already taken, the toolbox binds a port the OS picks instead.
+It logs a warning such as `TCP port 40312 is outside 21073-21172 because no port in that range
+was free; the shipped firewall definitions do not cover it`, and the main window keeps the
+latest one in its status bar. With the firewall on, peers cannot reach that port: close other
+toolbox instances or open the port yourself.
 
 ## License
 
@@ -86,18 +185,6 @@ bundled texts for the exact artifact. Public binary releases must also publish
 the exact corresponding-source payload defined in `legal/SOURCE_OFFER.md`;
 these materials are operational guidance, not legal advice or a guarantee of
 compliance.
-
-## Milestones
-
-- [x] **0 — Groundwork.** Direct dependencies pinned, sdc11073 API verified, networking settled.
-- [x] **1 — Core.** Create data sources at runtime, publish them, remote-control them. Headless, with a console front end and an acceptance test.
-- [x] **2 — Provider UI.** Metric list with live values, "New data source" dialog.
-- [x] **3 — Consumer UI.** Discovery, MDIB browser, editors for controllable metrics. Accepts foreign MDIBs defensively; detailed metric and operation views cover the supported subset.
-- [x] **4a — Alarms and presets.** Alert conditions with their signals, and configs you can export, import and load at startup.
-- [x] **4b — Contexts and signal handling.** Editable patient and location, acknowledgement and delegation, a preset picker.
-- [x] **4c — Waveforms and distributions.** Both sample-array kinds, a generator for both, and a plot to watch them on.
-- [x] **4d — Device presets.** Seven realistic virtual device profiles with coded values, device identity, subsystem structure, and actions, each built by tests.
-- [x] **4e — TLS.** Strict TLS 1.2+ mutual authentication, certificate inspection and CA-based participant authorization.
 
 ## Try it
 
@@ -126,12 +213,22 @@ The remote-control checkbox is offered only for number, text and choice sources.
 
 The **Network** panel is everybody else's. *Scan* finds providers, *Connect* loads one, and you get its containment tree above and its metrics below.
 Rows the device will accept writes for are marked writable; select one and the editor underneath adapts to it — a combo box for a choice, a plain field with the permitted range for a number.
-The result of a write is reported as the provider's own `InvocationState`.
+The result of a write is reported as the provider's own `InvocationState`, followed by the error code and text the provider gave when it refused.
+
+Each Network tab is an independent connection. Use **+** (**Ctrl+T**) to add one, then
+Scan/Connect in that tab. The tab's close button (or **Ctrl+W** while focused inside
+Network) disconnects only that session; closing the last tab leaves an empty one ready
+to connect. Numbered tab titles identify the peer; hover for its connection status.
+Switching tabs or hiding Network never pauses backend connections, subscriptions or
+incoming MDIB reports. Hidden controls/plots need not repaint. Widget/table mode and
+the light/dark theme apply to every tab, including new ones. Closing the application
+closes every session. Connections are not saved or automatically reconnected.
 
 The menu bar is on screen by default.\
 *View → Always show menu bar* hides it until you press **Alt**, if you would rather have the room.\
 *View → Split view* (F8) swaps between the two panels sitting side by side with a movable divider, and the same two stacked as tabs.\
 *View → Use widgets if possible* (F9) swaps the metric tables for a control per metric.\
+*View → Dark mode* switches between dark (checked) and light (unchecked) colours for this session.
 
 ## Widgets
 
@@ -183,7 +280,7 @@ consumer> list
 consumer> set m.zoom_level 9
 accepted, m.zoom_level is now 9
 consumer> set m.zoom_level 500
-refused by the provider (Fail)
+refused by the provider (Fail) - Oth: 500 is above the maximum 100 of 'm.zoom_level'
 ```
 
 Numbers can carry limits. Those become two different things in BICEPS, because the standard separates what a device can produce from what a caller may ask for:
@@ -232,6 +329,43 @@ provider> presets
 
 ## Presets
 
+### Native MDIB snapshots (XML)
+
+Presets can also be native BICEPS MDIB XML files. Choose a `[MDIB]` preset, import an
+`.xml` file, or start with `--config presets/mdib-demo-monitor.xml`. The two original
+synthetic XML presets are **MDIB demo monitor** and **MDIB demo infusion pump**;
+existing JSON presets remain available.
+
+An XML export is **one file containing both `MdDescription` and `MdState`**, including
+current sample blocks and all context states/history. Select **Native MDIB (*.xml)**
+in *File → Export config*, or use `export snapshot.xml` in the console. Combined
+`GetMdibResponse`, message `Mdib`, and participant `MdibContainer` inputs are accepted.
+Separate description/state files are not supported. Invalid XML, unsafe DTD/entity
+declarations, broken references and content the pinned library cannot preserve are
+rejected before provider replacement; failed writes preserve an existing export file.
+Duration fields must use the pinned library's SDPi-compatible hour/minute/second syntax
+(for example `PT5S`); calendar/day duration forms are currently rejected rather than changed.
+
+Native import replaces the whole MDIB and **restarts the provider**. Connected consumers
+must reconnect. The instance name/EPR, network binding and TLS settings remain local;
+imported patient/location states are not overwritten by toolbox defaults. A failed
+activation attempts to restore the previous provider and reports any recovery failure.
+
+The provider containment tree exposes the imported entities, with XML on hover. Supported
+scalar values can be edited locally, and compatible numeric/string set operations retain
+their own enabled state and allowed ranges/values. Other operations fail explicitly:
+an MDIB does not supply executable machinery/action logic. Alarms and sample blocks are
+snapshots; generators, automatic alarm rules, and action effects are **not inferred**.
+Graph-changing and context/alarm simulation controls are disabled in native mode. Load
+a JSON preset to return to the managed simulation workflow. Native snapshots cannot be
+exported through the reduced JSON profile format; use XML to avoid losing content.
+
+**Privacy:** full MDIB exports may include patient-identifying data and context history.
+Review them before sharing. Shipped XML demos contain no patient data. Development-only
+reference files are not presets and are not part of the application bundle.
+
+### Managed profiles (JSON)
+
 *File → Export config* writes device metadata, data-source definitions and scalar current values, alarm and action definitions, and currently associated patient/location contexts to a JSON file.
 It is not a full live-device snapshot: sample blocks, alert/signal state, control mode, generator state and context history are not exported.
 *File → Import config* validates descriptor references and generated section containment before changing the provider. Replacement removes tracked metrics, alarms and actions before rebuilding them; `replace=False` appends the profile while retaining the existing graph.
@@ -241,7 +375,7 @@ Both `replace=True` replacement and `replace=False` append are transactional for
 *File → Load preset* lists the ready-made devices in `presets/`, so the ones that ship with the tool need no file dialog.
 The same list appears in the startup window. Loading a profile with malformed field types or other schema errors raises `ConfigError`; `list_presets` catches those strict validation failures, invalid JSON and unreadable files and skips those entries, so one malformed preset does not interrupt discovery.
 Explicit profile versions must be JSON integers from 1 through the current format version, 3; preset discovery skips files outside that range. Profiles without a version predate versioning and are intentionally read with legacy version 1 semantics.
-The seven shipped presets are canonical current-schema profiles, not legacy compatibility fixtures. They are kept at profile format version 3 with explicit alert signal definitions. Tests for older readable formats use synthetic profile data instead of holding a shipped preset back on an earlier schema.
+The seven realistic-device presets and two focused examples are canonical current-schema profiles, not legacy compatibility fixtures. They are kept at profile format version 3 with explicit alert signal definitions where alarms are present. Tests for older readable formats use synthetic profile data instead of holding a shipped preset back on an earlier schema.
 
 Any of them can also be loaded at startup:
 
@@ -256,7 +390,7 @@ The startup name still decides the EPR and serial number; a saved `device.instan
 
 For a profile that imports successfully, recorded handles make its defined metrics, alerts and actions addressable under stable names. They do not reproduce an identical live MDIB or provider identity.
 
-### The shipped devices
+### The shipped demo devices
 
 | Preset                | What it is                            | Worth looking at                                                                                                    |
 |-----------------------|---------------------------------------|---------------------------------------------------------------------------------------------------------------------|
@@ -267,6 +401,24 @@ For a profile that imports successfully, recorded handles make its defined metri
 | `surgical-microscope` | Robotic scope, after an Aesculap Aeos | Six axes, fixpoint and free modes, ICG fluorescence, and *Home axes* — none of which is a value you write           |
 | `endoscopic-camera`   | Camera and light source               | Image profiles, and a *White balance now* action with nothing to type                                               |
 | `insufflator`         | Laparoscopic insufflator              | Nine metrics, one more than the infusion pump; the first preset this project had                                    |
+
+### Focused numeric examples
+
+Two smaller profiles complement the seven realistic devices above. Both publish read-only
+numeric measurements with coded units and declared containment, without alarms or actions:
+
+- **Operating Table** (`operating-table.json`): Height **780 mm** (500–1100 mm, resolution 1 mm),
+  Trendelenburg **−8°** and Lateral Angle **7.6°** (both −30° to 30°, resolution 0.1°).
+  The table metric types use the toolbox's private coding namespace; their units use MDC codes.
+- **Ventilation Pressure** (`ventilation-pressure.json`): **18 cmH₂O** (0–40 cmH₂O,
+  resolution 1 cmH₂O), with MDC pressure type and unit codes.
+
+Select either name in the startup config dropdown or *File → Load preset*, or load it directly:
+
+```powershell
+.venv\Scripts\python.exe run_toolbox.py --config presets\operating-table.json
+.venv\Scripts\python.exe run_toolbox.py --config presets\ventilation-pressure.json
+```
 
 ### What the presets are actually demonstrating
 
@@ -452,19 +604,38 @@ This is a focused SDC learning fixture, not an IEEE 11073 conformance claim. IEE
 | **Might cause problems** | A valid device or deployment can use the capability, so a test can be incomplete, misleading or need manual recovery.             |
 | **Will cause problems**  | A test or deployment that depends on the capability cannot succeed safely or correctly with the current toolbox.                  |
 
-| Severity                 | Not supported or partial                                                                                                                                                                                                                                                                                | Practical consequence                                                                                                                                                                                                   |
-|--------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **Might cause problems** | Per-certificate, per-operation authorization and known-invoker audit identity are unavailable.                                                                                                                                                                                                           | TLS can admit or reject a participant by its trusted CA/certificate, but the current sdc11073 operation handler cannot apply distinct permissions or report the client certificate identity for each operation. |
-| **Will cause problems**  | Remote control covers `SetValueOperation`, `SetStringOperation`, and argumentless `ActivateOperation` only. The toolbox does not publish or drive `SetContextState`, `SetAlertState`, `SetMetricState` or `SetComponentState` operations.                                                               | Valid state-changing workflows, actions requiring arguments, remote context association, and remote alert handling cannot be exercised end to end.                                                                      |
-| **Might cause problems** | Contexts cover patient and location only. The Network panel shows associated peer patients read-only, but ensemble, workflow, means and operator contexts are not modelled or shown.                                                                                                                      | Tests involving care-team, workflow or multi-device context coordination need another fixture or direct access to the raw MDIB.                                                                                         |
-| **Might cause problems** | The locally published alert model has one source metric per condition, local acknowledgement/delegation, and automatic limits only for decimal scalar values. Signals can use every standard manifestation and latching option. The consumer still displays peer source handles and signal manifestations. | Remote alert control, interoperable delegation, and limit conditions on text or choice sources cannot be exercised correctly.                                                                                 |
-| **Might cause problems** | The provider is a small MDIB model: scalar writes set `Validity=Valid` and `ActivationState=On`, with no controls for quality, component state or lifecycle transitions.                                                                                                                                | It cannot simulate many degraded, unavailable, inactive or quality-qualified states a consumer may need to handle.                                                                                                      |
-| **Might cause problems** | Sample arrays have no waveform annotations and use one non-real-time generator thread.                                                  | It is useful for basic streaming and display tests, not for timing or annotation conformance tests.                                                                                      |
-| **Might cause problems** | The GUI keeps one active peer. When a peer changes MDIB sequence or instance identity, it disconnects and requires a manual reconnect.                                                                                                                                                                  | Multi-peer monitoring and automatic restart/reload recovery are not covered.                                                                                                                                            |
-| **Might cause problems** | There is no declared conformance profile and no end-to-end test against an independent SDC implementation or product.                                                                                                                                                                                   | A passing repository suite demonstrates this toolbox talking to itself across processes, not product interoperability or standards conformance.                                                                         |
-| **Invisible**            | The consumer gives detailed metric views only for the five BICEPS metric descriptor types it recognizes. Other entities and extensions remain in the generic containment tree or raw `RemoteDevice.mdib`.                                                                                               | A simple peer appears complete, while foreign extensions and most non-metric state are not available through the high-level UI/API.                                                                                     |
-| **Invisible**            | The GUI takes the first inline concept description it finds. It does not select a language or use the peer's LocalizationService.                                                                                                                                                                       | The English labels in shipped presets look normal; localized or service-supplied text is not tested.                                                                                                                    |
-| **Invisible**            | Discovery scans the selected IPv4 interface without a location-scope filter, but excludes the provider published by the same toolbox window by EPR.                                                                                                                                                                            | A scan can list unrelated SDC providers, so test selection must still be deliberate.                                                                                                                     |
+### Toolbox limitations
+
+| Severity | Not supported or partial | Practical consequence |
+|----------|--------------------------|-----------------------|
+| **Will cause problems** | Remote control covers `SetValueOperation`, `SetStringOperation`, and argumentless `ActivateOperation` only. The consumer cannot send `SetContextState`, `SetAlertState`, `SetMetricState` or `SetComponentState`; a provider built from an imported MDIB that declares one publishes it but refuses every request with a failed invocation (`Fail`, error `Oth`). | Valid state-changing workflows, actions requiring arguments, remote context association, and remote alert handling cannot be exercised end to end. |
+| **Might cause problems** | Contexts cover patient and location only. The Network panel shows associated peer patients read-only, but ensemble, workflow, means and operator contexts are not modelled or shown. | Tests involving care-team, workflow or multi-device context coordination need another fixture or direct access to the raw MDIB. |
+| **Might cause problems** | The locally published alert model has one source metric per condition, local acknowledgement/delegation, and automatic limits only for decimal scalar values. Signals can use every standard manifestation and latching option. The consumer still displays peer source handles and signal manifestations. | Remote alert control, interoperable delegation, and limit conditions on text or choice sources cannot be exercised correctly. |
+| **Might cause problems** | The provider is a small MDIB model: scalar writes set `Validity=Valid` and `ActivationState=On`, with no controls for quality, component state or lifecycle transitions. | It cannot simulate many degraded, unavailable, inactive or quality-qualified states a consumer may need to handle. |
+| **Might cause problems** | Sample arrays have no waveform annotations and use one non-real-time generator thread. | It is useful for basic streaming and display tests, not for timing or annotation conformance tests. |
+| **Might cause problems** | Network tabs keep independent peers active. When a peer changes MDIB sequence or instance identity, only its tab disconnects and requires a manual reconnect. | Automatic restart/reload recovery is not covered. |
+| **Might cause problems** | A provider drops a consumer that does not accept a notification within 2 s (`constants.NOTIFICATION_TIMEOUT_SECONDS`), so that one silent or stalled consumer cannot hold up every other request. | A consumer on a very slow link, or one paused in a debugger, loses its subscriptions, shows the connection as lost and has to reconnect. |
+| **Might cause problems** | There is no declared conformance profile; the independent-implementation validation is manual and is not part of the routine repository suites. | A passing repository suite alone does not establish product interoperability or standards conformance. |
+| **Invisible** | The consumer gives detailed metric views only for the five BICEPS metric descriptor types it recognizes. Other entities and extensions remain in the generic containment tree or raw `RemoteDevice.mdib`. | A simple peer appears complete, while foreign extensions and most non-metric state are not available through the high-level UI/API. |
+| **Invisible** | The GUI takes the first inline concept description it finds. It does not select a language or use the peer's LocalizationService. | The English labels in shipped presets look normal; localized or service-supplied text is not tested. |
+| **Invisible** | Discovery scans the selected IPv4 interface without a location-scope filter, but excludes the provider published by the same toolbox window by EPR. | A scan can list unrelated SDC providers, so test selection must still be deliberate. |
+
+### Library limitations
+
+| Severity | Not supported or partial | Practical consequence |
+|----------|--------------------------|-----------------------|
+| **Might cause problems** | Per-certificate, per-operation authorization and known-invoker audit identity are unavailable. | TLS can admit or reject a participant by its trusted CA/certificate, but the current sdc11073 operation handler cannot apply distinct permissions or report the client certificate identity for each operation. |
+| **Might cause problems** | The hosted `/Get` service answers a WS-MetadataExchange `GetMetadata` request with the WS-Transfer `GetResponse` action; the device root accepts WS-Transfer `Get` but rejects `GetMetadata`. | Peers that rely on `GetMetadata` may reject the response or fail to retrieve metadata; verify the expected behavior for the selected profile. |
+| **Might cause problems** | The library answers an unknown operation handle with error code `Inv`; BICEPS specifies `Unkn`. | A peer that distinguishes an unknown operation from an invalid invocation may misclassify the failure. |
+| **Might cause problems** | A slow but responsive consumer can block the library's bounded notification dispatcher and delay delivery to every consumer. | One slow consumer can reduce notification throughput for otherwise healthy consumers. |
+| **Might cause problems** | In one observed run, abrupt death of a backlogged subscriber left the provider frozen, and `stop()` also hung. | A provider may require a process restart if a subscriber disappears during notification backlog. |
+| **Might cause problems** | The consumer retains historic context states; repeated patient-context updates accumulate state and memory. | Long-running consumers that receive many context changes may accumulate memory and handles. |
+| **Might cause problems** | A TLS rejection on the event-sink path can look like a slow peer to the consumer; the provider log contains the actual rejection reason. | Diagnosing an event subscription failure from consumer-side status alone can be misleading. |
+| **Might cause problems** | A forged WS-Discovery `Bye` can temporarily remove a healthy device from discovery results. | An unauthenticated discovery message can disrupt device visibility briefly. |
+| **Might cause problems** | A flood of unicast WS-Discovery `Probe` messages can wedge discovery shutdown; this was observed with 3,000 probes. | `stop()` may not return after discovery has been flooded. |
+| **Might cause problems** | On provider shutdown, `SubscriptionEnd` messages can contain a malformed subscription-manager address and may be sent to `NotifyTo` when no `EndTo` was supplied. | A strict peer consumer may not recognize which subscription ended. |
+| **Might cause problems** | The library hosts the ContainmentTree service, but its `GetContainmentTree` and `GetDescriptor` operations return a SOAP fault; the toolbox therefore does not advertise the service. | A peer that requires those operations must read the MDIB with `GetMdib`, `GetMdDescription` and `GetMdState` instead. |
+| **Might cause problems** | The library's consumer MDIB raises when a waveform notification omits the optional `DeterminationTime`; the toolbox substitutes the notification arrival time as a workaround. | Other consumers using the library directly may fail to process such waveform notifications. |
 
 ## Tests
 
@@ -480,6 +651,8 @@ Linux and once on Windows through `tests/run_suites.py`. Qt jobs use
 | `tests/security.py` | TLS policy, PEM validation, certificate metadata and fingerprint pins |
 | `tests/tls_helper.py` | self-signed local CA generation, additive participant identities and overwrite protection |
 | `tests/application_defaults.py` | shared application defaults and distinct acceptance identity |
+| `tests/console_commands.py` | rejected console writes stay interactive; text and choice values keep leading zeros |
+| `tests/coding_export.py` | PDF text-row separation and missing-text diagnostics without optional PDF dependencies |
 | `tests/import_bootstrap.py` | direct test imports under unrelated package shadowing |
 | `tests/licensing.py` | project licensing, notices and build legal-payload sources |
 | `tests/provider_core.py` | provider descriptors, values, alarms, contexts and rollback |
@@ -492,7 +665,11 @@ Linux and once on Windows through `tests/run_suites.py`. Qt jobs use
 | `tests/gui_provider_structure.py` | provider action, alarm and operation structural refreshes |
 | `tests/service_lifecycle.py` | provider and consumer startup fault cleanup |
 | `tests/consumer_lifecycle.py` | window-close races, stale work and natural real-window shutdown |
+| `tests/multi_provider.py` | independent connection tabs, hidden backend reports, per-provider writes and lifecycle/settings isolation |
+| `tests/gui_audit_regressions.py` | truthful missing/current values, active drafts, cleanup handoffs, plot bounds and scope updates |
 | `tests/acceptance_readiness.py` | bounded provider readiness waits and subprocess cleanup |
+| `tests/port_range.py` | provider, consumer and discovery sockets bind in 21073–21172, exclusively, with the fallback warning |
+| `tests/linux_packaging.py` | desktop entry, firewall definitions, package versions, glibc floor and AppImage layout |
 
 The manifest selects platform-appropriate suites, including TLS configuration and helper checks
 on both systems. A separate Windows step checks the console-rendered signal summary under strict
@@ -520,7 +697,7 @@ Run the same default set that continuous integration runs locally with:
 
 `tests/gui_smoke.py` remains a manual broad regression script because it is intentionally long and duplicates the focused GUI suites while also starting a live peer. Run it when changing interactions that cross several GUI areas; it uses the offscreen backend and needs no display.
 
-The packaging jobs separately launch each built Windows and Linux application with `--smoke-test`. `tests/acceptance_provider.py` is a subprocess fixture used by acceptance scripts, not a standalone suite.
+The packaging jobs separately launch each built Windows and Linux application with `--smoke-test`. The `install-packages` jobs run `packaging/linux/install_test.sh` on each Linux package in a clean container: install, smoke-test offscreen and under X11 with the GTK theme, then check the native packages' firewall definitions are present but not enabled, uninstall them and check that a firewalld zone using the service stays valid. AppImage tests first install the expected host libraries and run without FUSE. Run it locally as root in a matching container, for example `sh packaging/linux/install_test.sh dist/<package>`. `tests/acceptance_provider.py` is a subprocess fixture used by acceptance scripts, not a standalone suite.
 
 `provider_core.py` is the odd one out: it is about what the MDIB must never be left in. Its first section deliberately writes a descriptor BICEPS cannot serialise *without* the rollback, watches the orphan appear, and only then checks that the guarded path leaves nothing behind — so a passing run means the check is still capable of failing.
 
@@ -543,6 +720,19 @@ offline test setup. A directly self-signed participant certificate also works if
 the other participant's trusted CA bundle. Self-signed does not mean accepting arbitrary
 certificates: trust must remain explicit. Use `--tls-peer-fingerprint` to additionally pin
 one expected SHA-256 leaf certificate.
+
+Three options relax this for lab setups, each also available as a startup-dialog field:
+
+- **Trusted certificate folder** (`--tls-trusted-dir`): every PEM certificate (`.pem`, `.crt`,
+  `.cer`) in the folder is trusted, self-signed participant certificates included. Other files
+  such as keys are skipped. It replaces or complements `--tls-ca`, and mutual TLS stays in force.
+- **Allow self-signed peer certificates** (`--tls-allow-self-signed`): accepts any peer that
+  presents a currently valid self-signed certificate, plus anything the CA bundle or folder
+  issued. Python cannot hook chain validation, so the check happens right after the handshake
+  on the consumer side, and the provider **stops requesting client certificates**. Peers are
+  not authenticated. Combine it with `--tls-peer-fingerprint` if identity matters.
+- **Skip hostname/IP check** (`--tls-no-hostname-check`): the peer certificate no longer has
+  to name the advertised host or IP. The chain is still validated.
 
 Generate a self-contained local test CA plus provider and consumer identities with:
 
@@ -650,3 +840,5 @@ with ConsumerService() as service:
 
 WS-Discovery in sdc11073 binds to a **single IPv4 address**. On a machine with several adapters (VPN, Hyper-V, Wi-Fi Direct, Bluetooth PAN) you have to say which one, hence the
 `--ip` argument everywhere. Loopback is the default so two instances on one machine can talk without involving the network.
+
+Each provider and consumer listens on the first free TCP port in 21073–21172, and the discovery reply socket takes the first free UDP port in that range. Only the multicast listener stays on UDP 3702. A firewall therefore needs UDP 3702 plus TCP and UDP 21073–21172 open; see [Firewall](#firewall), including the warning when the range is exhausted.

@@ -11,6 +11,7 @@ GUI thread, so slots connected to these signals are always safe.
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, Signal
@@ -55,6 +56,8 @@ class MdibBridge(QObject):
     def __init__(self, mdib: MdibBase, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._mdib = mdib
+        self._emission_lock = threading.RLock()
+        self._closed = False
         bindings = {
             "metrics_by_handle": self._on_metrics,
             "new_descriptors_by_handle": self._on_descriptors_added,
@@ -68,30 +71,44 @@ class MdibBridge(QObject):
         # Only a ConsumerMdib reports that the far end restarted; a provider has no peer.
         if hasattr(type(mdib), "sequence_or_instance_id_changed_event"):
             bindings["sequence_or_instance_id_changed_event"] = self._on_peer_restarted
+        self._bindings = bindings
         observableproperties.bind(mdib, **bindings)
+
+    def close(self) -> None:
+        """Suppress even already-acquired callbacks before the QObject can be deleted."""
+        with self._emission_lock:
+            self._closed = True
+            bindings, self._bindings = self._bindings, {}
+        # Never enter SDK unbinding under the emission lock: dispatch may hold MDIB locks.
+        observableproperties.unbind(self._mdib, **bindings)
+
+    def _emit(self, signal_name: str, *args: object) -> None:
+        with self._emission_lock:
+            if not self._closed:
+                getattr(self, signal_name).emit(*args)
 
     # The callbacks below may run on any thread. They must do nothing but emit.
 
     def _on_metrics(self, values: dict) -> None:
-        self.metrics_changed.emit(dict(values))
+        self._emit("metrics_changed", dict(values))
 
     def _on_descriptors_added(self, values: dict) -> None:
-        self.descriptors_added.emit(dict(values))
+        self._emit("descriptors_added", dict(values))
 
     def _on_descriptors_updated(self, values: dict) -> None:
-        self.descriptors_updated.emit(dict(values))
+        self._emit("descriptors_updated", dict(values))
 
     def _on_descriptors_deleted(self, values: dict) -> None:
-        self.descriptors_deleted.emit(dict(values))
+        self._emit("descriptors_deleted", dict(values))
 
     def _on_operations(self, values: dict) -> None:
-        self.operations_changed.emit(dict(values))
+        self._emit("operations_changed", dict(values))
 
     def _on_alerts(self, values: dict) -> None:
-        self.alerts_changed.emit(dict(values))
+        self._emit("alerts_changed", dict(values))
 
     def _on_contexts(self, values: dict) -> None:
-        self.contexts_changed.emit(dict(values))
+        self._emit("contexts_changed", dict(values))
 
     def _on_waveforms(self, values: dict) -> None:
         """Snapshot the samples here, and send those rather than the states.
@@ -111,8 +128,8 @@ class MdibBridge(QObject):
             metric_value = getattr(state, "MetricValue", None)
             # A descriptor being created also lands here, with no MetricValue yet.
             blocks[handle] = list(getattr(metric_value, "Samples", None) or [])
-        self.waveforms_changed.emit(blocks)
+        self._emit("waveforms_changed", blocks)
 
     def _on_peer_restarted(self, changed: bool) -> None:  # noqa: FBT001 - the observable is a flag
         if changed:
-            self.peer_restarted.emit()
+            self._emit("peer_restarted")

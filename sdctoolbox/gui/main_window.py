@@ -17,7 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -32,10 +32,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import config
+from .. import config, ports
+from ..mdib_io import NativeMdibConfig
 from .consumer_pane import ConsumerPane
+from .consumer_tabs import ConsumerTabs
+from .menu_keys import BareAltTracker
 from .no_wheel import NoWheelTabBar
 from .provider_pane import ProviderPane
+from .styling import is_dark, set_dark_mode
 
 if TYPE_CHECKING:
     from ..provider_service import ProviderService
@@ -43,7 +47,7 @@ if TYPE_CHECKING:
 PROVIDER_TITLE = "My device"
 NETWORK_TITLE = "Network"
 
-CONFIG_FILE_FILTER = "SDC toolbox config (*.json);;All files (*)"
+CONFIG_FILE_FILTER = config.FILE_FILTER
 
 # Where the divider sits when the window opens, as a share of the width.
 PROVIDER_SHARE = 3
@@ -87,6 +91,9 @@ class TitledPanel(QWidget):
 class MainWindow(QMainWindow):
     """Hosts the provider and consumer panels in whichever layout is selected."""
 
+    # A port fallback is reported on whichever thread bound the socket; this hops to the GUI.
+    _port_warning = Signal(str)
+
     def __init__(self, service: ProviderService) -> None:
         super().__init__()
         self.service = service
@@ -94,7 +101,7 @@ class MainWindow(QMainWindow):
         self.resize(1100, 560)
 
         self.provider_pane = ProviderPane(service, self)
-        self.network_pane = ConsumerPane(
+        self.network_tabs = ConsumerTabs(
             service.ip,
             self,
             own_epr=service.epr.urn,
@@ -102,7 +109,7 @@ class MainWindow(QMainWindow):
         )
 
         self.provider_panel = TitledPanel(PROVIDER_TITLE, self.provider_pane)
-        self.network_panel = TitledPanel(NETWORK_TITLE, self.network_pane)
+        self.network_panel = TitledPanel(NETWORK_TITLE, self.network_tabs)
 
         # Both layouts exist all the time; the panels move between them on demand.
         self.splitter = QSplitter(Qt.Horizontal)
@@ -120,13 +127,32 @@ class MainWindow(QMainWindow):
         # Remembered across a trip through tab mode so the divider comes back where it was.
         self._splitter_sizes: list[int] = []
 
+        self._alt_key = BareAltTracker(self)
         self._build_menus()
         self.set_split_view(enabled=True)
         self.set_use_widgets(enabled=True)
 
         self._show_status_hint()
 
+        # Stays in the status bar: a firewall that blocks the toolbox is easy to miss otherwise.
+        self.port_warning_label = QLabel()
+        self.statusBar().addPermanentWidget(self.port_warning_label)
+        self._port_warning.connect(self._show_port_warnings)
+        self._show_port_warnings()
+        self._unsubscribe_port_warnings = ports.subscribe_fallback_warnings(self._port_warning.emit)
+
+    def _show_port_warnings(self, _message: str = "") -> None:
+        warnings = ports.fallback_warnings()
+        self.port_warning_label.setText(warnings[-1] if warnings else "")
+        self.port_warning_label.setToolTip("\n".join(warnings))
+        self.port_warning_label.setVisible(bool(warnings))
+
     # -- layout --------------------------------------------------------------------
+
+    @property
+    def network_pane(self) -> ConsumerPane:
+        """Current connection for existing single-pane callers."""
+        return self.network_tabs.current_pane
 
     def set_split_view(self, enabled: bool) -> None:  # noqa: FBT001 - matches the Qt signal
         """Choose between panels side by side and stacked tabs."""
@@ -176,7 +202,7 @@ class MainWindow(QMainWindow):
         "If possible" is the operative part: a metric with no control that suits it still
         gets a card, showing its value read-only, rather than vanishing from the view.
         """
-        for pane in (self.provider_pane, self.network_pane):
+        for pane in (self.provider_pane, self.network_tabs):
             pane.set_use_widgets(enabled)
         if self.widgets_action.isChecked() != enabled:
             self.widgets_action.setChecked(enabled)
@@ -253,6 +279,14 @@ class MainWindow(QMainWindow):
         self.split_view_action.toggled.connect(self.set_split_view)
         view_menu.addAction(self.split_view_action)
 
+        view_menu.addSeparator()
+        self.dark_mode_action = QAction("&Dark mode", self)
+        self.dark_mode_action.setCheckable(True)
+        self.dark_mode_action.setChecked(is_dark(self))
+        self.dark_mode_action.setStatusTip("Use dark colours, or switch back to light mode")
+        self.dark_mode_action.toggled.connect(set_dark_mode)
+        view_menu.addAction(self.dark_mode_action)
+
         # Hiding is opt-in. The actions keep working through their shortcuts either way.
         for menu in (file_menu, view_menu):
             menu.aboutToHide.connect(self._maybe_hide_menu_bar)
@@ -292,18 +326,20 @@ class MainWindow(QMainWindow):
 
     def export_config(self) -> Path | None:
         """Ask for a filename and write this device's configuration to it."""
-        suggested = f"{self.service.instance_name}{config.FILE_SUFFIX}"
-        filename, _ = QFileDialog.getSaveFileName(
+        native_mode = self.service.native_mode
+        suggested = f"{self.service.instance_name}{'.xml' if native_mode else config.FILE_SUFFIX}"
+        filename, selected_filter = QFileDialog.getSaveFileName(
             self,
             "Export config",
             suggested,
             CONFIG_FILE_FILTER,
+            selectedFilter=config.MDIB_FILE_FILTER if native_mode else config.JSON_FILE_FILTER,
         )
         if not filename:
             return None
         try:
-            written = config.save(self.service, filename)
-        except OSError as exc:
+            written = config.save(self.service, config.export_path(filename, selected_filter))
+        except (OSError, config.ConfigError) as exc:
             QMessageBox.warning(self, "Could not export", str(exc))
             return None
         metrics = len(self.service.list_metrics())
@@ -332,36 +368,42 @@ class MainWindow(QMainWindow):
         Everything already configured is discarded, since a preset describes a whole device
         rather than an addition to one.
         """
-        existing = len(self.service.list_metrics()) + len(self.service.list_alerts())
-        if confirm and existing:
-            answer = QMessageBox.question(
-                self,
-                "Replace this device?",
-                f"Importing replaces the {existing} item(s) you have configured.\n\nContinue?",
-            )
-            if answer != QMessageBox.Yes:
-                return False
-
         try:
             device_config = config.load_file(path)
         except config.ConfigError as exc:
             QMessageBox.warning(self, "Could not import", str(exc))
             return False
+        restart = isinstance(device_config, NativeMdibConfig) or self.service.native_mode
+        existing = len(self.service.list_metrics()) + len(self.service.list_alerts()) + len(self.service.list_actions())
+        if confirm and (existing or restart):
+            detail = "\n\nThe provider will restart; connected consumers must reconnect." if restart else ""
+            answer = QMessageBox.question(
+                self,
+                "Replace this device?",
+                f"Importing replaces the {existing} item(s) you have configured.{detail}\n\nContinue?",
+            )
+            if answer != QMessageBox.Yes:
+                return False
 
         return self.apply_config(device_config, path)
 
     def apply_config(
         self,
-        device_config: config.DeviceConfig,
+        device_config: config.DeviceConfig | NativeMdibConfig,
         source: str | Path,
     ) -> bool:
         """Rebuild this device from an already parsed, single-use config snapshot."""
+        previous_mdib = getattr(self.service, "_mdib", None)
         try:
             metrics, alarms = config.apply_to(self.service, device_config, replace=True)
         except config.ConfigError as exc:
+            if getattr(self.service, "_mdib", None) is not previous_mdib:
+                self._replace_provider_pane()
             QMessageBox.warning(self, "Could not import", str(exc))
             return False
 
+        if getattr(self.service, "_mdib", None) is not previous_mdib:
+            self._replace_provider_pane()
         self.provider_pane.refresh()
         self.provider_pane.refresh_alerts()
         self.provider_pane.refresh_actions()
@@ -372,6 +414,25 @@ class MainWindow(QMainWindow):
             8000,
         )
         return True
+
+    def _replace_provider_pane(self) -> None:
+        """Retire the old MDIB bridge without touching outbound consumer sessions."""
+        old = self.provider_pane
+        old.bridge.close()
+        if getattr(self.service, "_mdib", None) is None:
+            old.setEnabled(False)
+            self.statusBar().showMessage("Provider stopped: MDIB replacement and recovery failed")
+            return
+        pane = ProviderPane(self.service, self.provider_panel)
+        pane.set_use_widgets(self.widgets_enabled)
+        layout = self.provider_panel.layout()
+        layout.removeWidget(old)
+        old.hide()
+        old.setParent(None)
+        old.deleteLater()
+        layout.addWidget(pane, 1)
+        self.provider_pane = pane
+        self.provider_panel.content = pane
 
     # -- the menu bar --------------------------------------------------------------
 
@@ -419,7 +480,7 @@ class MainWindow(QMainWindow):
 
     def keyReleaseEvent(self, event) -> None:  # noqa: ANN001, N802 - Qt naming
         """Alt on its own reveals the menu bar; Escape puts it away."""
-        if event.key() == Qt.Key_Alt and not (event.modifiers() & ~Qt.AltModifier):
+        if event.key() == Qt.Key_Alt and self._alt_key.is_bare and not event.isAutoRepeat():
             self.toggle_menu_bar()
             event.accept()
             return
@@ -431,5 +492,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: ANN001, N802 - Qt naming
         """Drop the consumer's subscriptions and discovery socket on the way out."""
-        self.network_pane.shutdown()
+        self._unsubscribe_port_warnings()
+        self.provider_pane.bridge.close()
+        self.network_tabs.shutdown()
         super().closeEvent(event)

@@ -13,9 +13,9 @@ The obvious-looking shortcuts do not work:
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QAbstractItemView, QLabel, QSizePolicy, QWidget
+from PySide6.QtWidgets import QApplication, QAbstractItemView, QLabel, QSizePolicy, QTableWidget, QWidget
 
 # How far to blend foreground towards background for de-emphasised text, in percent.
 # High enough to read comfortably, low enough to look secondary.
@@ -49,6 +49,7 @@ def muted_colour(widget: QWidget) -> QColor:
 
 def mute(widget: QWidget) -> None:
     """Render a label as secondary text without hard-coding a colour."""
+    widget.setProperty("_toolboxTextStyle", "muted")
     palette = widget.palette()
     colour = muted_colour(widget)
     for group in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive):
@@ -64,11 +65,52 @@ def error_colour(widget: QWidget) -> QColor:
 
 def mark_as_error(widget: QWidget) -> None:
     """Render a label as an error message."""
+    widget.setProperty("_toolboxTextStyle", "error")
     palette = widget.palette()
     colour = error_colour(widget)
     for group in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive):
         palette.setColor(group, QPalette.ColorRole.WindowText, colour)
     widget.setPalette(palette)
+
+
+def set_dark_mode(enabled: bool) -> None:
+    """Switch the application palette, including existing hints and errors."""
+    app = QApplication.instance()
+    muted_items = []
+    for table in app.allWidgets():
+        if isinstance(table, QTableWidget):
+            previous = muted_colour(table)
+            for row in range(table.rowCount()):
+                for column in range(table.columnCount()):
+                    item = table.item(row, column)
+                    if item is not None and item.foreground().color() == previous:
+                        muted_items.append((table, item))
+    app.styleHints().setColorScheme(Qt.ColorScheme.Dark if enabled else Qt.ColorScheme.Light)
+    # Native scheme overrides are ignored by some Qt platform plugins.
+    palette = QPalette(QColor("#353535" if enabled else "#efefef"))
+    accent = QColor("#58a6ff" if enabled else "#0078d4")
+    palette.setColor(QPalette.ColorRole.Highlight, accent)
+    palette.setColor(QPalette.ColorRole.Link, accent)
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor("black" if enabled else "white"))
+    if enabled:
+        for role in (QPalette.ColorRole.WindowText, QPalette.ColorRole.Text, QPalette.ColorRole.ButtonText):
+            palette.setColor(QPalette.ColorGroup.Disabled, role, QColor("#999999"))
+    app.setPalette(palette)
+    for widget in app.allWidgets():
+        # QSS gives views/headers explicit palettes that no longer inherit app changes.
+        if isinstance(widget, QAbstractItemView):
+            widget.setPalette(palette)
+            widget.viewport().setPalette(palette)
+        text_style = widget.property("_toolboxTextStyle")
+        if text_style in ("muted", "error"):
+            widget.setPalette(palette)
+            if text_style == "muted":
+                mute(widget)
+            else:
+                mark_as_error(widget)
+    for table, item in muted_items:
+        with QSignalBlocker(table):
+            item.setForeground(muted_colour(table))
 
 
 def constrain_dynamic_label(

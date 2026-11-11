@@ -133,6 +133,12 @@ _CORE_NOTICE_RULES = {
     ),
     "aiosignal": ((f"{LEGAL_ROOT}/licenses/aiosignal/LICENSE", ()),),
     "attrs": ((f"{LEGAL_ROOT}/licenses/attrs/LICENSE", ()),),
+    "cffi": ((f"{LEGAL_ROOT}/licenses/cffi/LICENSE", ()),),
+    "cryptography": (
+        (f"{LEGAL_ROOT}/licenses/cryptography/LICENSE", ()),
+        (f"{LEGAL_ROOT}/licenses/cryptography/LICENSE.APACHE", ()),
+        (f"{LEGAL_ROOT}/licenses/cryptography/LICENSE.BSD", ()),
+    ),
     "frozenlist": ((f"{LEGAL_ROOT}/licenses/frozenlist/LICENSE", ()),),
     "idna": ((f"{LEGAL_ROOT}/licenses/idna/LICENSE.md", ()),),
     "ifaddr": ((f"{LEGAL_ROOT}/licenses/ifaddr/LICENSE.txt", ()),),
@@ -145,6 +151,7 @@ _CORE_NOTICE_RULES = {
         (f"{LEGAL_ROOT}/licenses/propcache/LICENSE", ()),
         (f"{LEGAL_ROOT}/licenses/propcache/NOTICE", ()),
     ),
+    "pycparser": ((f"{LEGAL_ROOT}/licenses/pycparser/LICENSE", ()),),
     "Python": (
         (
             f"{LEGAL_ROOT}/licenses/python/LICENSE.txt",
@@ -231,12 +238,15 @@ _MODULE_PREFIXES = {
     "aiohttp": ("aiohttp",),
     "aiosignal": ("aiosignal",),
     "attrs": ("attr", "attrs"),
+    "cffi": ("_cffi_backend", "cffi"),
+    "cryptography": ("cryptography",),
     "frozenlist": ("frozenlist",),
     "idna": ("idna",),
     "ifaddr": ("ifaddr",),
     "lxml": ("lxml",),
     "multidict": ("multidict",),
     "propcache": ("propcache",),
+    "pycparser": ("pycparser",),
     "pyinstaller": (
         "_pyi_rth_utils",
         "pyimod",
@@ -266,6 +276,61 @@ _SOURCE_OVERRIDES = {
 _LEGAL_BASENAME = re.compile(
     r"^(license|licence|copying|notice|authors|copyright)", re.IGNORECASE
 )
+_QT_WHEEL_NOTICE = "LicenseRef-Qt-Commercial.txt"
+_DEBIAN_COMMON_LICENSE = re.compile(r"/usr/share/common-licenses/([A-Za-z0-9.+-]+)")
+_QT_IMAGEFORMATS_PLUGIN = re.compile(
+    r"/plugins/imageformats/(?:lib)?q(?:dds|icns|jp2|mng|tga|tiff|wbmp|webp)"
+    r"\.(?:dll|so(?:\.\d+)*)$",
+    re.IGNORECASE,
+)
+
+# GitHub's Linux Python toolcache omits the top-level LICENSE.txt carried by
+# python.org and Windows installers. This is the current PSF-2.0 notice from
+# CPython's LICENSE source file, retained as a deterministic build fallback.
+_PYTHON_LICENSE_FALLBACK = """PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2
+
+1. This LICENSE AGREEMENT is between the Python Software Foundation (\"PSF\"), and
+the Individual or Organization (\"Licensee\") accessing and otherwise using this
+software (\"Python\") in source or binary form and its associated documentation.
+
+2. Subject to the terms and conditions of this License Agreement, PSF hereby
+grants Licensee a nonexclusive, royalty-free, world-wide license to reproduce,
+analyze, test, perform and/or display publicly, prepare derivative works,
+distribute, and otherwise use Python alone or in any derivative version,
+provided, however, that PSF's License Agreement and PSF's notice of copyright,
+i.e., \"Copyright (c) 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010,
+2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023 Python
+Software Foundation; All Rights Reserved\" are retained in Python alone or in any
+derivative version prepared by Licensee.
+
+3. In the event Licensee prepares a derivative work that is based on or
+incorporates Python or any part thereof, and wants to make the derivative work
+available to others as provided herein, then Licensee hereby agrees to include in
+any such work a brief summary of the changes made to Python.
+
+4. PSF is making Python available to Licensee on an \"AS IS\" basis. PSF MAKES NO
+REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED. BY WAY OF EXAMPLE, BUT NOT
+LIMITATION, PSF MAKES NO AND DISCLAIMS ANY REPRESENTATION OR WARRANTY OF
+MERCHANTABILITY OR FITNESS FOR ANY PARTICULAR PURPOSE OR THAT THE USE OF PYTHON
+WILL NOT INFRINGE ANY THIRD PARTY RIGHTS.
+
+5. PSF SHALL NOT BE LIABLE TO LICENSEE OR ANY OTHER USERS OF PYTHON FOR ANY
+INCIDENTAL, SPECIAL, OR CONSEQUENTIAL DAMAGES OR LOSS AS A RESULT OF MODIFYING,
+DISTRIBUTING, OR OTHERWISE USING PYTHON, OR ANY DERIVATIVE THEREOF, EVEN IF
+ADVISED OF THE POSSIBILITY THEREOF.
+
+6. This License Agreement will automatically terminate upon a material breach of
+its terms and conditions.
+
+7. Nothing in this License Agreement shall be deemed to create any relationship
+of agency, partnership, or joint venture between PSF and Licensee. This License
+Agreement does not grant permission to use PSF trademarks or trade name in a
+trademark sense to endorse or promote products or services of Licensee, or any
+third party.
+
+8. By copying, installing or otherwise using Python, Licensee agrees to be bound
+by the terms and conditions of this License Agreement.
+"""
 
 
 def _canonicalize_name(name: str) -> str:
@@ -311,20 +376,92 @@ def _is_unused_qt_binary(path: str) -> bool:
     )
 
 
+# Libraries every Linux desktop provides and that must come from the host, so the bundle
+# works with the host's graphics driver, glibc and C++ runtime. This is the AppImage
+# excludelist of AppImageCommunity/pkg2appimage, file "excludelist" at commit
+# 15a64c20dc23a0154622ba25829364323903b6b5.
+LINUX_HOST_LIBRARIES = frozenset(
+    {
+        "ld-linux.so.2",
+        "ld-linux-x86-64.so.2",
+        "libanl.so.1",
+        "libBrokenLocale.so.1",
+        "libcidn.so.1",
+        "libc.so.6",
+        "libdl.so.2",
+        "libm.so.6",
+        "libmvec.so.1",
+        "libnss_compat.so.2",
+        "libnss_dns.so.2",
+        "libnss_files.so.2",
+        "libnss_hesiod.so.2",
+        "libnss_nisplus.so.2",
+        "libnss_nis.so.2",
+        "libpthread.so.0",
+        "libresolv.so.2",
+        "librt.so.1",
+        "libthread_db.so.1",
+        "libutil.so.1",
+        "libstdc++.so.6",
+        "libGL.so.1",
+        "libEGL.so.1",
+        "libGLdispatch.so.0",
+        "libGLX.so.0",
+        "libOpenGL.so.0",
+        "libdrm.so.2",
+        "libglapi.so.0",
+        "libgbm.so.1",
+        "libxcb.so.1",
+        "libX11.so.6",
+        "libX11-xcb.so.1",
+        "libwayland-client.so.0",
+        "libasound.so.2",
+        "libfontconfig.so.1",
+        "libfreetype.so.6",
+        "libharfbuzz.so.0",
+        "libcom_err.so.2",
+        "libexpat.so.1",
+        "libgcc_s.so.1",
+        "libgpg-error.so.0",
+        "libICE.so.6",
+        "libSM.so.6",
+        "libusb-1.0.so.0",
+        "libuuid.so.1",
+        "libz.so.1",
+        "libjack.so.0",
+        "libpipewire-0.3.so.0",
+        "libxcb-dri3.so.0",
+        "libxcb-dri2.so.0",
+        "libfribidi.so.0",
+        "libgmp.so.10",
+    }
+)
+
+
 def filter_binaries(
     binaries: Iterable[object], platform: str | None = None
 ) -> list[object]:
-    """Drop unused Qt payloads, plus Windows host/PATH contamination."""
+    """Drop unused Qt payloads, Windows host/PATH contamination and Linux host libraries."""
     platform = platform or runtime_platform.system()
     windows_root_text = os.environ.get("WINDIR")
     windows_root = _resolved(windows_root_text) if windows_root_text else None
     installed_base = _resolved(sysconfig.get_config_var("installed_base"))
     environment_root = _resolved(sys.prefix)
+    site_packages = {_resolved(sysconfig.get_paths()[key]) for key in ("purelib", "platlib")}
     result = []
     for entry in binaries:
         destination, source_text = _entry_parts(entry)
         if _is_unused_qt_binary(destination) or _is_unused_qt_binary(source_text):
             continue
+        if platform == "Linux":
+            name = destination.replace("\\", "/").rsplit("/", 1)[-1]
+            source = _resolved(source_text)
+            # A wheel's own copy stays; the host's copy (even under a /usr Python) does not.
+            if name in LINUX_HOST_LIBRARIES and not any(
+                source.is_relative_to(root) for root in site_packages
+            ):
+                print(f"legal inventory: leaving host library {source} to the host")
+                continue
         if platform != "Windows":
             result.append(entry)
             continue
@@ -926,13 +1063,7 @@ def _debian_native_components(
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(copyright_file, target)
         notice_paths = [notice]
-        for common in sorted(
-            set(
-                re.findall(
-                    r"/usr/share/common-licenses/([A-Za-z0-9.+-]+)", copyright_text
-                )
-            )
-        ):
+        for common in sorted(set(_DEBIAN_COMMON_LICENSE.findall(copyright_text))):
             source = Path("/usr/share/common-licenses") / common
             if source.is_file():
                 destination = f"{LEGAL_ROOT}/licenses/debian/common/{common}"
@@ -980,7 +1111,9 @@ def generate_payload(
 
     distributions = _distributions()
     owners = _distribution_file_owners(distributions)
-    runtime_closure = _dependency_closure(("sdc11073", "PySide6"), distributions)
+    runtime_closure = _dependency_closure(
+        ("sdc11073", "PySide6", "cryptography"), distributions
+    )
     build_closure = _dependency_closure(
         ("PyInstaller", "pyinstaller-hooks-contrib"), distributions
     )
@@ -1046,6 +1179,16 @@ def generate_payload(
         project_url = _project_url(distribution, name)
         notice_paths = _copy_distribution_notices(name, distribution, output)
         if name in {"pyside6", "pyside6-addons", "pyside6-essentials", "shiboken6"}:
+            notice = f"{LEGAL_ROOT}/licenses/{name}/{_QT_WHEEL_NOTICE}"
+            if notice not in notice_paths:
+                # The Linux wheels omit the notice that the Windows wheels ship.
+                target = output / Path(notice)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(
+                    project_root / LEGAL_ROOT / "licenses" / "pyside6" / _QT_WHEEL_NOTICE,
+                    target,
+                )
+                notice_paths.insert(0, notice)
             notice_paths.extend(
                 [
                     f"{LEGAL_ROOT}/licenses/qt/LGPL-3.0-only.txt",
@@ -1108,13 +1251,14 @@ def generate_payload(
             }
         )
 
-    python_license = installed_base / "LICENSE.txt"
-    if not python_license.is_file():
-        raise RuntimeError(f"Python license is missing: {python_license}")
     python_notice = f"{LEGAL_ROOT}/licenses/python/LICENSE.txt"
     target = output / Path(python_notice)
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(python_license, target)
+    python_license = installed_base / "LICENSE.txt"
+    if python_license.is_file():
+        shutil.copyfile(python_license, target)
+    else:
+        target.write_text(_PYTHON_LICENSE_FALLBACK, encoding="utf-8")
     components.append(
         {
             "name": "Python",
@@ -1216,6 +1360,8 @@ def generate_payload(
             qt_modules.append("qtsvg")
         if any("translations/" in path for path in qt_paths):
             qt_modules.append("qttranslations")
+        if any(_QT_IMAGEFORMATS_PLUGIN.search(f"/{path}") for path in qt_paths):
+            qt_modules.append("qtimageformats")
         components.append(
             {
                 "name": "Qt",
@@ -1291,7 +1437,7 @@ def generate_payload(
         "required_documents": list(REQUIRED_DOCUMENTS),
         "generation": {
             "method": "installed distribution metadata plus PyInstaller Analysis TOCs",
-            "runtime_roots": ["PySide6", "sdc11073"],
+            "runtime_roots": ["PySide6", "cryptography", "sdc11073"],
             "build_roots": ["PyInstaller", "pyinstaller-hooks-contrib"],
         },
     }
@@ -1325,18 +1471,25 @@ def _archive_path(path: object) -> tuple[str, str] | None:
     return normalized, unicodedata.normalize("NFC", normalized).casefold()
 
 
-def _pyinstaller_modules(executable: bytes) -> set[str]:
-    """Read module names from a PyInstaller executable without importing it."""
+def _pyinstaller_evidence(executable: bytes) -> tuple[int, str, set[str]] | None:
+    """Read Python runtime and module names without importing the executable."""
     cookie_magic = b"MEI\014\013\012\013\016"
     cookie_format = "!8sIIII64s"
     cookie_length = struct.calcsize(cookie_format)
     cookie_offset = executable.rfind(cookie_magic)
     if cookie_offset < 0 or cookie_offset + cookie_length > len(executable):
-        return set()
-    _magic, archive_length, toc_offset, toc_length, _version, _library = struct.unpack(
+        return None
+    _magic, archive_length, toc_offset, toc_length, version, library = struct.unpack(
         cookie_format, executable[cookie_offset : cookie_offset + cookie_length]
     )
     archive_start = cookie_offset + cookie_length - archive_length
+    if (
+        archive_start < 0
+        or archive_length < cookie_length
+        or toc_offset + toc_length > archive_length - cookie_length
+    ):
+        return None
+    library_name = library.rstrip(b"\0").decode("utf-8")
     toc = executable[
         archive_start + toc_offset : archive_start + toc_offset + toc_length
     ]
@@ -1346,11 +1499,16 @@ def _pyinstaller_modules(executable: bytes) -> set[str]:
     entry_header = "!IIIIBc"
     entry_header_length = struct.calcsize(entry_header)
     while position + entry_header_length <= len(toc):
-        entry_length, offset, length, _raw_length, compressed, typecode = struct.unpack(
+        entry_length, offset, length, raw_length, compressed, typecode = struct.unpack(
             entry_header, toc[position : position + entry_header_length]
         )
-        if entry_length < entry_header_length or position + entry_length > len(toc):
-            return set()
+        if (
+            entry_length < entry_header_length
+            or position + entry_length > len(toc)
+            or offset + length > toc_offset
+            or (not compressed and raw_length != length)
+        ):
+            return None
         name = toc[position + entry_header_length : position + entry_length]
         name = name.rstrip(b"\0").decode("utf-8")
         if typecode in {b"m", b"M"}:
@@ -1361,16 +1519,22 @@ def _pyinstaller_modules(executable: bytes) -> set[str]:
             ]
             if compressed:
                 pyz_data = zlib.decompress(pyz_data)
+            if len(pyz_data) != raw_length:
+                return None
         position += entry_length
+    if position != len(toc):
+        return None
     if pyz_data is None or not pyz_data.startswith(b"PYZ\0") or len(pyz_data) < 12:
-        return modules
+        return version, library_name, modules
     pyz_toc_offset = struct.unpack("!i", pyz_data[8:12])[0]
+    if not 12 <= pyz_toc_offset < len(pyz_data):
+        return None
     pyz_toc = marshal.loads(pyz_data[pyz_toc_offset:])
     if not isinstance(pyz_toc, (dict, list, tuple)):
-        return set()
+        return None
     entries = pyz_toc.keys() if isinstance(pyz_toc, dict) else dict(pyz_toc).keys()
     modules.update(name for name in entries if isinstance(name, str))
-    return modules
+    return version, library_name, modules
 
 
 def validate_payload(
@@ -1526,6 +1690,7 @@ def validate_payload(
         "SDC-Testing-Toolbox.exe" if system == "Windows" else "SDC-Testing-Toolbox"
     )
     executable_bytes = archive_file(executable)
+    python_version: int | None = None
     if executable_bytes is None:
         errors.append(
             f"archive is missing expected platform executable file {executable}"
@@ -1533,7 +1698,7 @@ def validate_payload(
         embedded_modules: set[str] = set()
     else:
         try:
-            embedded_modules = _pyinstaller_modules(executable_bytes)
+            executable_evidence = _pyinstaller_evidence(executable_bytes)
         except (
             EOFError,
             ImportError,
@@ -1544,11 +1709,40 @@ def validate_payload(
             struct.error,
             zlib.error,
         ):
-            embedded_modules = set()
+            executable_evidence = None
+        embedded_modules = executable_evidence[2] if executable_evidence else set()
         if not embedded_modules:
             errors.append(
                 "platform executable has no readable PyInstaller module table"
             )
+        elif executable_evidence is not None:
+            version, library, _modules = executable_evidence
+            if not re.fullmatch(
+                rf"(?:python{version}t?\.dll|libpython{version // 100}\.{version % 100}t?\.so(?:\.\d+)*)",
+                library,
+            ):
+                errors.append("executable Python version and library disagree")
+            elif (
+                archive_file(library) is None
+                and archive_file(f"_internal/{library}") is None
+            ):
+                errors.append(f"executable Python library is absent: {library}")
+            else:
+                python_version = version
+
+    # The supported aiohttp/aiosignal markers require this only below Python 3.13.
+    typing_extensions_required = python_version is None or python_version < 313
+    typing_extensions_shipped = any(
+        module == "typing_extensions" or module.startswith("typing_extensions.")
+        for module in embedded_modules
+    ) or any(
+        re.search(
+            r"/typing_extensions(?:/|(?:\.[^/]+)?\.(?:pyc?|pyd|so)$)",
+            name.casefold(),
+        )
+        for name, _value in normalized.values()
+        if name.startswith(f"{ARTIFACT_ROOT}/")
+    )
 
     required_documents = string_list(
         inventory.get("required_documents"), "inventory required_documents"
@@ -1574,7 +1768,7 @@ def validate_payload(
         build_roots = string_list(
             generation.get("build_roots"), "inventory generation.build_roots"
         )
-        if runtime_roots != ["PySide6", "sdc11073"]:
+        if runtime_roots != ["PySide6", "cryptography", "sdc11073"]:
             errors.append(
                 "inventory generation.runtime_roots is not the code-owned root set"
             )
@@ -1691,6 +1885,12 @@ def validate_payload(
             component_names.append(raw_name)
         for field in ("version", "scope", "license_expression"):
             string_field(component.get(field), f"{label}.{field}")
+        if raw_name == "Python" and python_version is not None:
+            if not re.match(
+                rf"^{python_version // 100}\.{python_version % 100}\.",
+                str(component.get("version")),
+            ):
+                errors.append("Python.version does not match executable runtime")
         validate_urls(component, label)
         notices = validate_notices(component, label)
         evidence = object_field(
@@ -1759,6 +1959,8 @@ def validate_payload(
         "aiohttp",
         "aiosignal",
         "attrs",
+        "cffi",
+        "cryptography",
         "frozenlist",
         "idna",
         "ifaddr",
@@ -1772,9 +1974,10 @@ def validate_payload(
         "Qt",
         "sdc11073",
         "shiboken6",
-        "typing_extensions",
         "yarl",
     }
+    if typing_extensions_required or typing_extensions_shipped:
+        expected_component_names.add("typing_extensions")
     missing_components = expected_component_names - set(component_names)
     unexpected_components = set(component_names) - expected_component_names
     for name in sorted(missing_components):
@@ -1813,7 +2016,7 @@ def validate_payload(
         for entry in build_only + resolved_not_packaged
         if isinstance(entry.get("name"), str)
     }
-    for expected in ("pyinstaller-hooks-contrib", "PySide6_Addons"):
+    for expected in ("pycparser", "pyinstaller-hooks-contrib", "PySide6_Addons"):
         if expected not in classified_names:
             errors.append(
                 f"inventory does not classify expected unbundled distribution {expected}"
@@ -1848,20 +2051,24 @@ def validate_payload(
         "aiohttp",
         "aiosignal",
         "attrs",
+        "cffi",
+        "cryptography",
         "frozenlist",
         "idna",
         "ifaddr",
         "lxml",
         "multidict",
         "propcache",
+        "pycparser",
         "PySide6",
         "PySide6_Addons",
         "PySide6_Essentials",
         "sdc11073",
         "shiboken6",
-        "typing_extensions",
         "yarl",
     }
+    if typing_extensions_required:
+        expected_runtime.add("typing_extensions")
     if set(resolved_names) != expected_runtime or len(resolved_names) != len(
         expected_runtime
     ):
@@ -1938,7 +2145,19 @@ def validate_payload(
             copyright_path = (
                 f"{LEGAL_ROOT}/licenses/debian/{package.replace(':', '_')}/copyright"
             )
-            rules = ((copyright_path, ("Format:", "License:")),)
+            copyright_bytes = archive_file(copyright_path)
+            copyright_text = (
+                copyright_bytes.decode("utf-8", errors="replace")
+                if copyright_bytes else ""
+            )
+            common_licenses = sorted(set(_DEBIAN_COMMON_LICENSE.findall(copyright_text)))
+            rules = (
+                (copyright_path, ("Format:", "License:")),
+                *(
+                    (f"{LEGAL_ROOT}/licenses/debian/common/{common}", ())
+                    for common in common_licenses
+                ),
+            )
         if rules is None:
             errors.append(f"{label}: no code-owned component-specific notice mapping")
         else:
@@ -2040,6 +2259,18 @@ def validate_payload(
         for path in qt_paths
     ):
         errors.append("Qt inventory has no separately packaged shared library")
+    if qt and any(_QT_IMAGEFORMATS_PLUGIN.search(name) for name in archive_names):
+        qt_version = qt.get("version")
+        imageformats_archive = (
+            "https://download.qt.io/official_releases/qt/"
+            f"{'.'.join(str(qt_version).split('.')[:2])}/{qt_version}/submodules/"
+            f"qtimageformats-everywhere-src-{qt_version}.tar.xz"
+        )
+        urls = qt.get("source_archive_urls")
+        if not isinstance(urls, list) or imageformats_archive not in urls:
+            errors.append(
+                "Qt: missing exact-version qtimageformats corresponding-source archive URL"
+            )
     if any("qt6pdf" in name or "virtualkeyboard" in name for name in lowered):
         errors.append(
             "artifact contains excluded unused Qt PDF or Virtual Keyboard payload"

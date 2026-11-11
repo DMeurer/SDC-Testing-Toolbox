@@ -77,6 +77,66 @@ def number(**kwargs) -> WidgetSpec:  # noqa: ANN003
     return WidgetSpec(handle="m.n", label="N", kind=MetricKind.NUMBER, **kwargs)
 
 
+def check_exact_numeric_controls(app: QApplication, report: Report) -> None:
+    """A small adjustment must not round away the low digits of a wire value."""
+    print("\nExact numeric controls")
+    for lower, upper, step, next_value in (
+        ("1000000000000000000000000000000", "1000000000000000000000000000100", "1", "1000000000000000000000000000001"),
+        ("-1000000000000000000000000000100", "-1000000000000000000000000000000", "1", "-1000000000000000000000000000099"),
+        ("1000000000000000000000000000000.00", "1000000000000000000000000000001.00", "0.01", "1000000000000000000000000000000.01"),
+        ("-1.25", "1.25", "0.25", "-1.00"),
+    ):
+        control = build_widget(number(editable=True, allowed_ranges=(RemoteRange(Decimal(lower), Decimal(upper), Decimal(step)),)))
+        emitted = []
+        control.value_requested.connect(lambda _h, value, target=emitted: target.append(value))
+        report.check(isinstance(control, SliderWidget), f"{lower} with step {step} uses a slider")
+        control.show_value(Decimal(next_value))
+        report.check(control.slider.value() == 1, f"{next_value} maps back to position 1")
+        report.check(control._position_to_value(1) == Decimal(next_value), f"position 1 preserves {next_value}")  # noqa: SLF001
+        control.show_value(Decimal(lower))
+        control.slider.setSliderDown(True)
+        control.slider.setValue(1)
+        report.check(not emitted, f"dragging from {lower} sends nothing before release")
+        control.slider.setSliderDown(False)
+        report.check(emitted == [Decimal(next_value)], f"release sends exact {next_value}", str(emitted))
+        emitted.clear()
+        control.show()
+        control.activateWindow()
+        control.slider.setFocus()
+        app.processEvents()
+        control.show_value(Decimal(lower))
+        QTest.keyClick(control.slider, Qt.Key_Right)
+        report.check(emitted == [Decimal(next_value)], f"keyboard sends exact {next_value}", str(emitted))
+        report.check(Decimal(control.readout.text()) == Decimal(next_value), f"the readout retains {next_value}")
+        control.close()
+        control.deleteLater()
+
+    crossing = build_widget(number(
+        minimum=Decimal("-1000000000000000000000000000000"),
+        maximum=Decimal("1000000000000000000000000000100"),
+        resolution=Decimal("200000000000000000000000000000"),
+    ))
+    report.check(crossing.slider.maximum() == 11, "a non-aligned large span keeps its separate upper endpoint")
+    crossing.show_value(Decimal("999999999999999999999999999999"))
+    report.check(crossing.slider.value() == 9, "inverse mapping does not round a value up onto the next position")
+    crossing.deleteLater()
+
+    for start, expected in (
+        ("1000000000000000000000000000000", "1000000000000000000000000000001"),
+        ("-1000000000000000000000000000100", "-1000000000000000000000000000099"),
+        ("1000000000000000000000000000000.25", "1000000000000000000000000000001.25"),
+        ("-1.25", "-0.25"),
+    ):
+        control = build_widget(number(editable=True))
+        emitted = []
+        control.value_requested.connect(lambda _h, value, target=emitted: target.append(value))
+        control.show_value(Decimal(start))
+        control.buttons[2].click()
+        report.check(emitted == [Decimal(expected)], f"stepper +1 sends exact {expected}", str(emitted))
+        report.check(Decimal(control.edit.text()) == Decimal(expected), f"stepper +1 displays exact {expected}")
+        control.deleteLater()
+
+
 # (description, spec, expected control)
 CHOICES = [
     (
@@ -97,6 +157,14 @@ CHOICES = [
     (
         "a fractional resolution still gets a slider",
         number(minimum=Decimal("0"), maximum=Decimal("40"), resolution=Decimal("0.1")),
+        SliderWidget,
+    ),
+    (
+        "technical bounds without operation limits still get a slider",
+        number(
+            resolution=Decimal("0.1"),
+            technical_ranges=(RemoteRange(Decimal("1"), Decimal("100"), Decimal("1")),),
+        ),
         SliderWidget,
     ),
     (
@@ -229,6 +297,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
     QMessageBox.warning = staticmethod(lambda *_a, **_k: QMessageBox.StandardButton.Ok)
 
     check_shapes_are_reachable(report)
+    check_exact_numeric_controls(app, report)
 
     print("\n1. Which control represents which metric")
     for description, spec, expected in CHOICES:

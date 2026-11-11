@@ -1,0 +1,4 @@
+[SDC-Testing-Toolbox]
+title=SDC Testing Toolbox
+description=IEEE 11073 SDC learning tool: WS-Discovery on UDP 3702 and the toolbox's own TCP and UDP ports 21073-21172.
+ports=3702/udp|21073:21172/udp|21073:21172/tcp

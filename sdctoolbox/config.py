@@ -8,6 +8,7 @@ replaces tracked metrics, alerts, and actions by default, or appends them with `
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass, field, fields
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -48,9 +49,11 @@ from .model import (
     patient_measurement_wire_value,
     slugify,
     validate_decimal,
+    validate_xml_text,
 )
 
 if TYPE_CHECKING:
+    from .mdib_io import NativeMdibConfig
     from .provider_service import ProviderService
 
 # Version 3 adds per-alert signal manifestation and latching settings. Earlier profiles remain
@@ -59,6 +62,9 @@ CONFIG_VERSION = 3
 LEGACY_CONFIG_VERSION = 1
 
 FILE_SUFFIX = ".sdcprofile.json"
+JSON_FILE_FILTER = "SDC toolbox config (*.json)"
+MDIB_FILE_FILTER = "Native MDIB (*.xml)"
+FILE_FILTER = f"{JSON_FILE_FILTER};;{MDIB_FILE_FILTER};;All files (*)"
 
 _TOP_LEVEL_KEYS = {"version", "name", "description", "device", "metrics", "alerts", "actions", "contexts"}
 _METRIC_KEYS = {
@@ -108,6 +114,18 @@ _FIXED_DESCRIPTOR_HANDLES = {
 
 class ConfigError(Exception):
     """A config file could not be read, or does not describe a usable device."""
+
+
+def export_path(filename: str | Path, selected_filter: str) -> Path:
+    """Respect an explicit export format without silently changing a conflicting suffix."""
+    target = Path(filename)
+    suffix = {JSON_FILE_FILTER: ".json", MDIB_FILE_FILTER: ".xml"}.get(selected_filter)
+    if suffix is not None:
+        if target.suffix and target.suffix.lower() != suffix:
+            raise ConfigError(f"filename suffix {target.suffix!r} conflicts with the selected {suffix} format")
+        if not target.suffix:
+            target = target.with_suffix(suffix)
+    return target
 
 
 _JSON_TYPE_NAMES = {
@@ -179,7 +197,7 @@ class Preset:
     def summary(self) -> str:
         """What the file contains, for a menu entry or a dropdown."""
         parts = [f"{self.metrics} data source(s)", f"{self.alerts} alarm(s)"]
-        return ", ".join(parts)
+        return ("Native MDIB; " if self.path.suffix.lower() == ".xml" else "") + ", ".join(parts)
 
 
 def list_presets(directory: str | Path | None = None) -> list[Preset]:
@@ -196,7 +214,7 @@ def list_presets(directory: str | Path | None = None) -> list[Preset]:
     found = []
     for path in sorted(folder.glob("*.json")):
         try:
-            data = json.loads(path.read_text(encoding="utf-8"), parse_float=Decimal)
+            data = json.loads(path.read_text(encoding="utf-8-sig"), parse_float=Decimal)
             device = parse(data)
         except (OSError, UnicodeError, ValueError, RecursionError, ConfigError):
             continue
@@ -209,6 +227,21 @@ def list_presets(directory: str | Path | None = None) -> list[Preset]:
                 alerts=len(device.alerts),
             ),
         )
+    from .mdib_io import parse_mdib
+    from .native_mdib import label
+
+    for path in sorted(folder.glob("*.xml")):
+        try:
+            mdib = parse_mdib(path.read_bytes())
+        except (OSError, ConfigError):
+            continue
+        descriptors = list(mdib.descriptions.objects)
+        root = next(descriptor for descriptor in descriptors if descriptor.parent_handle is None)
+        found.append(Preset(
+            path=path, name=f"{label(root)} [MDIB]", description="Native combined MDIB snapshot; loading restarts the provider.",
+            metrics=sum(descriptor.is_metric_descriptor for descriptor in descriptors),
+            alerts=sum(descriptor.is_alert_condition_descriptor for descriptor in descriptors),
+        ))
     found.sort(key=lambda preset: preset.name.lower())
     return found
 
@@ -421,12 +454,7 @@ def action_from_dict(entry: dict[str, Any], metrics: dict[str, MetricSpec]) -> A
 
 
 def _context_to_dict(service: ProviderService) -> dict[str, Any]:
-    """Patient and location, omitted entirely when neither was filled in.
-
-    Location is always present in practice, since every provider publishes a default one as
-    a discovery scope, but a config that only describes data sources should not grow a
-    patient block full of empty strings.
-    """
+    """Capture contexts, including an explicit empty patient instruction for a detach."""
     contexts: dict[str, Any] = {}
     location = service.get_location()
     if not location.is_empty():
@@ -465,6 +493,8 @@ def _context_to_dict(service: ProviderService) -> dict[str, Any]:
         if patient.race is not None:
             patient_data["race"] = _coding_to_json(patient.race, "")
         contexts["patient"] = patient_data
+    else:
+        contexts["patient"] = {}
     return contexts
 
 
@@ -474,9 +504,13 @@ def to_dict(service: ProviderService, *, include_values: bool = True) -> dict[st
     :param include_values: record each metric's current value as its initial_value, so that
         reloading the file reproduces what is on screen rather than an empty device.
     """
+    if getattr(service, "native_mode", False):
+        raise ConfigError("native MDIB state cannot be exported as a JSON profile; export an .xml MDIB instead")
     metrics = []
     for handle, spec in sorted(service.list_metrics().items()):
         entry = metric_to_dict(handle, spec)
+        # Capability survives disabling; current OperatingMode is not part of a profile.
+        entry["controllable"] = service.operation_handle_for(handle) is not None
         # A sample array's samples are generated or pushed, not configured, so recording
         # a block of them as an initial value would be recording noise.
         if include_values and not spec.is_sample_array:
@@ -508,13 +542,33 @@ def to_dict(service: ProviderService, *, include_values: bool = True) -> dict[st
     return payload
 
 
+def write_atomically(target: Path, data: str | bytes) -> None:
+    """Replace target in one step, keeping the old file whole if writing fails.
+
+    The temporary file is created by hand because tempfile treats a refused create as a name
+    clash on Windows and retries about two billion times, which froze a save into a folder
+    the user may not write to. Here a refused create is raised as it is, at once.
+    """
+    binary = isinstance(data, bytes)
+    temporary = target.parent / f".sdctoolbox-{uuid.uuid4().hex[:8]}.tmp"
+    output = temporary.open("xb" if binary else "x", encoding=None if binary else "utf-8")
+    try:
+        with output:
+            output.write(data)
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def save(service: ProviderService, path: str | Path, *, include_values: bool = True) -> Path:
-    """Write a running provider's configuration to a file."""
+    """Atomically replace a profile, preserving the old file if writing fails."""
     target = Path(path)
-    target.write_text(
-        json.dumps(to_dict(service, include_values=include_values), indent=2) + "\n",
-        encoding="utf-8",
-    )
+    if target.suffix.lower() == ".xml":
+        from .mdib_io import save_mdib
+
+        return save_mdib(service, target)
+    payload = json.dumps(to_dict(service, include_values=include_values), indent=2) + "\n"
+    write_atomically(target, payload)
     return target
 
 
@@ -701,7 +755,12 @@ def _device_from_dict(data: Any) -> tuple[DeviceInfo | None, str]:
     _check_keys(data, known, "device")
     _check_types(data, {name: str for name in known}, "device")
     values = {key: value for key, value in data.items() if key != "instance_name"}
-    return DeviceInfo(**values), data.get("instance_name") or ""
+    instance_name = data.get("instance_name") or ""
+    try:
+        validate_xml_text(instance_name, "device instance_name")
+        return DeviceInfo(**values), instance_name
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
 
 
 def _required_coding_from_json(raw: Any, field: str) -> Coding:
@@ -823,7 +882,9 @@ def _contexts_from_dict(data: Any) -> tuple[LocationInfo | None, PatientInfo | N
         _check_keys(raw, allowed, field)
         _check_types(raw, {key: str for key in allowed}, field)
         try:
-            return cls(**raw)
+            context = cls(**raw)
+            context.validate_text()
+            return context
         except (TypeError, ValueError) as exc:
             msg = f"{field}: {exc}"
             raise ConfigError(msg) from exc
@@ -860,6 +921,13 @@ def parse(data: Any) -> DeviceConfig:
         )
         raise ConfigError(msg)
 
+    # Never announced, but listed in the preset menu, and a profile refuses text XML cannot carry everywhere else.
+    for key in ("name", "description"):
+        try:
+            validate_xml_text(data.get(key, ""), f"top level.{key}")
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
+
     device, instance_name = _device_from_dict(data.get("device"))
     metrics = [metric_from_dict(entry) for entry in data.get("metrics", [])]
     alerts = [alert_from_dict(entry) for entry in data.get("alerts", [])]
@@ -893,16 +961,23 @@ def parse(data: Any) -> DeviceConfig:
     )
 
 
-def load_file(path: str | Path) -> DeviceConfig:
+def load_file(path: str | Path) -> DeviceConfig | NativeMdibConfig:
     """Read and validate a config file without touching any provider."""
     source = Path(path)
+    if source.suffix.lower() == ".xml":
+        from .mdib_io import load_mdib_file
+
+        return load_mdib_file(source)
     try:
-        text = source.read_text(encoding="utf-8")
+        text = source.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeError) as exc:
         msg = f"cannot read {source}: {exc}"
         raise ConfigError(msg) from exc
     try:
         data = json.loads(text, parse_float=Decimal)
+    except RecursionError as exc:
+        msg = f"{source} is nested too deeply to read"
+        raise ConfigError(msg) from exc
     except ValueError as exc:
         msg = f"{source} is not valid JSON: {exc}"
         raise ConfigError(msg) from exc
@@ -975,7 +1050,7 @@ def _resolve_metric_handles(
 
 def apply_to(
     service: ProviderService,
-    device: DeviceConfig,
+    device: DeviceConfig | NativeMdibConfig,
     *,
     replace: bool = True,
 ) -> tuple[int, int]:
@@ -989,6 +1064,12 @@ def apply_to(
         compensated back to the pre-import graph.
     """
     try:
+        from .mdib_io import NativeMdibConfig
+
+        if isinstance(device, NativeMdibConfig):
+            if not replace:
+                raise ConfigError("native MDIB import replaces the whole device; append is not supported")
+            return service.replace_mdib(device)
         return service.import_profile(device, replace=replace)
     except Exception as exc:
         msg = str(exc) or type(exc).__name__

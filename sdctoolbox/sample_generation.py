@@ -34,6 +34,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger("sdctoolbox.provider")
 
 WAVEFORM_BLOCK_SECONDS = constants.WAVEFORM_BLOCK_SECONDS
+# Blocks that fell due during a longer stall are not replayed; the stream restarts from the present.
+MAX_CATCH_UP_SECONDS = 1.0
 DISTRIBUTION_BINS = 32
 DISTRIBUTION_WIDTH = 0.12
 DISTRIBUTION_DRIFT = 0.02
@@ -75,11 +77,21 @@ class SamplePublisher:
         if entity is None:
             msg = f"no metric with handle {handle!r}"
             raise KeyError(msg)
+        ranges = entity.descriptor.TechnicalRange
+        # Sample granularity is not a setpoint grid: enforce bounds, not StepWidth.
+        for sample in prepared:
+            if ranges and not any(
+                (limit.Lower is None or sample >= limit.Lower)
+                and (limit.Upper is None or sample <= limit.Upper)
+                for limit in ranges
+            ):
+                msg = f"sample {sample} is outside the TechnicalRange of {handle!r}"
+                raise ValueError(msg)
         if entity.state.MetricValue is None:
             entity.state.mk_metric_value()
         entity.state.MetricValue.Samples = prepared
         entity.state.MetricValue.DeterminationTime = determination_time
-        entity.state.MetricValue.Validity = pm_types.MeasurementValidity.VALID
+        entity.state.MetricValue.MetricQuality.Validity = pm_types.MeasurementValidity.VALID
         entity.state.MetricValue.MetricQuality.Mode = pm_types.GenerationMode.DEMO
         entity.state.ActivationState = pm_types.ComponentActivation.ON
 
@@ -280,6 +292,19 @@ class DemoSampleGenerator:
         ]
         return block, (phase + count / cycle) % 1.0
 
+    def _schedule(self, handle: str, now: float) -> tuple[float, bool]:
+        """Return when the source's block fell due and whether its stream starts over.
+
+        Every deadline continues from the previous one, so a wake-up that is a few
+        milliseconds late is made up for by the next wake-up instead of slowing the
+        stream down for good. A new source, or one that stalled for longer than
+        MAX_CATCH_UP_SECONDS, starts over from the present.
+        """
+        due = self.deadlines.get(handle)
+        if due is None or now - due > MAX_CATCH_UP_SECONDS:
+            return now, True
+        return due, False
+
     def _publish_waveform_sources(self, sources: Sequence[tuple[str, MetricSpec]], now: float) -> None:
         prepared = []
         updates: dict[str, tuple[float, float, float]] = {}
@@ -288,10 +313,10 @@ class DemoSampleGenerator:
             try:
                 block, next_phase = self.next_block(handle, spec)
                 period = float(spec.sample_period)
-                first_time = self.next_waveform_times.get(
-                    handle,
-                    wall_time - max(0, len(block) - 1) * period,
-                )
+                due, restart = self._schedule(handle, now)
+                first_time = self.next_waveform_times.get(handle)
+                if restart or first_time is None:
+                    first_time = wall_time - max(0, len(block) - 1) * period
                 item = self._publisher.prepare(
                     handle,
                     block,
@@ -307,7 +332,7 @@ class DemoSampleGenerator:
             updates[handle] = (
                 next_phase,
                 first_time + len(block) * period,
-                now + len(block) * period,
+                due + len(block) * period,
             )
 
         committed = self._publish_family(
@@ -348,7 +373,7 @@ class DemoSampleGenerator:
         )
         for handle in committed:
             self.phases[handle] = updates[handle]
-            self.deadlines[handle] = now + WAVEFORM_BLOCK_SECONDS
+            self.deadlines[handle] = self._schedule(handle, now)[0] + WAVEFORM_BLOCK_SECONDS
 
     def _publish_family(
         self,
@@ -385,6 +410,16 @@ class DemoSampleGenerator:
             exc_info=exc_info,
         )
 
+    def seconds_until_next_block(self) -> float:
+        """How long the worker may sleep before some source is due."""
+        with self._lock:
+            active = [
+                self.deadlines.get(handle, self._monotonic())
+                for handle, spec in self._specs().items()
+                if spec.is_sample_array and handle not in self.pinned and handle not in self.quarantined
+            ]
+        return max(0.0, min(active) - self._monotonic()) if active else WAVEFORM_BLOCK_SECONDS
+
     def _run(self) -> None:
         failure_logged = False
         while not self._stop.is_set():
@@ -395,14 +430,7 @@ class DemoSampleGenerator:
                 if not failure_logged:
                     logger.exception("sample generator failed; retrying")
                     failure_logged = True
-            with self._lock:
-                active = [
-                    self.deadlines.get(handle, self._monotonic())
-                    for handle, spec in self._specs().items()
-                    if spec.is_sample_array and handle not in self.pinned and handle not in self.quarantined
-                ]
-            delay = max(0.0, min(active) - self._monotonic()) if active else WAVEFORM_BLOCK_SECONDS
-            self._stop.wait(delay)
+            self._stop.wait(self.seconds_until_next_block())
 
 
 def domain_step(spec: MetricSpec) -> Decimal:

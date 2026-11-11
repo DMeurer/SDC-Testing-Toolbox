@@ -14,18 +14,22 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from gui_test_support import Report, WindowFixture, pump, wait_for
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSignalBlocker, Qt
+from PySide6.QtGui import QPalette
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QSizePolicy
+from PySide6.QtWidgets import QDialog, QLabel, QLineEdit, QSizePolicy
 from sdc11073.xml_types import msg_types
 
 from sdctoolbox.gui.consumer_pane import ACTION_BUTTON_TEXT_WIDTH, ACTION_BUTTON_WIDTH
+from sdctoolbox.gui.styling import mark_as_error, mute
 from sdctoolbox.model import MetricKind, MetricSpec, RemoteAction
 
 LINE_SEPARATORS = "\r\n\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 
 
 class ActionRemote:
+    epr = "urn:uuid:688e31cd-777a-4a56-9706-6b4149c95f20"
+
     def __init__(self, actions: dict[str, RemoteAction]) -> None:
         self._actions = actions
         self.invoked: list[str] = []
@@ -63,6 +67,142 @@ def stretched_empty_columns(board) -> list[int]:
         for column in range(board._grid.columnCount())
         if column not in used and board._grid.columnStretch(column) > 0
     ]
+
+
+def menu_key_checks(report: Report, fixture: WindowFixture) -> None:
+    """Only a complete bare-Alt gesture may reveal an unpinned menu."""
+    window, app = fixture.window, fixture.app
+    original_pinned = window.always_show_menu
+    editor = QLineEdit("keyboard target", window)
+    editor.show()
+    window.activateWindow()
+    try:
+        window.set_always_show_menu(False)
+        for key in (Qt.Key_F11, Qt.Key_X, Qt.Key_Left):
+            editor.setFocus()
+            QTest.keyClick(editor, key, Qt.AltModifier)
+            pump(app)
+            report.check(window.menuBar().isHidden(),
+                         f"Alt+{key.name} does not act like bare Alt, including child-consumed keys")
+            window.menuBar().hide()
+        QTest.keyClick(editor, Qt.Key_Alt, Qt.ControlModifier)
+        pump(app)
+        report.check(window.menuBar().isHidden(), "Ctrl+Alt does not reveal the menu")
+        QTest.keyClick(editor, Qt.Key_Alt)
+        pump(app)
+        report.check(window.menuBar().isVisible(), "bare Alt still reveals the unpinned menu")
+        QTest.keyClick(window.menuBar(), Qt.Key_Alt)
+        pump(app)
+        report.check(window.menuBar().isHidden(), "a second bare Alt hides it again")
+        window.set_always_show_menu(True)
+        QTest.keyClick(editor, Qt.Key_Alt)
+        pump(app)
+        report.check(window.menuBar().isVisible(), "bare Alt never hides a pinned menu")
+    finally:
+        window.set_always_show_menu(original_pinned)
+        editor.close()
+        editor.deleteLater()
+        pump(app)
+
+
+def theme_checks(report: Report, fixture: WindowFixture) -> None:
+    window = fixture.window
+    assert window is not None
+    app = fixture.app
+    view_menu = next(
+        action.menu() for action in window.menuBar().actions()
+        if action.text().replace("&", "") == "View"
+    )
+    action = next(
+        (action for action in view_menu.actions()
+         if action.text().replace("&", "") == "Dark mode"),
+        None,
+    )
+    report.check(action is not None and action.isCheckable(), "View offers a light/dark toggle")
+    if action is None:
+        return
+
+    original_palette = app.palette()
+    original_scheme = app.styleHints().colorScheme()
+    original_checked = action.isChecked()
+    original_text_palettes = [
+        (widget, widget.palette()) for widget in app.allWidgets()
+        if widget.property("_toolboxTextStyle") in ("muted", "error")
+    ]
+    report.check(
+        action.isChecked() == (window.palette().color(QPalette.Window).lightness() < 128),
+        "the theme toggle initially matches the visible theme",
+    )
+    error_label = QLabel("Theme validation error", window)
+    mark_as_error(error_label)
+    editor = QLineEdit("unsaved draft", window)
+    original_pane = window.network_pane
+    inactive_pane = window.network_tabs.add_connection()
+    window.network_tabs.setCurrentWidget(original_pane)
+
+    def contrast(foreground, background) -> float:
+        def luminance(colour) -> float:
+            channels = (colour.redF(), colour.greenF(), colour.blueF())
+            linear = [value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
+                      for value in channels]
+            return sum(value * weight for value, weight in zip(linear, (0.2126, 0.7152, 0.0722)))
+        low, high = sorted((luminance(foreground), luminance(background)))
+        return (high + 0.05) / (low + 0.05)
+
+    try:
+        for dark in (True, False, True, False):
+            if action.isChecked() != dark:
+                action.trigger()
+            pump(app)
+            mode = "dark" if dark else "light"
+            for widget in (window, window.provider_pane, window.network_pane, editor):
+                report.check(
+                    (widget.palette().color(QPalette.Window).lightness() < 128) == dark,
+                    f"{mode} mode updates existing {type(widget).__name__} backgrounds",
+                )
+            report.check(editor.text() == "unsaved draft", "theme switches preserve draft text")
+            for pane in (window.provider_pane, original_pane, inactive_pane):
+                for table in (pane.table, pane.alert_table):
+                    report.check(
+                        (table.viewport().palette().color(QPalette.Base).lightness() < 128) == dark
+                        and (table.horizontalHeader().palette().color(QPalette.Window).lightness() < 128) == dark,
+                        f"{mode} mode updates table bodies and headers, including inactive tabs",
+                    )
+            for label in (window.provider_pane.context_label, window.network_pane.context_label, error_label):
+                palette = label.palette()
+                report.check(
+                    contrast(palette.color(QPalette.WindowText), palette.color(QPalette.Window)) >= 4.5,
+                    f"{mode} mode keeps existing hint/error text readable",
+                )
+            palette = editor.palette()
+            report.check(
+                contrast(palette.color(QPalette.Text), palette.color(QPalette.Base)) >= 4.5,
+                f"{mode} mode keeps editor text readable",
+            )
+            report.check(
+                contrast(palette.color(QPalette.HighlightedText), palette.color(QPalette.Highlight)) >= 4.5,
+                f"{mode} mode keeps selected text readable",
+            )
+            dialog = QDialog(window)
+            hint = QLabel("New dialog hint", dialog)
+            mute(hint)
+            report.check(
+                (dialog.palette().color(QPalette.Window).lightness() < 128) == dark
+                and contrast(hint.palette().color(QPalette.WindowText), hint.palette().color(QPalette.Window)) >= 4.5,
+                f"{mode} mode applies to newly created dialogs and hints",
+            )
+            dialog.deleteLater()
+    finally:
+        with QSignalBlocker(action):
+            action.setChecked(original_checked)
+        app.styleHints().setColorScheme(original_scheme)
+        app.setPalette(original_palette)
+        for widget, palette in original_text_palettes:
+            widget.setPalette(palette)
+        editor.deleteLater()
+        error_label.deleteLater()
+        window.network_tabs.close_connection(window.network_tabs.indexOf(inactive_pane))
+        pump(app)
 
 
 def remote_action_checks(report: Report, fixture: WindowFixture) -> None:
@@ -268,6 +408,9 @@ def main() -> int:
         service = fixture.service
         window = fixture.window
         assert window is not None
+
+        menu_key_checks(report, fixture)
+        theme_checks(report, fixture)
 
         report.check(window.splitter.count() == 2, "split view contains both panels")
         report.check(window.splitter.orientation() == Qt.Horizontal, "split panels are side by side")

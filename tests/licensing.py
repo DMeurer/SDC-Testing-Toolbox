@@ -4,12 +4,26 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
+import lzma
+import marshal
+import os
+import re
+import shutil
+import struct
+import subprocess
 import sys
+import sysconfig
 import tarfile
 import zipfile
+import zlib
 from collections.abc import Callable
+from email.message import Message
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from unittest.mock import patch
 
 TESTS = Path(__file__).resolve().parent
 ROOT = TESTS.parent
@@ -19,9 +33,12 @@ sys.path.insert(0, str(TESTS))
 from legal_payload import (  # noqa: I001 - ROOT must precede local imports
     ARTIFACT_ROOT,
     INVENTORY_NAME,
+    LINUX_HOST_LIBRARIES,
+    REQUIRED_DOCUMENTS,
     filter_binaries,
     validate_payload,
 )
+import legal_payload
 from script_support import Report
 
 
@@ -31,9 +48,166 @@ PINNED_LEGAL_SHA256 = {
     "legal/licenses/qt/Qt-GPL-exception-1.0.txt": "40678d338ce53cd93f8b22b281a2ecbcaa3ee65ce60b25ffb0c462b0530846b2",
     "legal/licenses/openssl/Apache-2.0.txt": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a",
 }
+# Source tree only: Windows wheels ship their own CRLF copy of this notice.
+QT_WHEEL_NOTICE_SHA256 = "9b1f50aae6267f9d5e0ceb6775ee86450262c25ec7c0573e151fe5d3f18a4700"
+
+
+PACKAGE_BUNDLE_PREFIX = {
+    "deb": "opt/sdc-testing-toolbox/",
+    "rpm": "opt/sdc-testing-toolbox/",
+    "appimage": "usr/lib/sdc-testing-toolbox/",
+}
+
+
+def _package_kind(path: Path) -> str | None:
+    """deb, rpm or appimage by magic bytes; None for anything zip/tar should try."""
+    with path.open("rb") as stream:
+        head = stream.read(11)
+    if head.startswith(b"!<arch>\n"):
+        return "deb"
+    if head.startswith(b"\xed\xab\xee\xdb"):
+        return "rpm"
+    if head.startswith(b"\x7fELF"):
+        if head[8:11] == b"AI\x02":
+            return "appimage"
+        raise ValueError(f"unsupported or invalid archive: {path}")
+    return None
+
+
+def _tar_regular_files(data: bytes) -> dict[str, bytes]:
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as archive:
+        return {
+            member.name.removeprefix("./"): extracted.read()
+            for member in archive.getmembers()
+            if member.isfile() and (extracted := archive.extractfile(member)) is not None
+        }
+
+
+def _deb_members(data: bytes) -> dict[str, bytes]:
+    offset, members = 8, {}
+    while offset + 60 <= len(data):
+        header = data[offset : offset + 60]
+        if header[58:60] != b"`\n":
+            raise ValueError("deb has a malformed ar member header")
+        size = int(header[48:58])
+        members[header[:16].decode("ascii").strip().rstrip("/")] = data[
+            offset + 60 : offset + 60 + size
+        ]
+        offset += 60 + size + size % 2
+    payload = next((name for name in members if name.startswith("data.tar")), None)
+    if payload is None:
+        raise ValueError("deb has no data.tar member")
+    if payload.endswith(".zst"):
+        raise ValueError(f"deb payload {payload} uses zstd, which Python 3.12 cannot read")
+    return _tar_regular_files(members[payload])
+
+
+def _rpm_members(data: bytes) -> dict[str, bytes]:
+    offset = 96
+    for padded in (True, False):  # the signature header, then the main header
+        if data[offset : offset + 3] != b"\x8e\xad\xe8":
+            raise ValueError("rpm header magic missing")
+        entries, store = struct.unpack("!II", data[offset + 8 : offset + 16])
+        offset += 16 + 16 * entries + store
+        if padded:
+            offset += -offset % 8
+    payload = data[offset:]
+    if payload.startswith(b"\xfd7zXZ\x00"):
+        cpio = lzma.decompress(payload)
+    elif payload.startswith(b"\x1f\x8b"):
+        cpio = zlib.decompress(payload, 16 + zlib.MAX_WBITS)
+    elif payload.startswith(b"\x28\xb5\x2f\xfd"):
+        raise ValueError("rpm payload uses zstd, which Python 3.12 cannot read")
+    else:
+        raise ValueError("rpm payload compression is unsupported")
+    files, offset = {}, 0
+    while True:
+        if cpio[offset : offset + 6] not in (b"070701", b"070702"):
+            raise ValueError("rpm payload is not a newc cpio archive")
+        fields = [int(cpio[offset + 6 + 8 * i : offset + 14 + 8 * i], 16) for i in range(13)]
+        mode, size, name_size = fields[1], fields[6], fields[11]
+        name = cpio[offset + 110 : offset + 109 + name_size].decode("utf-8")
+        offset += 110 + name_size
+        offset += -offset % 4
+        content = cpio[offset : offset + size]
+        offset += size + -size % 4
+        if name == "TRAILER!!!":
+            return files
+        if mode & 0o170000 == 0o100000:
+            files[name.removeprefix("./").removeprefix("/")] = content
+
+
+def _appimage_members(path: Path) -> dict[str, bytes]:
+    if not sys.platform.startswith("linux"):
+        raise ValueError("AppImage inspection needs Linux")
+    with TemporaryDirectory(prefix="sdctoolbox-appimage-") as temporary:
+        runnable = Path(temporary) / "artifact.AppImage"
+        shutil.copyfile(path, runnable)
+        runnable.chmod(0o755)
+        try:
+            subprocess.run(
+                [str(runnable), "--appimage-extract"],
+                cwd=temporary, check=True, capture_output=True, timeout=600,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise ValueError(f"AppImage extraction failed: {error}") from error
+        root = Path(temporary) / "squashfs-root"
+        files = {}
+        for directory, _subdirectories, names in os.walk(root):
+            for name in names:
+                member = Path(directory) / name
+                if member.is_file() and not member.is_symlink():
+                    files[member.relative_to(root).as_posix()] = member.read_bytes()
+        return files
+
+
+def _package_members(path: Path) -> dict[str, bytes]:
+    """Every regular file a deb, rpm or AppImage installs, named without a leading ./."""
+    kind = _package_kind(path)
+    if kind == "appimage":
+        return _appimage_members(path)
+    if kind == "deb":
+        return _deb_members(path.read_bytes())
+    if kind == "rpm":
+        return _rpm_members(path.read_bytes())
+    raise ValueError(f"not a deb, rpm or AppImage: {path}")
+
+
+def _package_bundle(kind: str, members: dict[str, bytes]) -> list[tuple[str, bytes]]:
+    prefix = PACKAGE_BUNDLE_PREFIX[kind]
+    return [
+        (f"{ARTIFACT_ROOT}/{name.removeprefix(prefix)}", data)
+        for name, data in members.items()
+        if name.startswith(prefix)
+    ]
+
+
+def _package_extras_errors(kind: str, members: dict[str, bytes], license_text: bytes | None) -> list[str]:
+    """What a package must install besides the bundle: its license copy and firewall files."""
+    errors = []
+    license_copy = {
+        "deb": "usr/share/doc/sdc-testing-toolbox/copyright",
+        "rpm": "usr/share/licenses/sdc-testing-toolbox/LICENSE",
+    }.get(kind)
+    if license_copy and (license_text is None or members.get(license_copy) != license_text):
+        errors.append(f"{license_copy} is missing or differs from the bundle LICENSE")
+    firewall = (
+        ("usr/share/sdc-testing-toolbox/firewall/firewalld/", "usr/share/sdc-testing-toolbox/firewall/ufw/")
+        if kind == "appimage"
+        else ("usr/lib/firewalld/services/", "etc/ufw/applications.d/")
+    )
+    errors.extend(
+        f"{directory}sdc-testing-toolbox{suffix} is missing"
+        for directory, suffix in zip(firewall, (".xml", ""))
+        if f"{directory}sdc-testing-toolbox{suffix}" not in members
+    )
+    return errors
 
 
 def _archive_files(path: Path) -> list[tuple[str, bytes]]:
+    kind = _package_kind(path)
+    if kind is not None:
+        return _package_bundle(kind, _package_members(path))
     if zipfile.is_zipfile(path):
         with zipfile.ZipFile(path) as archive:
             return [
@@ -50,6 +224,290 @@ def _archive_files(path: Path) -> list[tuple[str, bytes]]:
                 and (extracted := archive.extractfile(member)) is not None
             ]
     raise ValueError(f"unsupported or invalid archive: {path}")
+
+
+def check_conditional_typing_extensions(
+    report: Report, files: dict[str, bytes], inventory_path: str
+) -> None:
+    inventory = json.loads(files[inventory_path])
+    windows = inventory["platform"]["system"] == "Windows"
+    executable = f"{ARTIFACT_ROOT}/SDC-Testing-Toolbox" + (".exe" if windows else "")
+    modules = {
+        module
+        for component in inventory["components"]
+        if component["name"] != "typing_extensions"
+        for module in component["evidence"]["modules"]
+    }
+    notice = "legal/licenses/typing-extensions/LICENSE"
+
+    def fixture(minor: int, *, shipped: bool = False) -> dict[str, bytes]:
+        changed_inventory = json.loads(json.dumps(inventory))
+        for field in (
+            "components", "resolved_runtime", "resolved_runtime_not_packaged", "build_only"
+        ):
+            changed_inventory[field] = [
+                item
+                for item in changed_inventory[field]
+                if item["name"] not in {"typing_extensions", "typing-extensions"}
+            ]
+        python = next(
+            c for c in changed_inventory["components"] if c["name"] == "Python"
+        )
+        library = f"python3{minor}.dll" if windows else f"libpython3.{minor}.so.1.0"
+        old_libraries = [
+            path
+            for path in python["evidence"]["artifact_paths"]
+            if re.fullmatch(
+                r"(?:python3\d+t?\.dll|libpython3\.\d+t?\.so(?:\.\d+)*)",
+                Path(path).name,
+            )
+        ]
+        python["version"] = f"3.{minor}.0"
+        python["evidence"]["artifact_paths"] = [
+            path
+            for path in python["evidence"]["artifact_paths"]
+            if path not in old_libraries
+        ] + [library]
+        old_basenames = {Path(path).name for path in old_libraries}
+        changed = {
+            name: value
+            for name, value in files.items()
+            if Path(name).name not in old_basenames
+        }
+        changed[f"{ARTIFACT_ROOT}/{library}"] = b"Python runtime fixture"
+        included_modules = modules | ({"typing_extensions"} if shipped else set())
+        # Only the CArchive/PYZ tables are needed; no fixture code is executed.
+        pyz = (
+            b"PYZ\0" + b"\0" * 4 + struct.pack("!i", 12)
+            + marshal.dumps([(name, (0, 0, 0)) for name in sorted(included_modules)])
+        )
+        toc = struct.pack("!IIIIBc", 22, 0, len(pyz), len(pyz), 0, b"z") + b"PYZ\0"
+        changed[executable] = pyz + toc + struct.pack(
+            "!8sIIII64s",
+            b"MEI\014\013\012\013\016",
+            len(pyz) + len(toc) + 88,
+            len(pyz),
+            len(toc),
+            300 + minor,
+            library.encode(),
+        )
+        if shipped:
+            changed_inventory["components"].append(
+                {
+                    "name": "typing_extensions",
+                    "version": "4.16.0",
+                    "scope": "runtime",
+                    "license_expression": "PSF-2.0",
+                    "project_url": "https://github.com/python/typing_extensions",
+                    "source_archive_urls": [],
+                    "notice_paths": [notice],
+                    "evidence": {"modules": ["typing_extensions"], "artifact_paths": []},
+                }
+            )
+            changed[f"{ARTIFACT_ROOT}/{notice}"] = b"Python Software Foundation License"
+        if minor < 13:
+            changed_inventory["resolved_runtime"].append(
+                {"name": "typing_extensions", "version": "4.16.0"}
+            )
+        changed[inventory_path] = json.dumps(changed_inventory).encode()
+        return changed
+
+    def check(
+        description: str, changed: dict[str, bytes], expected: str | None = None
+    ) -> None:
+        errors = validate_payload(changed)
+        report.check(
+            not errors
+            if expected is None
+            else any(expected in error for error in errors),
+            description,
+            "; ".join(errors),
+        )
+
+    for minor, shipped in ((12, True), (13, False), (14, False), (13, True)):
+        check(
+            f"Python 3.{minor} conditional typing_extensions closure (shipped={shipped})",
+            fixture(minor, shipped=shipped),
+        )
+    missing = fixture(12)
+    check(
+        "Python 3.12 rejects missing required typing_extensions", missing,
+        "missing expected runtime component typing_extensions",
+    )
+    missing_inventory = json.loads(missing[inventory_path])
+    missing_inventory["resolved_runtime"] = [
+        c for c in missing_inventory["resolved_runtime"]
+        if c["name"] != "typing_extensions"
+    ]
+    python = next(c for c in missing_inventory["components"] if c["name"] == "Python")
+    python["version"] = "3.13.0"
+    missing[inventory_path] = json.dumps(missing_inventory).encode()
+    check(
+        "Python inventory claim cannot hide the 3.12 typing_extensions requirement",
+        missing, "missing expected runtime component typing_extensions",
+    )
+    check(
+        "Python inventory version must agree with CArchive runtime", missing,
+        "Python.version does not match executable runtime",
+    )
+
+    shipped = fixture(13, shipped=True)
+    omitted = json.loads(shipped[inventory_path])
+    omitted["components"] = [
+        c for c in omitted["components"] if c["name"] != "typing_extensions"
+    ]
+    shipped[inventory_path] = json.dumps(omitted).encode()
+    check(
+        "Python 3.13 rejects an unclassified embedded typing_extensions", shipped,
+        "missing expected runtime component typing_extensions",
+    )
+    loose = fixture(13)
+    loose[f"{ARTIFACT_ROOT}/typing_extensions.py"] = b"# standalone module"
+    check(
+        "Python 3.13 rejects an unclassified loose typing_extensions", loose,
+        "missing expected runtime component typing_extensions",
+    )
+    missing_notice = fixture(13, shipped=True)
+    del missing_notice[f"{ARTIFACT_ROOT}/{notice}"]
+    check(
+        "Python 3.13 shipped typing_extensions still requires its notice",
+        missing_notice, "missing bundled notice",
+    )
+    wrong_notice = fixture(13, shipped=True)
+    wrong_inventory = json.loads(wrong_notice[inventory_path])
+    typing = next(
+        c for c in wrong_inventory["components"] if c["name"] == "typing_extensions"
+    )
+    typing["notice_paths"] = ["legal/licenses/python/LICENSE.txt"]
+    wrong_notice[inventory_path] = json.dumps(wrong_inventory).encode()
+    check(
+        "Python 3.13 rejects a misassigned typing_extensions notice", wrong_notice,
+        "missing or misassigned component-specific legal notice",
+    )
+
+    missing_library = fixture(13)
+    library_path = f"{ARTIFACT_ROOT}/" + (
+        "python313.dll" if windows else "libpython3.13.so.1.0"
+    )
+    del missing_library[library_path]
+    check(
+        "Conditional closure requires the CArchive Python library in the artifact",
+        missing_library, "executable Python library is absent",
+    )
+    mismatched_library = fixture(13)
+    binary = mismatched_library[executable]
+    mismatched_library[executable] = binary[:-64] + (
+        b"python312.dll" if windows else b"libpython3.12.so.1.0"
+    ).ljust(64, b"\0")
+    check(
+        "Conditional closure rejects a CArchive version/library mismatch",
+        mismatched_library, "executable Python version and library disagree",
+    )
+    unreadable = fixture(13)
+    unreadable[executable] = b"not a PyInstaller executable"
+    check(
+        "Unreadable executable cannot waive the typing_extensions requirement",
+        unreadable, "missing expected runtime component typing_extensions",
+    )
+    invalid_cookie = fixture(13)
+    binary = invalid_cookie[executable]
+    invalid_cookie[executable] = (
+        binary[:-80] + struct.pack("!I", len(binary) + 1) + binary[-76:]
+    )
+    check(
+        "Out-of-bounds CArchive cannot waive the typing_extensions requirement",
+        invalid_cookie, "missing expected runtime component typing_extensions",
+    )
+    bounds_fixture = fixture(13)
+    binary = bounds_fixture[executable]
+    pyz_length = struct.unpack("!I", binary[-76:-72])[0]
+    pyz = binary[:pyz_length]
+    toc = binary[pyz_length:-88]
+
+    def repack(pyz_data: bytes, toc_data: bytes) -> bytes:
+        magic, _size, _offset, _length, version, library = struct.unpack(
+            "!8sIIII64s", binary[-88:]
+        )
+        return bytes(pyz_data) + bytes(toc_data) + struct.pack(
+            "!8sIIII64s", magic, len(pyz_data) + len(toc_data) + 88,
+            len(pyz_data), len(toc_data), version, library,
+        )
+
+    for description, field_offset, value in (
+        ("overlong stored entry", 8, len(binary) + 1),
+        ("entry overlapping TOC", 8, pyz_length + 1),
+        ("entry offset beyond DATA", 4, pyz_length + 1),
+        ("maximum unsigned entry offset", 4, 0xFFFFFFFF),
+        ("inconsistent uncompressed entry length", 12, pyz_length + 1),
+    ):
+        changed = dict(bounds_fixture)
+        changed_toc = bytearray(toc)
+        struct.pack_into("!I", changed_toc, field_offset, value)
+        changed[executable] = repack(pyz, changed_toc)
+        check(
+            f"Malformed {description} cannot waive typing_extensions", changed,
+            "missing expected runtime component typing_extensions",
+        )
+    for trailing_length in (1, 17):
+        changed = dict(bounds_fixture)
+        changed[executable] = repack(pyz, toc + b"\0" * trailing_length)
+        check(
+            f"Incomplete trailing TOC ({trailing_length} bytes) cannot waive typing_extensions",
+            changed, "missing expected runtime component typing_extensions",
+        )
+    for offset, length in ((pyz_length - 1, 2), (pyz_length + 1, 0), (0xFFFFFFFF, 0)):
+        changed = dict(bounds_fixture)
+        extra_entry = struct.pack(
+            "!IIIIBc", 22, offset, length, length, 0, b"x"
+        ) + b"bad\0"
+        changed[executable] = repack(pyz, toc + extra_entry)
+        check(
+            f"Out-of-range non-PYZ entry ({offset}, {length}) cannot waive typing_extensions",
+            changed, "missing expected runtime component typing_extensions",
+        )
+    for offset in (12 - pyz_length, -1, 0, 11, pyz_length, pyz_length + 1):
+        changed = dict(bounds_fixture)
+        changed_pyz = bytearray(pyz)
+        struct.pack_into("!i", changed_pyz, 8, offset)
+        changed[executable] = repack(changed_pyz, toc)
+        check(
+            f"Invalid PYZ TOC offset {offset} cannot waive typing_extensions", changed,
+            "missing expected runtime component typing_extensions",
+        )
+    compressed_pyz = zlib.compress(pyz)
+    compressed_toc = bytearray(toc)
+    struct.pack_into("!I", compressed_toc, 8, len(compressed_pyz))
+    compressed_toc[16] = 1
+    compressed_fixture = dict(bounds_fixture)
+    compressed_fixture[executable] = repack(compressed_pyz, compressed_toc)
+    check("Valid compressed PYZ preserves conditional closure", compressed_fixture)
+    struct.pack_into("!I", compressed_toc, 12, pyz_length + 1)
+    compressed_fixture[executable] = repack(compressed_pyz, compressed_toc)
+    check(
+        "Inconsistent decompressed PYZ length cannot waive typing_extensions",
+        compressed_fixture, "missing expected runtime component typing_extensions",
+    )
+    omitted_dependency = fixture(13)
+    omitted_inventory = json.loads(omitted_dependency[inventory_path])
+    for field in ("components", "resolved_runtime"):
+        omitted_inventory[field] = [
+            c for c in omitted_inventory[field] if c["name"] != "aiohttp"
+        ]
+    omitted_dependency[inventory_path] = json.dumps(omitted_inventory).encode()
+    check(
+        "Python 3.13 still rejects other code-owned dependency omissions",
+        omitted_dependency, "resolved_runtime does not match the code-owned",
+    )
+    invented_dependency = fixture(13)
+    invented_inventory = json.loads(invented_dependency[inventory_path])
+    invented_inventory["resolved_runtime"].append(
+        {"name": "typing_extensions", "version": "4.16.0"}
+    )
+    invented_dependency[inventory_path] = json.dumps(invented_inventory).encode()
+    check(
+        "Inventory cannot invent a Python 3.13 typing_extensions requirement",
+        invented_dependency, "resolved_runtime does not match the code-owned",
+    )
 
 
 def _check_pinned_legal_hashes(
@@ -189,9 +647,462 @@ def check_binary_filter(report: Report) -> None:
         "non-Windows filtering retains a non-Qt binary",
     )
 
+    site_packages = Path(sysconfig.get_paths()["platlib"])
+    host_stack = [
+        ("libstdc++.so.6", "/usr/lib/x86_64-linux-gnu/libstdc++.so.6", "BINARY"),
+        ("libfontconfig.so.1", "/usr/lib/x86_64-linux-gnu/libfontconfig.so.1", "BINARY"),
+        # A system Python lives in /usr too, so its prefix must not make a host library "ours".
+        (
+            "libgcc_s.so.1",
+            str(Path(sysconfig.get_config_var("installed_base")) / "lib" / "libgcc_s.so.1"),
+            "BINARY",
+        ),
+    ]
+    bundled = [
+        ("libxcb-cursor.so.0", "/usr/lib/x86_64-linux-gnu/libxcb-cursor.so.0", "BINARY"),
+        (
+            "PySide6/Qt/lib/libz.so.1",
+            str(site_packages / "PySide6" / "Qt" / "lib" / "libz.so.1"),
+            "BINARY",
+        ),
+    ]
+    report.check(
+        filter_binaries(host_stack + bundled, platform="Linux") == bundled,
+        "Linux filtering leaves excludelist system libraries to the host",
+    )
+    under_python = [
+        (name, str(Path(sysconfig.get_config_var("installed_base")) / "lib" / name), "BINARY")
+        for name in ("libstdc++.so.6", "libfontconfig.so.1")
+    ]
+    report.check(
+        filter_binaries(under_python, platform="Windows") == under_python
+        and filter_binaries(under_python, platform="Linux") == []
+        and filter_binaries(bundled[1:], platform="Windows") == bundled[1:],
+        "Windows filtering is unchanged by the Linux host-library list",
+    )
+    report.check(
+        len(LINUX_HOST_LIBRARIES) == 52
+        and {"libstdc++.so.6", "libgcc_s.so.1", "libfontconfig.so.1"} <= LINUX_HOST_LIBRARIES
+        and "libxcb-cursor.so.0" not in LINUX_HOST_LIBRARIES,
+        "the Linux host-library list is the pinned excludelist",
+        f"{len(LINUX_HOST_LIBRARIES)} names",
+    )
+
+
+def legal_fixture() -> tuple[dict[str, bytes], dict[str, object]]:
+    """A complete, offline artifact; the executable table contains no runnable code."""
+    notices = {
+        "aiohappyeyeballs": ["aiohappyeyeballs/LICENSE"],
+        "aiohttp": ["aiohttp/LICENSE.txt", "aiohttp/vendor/llhttp/LICENSE"],
+        "aiosignal": ["aiosignal/LICENSE"],
+        "attrs": ["attrs/LICENSE"],
+        "cffi": ["cffi/LICENSE"],
+        "cryptography": ["cryptography/LICENSE", "cryptography/LICENSE.APACHE", "cryptography/LICENSE.BSD"],
+        "frozenlist": ["frozenlist/LICENSE"],
+        "idna": ["idna/LICENSE.md"],
+        "ifaddr": ["ifaddr/LICENSE.txt"],
+        "lxml": ["lxml/LICENSE.txt", "lxml/LICENSES.txt"],
+        "multidict": ["multidict/LICENSE"],
+        "propcache": ["propcache/LICENSE", "propcache/NOTICE"],
+        "pyinstaller": ["pyinstaller/COPYING.txt"],
+        "PySide6": ["pyside6/LicenseRef-Qt-Commercial.txt"],
+        "PySide6_Essentials": ["pyside6-essentials/LicenseRef-Qt-Commercial.txt"],
+        "Python": ["python/LICENSE.txt"],
+        "Qt": [],
+        "sdc11073": ["sdc11073/LICENSE"],
+        "shiboken6": ["shiboken6/LicenseRef-Qt-Commercial.txt"],
+        "yarl": ["yarl/LICENSE", "yarl/NOTICE"],
+    }
+    qt_notices = [
+        "legal/licenses/qt/LGPL-3.0-only.txt",
+        "legal/licenses/qt/GPL-3.0-only.txt",
+        "legal/licenses/qt/Qt-GPL-exception-1.0.txt",
+    ]
+    files = {
+        f"{ARTIFACT_ROOT}/{relative}": (
+            ROOT / ("LICENSE" if relative == qt_notices[1] else relative)
+        ).read_bytes()
+        for relative in REQUIRED_DOCUMENTS
+        if relative != INVENTORY_NAME
+    }
+    components = []
+    modules = []
+    for name, suffixes in notices.items():
+        paths = [f"legal/licenses/{suffix}" for suffix in suffixes]
+        for path in paths:
+            files[f"{ARTIFACT_ROOT}/{path}"] = (
+                b"notice fixture: valid commercial Qt licenses; Bootloader Exception; "
+                b"PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2; MIT License Draeger"
+            )
+        if name in {"PySide6", "PySide6_Essentials", "shiboken6", "Qt"}:
+            paths.extend(qt_notices)
+        if name == "Qt":
+            paths.append("legal/SOURCE_OFFER.md")
+        module = {
+            "attrs": "attr", "Python": "__future__", "PySide6_Essentials": "PySide6",
+        }.get(name, name)
+        modules.append(module)
+        components.append({
+            "name": name,
+            "version": "3.13.0" if name == "Python" else "6.11.2",
+            "scope": "runtime",
+            "license_expression": "MIT",
+            "project_url": "https://example.test/project",
+            "source_archive_urls": [
+                "https://download.qt.io/official_releases/qt/6.11/6.11.2/submodules/qtbase-everywhere-src-6.11.2.tar.xz"
+            ] if name == "Qt" else [],
+            "notice_paths": paths,
+            "evidence": {
+                "modules": [module] if name not in {"Qt", "pyinstaller"} else [],
+                "artifact_paths": ["PySide6/Qt6Core.dll"] if name == "Qt" else (
+                    ["SDC-Testing-Toolbox executable bootloader and embedded loader"]
+                    if name == "pyinstaller" else []
+                ),
+            },
+        })
+    pyz = b"PYZ\0" + b"\0" * 4 + struct.pack("!i", 12) + marshal.dumps(
+        [(name, (0, 0, 0)) for name in modules]
+    )
+    toc = struct.pack("!IIIIBc", 22, 0, len(pyz), len(pyz), 0, b"z") + b"PYZ\0"
+    files[f"{ARTIFACT_ROOT}/SDC-Testing-Toolbox"] = pyz + toc + struct.pack(
+        "!8sIIII64s", b"MEI\014\013\012\013\016", len(pyz) + len(toc) + 88,
+        len(pyz), len(toc), 313, b"libpython3.13.so.1.0",
+    )
+    files[f"{ARTIFACT_ROOT}/libpython3.13.so.1.0"] = b"Python runtime fixture"
+    files[f"{ARTIFACT_ROOT}/PySide6/Qt6Core.dll"] = b"Qt shared library fixture"
+    unpackaged = ["pycparser", "PySide6_Addons"]
+    inventory = {
+        "schema_version": 2,
+        "artifact_layout": "PyInstaller one-directory bundle with replaceable shared libraries",
+        "platform": {"system": "Linux", "machine": "x86_64"},
+        "components": components,
+        "native_components": [],
+        "build_only": [{"name": "pyinstaller-hooks-contrib", "version": "1", "reason": "not bundled"}],
+        "resolved_runtime_not_packaged": [
+            {"name": name, "version": "1", "reason": "not bundled"} for name in unpackaged
+        ],
+        "resolved_runtime": [
+            {"name": name, "version": "6.11.2"}
+            for name in [*notices, *unpackaged] if name not in {"Python", "Qt", "pyinstaller"}
+        ],
+        "required_documents": list(REQUIRED_DOCUMENTS),
+        "generation": {
+            "method": "offline fixture", "runtime_roots": ["PySide6", "cryptography", "sdc11073"],
+            "build_roots": ["PyInstaller", "pyinstaller-hooks-contrib"],
+        },
+    }
+    files[f"{ARTIFACT_ROOT}/{INVENTORY_NAME}"] = json.dumps(inventory).encode()
+    return files, inventory
+
+
+def check_debian_common_notices(report: Report) -> None:
+    with TemporaryDirectory(prefix="sdctoolbox-debian-") as temporary:
+        root = Path(temporary)
+        copyright_path = root / "doc" / "libfixture1" / "copyright"
+        copyright_path.parent.mkdir(parents=True)
+        copyright_path.write_text(
+            "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n"
+            "License: GPL-2\n See /usr/share/common-licenses/GPL-2 for the full text.\n",
+            encoding="utf-8",
+        )
+        common = root / "common" / "GPL-2"
+        common.parent.mkdir()
+        common.write_text("GNU GENERAL PUBLIC LICENSE Version 2 fixture", encoding="utf-8")
+
+        def system_path(value: str) -> Path:
+            return {
+                "/usr/share/doc": root / "doc",
+                "/usr/share/common-licenses": root / "common",
+            }.get(value, Path(value))
+
+        def query(argv: list[str], **_kwargs: object) -> object:
+            return SimpleNamespace(returncode=0, stdout=(
+                "libfixture1:amd64: /lib/libfixture.so.1\n" if argv[1] == "-S"
+                else "1.0\thttps://example.test/libfixture\tlibfixture\n"
+            ))
+
+        output = root / "output"
+        with patch.object(legal_payload, "Path", side_effect=system_path), patch.object(
+            legal_payload.subprocess, "run", side_effect=query,
+        ):
+            native = legal_payload._debian_native_components(
+                {root / "libfixture.so.1": {"libfixture.so.1"}}, output,
+            )[0]
+        expected = [
+            "legal/licenses/debian/libfixture1/copyright",
+            "legal/licenses/debian/common/GPL-2",
+        ]
+        report.check(native["notice_paths"] == expected, "Debian generation includes the referenced common GPL-2 text")
+        files, inventory = legal_fixture()
+        inventory["native_components"] = [native]
+        files[f"{ARTIFACT_ROOT}/libfixture.so.1"] = b"native fixture"
+        for path in expected:
+            files[f"{ARTIFACT_ROOT}/{path}"] = (output / path).read_bytes()
+        key = f"{ARTIFACT_ROOT}/{INVENTORY_NAME}"
+        files[key] = json.dumps(inventory).encode()
+        errors = validate_payload(files)
+        report.check(not errors, "validator accepts the complete generated Debian notice set", "; ".join(errors))
+
+        for description, mutate, expected_error in (
+            ("omitted common notice claim", lambda n, f: n["notice_paths"].pop(), "missing or misassigned"),
+            ("missing common notice file", lambda n, f: f.pop(f"{ARTIFACT_ROOT}/{expected[1]}"), "missing bundled notice"),
+            ("unrelated common notice", lambda n, f: n["notice_paths"].append("legal/licenses/common/Zlib.txt"), "missing or misassigned"),
+            ("unsafe common notice path", lambda n, f: n["notice_paths"].append("legal/../escape"), "unsafe or non-normalized"),
+            ("incorrect common hash", lambda n, f: n["notice_sha256"].__setitem__(expected[1], "0" * 64), "SHA-256 mismatch"),
+        ):
+            changed_inventory = json.loads(json.dumps(inventory))
+            changed = dict(files)
+            changed_native = changed_inventory["native_components"][0]
+            mutate(changed_native, changed)
+            if description != "incorrect common hash":
+                changed_native["notice_sha256"] = {
+                    path: hashlib.sha256(changed[f"{ARTIFACT_ROOT}/{path}"]).hexdigest()
+                    for path in changed_native["notice_paths"]
+                    if f"{ARTIFACT_ROOT}/{path}" in changed
+                }
+            changed[key] = json.dumps(changed_inventory).encode()
+            errors = validate_payload(changed)
+            report.check(any(expected_error in error for error in errors), f"Debian validation rejects {description}", "; ".join(errors))
+
+        no_reference = json.loads(json.dumps(inventory))
+        native = no_reference["native_components"][0]
+        native["notice_paths"] = expected[:1]
+        files[f"{ARTIFACT_ROOT}/{expected[0]}"] = b"Format: Debian copyright\nLicense: MIT\n"
+        native["notice_sha256"] = {
+            expected[0]: hashlib.sha256(files[f"{ARTIFACT_ROOT}/{expected[0]}"]).hexdigest(),
+        }
+        files[key] = json.dumps(no_reference).encode()
+        errors = validate_payload(files)
+        report.check(not errors, "Debian copyright without common-license references needs only its own notice", "; ".join(errors))
+
+
+def check_qt_imageformat_sources(report: Report) -> None:
+    archive = "https://download.qt.io/official_releases/qt/6.11/6.11.2/submodules/qtimageformats-everywhere-src-6.11.2.tar.xz"
+    for plugin, required in (
+        ("PySide6/plugins/imageformats/qtiff.dll", True),
+        ("PySide6/Qt/plugins/imageformats/libqwebp.so", True),
+        ("PySide6/plugins/imageformats/qjpeg.dll", False),
+        ("vendor/qwebp.dll", False),
+    ):
+        with TemporaryDirectory(prefix="sdctoolbox-qt-sources-") as temporary:
+            root = Path(temporary)
+            distributions = {}
+            for name in ("pyside6", "pyside6-essentials", "sdc11073", "cryptography", "pyinstaller", "pyinstaller-hooks-contrib"):
+                metadata = Message()
+                metadata["Name"] = name
+                metadata["License"] = "MIT"
+                metadata["Home-page"] = "https://example.test/project"
+                notice = f"{name}/LICENSE"
+                (root / name).mkdir()
+                (root / notice).write_text("notice fixture", encoding="utf-8")
+                distributions[name] = SimpleNamespace(
+                    metadata=metadata, version="6.11.2", requires=[], files=[notice],
+                    locate_file=lambda relative: root / relative,
+                )
+            distributions["pyside6-essentials"].files.append("plugin")
+            (root / "plugin").write_bytes(b"plugin fixture")
+            with patch.object(legal_payload, "_distributions", return_value=distributions), patch.object(
+                legal_payload, "_linked_library_names", return_value=set(),
+            ):
+                legal_payload.generate_payload(ROOT, root / "output", [], [(plugin, str(root / "plugin"), "BINARY")], [])
+            generated = json.loads((root / "output" / INVENTORY_NAME).read_text(encoding="utf-8"))
+            qt = next(c for c in generated["components"] if c["name"] == "Qt")
+            report.check((archive in qt["source_archive_urls"]) == required, f"Qt generation conditionally supplies qtimageformats for {plugin}")
+
+        files, inventory = legal_fixture()
+        qt = next(c for c in inventory["components"] if c["name"] == "Qt")
+        files[f"{ARTIFACT_ROOT}/{plugin}"] = b"plugin fixture"
+        key = f"{ARTIFACT_ROOT}/{INVENTORY_NAME}"
+        files[key] = json.dumps(inventory).encode()
+        errors = validate_payload(files)
+        report.check(
+            any("qtimageformats" in error for error in errors) if required else not errors,
+            f"Qt validation derives imageformat source requirements from archive files: {plugin}", "; ".join(errors),
+        )
+        if required:
+            qt["source_archive_urls"].append(archive)
+            files[key] = json.dumps(inventory).encode()
+            errors = validate_payload(files)
+            report.check(not errors, "Qt validation accepts the exact versioned imageformats source archive", "; ".join(errors))
+            qt["source_archive_urls"][-1] = archive.replace("6.11.2", "6.11.1")
+            files[key] = json.dumps(inventory).encode()
+            errors = validate_payload(files)
+            report.check(any("qtimageformats" in error for error in errors), "Qt validation rejects a wrong-version imageformats archive", "; ".join(errors))
+
+
+def check_qt_wheel_notice_fallback(report: Report) -> None:
+    vendored = ROOT / "legal/licenses/pyside6/LicenseRef-Qt-Commercial.txt"
+    vendored_bytes = vendored.read_bytes() if vendored.is_file() else None
+    report.check(
+        vendored_bytes is not None
+        and hashlib.sha256(vendored_bytes).hexdigest() == QT_WHEEL_NOTICE_SHA256,
+        "source tree pins the upstream PySide6 notice that Linux wheels omit",
+    )
+    wheel_notice = b"wheel notice fixture\r\n"
+    with TemporaryDirectory(prefix="sdctoolbox-qt-notice-") as temporary:
+        root = Path(temporary)
+        distributions = {}
+        binaries = []
+        for name in (
+            "pyside6", "pyside6-essentials", "shiboken6", "sdc11073",
+            "cryptography", "pyinstaller", "pyinstaller-hooks-contrib",
+        ):
+            metadata = Message()
+            metadata["Name"] = name
+            metadata["License"] = "MIT"
+            metadata["Home-page"] = "https://example.test/project"
+            files = [f"{name}/module.bin"]
+            if name == "pyside6-essentials":
+                files.append(f"{name}.dist-info/licenses/LicenseRef-Qt-Commercial.txt")
+            elif name not in {"pyside6", "shiboken6"}:
+                files.append(f"{name}/LICENSE")
+            for relative in files:
+                (root / relative).parent.mkdir(parents=True, exist_ok=True)
+                (root / relative).write_bytes(wheel_notice)
+            distributions[name] = SimpleNamespace(
+                metadata=metadata, version="6.11.2", requires=[], files=files,
+                locate_file=lambda relative: root / relative,
+            )
+            binaries.append((f"{name}/module.bin", str(root / name / "module.bin"), "BINARY"))
+        with patch.object(legal_payload, "_distributions", return_value=distributions), patch.object(
+            legal_payload, "_linked_library_names", return_value=set(),
+        ):
+            legal_payload.generate_payload(ROOT, root / "output", [], binaries, [])
+        generated = json.loads((root / "output" / INVENTORY_NAME).read_text(encoding="utf-8"))
+        components = {component["name"]: component for component in generated["components"]}
+        qt_texts = [
+            "legal/licenses/qt/LGPL-3.0-only.txt",
+            "legal/licenses/qt/GPL-3.0-only.txt",
+            "legal/licenses/qt/Qt-GPL-exception-1.0.txt",
+        ]
+        for name, source, expected in (
+            ("pyside6", "vendored for a wheel without it", vendored_bytes),
+            ("pyside6-essentials", "from its own wheel", wheel_notice),
+            ("shiboken6", "vendored for a wheel without it", vendored_bytes),
+        ):
+            notice = f"legal/licenses/{name}/LicenseRef-Qt-Commercial.txt"
+            copied = root / "output" / notice
+            notice_paths = components[name]["notice_paths"]
+            report.check(
+                notice_paths == [notice, *qt_texts]
+                and copied.is_file()
+                and copied.read_bytes() == expected,
+                f"{name} carries the Qt notice {source}",
+                str(notice_paths),
+            )
+
+
+def _tar_xz(members: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:xz") as archive:
+        for name, data in members.items():
+            info = tarfile.TarInfo(f"./{name}")
+            info.size = len(data)
+            info.mode = 0o644
+            archive.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+def _fixture_deb(path: Path, members: dict[str, bytes], data_name: str = "data.tar.xz") -> None:
+    parts = {
+        "debian-binary": b"2.0\n",
+        "control.tar.xz": _tar_xz({"control": b"Package: fixture\n"}),
+        data_name: _tar_xz(members),
+    }
+    out = bytearray(b"!<arch>\n")
+    for name, data in parts.items():
+        out += f"{name:<16}{0:<12}{0:<6}{0:<6}{100644:<8}{len(data):<10}`\n".encode()
+        out += data + b"\n" * (len(data) % 2)
+    path.write_bytes(bytes(out))
+
+
+def _fixture_rpm(path: Path, members: dict[str, bytes]) -> None:
+    """An rpm with empty signature and main headers and an xz newc cpio payload."""
+    cpio = bytearray()
+    entries = [*((f"./{name}", 0o100644, data) for name, data in members.items())]
+    entries.append(("TRAILER!!!", 0, b""))
+    for inode, (name, mode, data) in enumerate(entries, 1):
+        encoded = name.encode() + b"\0"
+        fields = (inode, mode, 0, 0, 1, 0, len(data), 0, 0, 0, 0, len(encoded), 0)
+        cpio += b"070701" + b"".join(f"{value:08x}".encode() for value in fields) + encoded
+        cpio += b"\0" * (-len(cpio) % 4)
+        cpio += data
+        cpio += b"\0" * (-len(cpio) % 4)
+    empty_header = b"\x8e\xad\xe8\x01\0\0\0\0" + struct.pack("!II", 0, 0)
+    lead = b"\xed\xab\xee\xdb" + b"\0" * 92
+    path.write_bytes(lead + empty_header + empty_header + lzma.compress(bytes(cpio)))
+
+
+def check_package_formats(report: Report) -> None:
+    fixture, _inventory = legal_fixture()
+    license_text = fixture[f"{ARTIFACT_ROOT}/LICENSE"]
+    installed = {
+        f"opt/sdc-testing-toolbox/{name.split('/', 1)[1]}": data for name, data in fixture.items()
+    }
+    firewall = {
+        "usr/lib/firewalld/services/sdc-testing-toolbox.xml": b"<service/>",
+        "etc/ufw/applications.d/sdc-testing-toolbox": b"[SDC-Testing-Toolbox]\n",
+    }
+    packages = {
+        "deb": {**installed, **firewall, "usr/share/doc/sdc-testing-toolbox/copyright": license_text},
+        "rpm": {**installed, **firewall, "usr/share/licenses/sdc-testing-toolbox/LICENSE": license_text},
+    }
+    with TemporaryDirectory(prefix="sdctoolbox-packages-") as temporary:
+        for kind, members in packages.items():
+            path = Path(temporary) / f"fixture.{kind}"
+            (_fixture_deb if kind == "deb" else _fixture_rpm)(path, members)
+            files = _archive_files(path)
+            report.check(
+                sorted(files) == sorted(fixture.items()),
+                f"{kind} bundle files map onto the {ARTIFACT_ROOT} root",
+                f"{len(files)} files",
+            )
+            errors = validate_payload(files)
+            report.check(not errors, f"{kind} fixture legal payload validates", "; ".join(errors))
+            report.check(
+                _package_extras_errors(kind, _package_members(path), license_text) == [],
+                f"{kind} fixture installs its license copy and firewall definitions",
+            )
+            report.check(
+                _package_extras_errors(kind, installed, license_text) != [],
+                f"{kind} check notices a missing license copy and firewall definitions",
+            )
+
+        zstd = Path(temporary) / "zstd.deb"
+        _fixture_deb(zstd, installed, data_name="data.tar.zst")
+        try:
+            _archive_files(zstd)
+        except ValueError as error:
+            report.check("zstd" in str(error), "deb with a zstd payload is refused by name", str(error))
+        else:
+            report.check(False, "deb with a zstd payload is refused by name")
+
+        appimage = Path(temporary) / "stub.AppImage"
+        appimage.write_bytes(b"\x7fELF\x02\x01\x01\0AI\x02" + b"\0" * 64)
+        try:
+            _archive_files(appimage)
+        except ValueError as error:
+            expected = "AppImage" if sys.platform.startswith("linux") else "needs Linux"
+            report.check(expected in str(error), "AppImage stub is recognised but not extracted", str(error))
+        else:
+            report.check(False, "AppImage stub is recognised but not extracted")
+
+        plain_elf = Path(temporary) / "plain.elf"
+        plain_elf.write_bytes(b"\x7fELF\x02\x01\x01\0\0\0\0" + b"\0" * 64)
+        try:
+            _archive_files(plain_elf)
+        except ValueError as error:
+            report.check("unsupported" in str(error), "an ELF that is not an AppImage is unsupported", str(error))
+        else:
+            report.check(False, "an ELF that is not an AppImage is unsupported")
+
 
 def check_sources(report: Report) -> None:
     check_binary_filter(report)
+    check_debian_common_notices(report)
+    check_qt_imageformat_sources(report)
+    check_qt_wheel_notice_fallback(report)
+    check_package_formats(report)
     license_text = (ROOT / "LICENSE").read_text(encoding="utf-8")
     report.check(
         "GNU GENERAL PUBLIC LICENSE\n                       Version 3, 29 June 2007"
@@ -267,11 +1178,23 @@ def check_sources(report: Report) -> None:
 def check_archive(report: Report, archive_path: Path) -> None:
     report.require(archive_path.is_file(), "artifact archive exists", str(archive_path))
     try:
-        files = _archive_files(archive_path)
-    except (OSError, ValueError, tarfile.TarError, zipfile.BadZipFile) as error:
+        kind = _package_kind(archive_path)
+        members = _package_members(archive_path) if kind else None
+        files = _package_bundle(kind, members) if kind else _archive_files(archive_path)
+    except (
+        OSError, ValueError, lzma.LZMAError, struct.error, zlib.error,
+        tarfile.TarError, zipfile.BadZipFile,
+    ) as error:
         report.check(False, "artifact archive opens", str(error))
         return
     report.check(bool(files), "artifact archive contains files", str(len(files)))
+    if members is not None:
+        errors = _package_extras_errors(kind, members, dict(files).get(f"{ARTIFACT_ROOT}/LICENSE"))
+        report.check(
+            not errors,
+            f"{kind} installs its license copy and firewall definitions",
+            "; ".join(errors),
+        )
     inventory_count = sum(
         name.replace("\\", "/").endswith(f"/{INVENTORY_NAME}") for name, _value in files
     )
@@ -300,6 +1223,7 @@ def check_archive(report: Report, archive_path: Path) -> None:
     if inventory_path is None:
         return
     inventory = json.loads(file_map[inventory_path].decode("utf-8"))
+    check_conditional_typing_extensions(report, file_map, inventory_path)
 
     malformed_root = dict(file_map)
     malformed_root[inventory_path] = b"[]"
@@ -610,7 +1534,9 @@ def check_archive(report: Report, archive_path: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--artifact", type=Path, help="validate an extracted final ZIP or tar archive"
+        "--artifact",
+        type=Path,
+        help="validate a final zip, tar.gz, deb, rpm or AppImage (AppImage needs Linux)",
     )
     arguments = parser.parse_args()
 

@@ -42,6 +42,7 @@ from sdctoolbox.model import (  # noqa: E402
     patient_measurement_wire_value,
 )
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
+from sdctoolbox.mdib_io import NativeMdibConfig, parse_mdib  # noqa: E402
 
 def _take_option(parts: list[str], name: str) -> tuple[str | None, list[str]]:
     """Pull "--name value" out of a token list, returning the value and what is left."""
@@ -247,7 +248,11 @@ class ProviderShell(Cmd):
         """
         text = line.strip().lower()
         if text == "on":
-            self.service.start_generator()
+            try:
+                self.service.start_generator()
+            except ValueError as exc:
+                print(f"rejected: {exc}")
+                return
         elif text == "off":
             self.service.stop_generator()
         elif text:
@@ -263,13 +268,12 @@ class ProviderShell(Cmd):
             return
         handle, raw = parts[0], " ".join(parts[1:])
         try:
-            value: Decimal | str = Decimal(raw)
-        except InvalidOperation:
-            value = raw
-        try:
-            self.service.set_value(handle, value)
+            self.service.set_value(handle, raw)
         except KeyError:
             print(f"no such handle: {handle}")
+            return
+        except (TypeError, ValueError) as exc:
+            print(f"rejected: {exc}")
             return
         print(f"{handle} = {show(self.service.get_value(handle))}")
 
@@ -302,6 +306,9 @@ class ProviderShell(Cmd):
             self.service.remove_metric(handle)
         except KeyError:
             print(f"no such handle: {handle}")
+            return
+        except ValueError as exc:
+            print(f"rejected: {exc}")
             return
         print(f"removed {handle}")
 
@@ -436,6 +443,9 @@ class ProviderShell(Cmd):
         except KeyError:
             print(f"no such alarm: {handle}")
             return
+        except ValueError as exc:
+            print(f"rejected: {exc}")
+            return
         print(f"{handle} is now {'present' if present else 'clear'}")
 
     def do_alerts(self, _line: str) -> None:
@@ -502,7 +512,11 @@ class ProviderShell(Cmd):
             print(f"  {self.service.get_patient().summary() or 'nobody attached'}")
             return
         if parts[0].lower() == "off":
-            self.service.clear_patient()
+            try:
+                self.service.clear_patient()
+            except ValueError as exc:
+                print(f"rejected: {exc}")
+                return
             print("  nobody attached")
             return
 
@@ -607,7 +621,7 @@ class ProviderShell(Cmd):
             return
         try:
             written = config.save(self.service, path)
-        except OSError as exc:
+        except (OSError, config.ConfigError) as exc:
             print(f"could not write: {exc}")
             return
         print(
@@ -622,7 +636,11 @@ class ProviderShell(Cmd):
             print("usage: import <file>")
             return
         try:
-            metrics, alarms = config.load_into(self.service, path)
+            snapshot = config.load_file(path)
+            restart = isinstance(snapshot, NativeMdibConfig) or self.service.native_mode
+            if restart:
+                print("Replacing the MDIB restarts the provider; connected consumers must reconnect.")
+            metrics, alarms = config.apply_to(self.service, snapshot)
         except config.ConfigError as exc:
             print(f"could not import: {exc}")
             return
@@ -740,17 +758,13 @@ class ConsumerShell(Cmd):
             print("usage: set <handle> <value>")
             return
         handle, raw = parts[0], " ".join(parts[1:])
-        try:
-            value: Decimal | str = Decimal(raw)
-        except InvalidOperation:
-            value = raw
-
-        state = self.remote.set_value(handle, value)
+        state = self.remote.set_value(handle, raw)
         if state in (msg_types.InvocationState.FINISHED, msg_types.InvocationState.FINISHED_MOD):
             time.sleep(0.6)
             print(f"accepted, {handle} is now {show(self.remote.metrics()[handle].value)}")
         else:
-            print(f"refused by the provider ({state})")
+            reason = self.remote.last_invocation_detail
+            print(f"refused by the provider ({state})" + (f" - {reason}" if reason else ""))
 
     def do_watch(self, line: str) -> None:
         """watch [seconds]  -  print changes as they arrive."""
@@ -835,13 +849,23 @@ def run_provider(args: argparse.Namespace) -> int:
             print(f"error: {exc}")
             return 2
 
-    device = device_config.device if device_config is not None else None
-    service = ProviderService(ip=args.ip, instance_name=args.name, device=device)
-    service.start()
+    device = device_config.device if device_config is not None and not isinstance(device_config, NativeMdibConfig) else None
+    try:
+        service = ProviderService(ip=args.ip, instance_name=args.name, device=device)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if isinstance(device_config, NativeMdibConfig):
+        service.start(parse_mdib(device_config.xml))
+    else:
+        service.start()
     try:
         if args.config and device_config is not None:
             try:
-                metrics, alarms = config.apply_to(service, device_config, replace=True)
+                if isinstance(device_config, NativeMdibConfig):
+                    metrics, alarms = len(service.list_metrics()), len(service.list_alerts())
+                else:
+                    metrics, alarms = config.apply_to(service, device_config, replace=True)
             except config.ConfigError as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 return 2
