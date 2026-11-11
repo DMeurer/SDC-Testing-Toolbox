@@ -14,11 +14,14 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from script_support import Report  # noqa: E402
+from sdc11073.consumer.subscription import ConsumerSubscriptionManager  # noqa: E402
 from sdc11073.definitions_sdc import SdcV1Definitions  # noqa: E402
 from lxml import etree  # noqa: E402
+from sdc11073.namespaces import default_ns_helper  # noqa: E402
 from sdc11073.observableproperties import ObservableProperty  # noqa: E402
 from sdc11073.pysoap.soapclient import HTTPReturnCodeError  # noqa: E402
 from sdc11073.pysoap.soapenvelope import Fault  # noqa: E402
+from sdc11073.xml_types import eventing_types  # noqa: E402
 from sdc11073.xml_types.actions import Actions  # noqa: E402
 
 from sdctoolbox import consumer_service as consumer_module  # noqa: E402
@@ -544,45 +547,90 @@ def new_consumer() -> consumer_module.SdcConsumer:
 
 
 def subscription_end_reasons() -> None:
-    """A peer that ends its subscriptions can say why; the connection-lost reason repeats it."""
+    """A peer that ends its subscriptions can say why; the connection-lost reason repeats it.
 
-    def ended(status: str | None, reason: object = None) -> SimpleNamespace:
-        return SimpleNamespace(is_subscribed=False, end_status=status, end_reason=reason)
+    The messages go through the consumer's own SubscriptionEnd handler: sdc11073 flags a
+    subscription as ended before it stores what the peer said, and the connection watcher
+    runs on that flag.
+    """
+    wse = "http://schemas.xmlsoap.org/ws/2004/08/eventing/"
 
-    def lost_reason(subscriptions: dict | None) -> str | None:
+    def lost_reason(*ends: tuple[str | None, tuple[str, ...]] | None) -> str | None:
+        """Subscribe once per entry, then end each; None lets a subscription lapse without any message."""
         consumer = new_consumer()
-        consumer._subscription_mgr = None if subscriptions is None else SimpleNamespace(subscriptions=subscriptions)
-        consumer.subscription_status = {"report": True}
+        consumer._subscription_mgr = ConsumerSubscriptionManager(
+            None, None, SdcV1Definitions.data_model, lambda _url: None, "http://127.0.0.1:1/notify",
+        )
+        hosted = SimpleNamespace(EndpointReference=[SimpleNamespace(Address="http://127.0.0.1:1/service")])
+        subscriptions = []
+        for index in range(len(ends)):
+            filter_type = eventing_types.FilterType()
+            filter_type.text = f"urn:example:report{index}"
+            subscription = consumer.mk_subscription(hosted, filter_type, [])
+            subscription.is_subscribed = True
+            subscriptions.append(subscription)
         remote = RemoteDevice(consumer, object(), "ending peer")
-        consumer.subscription_status = {"report": False}
+        for subscription, end in zip(subscriptions, ends):
+            if end is None:
+                subscription.is_subscribed = False
+                continue
+            status, reasons = end
+            message = eventing_types.SubscriptionEnd()
+            if status:
+                message.Status = wse + status
+            for text in reasons:
+                message.add_reason(text, "en")
+            node = message.as_etree_node(message.NODETYPE, default_ns_helper.partial_map(default_ns_helper.WSE))
+            consumer._on_subscription_end(
+                SimpleNamespace(
+                    message_data=SimpleNamespace(p_msg=SimpleNamespace(msg_node=node)),
+                    current_path_element=subscription.end_to_url.rsplit("/", 1)[-1],
+                ),
+            )
         return remote.connection_lost_reason
 
-    wse = "http://schemas.xmlsoap.org/ws/2004/08/eventing/"
-    reason = lost_reason({"a": ended(wse + "DeliveryFailure", SimpleNamespace(text="too many subscribers"))})
+    reason = lost_reason(("DeliveryFailure", ("too many subscribers",)))
     REPORT.check(
         reason is not None and "DeliveryFailure" in reason and "too many subscribers" in reason,
         "the connection-lost reason repeats the status and reason the peer sent",
         str(reason),
     )
-    reason = lost_reason({"a": ended(wse + "SourceCancelling"), "b": ended(wse + "SourceCancelling")})
+    reason = lost_reason(("SourceCancelling", ()))
+    REPORT.check(
+        reason is not None and "ended its subscriptions (SourceCancelling)" in reason,
+        "a status without a reason is repeated alone",
+        str(reason),
+    )
+    reason = lost_reason((None, ("shutting down",)))
+    REPORT.check(
+        reason is not None and "shutting down" in reason,
+        "a reason without a status is repeated alone",
+        str(reason),
+    )
+    reason = lost_reason(("SourceCancelling", ()), ("SourceCancelling", ()), ("SourceCancelling", ()))
     REPORT.check(
         reason is not None and reason.count("SourceCancelling") == 1,
         "the same status from several subscriptions is named once",
         str(reason),
     )
-    reason = lost_reason({"a": ended(None, "plain text reason")})
+    reason = lost_reason(("DeliveryFailure", ("a",)), ("SourceCancelling", ("b",)))
     REPORT.check(
-        reason is not None and "plain text reason" in reason,
-        "a reason that is not a language-tagged string is still repeated",
+        reason is not None and all(part in reason for part in ("DeliveryFailure", "SourceCancelling", "a", "b")),
+        "different statements from different subscriptions are all repeated",
         str(reason),
     )
-    for subscriptions, description in (({"a": ended(None)}, "no end message"), (None, "no subscription manager")):
-        reason = lost_reason(subscriptions)
-        REPORT.check(
-            reason is not None and "no active report subscriptions" in reason,
-            f"without anything from the peer the generic reason remains: {description}",
-            str(reason),
-        )
+    reason = lost_reason(None)
+    REPORT.check(
+        reason is not None and "no active report subscriptions" in reason and "ended" not in reason,
+        "without a message from the peer the generic reason remains",
+        str(reason),
+    )
+    reason = lost_reason(("SourceCancelling", ()), None)
+    REPORT.check(
+        reason is not None and "SourceCancelling" in reason,
+        "a lapsed subscription does not hide what the peer said about another",
+        str(reason),
+    )
 
 
 def peer_with_services(declared: dict[str, list[str]], *, active: tuple[str, ...] = (), refuse: tuple[str, ...] = ()):

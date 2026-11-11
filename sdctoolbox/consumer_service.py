@@ -319,6 +319,18 @@ def _declared_notifications(wsdl: Any, port_type_name: str) -> dict[str, str | N
 class _WsdlSdcConsumer(SdcConsumer):
     """Limit subscriptions before start_all groups actions by hosted service."""
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.peer_end_statements: list[str] = []
+
+    def _on_subscription_end(self, request_data: Any) -> Any:
+        # sdc11073 flags the subscription as ended before it stores the peer's status and reason,
+        # and the connection watcher reacts to that flag, so the statement is written down first.
+        statement = _subscription_end_statement(request_data)
+        if statement and statement not in self.peer_end_statements:
+            self.peer_end_statements.append(statement)
+        return super()._on_subscription_end(request_data)
+
     def _start_event_sink(self, shared_http_server: Any, http_server_start_timeout: float = 60.0) -> None:
         super()._start_event_sink(shared_http_server, http_server_start_timeout)
         if shared_http_server is None:
@@ -487,18 +499,21 @@ def _ensure_report_subscriptions(consumer: SdcConsumer) -> None:
         logger.warning("the device still refuses: %s", ", ".join(missing))
 
 
+def _subscription_end_statement(request_data: Any) -> str:
+    """The status and reason a SubscriptionEnd message carries, e.g. "SourceCancelling: too many subscribers"."""
+    try:
+        message = eventing_types.SubscriptionEnd.from_node(request_data.message_data.p_msg.msg_node)
+    except Exception:  # sdc11073 reports a malformed message itself
+        return ""
+    reasons = (str(getattr(reason, "text", reason) or "") for reason in message.Reason)
+    return ": ".join(
+        part for part in ((message.Status or "").rpartition("/")[2], " / ".join(r for r in reasons if r)) if part
+    )
+
+
 def _ended_by_device(consumer: SdcConsumer) -> str:
     """What the peer itself said when it ended its subscriptions; empty when it said nothing."""
-    manager = getattr(consumer, "subscription_mgr", None)
-    subscriptions = getattr(manager, "subscriptions", None) or {}
-    notes: list[str] = []
-    for subscription in list(subscriptions.values()):  # the manager's own thread may add entries meanwhile
-        status = str(getattr(subscription, "end_status", None) or "").rpartition("/")[2]
-        reason = getattr(subscription, "end_reason", None)
-        note = ": ".join(part for part in (status, str(getattr(reason, "text", reason) or "")) if part)
-        if note and note not in notes:
-            notes.append(note)
-    return "; ".join(notes)
+    return "; ".join(getattr(consumer, "peer_end_statements", ()))
 
 
 class RemoteDevice:
