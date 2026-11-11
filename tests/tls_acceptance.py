@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import faulthandler
 import io
 import logging
@@ -439,10 +440,11 @@ def check_unexpected_server_errors(report: Report) -> None:
     """Even during local TLS shutdown, body/response failures retain tracebacks."""
     with TemporaryDirectory(prefix="sdc-tls-errors-") as raw_temporary:
         provider_tls, consumer_tls = make_tls_configurations(Path(raw_temporary))
-        for failure in (
-            RuntimeError("unexpected request failure"),
-            AttributeError("unexpected request attribute failure"),
-            BrokenPipeError(10058, "unexpected response failure"),
+        for failure, label in (
+            (RuntimeError("unexpected request failure"), "RuntimeError"),
+            (AttributeError("unexpected request attribute failure"), "AttributeError"),
+            (BrokenPipeError(10058, "unexpected response failure"), "BrokenPipeError (WSAESHUTDOWN)"),
+            (BrokenPipeError(errno.EPIPE, "unexpected response failure"), "BrokenPipeError (EPIPE)"),
         ):
             provider = ProviderService(instance_name="tls-errors-provider", tls_config=provider_tls)
             provider.start()
@@ -481,7 +483,7 @@ def check_unexpected_server_errors(report: Report) -> None:
                 report.check(
                     "Traceback" in errors.getvalue() and type(failure).__name__ in errors.getvalue()
                     and str(failure) in errors.getvalue(),
-                    f"unexpected {type(failure).__name__} retains its traceback during TLS shutdown",
+                    f"unexpected {label} retains its traceback during TLS shutdown",
                 )
             finally:
                 provider.stop()
