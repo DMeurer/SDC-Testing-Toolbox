@@ -21,6 +21,7 @@ from sdc11073.namespaces import default_ns_helper  # noqa: E402
 from sdc11073.observableproperties import ObservableProperty  # noqa: E402
 from sdc11073.pysoap.soapclient import HTTPReturnCodeError  # noqa: E402
 from sdc11073.pysoap.soapenvelope import Fault  # noqa: E402
+from sdc11073.wsdiscovery.service import Service  # noqa: E402
 from sdc11073.xml_types import eventing_types  # noqa: E402
 from sdc11073.xml_types.actions import Actions  # noqa: E402
 
@@ -266,6 +267,96 @@ def consumer_discovery_start_failure() -> None:
         raises("discovery start failed", service.start)
     check(discovery.stop_count == 1, "consumer discovery start failure rolls back exactly once")
     check(not discovery.active and service._discovery is None, "consumer discovery failure resets state")
+
+
+class AnnouncingDiscovery(Tracker):
+    """The cache and callbacks of WSDiscovery, with its rule that a known EPR keeps its first entry."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cache: dict[str, Service] = {}
+        self.callbacks: dict[str, object] = {}
+
+    def set_remote_service_hello_callback(self, callback, types=None, scopes=None) -> None:  # noqa: ANN001, ARG002
+        self.callbacks["hello"] = callback
+
+    def set_on_probe_matches_callback(self, callback) -> None:  # noqa: ANN001
+        self.callbacks["probe"] = callback
+
+    def set_remote_service_resolve_match_callback(self, callback) -> None:  # noqa: ANN001
+        self.callbacks["resolve"] = callback
+
+    def set_remote_service_bye_callback(self, callback) -> None:  # noqa: ANN001
+        self.callbacks["bye"] = callback
+
+    def search_services(self, types=None, scopes=None, timeout=0) -> list[Service]:  # noqa: ANN001, ARG002
+        return list(self.cache.values())
+
+    def clear_remote_services(self) -> None:
+        self.cache.clear()
+
+    def receive(self, kind: str, service: Service) -> None:
+        known = self.cache.get(service.epr)
+        if known is None:
+            self.cache[service.epr] = service
+        elif len(service.x_addrs) > len(known.x_addrs):
+            known.x_addrs = service.x_addrs
+        callback = self.callbacks[kind]
+        if kind == "hello":
+            callback(("127.0.0.1", 3702), service)
+        elif kind == "probe":
+            callback([service])
+        else:
+            callback(service)
+
+    def receive_bye(self, epr: str) -> None:
+        self.cache.pop(epr, None)
+        self.callbacks["bye"](("127.0.0.1", 3702), epr)
+
+
+def a_restarted_provider_is_listed_at_its_new_address() -> None:
+    """A provider that died without a Bye and came back on another port is not offered at the old one.
+
+    The same EPR and metadata version are sent again, so the discovery cache keeps the old address.
+    """
+    epr = "urn:uuid:restarted-provider"
+
+    def announcement(port: int | None, instance: int) -> Service:
+        return Service(None, None, [] if port is None else [f"http://127.0.0.1:{port}/{epr}"], epr, instance)
+
+    def addresses_listed() -> list[tuple[str, ...]]:
+        return [device.x_addrs for device in service.known_devices() if device.epr == epr]
+
+    def at(port: int) -> list[tuple[str, ...]]:
+        return [(f"http://127.0.0.1:{port}/{epr}",)]
+
+    discovery = AnnouncingDiscovery()
+    service = ConsumerService()
+    with patch.object(consumer_module, "WSDiscovery", lambda _ip: discovery):
+        service.start()
+    try:
+        steps = (
+            ("hello", 55051, 55051, "a provider is listed at the address it announced"),
+            ("hello", 55082, 55082, "a Hello from another address replaces the one the discovery cache kept"),
+            ("probe", 55090, 55090, "so does an answer to a probe"),
+            ("resolve", 55091, 55091, "and an answer to a resolve"),
+            ("hello", None, 55091, "an announcement without any address does not blank the known one"),
+        )
+        for instance, (kind, announced, expected, description) in enumerate(steps, start=1):
+            discovery.receive(kind, announcement(announced, instance))
+            REPORT.check(addresses_listed() == at(expected), description, f"{addresses_listed()}")
+        listed = [device for device in service.known_devices() if device.epr == epr]
+        REPORT.check(
+            list(listed[0].service.x_addrs) == [at(55091)[0][0]],
+            "the service handed to connect() carries the same address",
+            str(listed[0].service.x_addrs),
+        )
+        discovery.receive_bye(epr)
+        REPORT.check(not addresses_listed(), "a Bye still removes the provider", str(addresses_listed()))
+        discovery.receive("hello", announcement(55100, 9))
+        REPORT.check(addresses_listed() == at(55100), "a provider that is back after its Bye is listed", str(addresses_listed()))
+    finally:
+        service.stop()
 
 
 def consumer_connection_failure(*, stage: str, tls: bool = False) -> None:
@@ -731,6 +822,7 @@ def main() -> int:
     generator_start_failure()
     provider_stop_failures()
     consumer_discovery_start_failure()
+    a_restarted_provider_is_listed_at_its_new_address()
     consumer_connection_failure(stage="start")
     consumer_connection_failure(stage="construct")
     consumer_connection_failure(stage="init")

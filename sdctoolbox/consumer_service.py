@@ -1102,6 +1102,10 @@ class ConsumerService:
         # networking thread, read from whichever thread asks for known_devices().
         self._last_seen: dict[str, float] = {}
         self._last_seen_lock = threading.Lock()
+        # The newest announcement of each provider, by EPR (guarded by the same lock). WSDiscovery
+        # keeps its first entry for an EPR that repeats its metadata version, so a provider that
+        # restarted on another port without a Bye would stay listed at the address it left.
+        self._announced: dict[str, Any] = {}
         self._discovery_listener: Callable[[], None] | None = None
         self._departure_listener: Callable[[str], None] | None = None
 
@@ -1125,9 +1129,9 @@ class ConsumerService:
         # Passive discovery: providers announce themselves with Hello on start and Bye on
         # a clean shutdown. Probe and resolve answers count as "heard from" as well.
         types = SdcV1Definitions.MedicalDeviceTypesFilter
-        self._discovery.set_remote_service_hello_callback(lambda _addr, service: self._heard(service.epr), types=types)
-        self._discovery.set_on_probe_matches_callback(lambda services: self._heard(*(s.epr for s in services)))
-        self._discovery.set_remote_service_resolve_match_callback(lambda service: self._heard(service.epr))
+        self._discovery.set_remote_service_hello_callback(lambda _addr, service: self._heard(service), types=types)
+        self._discovery.set_on_probe_matches_callback(lambda services: self._heard(*services))
+        self._discovery.set_remote_service_resolve_match_callback(lambda service: self._heard(service))
         self._discovery.set_remote_service_bye_callback(lambda _addr, epr: self._gone(epr))
         logger.info("discovery up on %s", self.ip)
 
@@ -1138,6 +1142,7 @@ class ConsumerService:
         self._tls_contexts = None
         with self._last_seen_lock:
             self._last_seen.clear()
+            self._announced.clear()
         if discovery is not None:
             discovery.stop()
 
@@ -1149,12 +1154,14 @@ class ConsumerService:
         """
         self._discovery_listener = listener
 
-    def _heard(self, *eprs: str) -> None:
+    def _heard(self, *services: Any) -> None:
         now = time.monotonic()
         with self._last_seen_lock:
-            for epr in eprs:
-                if epr:
-                    self._last_seen[epr] = now
+            for service in services:
+                if service.epr:
+                    self._last_seen[service.epr] = now
+                    if service.x_addrs:
+                        self._announced[service.epr] = service
         self._notify_listener()
 
     def set_departure_listener(self, listener: Callable[[str], None] | None) -> None:
@@ -1167,6 +1174,7 @@ class ConsumerService:
     def _gone(self, epr: str) -> None:
         with self._last_seen_lock:
             self._last_seen.pop(epr, None)
+            self._announced.pop(epr, None)
         departure = self._departure_listener
         if departure is not None:
             try:
@@ -1209,16 +1217,24 @@ class ConsumerService:
             return [device for device in devices if self._last_seen.get(device.epr, cutoff - 1) >= cutoff]
 
     def _devices_from(self, services: Iterable[Any]) -> list[DiscoveredDevice]:
-        return [
-            DiscoveredDevice(
-                epr=service.epr,
-                x_addrs=tuple(getattr(service, "x_addrs", ()) or ()),
-                scopes=_scope_uris(service),
-                service=service,
+        with self._last_seen_lock:
+            announced = dict(self._announced)
+        devices = []
+        for cached in services:
+            if self._own_epr is not None and cached.epr == self._own_epr:
+                continue
+            # The cache and the newest announcement differ only after a provider moved.
+            latest = announced.get(cached.epr)
+            service = latest if latest is not None and list(latest.x_addrs) != list(cached.x_addrs) else cached
+            devices.append(
+                DiscoveredDevice(
+                    epr=service.epr,
+                    x_addrs=tuple(getattr(service, "x_addrs", ()) or ()),
+                    scopes=_scope_uris(service),
+                    service=service,
+                ),
             )
-            for service in services
-            if self._own_epr is None or service.epr != self._own_epr
-        ]
+        return devices
 
     def __enter__(self) -> ConsumerService:
         self.start()
