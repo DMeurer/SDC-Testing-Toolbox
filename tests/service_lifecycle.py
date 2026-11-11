@@ -397,7 +397,7 @@ def consumer_connection_failure(*, stage: str, tls: bool = False) -> None:
             stack.enter_context(patcher)
         with patch.object(
         consumer_module,
-        "ConsumerMdib",
+        "_TolerantConsumerMdib",
         FakeConsumerMdib,
         ):
             raises(message, lambda: service.connect(device))
@@ -473,7 +473,7 @@ def scripted_consumers(errors: list[Exception | None], *, pause: float = 0.0):
 
     with (
         patch.object(consumer_module, "_WsdlSdcConsumer", ConsumerFactory),
-        patch.object(consumer_module, "ConsumerMdib", FakeConsumerMdib),
+        patch.object(consumer_module, "_TolerantConsumerMdib", FakeConsumerMdib),
     ):
         yield built, state
 
@@ -734,7 +734,7 @@ def http_error_answers() -> None:
 
         with (
             patch.object(consumer_module, "_WsdlSdcConsumer") as factory,
-            patch.object(consumer_module, "ConsumerMdib", FakeConsumerMdib),
+            patch.object(consumer_module, "_TolerantConsumerMdib", FakeConsumerMdib),
         ):
             factory.from_wsd_service.return_value = consumer
             try:

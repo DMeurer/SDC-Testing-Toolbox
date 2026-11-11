@@ -13,7 +13,7 @@ import threading
 import time
 import traceback
 from concurrent.futures import wait as wait_for_futures
-from copy import copy
+from copy import copy, deepcopy
 from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 from functools import partial
@@ -25,7 +25,7 @@ from sdc11073.consumer.consumerimpl import SdcConsumer, default_components_facto
 from sdc11073.consumer.request_handler_deferred import DispatchKeyRegistryDeferred
 from sdc11073.definitions_sdc import SdcV1Definitions
 from sdc11073.exceptions import ValidationError
-from sdc11073.mdib import ConsumerMdib
+from sdc11073.mdib import ConsumerMdib, mdibbase
 from sdc11073.mdib.consumermdibxtra import ConsumerMdibMethods
 from sdc11073.pysoap.soapclient import HTTPReturnCodeError
 from sdc11073.wsdiscovery import WSDiscovery
@@ -253,6 +253,45 @@ class _PeriodicConsumerMdibMethods(ConsumerMdibMethods):
         report = parser.from_node(received_message_data.p_msg.msg_node)
         processor = getattr(self._mdib, processor_name)
         processor(received_message_data.mdib_version_group, report)
+
+
+class _TolerantEntityGetter(mdibbase.EntityGetter):
+    """Return a stateless entity when the peer omitted a single-state descriptor's state.
+
+    BICEPS requires exactly one state per single-state descriptor, but a peer can still
+    leave one out. sdc11073 then raises KeyError, which aborts every walk over the MDIB
+    and hides the whole peer. The readers here already treat a None state as unknown.
+    """
+
+    def _mk_entity(self, descriptor: Any) -> mdibbase.Entity | mdibbase.MultiStateEntity:
+        if descriptor.is_context_descriptor or self._mdib.states.descriptor_handle.get(descriptor.Handle):
+            return super()._mk_entity(descriptor)
+        return mdibbase.Entity(self._mdib, deepcopy(descriptor), None)
+
+
+class _TolerantConsumerMdib(ConsumerMdib):
+    """ConsumerMdib that stays readable when the peer's MDIB lacks single states."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.entities = _TolerantEntityGetter(self)
+
+    def reload_all(self) -> None:
+        super().reload_all()
+        with self.mdib_lock:
+            missing = sorted(
+                descriptor.Handle
+                for descriptor in self.descriptions.objects
+                if not descriptor.is_context_descriptor
+                and not self.states.descriptor_handle.get(descriptor.Handle)
+            )
+        if missing:
+            logger.warning(
+                "peer MDIB has no state for %d descriptor(s); BICEPS requires exactly one each, "
+                "so they are shown with unknown state: %s",
+                len(missing),
+                ", ".join(missing),
+            )
 
 
 @dataclass
@@ -1388,7 +1427,7 @@ class ConsumerService:
                 if self.tls_config is not None
                 else None
             )
-            mdib = ConsumerMdib(consumer, extras_cls=_PeriodicConsumerMdibMethods)
+            mdib = _TolerantConsumerMdib(consumer, extras_cls=_PeriodicConsumerMdibMethods)
             mdib.init_mdib()
         except Exception as exc:
             try:

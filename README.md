@@ -91,18 +91,6 @@ the exact corresponding-source payload defined in `legal/SOURCE_OFFER.md`;
 these materials are operational guidance, not legal advice or a guarantee of
 compliance.
 
-## Milestones
-
-- [x] **0 — Groundwork.** Direct dependencies pinned, sdc11073 API verified, networking settled.
-- [x] **1 — Core.** Create data sources at runtime, publish them, remote-control them. Headless, with a console front end and an acceptance test.
-- [x] **2 — Provider UI.** Metric list with live values, "New data source" dialog.
-- [x] **3 — Consumer UI.** Discovery, MDIB browser, editors for controllable metrics. Accepts foreign MDIBs defensively; detailed metric and operation views cover the supported subset.
-- [x] **4a — Alarms and presets.** Alert conditions with their signals, and configs you can export, import and load at startup.
-- [x] **4b — Contexts and signal handling.** Editable patient and location, acknowledgement and delegation, a preset picker.
-- [x] **4c — Waveforms and distributions.** Both sample-array kinds, a generator for both, and a plot to watch them on.
-- [x] **4d — Device presets.** Seven realistic virtual device profiles with coded values, device identity, subsystem structure, and actions, each built by tests.
-- [x] **4e — TLS.** Strict TLS 1.2+ mutual authentication, certificate inspection and CA-based participant authorization.
-
 ## Try it
 
 Run it with no arguments and it asks how to start: device name, which address to bind discovery to, an optional config file, and whether to log verbosely.
@@ -307,7 +295,7 @@ The startup name still decides the EPR and serial number; a saved `device.instan
 
 For a profile that imports successfully, recorded handles make its defined metrics, alerts and actions addressable under stable names. They do not reproduce an identical live MDIB or provider identity.
 
-### The shipped devices
+### The shipped demo devices
 
 | Preset                | What it is                            | Worth looking at                                                                                                    |
 |-----------------------|---------------------------------------|---------------------------------------------------------------------------------------------------------------------|

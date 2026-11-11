@@ -35,6 +35,8 @@ CHECKS: list[tuple[str, str, str]] = [
     ("sdc11073.mdib.mdibbase", "EntityGetter.by_handle", "entity by handle"),
     ("sdc11073.mdib.mdibbase", "EntityGetter.by_node_type", "entities by type"),
     ("sdc11073.mdib.mdibbase", "EntityGetter.by_parent_handle", "walk the containment tree"),
+    ("sdc11073.mdib.mdibbase", "EntityGetter._mk_entity", "tolerate peer MDIBs without some single states"),
+    ("sdc11073.mdib.mdibbase", "Entity", "stateless entity for a missing peer state"),
     # --- Operations / external control ---
     ("sdc11073.provider.operations", "SetValueOperation", "remote control for numeric"),
     ("sdc11073.provider.operations", "SetStringOperation", "remote control for string/enum"),
@@ -79,6 +81,7 @@ CHECKS: list[tuple[str, str, str]] = [
     ("sdc11073.consumer.consumerimpl", "SdcConsumer.periodic_context_report", "periodic context report"),
     ("sdc11073.mdib", "ConsumerMdib", "consumer MDIB"),
     ("sdc11073.mdib", "ConsumerMdib.init_mdib", "load the MDIB"),
+    ("sdc11073.mdib", "ConsumerMdib.reload_all", "report missing peer states after GetMdib"),
     ("sdc11073.mdib.consumermdibxtra", "ConsumerMdibMethods", "extend MDIB report handling"),
     # --- Discovery ---
     ("sdc11073.wsdiscovery", "WSDiscovery", "discovery bound to an IP"),
@@ -126,6 +129,24 @@ SIGNATURE_CONTRACTS: list[tuple[str, str, str, CallShape]] = [
         "ProviderEntityGetter.new_entity",
         "new_entity(node_type, handle, parent_handle)",
         CallShape(4),  # unbound method: self plus the three project arguments
+    ),
+    (
+        "sdc11073.mdib.mdibbase",
+        "EntityGetter.__init__",
+        "EntityGetter(mdib)",
+        CallShape(2),
+    ),
+    (
+        "sdc11073.mdib.mdibbase",
+        "EntityGetter._mk_entity",
+        "_mk_entity(descriptor)",
+        CallShape(2),
+    ),
+    (
+        "sdc11073.mdib.mdibbase",
+        "Entity.__init__",
+        "Entity(mdib, descriptor, state)",
+        CallShape(4),
     ),
     (
         "sdc11073.provider.operations",

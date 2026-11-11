@@ -38,11 +38,13 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from script_support import Report  # noqa: E402
+from mdib_test_support import PM, original_mdib  # noqa: E402
 from sdc11073 import observableproperties  # noqa: E402
 from sdc11073.consumer.consumerimpl import SdcConsumer  # noqa: E402
 from sdc11073.definitions_sdc import SdcV1Definitions  # noqa: E402
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 from sdc11073.mdib import ConsumerMdib  # noqa: E402
+from sdc11073.pysoap.msgreader import MessageReader  # noqa: E402
 from sdc11073.xml_types import msg_types, pm_types  # noqa: E402
 from sdc11073.xml_types import pm_qnames as pm  # noqa: E402
 from sdc11073.xml_types.dataconverters import DecimalConverter  # noqa: E402
@@ -51,6 +53,7 @@ from sdctoolbox import config, constants  # noqa: E402
 from sdctoolbox.consumer_service import (  # noqa: E402
     RemoteDevice,
     _PeriodicConsumerMdibMethods,
+    _TolerantConsumerMdib,
 )
 from sdctoolbox.handlers import make_activate_handler  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
@@ -3901,6 +3904,170 @@ def check_periodic_consumer_routing(report: Report) -> None:
     )
 
 
+def check_missing_single_states(report: Report) -> None:
+    print("\n15. Peer MDIB without some single states")
+
+    # The fixture already leaves the SCO, VMD, channel and SystemContext without a state;
+    # dropping two operation states as well covers both operation readers.
+    dropped = {"demo.action", "demo.set"}
+    root = etree.fromstring(original_mdib())
+    for state in root.iter(f"{{{PM}}}State"):
+        if state.get("DescriptorHandle") in dropped:
+            state.getparent().remove(state)
+    descriptors, states = MessageReader(
+        SdcV1Definitions, None, logging.getLogger("missing-states"), validate=False,
+    ).read_mdib_xml(etree.tostring(root))
+    stated = {state.DescriptorHandle for state in states}
+    expected_missing = sorted(
+        descriptor.Handle
+        for descriptor in descriptors
+        if not descriptor.is_context_descriptor and descriptor.Handle not in stated
+    )
+    report.check(
+        set(dropped) <= set(expected_missing) and "demo.sco" in expected_missing,
+        "the fixture omits states for operations and containers",
+        ", ".join(expected_missing),
+    )
+
+    def peer_client():  # noqa: ANN202 - minimal SdcConsumer stand-in
+        get_service = SimpleNamespace(
+            get_mdib=lambda: SimpleNamespace(
+                result=(deepcopy(descriptors), deepcopy(states)),
+                mdib_version_group=SimpleNamespace(
+                    mdib_version=17,
+                    sequence_id="urn:uuid:11111111-1111-1111-1111-111111111111",
+                    instance_id=3,
+                ),
+            ),
+        )
+        return SimpleNamespace(
+            sdc_definitions=SdcV1Definitions,
+            log_prefix="missing-states",
+            msg_reader=None,
+            client=lambda name: get_service if name == "Get" else None,
+        )
+
+    stock = ConsumerMdib(peer_client())
+    stock.reload_all()
+    try:
+        stock.entities.items()
+        stock_error = None
+    except KeyError as exc:
+        stock_error = exc
+    report.check(
+        stock_error is not None and str(stock_error).strip("'") in expected_missing,
+        "the stock entity getter fails on the whole MDIB (proves the check below means something)",
+        repr(stock_error),
+    )
+
+    class Capture(logging.Handler):
+        def __init__(self) -> None:
+            super().__init__(logging.WARNING)
+            self.messages: list[str] = []
+
+        def emit(self, record: logging.LogRecord) -> None:
+            self.messages.append(record.getMessage())
+
+    consumer_logger = logging.getLogger("sdctoolbox.consumer")
+    capture = Capture()
+    previous_propagate = consumer_logger.propagate
+    consumer_logger.addHandler(capture)
+    consumer_logger.propagate = False
+    try:
+        mdib = _TolerantConsumerMdib(peer_client())
+        mdib.reload_all()
+    finally:
+        consumer_logger.removeHandler(capture)
+        consumer_logger.propagate = previous_propagate
+
+    warnings = [message for message in capture.messages if "no state" in message]
+    report.check(
+        len(warnings) == 1 and all(handle in warnings[0] for handle in expected_missing),
+        "loading the MDIB warns once and names every descriptor without a state",
+        warnings[0] if warnings else str(capture.messages),
+    )
+
+    try:
+        entities = dict(mdib.entities.items())
+        walk_error = None
+    except Exception as exc:  # noqa: BLE001 - any failure here is the regression
+        entities = {}
+        walk_error = exc
+    report.check(
+        walk_error is None and set(entities) == {descriptor.Handle for descriptor in descriptors},
+        "every descriptor is still reachable through entities.items()",
+        repr(walk_error) if walk_error else f"{len(entities)} entities",
+    )
+    report.check(
+        len(mdib.entities) == len(descriptors),
+        "len(entities) counts stateless descriptors too",
+    )
+    report.check(
+        all(entities[handle].state is None for handle in expected_missing if handle in entities),
+        "a descriptor without a state gets an entity whose state is None",
+    )
+    report.check(
+        entities.get("demo.rate") is not None
+        and entities["demo.rate"].state is not None
+        and entities["demo.rate"].state.MetricValue.Value == Decimal("12.5"),
+        "descriptors with a state keep it",
+    )
+    report.check(
+        mdib.entities.by_handle("demo.sco") is not None
+        and mdib.entities.by_handle("demo.sco").state is None
+        and {entity.handle for entity in mdib.entities.by_parent_handle("demo.sco")}
+        == {"demo.set", "demo.disabled", "demo.mode.set", "demo.action"}
+        and [entity.handle for entity in mdib.entities.by_node_type(pm.ActivateOperationDescriptor)]
+        == ["demo.action"],
+        "by_handle, by_parent_handle and by_node_type also tolerate missing states",
+    )
+    patient = mdib.entities.by_handle("demo.patient")
+    report.check(
+        patient is not None and patient.is_multi_state and set(patient.states) == {"demo.history", "demo.current"},
+        "context descriptors keep their multi-state entities",
+    )
+
+    remote = RemoteDevice(SimpleNamespace(), mdib, "urn:provider-core:missing-states")
+    try:
+        metrics = remote.metrics()
+        actions = remote.actions()
+        alerts = remote.alerts()
+        patients = remote.patient_contexts()
+        remote_error = None
+    except Exception as exc:  # noqa: BLE001 - any failure here is the regression
+        metrics, actions, alerts, patients = {}, {}, {}, {}
+        remote_error = exc
+    report.check(
+        remote_error is None and set(metrics) == {"demo.rate", "demo.mode", "demo.wave"},
+        "RemoteDevice.metrics() lists the peer metrics",
+        repr(remote_error) if remote_error else ", ".join(sorted(metrics)),
+    )
+    rate = metrics.get("demo.rate")
+    report.check(
+        rate is not None
+        and set(rate.operation_handles) == {"demo.set", "demo.disabled"}
+        and not rate.controllable_now,
+        "a set operation without a state is listed but not offered as enabled",
+        str(rate and (rate.operation_handles, rate.controllable_now)),
+    )
+    mode = metrics.get("demo.mode")
+    report.check(
+        mode is not None and mode.selected_operation_handle == "demo.mode.set",
+        "an operation that does have a state still controls its metric",
+    )
+    action = actions.get("demo.action")
+    report.check(
+        action is not None and not action.enabled,
+        "an ActivateOperation without a state is listed as disabled",
+        str(action),
+    )
+    report.check(
+        "demo.alarm" in alerts and set(patients) == {"demo.patient"},
+        "alerts and patient contexts are unaffected",
+        f"{sorted(alerts)} {sorted(patients)}",
+    )
+
+
 def main() -> int:
     basic_logging_setup(level=logging.ERROR)
     report = Report()
@@ -3939,6 +4106,7 @@ def main() -> int:
         check_foreign_consumer_operations(report)
         check_remote_metadata(report)
         check_periodic_consumer_routing(report)
+        check_missing_single_states(report)
     finally:
         service.stop()
 
