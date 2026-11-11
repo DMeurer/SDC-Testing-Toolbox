@@ -14,7 +14,7 @@ import zipfile
 import zlib
 from collections.abc import Callable
 from email.message import Message
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -600,6 +600,16 @@ def check_debian_common_notices(report: Report) -> None:
             "License: GPL-2\n See /usr/share/common-licenses/GPL-2 for the full text.\n",
             encoding="utf-8",
         )
+        free_copyright = root / "doc" / "libfree2" / "copyright"
+        free_copyright.parent.mkdir()
+        free_copyright.write_text(
+            "This package was debianized by a fixture maintainer.\n"
+            "Copyright (C) 2024 Fixture Authors\n"
+            "License: prose that is not a DEP-5 license field\n"
+            "The full text is in /usr/share/common-licenses/GPL-2.\n"
+            "Some files cite \"/usr/share/common-licenses/GPL-2.0\".\n",
+            encoding="utf-8",
+        )
         common = root / "common" / "GPL-2"
         common.parent.mkdir()
         common.write_text("GNU GENERAL PUBLIC LICENSE Version 2 fixture", encoding="utf-8")
@@ -610,24 +620,62 @@ def check_debian_common_notices(report: Report) -> None:
                 "/usr/share/common-licenses": root / "common",
             }.get(value, Path(value))
 
+        # Merged-/usr hosts resolve /lib to /usr/lib while dpkg may record /lib.
+        dpkg_owners = {
+            "/lib/libfixture.so.1": "libfixture1:amd64",
+            "/usr/lib/libfree.so.2": "libfree2:amd64",
+        }
+
         def query(argv: list[str], **_kwargs: object) -> object:
-            return SimpleNamespace(returncode=0, stdout=(
-                "libfixture1:amd64: /lib/libfixture.so.1\n" if argv[1] == "-S"
-                else "1.0\thttps://example.test/libfixture\tlibfixture\n"
-            ))
+            if argv[1] == "-S":
+                owner = dpkg_owners.get(argv[2])
+                return SimpleNamespace(
+                    returncode=0 if owner else 1,
+                    stdout=f"{owner}: {argv[2]}\n" if owner else "",
+                )
+            name = argv[-1].split(":", 1)[0]
+            return SimpleNamespace(
+                returncode=0,
+                stdout=f"1.0-1build1\thttps://example.test/{name}\t{name}-src\t1:1.0-1\n",
+            )
 
         output = root / "output"
         with patch.object(legal_payload, "Path", side_effect=system_path), patch.object(
             legal_payload.subprocess, "run", side_effect=query,
         ):
-            native = legal_payload._debian_native_components(
-                {root / "libfixture.so.1": {"libfixture.so.1"}}, output,
-            )[0]
+            native, free = legal_payload._debian_native_components(
+                {
+                    PurePosixPath("/usr/lib/libfixture.so.1"): {"libfixture.so.1"},
+                    PurePosixPath("/usr/lib/libfree.so.2"): {"libfree.so.2"},
+                },
+                output,
+            )
         expected = [
             "legal/licenses/debian/libfixture1/copyright",
             "legal/licenses/debian/common/GPL-2",
         ]
         report.check(native["notice_paths"] == expected, "Debian generation includes the referenced common GPL-2 text")
+        report.check(
+            native["evidence"]["owner"]["debian_binary_package"] == "libfixture1",
+            "Debian generation assigns a merged-/usr library through its dpkg /lib path",
+        )
+        report.check(
+            native["license_expression"] == "GPL-2"
+            and native["source_archive_urls"]
+            == ["https://launchpad.net/ubuntu/+source/libfixture1-src/1:1.0-1"],
+            "Debian generation records DEP-5 licenses and the versioned source package URL",
+            f"{native['license_expression']!r} {native['source_archive_urls']!r}",
+        )
+        free_expected = [
+            "legal/licenses/debian/libfree2/copyright",
+            "legal/licenses/debian/common/GPL-2",
+        ]
+        report.check(
+            free["license_expression"] == "LicenseRef-Debian-libfree2-copyright"
+            and free["notice_paths"] == free_expected,
+            "Debian generation ships free-form copyright files without parsing prose as licenses",
+            f"{free['license_expression']!r} {free['notice_paths']!r}",
+        )
         files, inventory = legal_fixture()
         inventory["native_components"] = [native]
         files[f"{ARTIFACT_ROOT}/libfixture.so.1"] = b"native fixture"
@@ -669,6 +717,26 @@ def check_debian_common_notices(report: Report) -> None:
         files[key] = json.dumps(no_reference).encode()
         errors = validate_payload(files)
         report.check(not errors, "Debian copyright without common-license references needs only its own notice", "; ".join(errors))
+
+        free_files, free_inventory = legal_fixture()
+        free_inventory["native_components"] = [free]
+        free_files[f"{ARTIFACT_ROOT}/libfree.so.2"] = b"native fixture"
+        for path in free_expected:
+            free_files[f"{ARTIFACT_ROOT}/{path}"] = (output / path).read_bytes()
+        free_files[key] = json.dumps(free_inventory).encode()
+        errors = validate_payload(free_files)
+        report.check(not errors, "validator accepts a free-form Debian copyright notice", "; ".join(errors))
+
+        unrelated = b"Not a package notice; see /usr/share/common-licenses/GPL-2.\n"
+        free_files[f"{ARTIFACT_ROOT}/{free_expected[0]}"] = unrelated
+        free["notice_sha256"][free_expected[0]] = hashlib.sha256(unrelated).hexdigest()
+        free_files[key] = json.dumps(free_inventory).encode()
+        errors = validate_payload(free_files)
+        report.check(
+            any("unexpected content" in error for error in errors),
+            "Debian validation rejects a free-form notice without copyright statements",
+            "; ".join(errors),
+        )
 
 
 def check_qt_imageformat_sources(report: Report) -> None:
@@ -725,10 +793,42 @@ def check_qt_imageformat_sources(report: Report) -> None:
             report.check(any("qtimageformats" in error for error in errors), "Qt validation rejects a wrong-version imageformats archive", "; ".join(errors))
 
 
+def check_qt_wheel_notice_platforms(report: Report) -> None:
+    qt_wheels = ("PySide6", "PySide6_Essentials", "shiboken6")
+    files, inventory = legal_fixture()
+    for component in inventory["components"]:
+        if component["name"] in qt_wheels:
+            commercial = [
+                path for path in component["notice_paths"]
+                if path.endswith("/LicenseRef-Qt-Commercial.txt")
+            ]
+            component["notice_paths"] = [
+                path for path in component["notice_paths"] if path not in commercial
+            ]
+            for path in commercial:
+                files.pop(f"{ARTIFACT_ROOT}/{path}")
+    key = f"{ARTIFACT_ROOT}/{INVENTORY_NAME}"
+    files[key] = json.dumps(inventory).encode()
+    errors = validate_payload(files)
+    report.check(not errors, "Linux validation accepts Qt wheels that ship no license files", "; ".join(errors))
+    inventory["platform"]["system"] = "Windows"
+    files[key] = json.dumps(inventory).encode()
+    errors = validate_payload(files)
+    report.check(
+        all(
+            any(error.startswith(f"{name}: missing or misassigned") for error in errors)
+            for name in qt_wheels
+        ),
+        "Windows validation still requires the Qt wheels' LicenseRef-Qt-Commercial notices",
+        "; ".join(errors),
+    )
+
+
 def check_sources(report: Report) -> None:
     check_binary_filter(report)
     check_debian_common_notices(report)
     check_qt_imageformat_sources(report)
+    check_qt_wheel_notice_platforms(report)
     license_text = (ROOT / "LICENSE").read_text(encoding="utf-8")
     report.check(
         "GNU GENERAL PUBLIC LICENSE\n                       Version 3, 29 June 2007"
