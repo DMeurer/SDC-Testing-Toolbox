@@ -528,6 +528,61 @@ def check_a_silent_subscriber_cannot_hold_up_the_provider(report: Report) -> Non
         service.stop()
 
 
+def check_the_consumer_is_told_about_descriptors_that_disappear(report: Report) -> None:
+    """A peer that creates or removes a descriptor while connected is reported to the consumer, once."""
+    service = ProviderService(instance_name="deleted-descriptor-conformance")
+    consumer = ConsumerService()
+    remote = None
+    try:
+        service.start()
+        keep = service.add_metric(MetricSpec(label="Keep", kind=MetricKind.NUMBER, initial_value=Decimal(1)))
+        gone = service.add_metric(MetricSpec(label="Gone", kind=MetricKind.NUMBER, initial_value=Decimal(2)))
+        consumer.start()
+        remote = _connect(consumer, service)
+        added: list[set[str]] = []
+        deleted: list[set[str]] = []
+        remote.bind(
+            new_descriptors_by_handle=lambda handles: added.append(set(handles)),
+            deleted_descriptors_by_handle=lambda handles: deleted.append(set(handles)),
+        )
+
+        late = service.add_metric(MetricSpec(label="Late", kind=MetricKind.NUMBER, initial_value=Decimal(3)))
+        report.check(
+            wait_until(lambda: any(late in handles for handles in added), timeout=10),
+            "the consumer is told about a descriptor the peer created",
+            str(added),
+        )
+        service.remove_metric(gone)
+        report.check(
+            wait_until(lambda: any(gone in handles for handles in deleted), timeout=10),
+            "the consumer is told about a descriptor the peer removed",
+            str(deleted),
+        )
+        report.check(
+            sum(gone in handles for handles in deleted) == 1 and not any(keep in handles for handles in deleted),
+            "the removal is reported once, and only for the descriptor that went away",
+            str(deleted),
+        )
+        metrics = remote.metrics()
+        report.check(
+            keep in metrics and late in metrics and gone not in metrics,
+            "the consumer's own view dropped the removed metric and kept the others",
+            str(sorted(metrics)),
+        )
+        service.set_value(keep, Decimal(5))
+        report.check(
+            wait_until(lambda: remote.metrics()[keep].value == Decimal(5), timeout=10)
+            and len(deleted) == 1,
+            "a later value report is not mistaken for another removal",
+            str(deleted),
+        )
+    finally:
+        if remote is not None:
+            remote.close()
+        consumer.stop()
+        service.stop()
+
+
 def main() -> int:
     report = Report()
     check_limit_alarms_declare_the_limits_they_monitor(report)
@@ -537,6 +592,7 @@ def main() -> int:
     check_failed_operations_say_why(report)
     check_the_consumer_logs_why_a_peer_refused(report)
     check_a_silent_subscriber_cannot_hold_up_the_provider(report)
+    check_the_consumer_is_told_about_descriptors_that_disappear(report)
     return report.summary()
 
 
