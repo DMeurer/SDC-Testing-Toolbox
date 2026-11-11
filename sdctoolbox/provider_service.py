@@ -20,6 +20,7 @@ from sdc11073.location import SdcLocation
 from sdc11073.mdib import ProviderMdib, mdibbase
 from sdc11073.provider import SdcProvider
 from sdc11073.provider.operations import ActivateOperation
+from sdc11073.provider.porttypes.getserviceimpl import GetService
 from sdc11073.provider.providerimpl import RoleProviderComponents, provider_components_async_factory
 from sdc11073.wsdiscovery import WSDiscovery
 from sdc11073.xml_types import pm_qnames as pm
@@ -29,7 +30,13 @@ from sdc11073.xml_types.xml_structure import DateOfBirthProperty
 
 from . import constants
 from .config import _unique_in
-from .handlers import apply_metric_value, make_activate_handler, make_set_handler
+from .handlers import (
+    ReasonedSetService,
+    VersionedGetService,
+    apply_metric_value,
+    make_activate_handler,
+    make_set_handler,
+)
 from .http_server import configure_request_handler
 from .mdib_io import NativeMdibConfig, mdib_bytes, parse_mdib
 from . import native_mdib as native
@@ -49,6 +56,7 @@ from .model import (
     patient_info_from_biceps,
     patient_measurement_wire_value,
     slugify,
+    validate_xml_text,
 )
 from .sample_generation import DemoSampleGenerator, SampleGeneratorSnapshot, domain_step
 from .sdc11073_v3_adapter import Sdc11073V3Adapter, Sdc11073V3Snapshot
@@ -181,6 +189,11 @@ class ProviderService:
             device: DeviceInfo | None = None,
             tls_config: TlsConfig | None = None,
     ) -> None:
+        # Both end up in ThisDevice. Text XML cannot carry made the provider start and answer
+        # discovery, and then fail every connect, so refuse it before anything exists.
+        validate_xml_text(instance_name, "instance name")
+        if friendly_name is not None:
+            validate_xml_text(friendly_name, "friendly name")
         self.ip = ip
         self.instance_name = instance_name
         # A preset describing a ventilator should announce itself as one. sdc11073 takes
@@ -313,9 +326,14 @@ class ProviderService:
                 return native.SnapshotProduct(mdib, sco, log_prefix, self._handler,
                                               None if native_mode else self._activate_handler)
 
-            provider_components = None
-            if self.tls_config is not None or native_mode:
-                provider_components = provider_components_async_factory()
+            provider_components = provider_components_async_factory()
+            provider_components.hosted_services["Set"] = [ReasonedSetService]
+            provider_components.hosted_services["Get"] = [
+                VersionedGetService if port_type is GetService else port_type
+                for port_type in provider_components.hosted_services["Get"]
+            ]
+            # sdc11073 hosts it but answers both of its operations with a 500 "not implemented".
+            provider_components.hosted_services.pop("ContainmentTree", None)
             if native_mode:
                 provider_components.scopes_factory = native.scopes
             if self.tls_config is not None:
@@ -331,6 +349,7 @@ class ProviderService:
                 role_provider_components=RoleProviderComponents(role_provider_class=role_provider_factory),
                 ssl_context_container=self._tls_contexts,
                 alternative_hostname=(self.tls_config.server_name if self.tls_config is not None else None),
+                socket_timeout=constants.NOTIFICATION_TIMEOUT_SECONDS,
             )
 
             # No waveform provider configured, so the real-time sample loop must stay off.
@@ -344,6 +363,10 @@ class ProviderService:
             if initialize_contexts:
                 self.set_location(LocationInfo(**constants.DEFAULT_LOCATION))
                 self.set_patient(DEFAULT_PATIENT)
+            else:
+                # Only set_location() publishes the device, and a native snapshot keeps its own
+                # contexts, so without this the provider would never answer a Probe or Resolve.
+                self._provider.publish()
 
             if self._sco is None and not native_mode:
                 msg = "no SCO registry was created - the bootstrap MDIB is missing its Sco element"
@@ -1174,6 +1197,13 @@ class ProviderService:
                         else None
                     ),
                 )
+                # The attribute names the limits that are switched off, so an upper-only alarm is "LoOff".
+                if spec.lower_limit is not None and spec.upper_limit is not None:
+                    entity.state.MonitoredAlertLimits = pm_types.AlertConditionMonitoredLimits.ALL_ON
+                elif spec.upper_limit is not None:
+                    entity.state.MonitoredAlertLimits = pm_types.AlertConditionMonitoredLimits.LOW_OFF
+                else:
+                    entity.state.MonitoredAlertLimits = pm_types.AlertConditionMonitoredLimits.HIGH_OFF
 
             signal_entities = []
             handles = {live_handle for live_handle, _ in self.mdib.entities.items()} | {handle}
@@ -1749,6 +1779,7 @@ class ProviderService:
             state.BindingStartTime = time.time()
 
             with self.mdib.context_state_transaction() as mgr:
+                state.BindingMdibVersion = mgr.new_mdib_version
                 mgr.disassociate_all(entity.handle, ignored_handle=state.Handle)
                 mgr.write_entity(entity, [state.Handle])
             logger.info("patient is now %s", info.summary() or "unset")

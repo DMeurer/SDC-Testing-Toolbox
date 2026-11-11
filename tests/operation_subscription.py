@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import sys
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,12 +21,19 @@ TESTS = ROOT / "tests"
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(TESTS))
 
-from script_support import Report, wait_until  # noqa: E402
+from script_support import CallbackRecorder, Report, wait_until  # noqa: E402
 from sdc11073.consumer.consumerimpl import SdcConsumer  # noqa: E402
 from sdc11073.definitions_sdc import SdcV1Definitions  # noqa: E402
 from sdc11073.provider.periodicreports import PeriodicStates  # noqa: E402
 from sdc11073.provider.porttypes.contextserviceimpl import ContextService  # noqa: E402
+from sdc11073.provider.porttypes.porttypebase import (  # noqa: E402
+    WSDLMessageDescription,
+    WSDLOperationBinding,
+    mk_wsdl_one_way_operation,
+    msg_prefix,
+)
 from sdc11073.provider.porttypes.stateeventserviceimpl import StateEventService  # noqa: E402
+from sdc11073.provider.porttypes.waveformserviceimpl import WaveformService  # noqa: E402
 from sdc11073.provider.subscriptionmgr_base import SubscriptionsManagerBase  # noqa: E402
 from sdc11073.xml_types import eventing_types, msg_types, pm_types  # noqa: E402
 from sdc11073.xml_types.actions import Actions  # noqa: E402
@@ -34,10 +41,12 @@ from sdc11073.xml_types.actions import Actions  # noqa: E402
 from sdctoolbox.consumer_service import ConsumerService, DiscoveredDevice  # noqa: E402
 from sdctoolbox.model import AlertSpec, MetricKind, MetricSpec, PatientInfo  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
+from sdctoolbox.sample_generation import SamplePublisher  # noqa: E402
 
 OPERATION_INVOKED = Actions.OperationInvokedReport.value
 EPISODIC_METRIC = Actions.EpisodicMetricReport.value
 PERIODIC_METRIC = Actions.PeriodicMetricReport.value
+WAVEFORM = Actions.Waveform.value
 
 
 def start_all_without_operation_reports(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
@@ -178,8 +187,10 @@ def check_partial_metric_feed_loss(report: Report) -> None:
         end(PERIODIC_METRIC)
         report.check(remote.connection_lost_reason is None, "loss of an optional periodic action keeps episodic metrics live")
         end(EPISODIC_METRIC)
+        # sdc11073 stores the new subscription status before it calls the observers, so the listener may still be running.
         report.check(
-            remote.operation_reports_subscribed() and bool(reasons) and remote.connection_lost_reason is not None,
+            wait_until(lambda: bool(reasons) and remote.connection_lost_reason is not None, timeout=5)
+            and remote.operation_reports_subscribed(),
             "ending the metric feed reports data loss even while OperationInvokedReport remains active",
         )
         remote._consumer.stop_all()  # this peer is reachable; explicitly clean up its remaining subscriptions
@@ -201,6 +212,131 @@ def check_partial_metric_feed_loss(report: Report) -> None:
     finally:
         if remote is not None:
             remote._consumer.stop_all()
+        service.stop()
+        provider.stop()
+
+
+def check_waveform_operation_naming(report: Report) -> None:
+    """The waveform operation is called Waveform by sdc11073 and WaveformStream by other peers.
+
+    Both declare the same action, so the subscription must follow the action and not the name.
+    """
+
+    def waveform_wsdl(name: str) -> list:
+        def add_port_type(self, parent):
+            mk_wsdl_one_way_operation(self._mk_port_type_node(parent, True), operation_name=name)
+
+        return [
+            patch.object(WaveformService, "add_wsdl_port_type", add_port_type),
+            patch.object(
+                WaveformService, "WSDLMessageDescriptions",
+                (WSDLMessageDescription(name, (f"{msg_prefix}:WaveformStreamReport",)),),
+            ),
+            patch.object(WaveformService, "WSDLOperationBindings", (WSDLOperationBinding(name, None, "literal"),)),
+        ]
+
+    for name in ("Waveform", "WaveformStream"):
+        provider = ProviderService(instance_name=f"waveform-{name.lower()}-provider")
+        service = ConsumerService()
+        remote = None
+        try:
+            with ExitStack() as stack:
+                for patcher in waveform_wsdl(name):
+                    stack.enter_context(patcher)
+                provider.start()
+                handle = provider.add_metric(MetricSpec(label="Named wave", kind=MetricKind.WAVEFORM))
+                service.start()
+                device = next((d for d in service.scan(timeout=10, expected=99) if d.epr == provider.epr.urn), None)
+                report.require(device is not None, f"provider naming the operation {name} is discoverable")
+                remote = service.connect(device)
+            report.check(
+                any(active and WAVEFORM in subscription_filter.split()
+                    for subscription_filter, active in remote._consumer.subscription_status.items()),  # noqa: SLF001
+                f"the waveform action is subscribed when the WSDL names the operation {name}",
+            )
+            blocks = CallbackRecorder(dict)
+            remote.bind(waveform_by_handle=blocks)
+            cursor = blocks.cursor()
+            provider.set_samples(handle, [Decimal(1), Decimal(2), Decimal(3)])
+            report.check(
+                blocks.wait_for(lambda payload: handle in payload, after=cursor, timeout=5.0) is not None,
+                f"waveform blocks reach the consumer when the WSDL names the operation {name}",
+            )
+        finally:
+            if remote is not None:
+                remote.close()
+            service.stop()
+            provider.stop()
+
+
+def check_waveform_without_determination_time(report: Report) -> None:
+    """BICEPS leaves DeterminationTime optional, and some peers omit it from their sample arrays."""
+    original_prepare = SamplePublisher.prepare
+
+    def prepare_without_time(self, handle, samples, *, determination_time):  # noqa: ANN001, ANN202
+        prepared = original_prepare(self, handle, samples, determination_time=determination_time)
+        prepared.entity.state.MetricValue.DeterminationTime = None
+        return prepared
+
+    block = [Decimal(1), Decimal(2), Decimal(3)]
+    provider = ProviderService(instance_name="untimed-waveform-provider")
+    service = ConsumerService()
+    remote = None
+    try:
+        provider.start()
+        handle = provider.add_metric(MetricSpec(label="Untimed wave", kind=MetricKind.WAVEFORM))
+        service.start()
+        device = next((d for d in service.scan(timeout=10, expected=99) if d.epr == provider.epr.urn), None)
+        report.require(device is not None, "provider is discoverable")
+        remote = service.connect(device)
+        blocks = CallbackRecorder(lambda payload: {key: list(state.MetricValue.Samples) for key, state in payload.items()})
+        remote.bind(waveform_by_handle=blocks)
+        cursor = blocks.cursor()
+        with patch.object(SamplePublisher, "prepare", prepare_without_time):
+            provider.set_samples(handle, block)
+        report.require(
+            provider.mdib.entities.by_handle(handle).state.MetricValue.DeterminationTime is None,
+            "the published block carries no DeterminationTime",
+        )
+        event = blocks.wait_for(lambda payload: handle in payload, after=cursor, timeout=5.0)
+        report.check(event is not None, "a waveform block without DeterminationTime reaches the consumer")
+        report.check(
+            event is not None and event.payload[handle] == block,
+            "its samples arrive intact",
+            str(event.payload if event is not None else None),
+        )
+    finally:
+        if remote is not None:
+            remote.close()
+        service.stop()
+        provider.stop()
+
+
+def check_deliberate_close_is_not_a_loss(report: Report) -> None:
+    """Ending our own subscriptions must not look like the peer going away."""
+    provider = ProviderService(instance_name="deliberate-close-provider")
+    service = ConsumerService()
+    remote = None
+    try:
+        provider.start()
+        service.start()
+        device = next((d for d in service.scan(timeout=10, expected=99) if d.epr == provider.epr.urn), None)
+        report.require(device is not None, "provider is discoverable")
+        remote = service.connect(device)
+        reasons: list[str] = []
+        remote.on_connection_lost(reasons.append)
+        with capture_warnings() as warnings:
+            remote.close()
+        report.check(
+            not reasons and remote.connection_lost_reason is None,
+            "closing a healthy connection does not notify the connection-lost listeners",
+            str(reasons),
+        )
+        report.check(not warnings, "closing a healthy connection logs no warning", "; ".join(warnings))
+        remote = None
+    finally:
+        if remote is not None:
+            remote.close()
         service.stop()
         provider.stop()
 
@@ -250,7 +386,7 @@ def main() -> int:
         # must reconcile both kinds of controls from the provider rather than guessing that
         # the requested value became the reported one.
         with patch.object(SdcConsumer, "start_all", start_all_without_metric_reports), patch(
-            "sdctoolbox.consumer_service._ensure_metric_report_subscription",
+            "sdctoolbox.consumer_service._ensure_report_subscriptions",
         ):
             unreported = consumer.connect(device)
         try:
@@ -306,6 +442,9 @@ def main() -> int:
         provider.stop()
     check_restricted_provider(report)
     check_partial_metric_feed_loss(report)
+    check_waveform_operation_naming(report)
+    check_waveform_without_determination_time(report)
+    check_deliberate_close_is_not_a_loss(report)
     return report.summary()
 
 

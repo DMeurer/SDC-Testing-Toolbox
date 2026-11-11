@@ -10,7 +10,7 @@ from __future__ import annotations
 import enum
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from decimal import Decimal, InvalidOperation, localcontext
 from typing import Any
 from urllib.parse import urlsplit
@@ -402,6 +402,11 @@ class DeviceInfo:
     model_name: str = constants.MODEL_NAME
     model_number: str = constants.MODEL_NUMBER
     firmware_version: str = constants.FIRMWARE_VERSION
+
+    def __post_init__(self) -> None:
+        for item in fields(self):
+            validate_xml_text(getattr(self, item.name), f"device {item.name}")
+
 
 @dataclass
 class MetricSpec:

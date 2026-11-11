@@ -512,7 +512,7 @@ class ConsumerPane(QWidget):
         remote.on_connection_lost(on_connection_lost)
         if not current():
             return
-        self._set_status(f"Connected to {remote.epr}")
+        self._set_status(f"Connected to {remote.epr}{self._missing_reports_note(remote)}")
         certificate = getattr(remote, "peer_certificate", None)
         if certificate is None:
             self.security_label.setText("Transport: HTTP (lab only)")
@@ -531,6 +531,14 @@ class ConsumerPane(QWidget):
         self._reset_remote_ui()
         self._set_status("Not connected")
         self._update_buttons()
+
+    @staticmethod
+    def _missing_reports_note(remote: RemoteDevice) -> str:
+        """Tell the user when the device refused subscriptions, so an incomplete view is not a mystery."""
+        missing = getattr(remote, "missing_reports", list)()
+        if not missing:
+            return ""
+        return f". Not receiving {', '.join(missing)}: the device refused those subscriptions"
 
     def _teardown_remote(self) -> None:
         if self.bridge is not None:
@@ -989,7 +997,8 @@ class ConsumerPane(QWidget):
         if state in FINISHED_STATES:
             self.invocation_label.setText(f"accepted ({state})")
         else:
-            self.invocation_label.setText(f"refused ({state})")
+            reason = self.remote.last_invocation_detail if self.remote is not None else ""
+            self.invocation_label.setText(f"refused ({state}) - {reason}" if reason else f"refused ({state})")
         self.refresh_values()
         self._restore_device_value(self._invoked_handle)
 

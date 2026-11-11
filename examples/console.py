@@ -763,7 +763,8 @@ class ConsumerShell(Cmd):
             time.sleep(0.6)
             print(f"accepted, {handle} is now {show(self.remote.metrics()[handle].value)}")
         else:
-            print(f"refused by the provider ({state})")
+            reason = self.remote.last_invocation_detail
+            print(f"refused by the provider ({state})" + (f" - {reason}" if reason else ""))
 
     def do_watch(self, line: str) -> None:
         """watch [seconds]  -  print changes as they arrive."""
@@ -849,7 +850,11 @@ def run_provider(args: argparse.Namespace) -> int:
             return 2
 
     device = device_config.device if device_config is not None and not isinstance(device_config, NativeMdibConfig) else None
-    service = ProviderService(ip=args.ip, instance_name=args.name, device=device)
+    try:
+        service = ProviderService(ip=args.ip, instance_name=args.name, device=device)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     if isinstance(device_config, NativeMdibConfig):
         service.start(parse_mdib(device_config.xml))
     else:

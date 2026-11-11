@@ -11,9 +11,10 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from concurrent.futures import TimeoutError as FutureTimeoutError
+import traceback
+from concurrent.futures import wait as wait_for_futures
 from copy import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 from functools import partial
 from http.client import BadStatusLine, HTTPException
@@ -21,9 +22,12 @@ from typing import TYPE_CHECKING, Any
 
 from sdc11073 import observableproperties
 from sdc11073.consumer.consumerimpl import SdcConsumer, default_components_factory
+from sdc11073.consumer.request_handler_deferred import DispatchKeyRegistryDeferred
 from sdc11073.definitions_sdc import SdcV1Definitions
+from sdc11073.exceptions import ValidationError
 from sdc11073.mdib import ConsumerMdib
 from sdc11073.mdib.consumermdibxtra import ConsumerMdibMethods
+from sdc11073.pysoap.soapclient import HTTPReturnCodeError
 from sdc11073.wsdiscovery import WSDiscovery
 from sdc11073.xml_types import eventing_types, msg_types, pm_types
 from sdc11073.xml_types import pm_qnames as pm
@@ -58,6 +62,13 @@ PROBE_SEND_SECONDS = 0.01
 # still there, and one not heard from for STALE_AFTER_SECONDS (crashed, no Bye) drops off.
 BACKGROUND_PROBE_SECONDS = 30.0
 STALE_AFTER_SECONDS = 2.5 * BACKGROUND_PROBE_SECONDS
+# An operation that waits for its result looks this often at whether the peer was declared lost.
+LOST_CHECK_SECONDS = 0.25
+# Every consumer compiles its XML schema validators when it is built. When two compile at the
+# same moment, libxml2 can skip an import without an error and leave one validator without any
+# declarations, so every request of that consumer then fails validation. Builds take turns.
+_CONSUMER_BUILD_LOCK = threading.Lock()
+_EMPTY_SCHEMA_MESSAGE = "No matching global declaration"
 
 # Descriptor node types we recognize as metrics, mapped to our own kind enum.
 METRIC_NODE_TYPES = {
@@ -134,6 +145,13 @@ def _operation_is_enabled(state: Any) -> bool:
     """Whether an operation explicitly has the mandatory enabled mode."""
     mode = getattr(state, "OperatingMode", None)
     return isinstance(mode, str) and mode == pm_types.OperatingMode.ENABLED
+
+
+def _failure_reason(info: Any) -> str:
+    """The error code and texts a peer gave for an invocation, empty when it gave none."""
+    code = _enum_value(getattr(info, "InvocationError", None))
+    texts = ", ".join(text.text for text in info.InvocationErrorMessage or () if text.text)
+    return ": ".join(part for part in (code, texts) if part)
 
 
 def _seconds(duration: Any) -> Decimal | None:
@@ -216,6 +234,15 @@ class _PeriodicConsumerMdibMethods(ConsumerMdibMethods):
         # on this helper for as long as the MDIB does.
         observableproperties.bind(self._sdc_client, **self._periodic_report_callbacks)
 
+    def _on_waveform_report(self, received_message_data: Any) -> None:
+        # BICEPS leaves @DeterminationTime optional, but sdc11073 adds the sample offsets to it and
+        # drops the whole block when it is missing, so a peer that omits it gets the arrival time.
+        arrived = str(int(time.time() * 1000))
+        for value in received_message_data.p_msg.msg_node.iter(pm.MetricValue.text):
+            if value.get("DeterminationTime") is None:
+                value.set("DeterminationTime", arrived)
+        super()._on_waveform_report(received_message_data)
+
     def _on_periodic_report(
         self,
         parser_name: str,
@@ -269,8 +296,81 @@ class OperationReportsMissing(ConsumerError):
     """The peer is there, but without an OperationInvokedReport subscription it refuses operations."""
 
 
+_WSDL_NS = "{http://schemas.xmlsoap.org/wsdl/}"
+
+
+def _declared_notifications(wsdl: Any, port_type_name: str) -> dict[str, str | None] | None:
+    """The notifications a port type declares, each with the soapAction of its binding.
+
+    A notification is a one-way operation with an output and no input. None means the WSDL
+    has no such port type.
+    """
+    port_type = wsdl.find(f"{_WSDL_NS}portType[@name='{port_type_name}']")
+    if port_type is None:
+        return None
+    soap_actions: dict[str | None, str] = {}
+    for binding in wsdl.findall(f"{_WSDL_NS}binding"):
+        if binding.get("type", "").rpartition(":")[2] != port_type_name:
+            continue
+        for operation in binding.findall(f"{_WSDL_NS}operation"):
+            for child in operation:
+                if child.get("soapAction"):
+                    soap_actions[operation.get("name")] = child.get("soapAction")
+    return {
+        operation.get("name"): soap_actions.get(operation.get("name"))
+        for operation in port_type.findall(f"{_WSDL_NS}operation")
+        if operation.get("name")
+        and operation.find(f"{_WSDL_NS}input") is None
+        and operation.find(f"{_WSDL_NS}output") is not None
+    }
+
+
+class _StoppableDispatcher(DispatchKeyRegistryDeferred):
+    """sdc11073's deferred request dispatcher, with a worker thread that can be ended.
+
+    The library starts one worker per consumer that waits on its queue for ever and offers no way
+    to stop it. Every connection, even a failed one, then left a thread behind that kept the closed
+    consumer, its MDIB and its sockets alive.
+    """
+
+    def _read_queue(self) -> None:
+        while (queued := self._queue.get()) is not None:
+            func, request, action = queued
+            try:
+                func(request)
+            except Exception:  # noqa: BLE001 - one failing handler must not end the worker
+                self._logger.error(  # noqa: PLE1205
+                    'method {} for action "{}" failed:{}', func.__name__, action, traceback.format_exc(),
+                )
+
+    def stop(self) -> None:
+        """End the worker once it has handled the requests it already accepted."""
+        self._queue.put(None)
+
+
 class _WsdlSdcConsumer(SdcConsumer):
     """Limit subscriptions before start_all groups actions by hosted service."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        components = kwargs.get("components") or default_components_factory()
+        kwargs["components"] = replace(components, action_dispatcher_class=_StoppableDispatcher)
+        super().__init__(*args, **kwargs)
+        self.peer_end_statements: list[str] = []
+
+    def stop_all(self, unsubscribe: bool = True) -> None:
+        """Stop everything, the notification worker included: a stopped consumer is gone for good."""
+        try:
+            super().stop_all(unsubscribe)
+        finally:
+            self._services_dispatcher.stop()
+
+    def _on_subscription_end(self, request_data: Any) -> Any:
+        # sdc11073 flags the subscription as ended before it stores the peer's status and reason,
+        # and the connection watcher reacts to that flag, so the statement is written down first.
+        statement = _subscription_end_statement(request_data)
+        if statement and statement not in self.peer_end_statements:
+            self.peer_end_statements.append(statement)
+        return super()._on_subscription_end(request_data)
 
     def _start_event_sink(self, shared_http_server: Any, http_server_start_timeout: float = 60.0) -> None:
         super()._start_event_sink(shared_http_server, http_server_start_timeout)
@@ -279,24 +379,35 @@ class _WsdlSdcConsumer(SdcConsumer):
 
     def _mk_hosted_services(self, host_description: Any) -> None:
         super()._mk_hosted_services(host_description)
-        ns = "{http://schemas.xmlsoap.org/wsdl/}"
         for hosted in self.hosted_services.values():
             if hosted.wsdl_node is None:
                 continue
             for name, client in hosted.services.items():
-                port_type = hosted.wsdl_node.find(f"{ns}portType[@name='{name}']")
-                if port_type is None:
+                declared = _declared_notifications(hosted.wsdl_node, name)
+                if declared is None:
                     continue
                 # get_available_subscriptions() lists library capabilities, not peer support.
-                notifications = {
-                    _action_uri(getattr(self.sdc_definitions.Actions, operation.get("name"), ""))
-                    for operation in port_type.findall(f"{ns}operation")
-                    if operation.find(f"{ns}input") is None and operation.find(f"{ns}output") is not None
+                # Operation names differ between implementations (sdc11073 declares Waveform
+                # where others declare WaveformStream), so the binding's soapAction counts too.
+                declared_actions = {
+                    action
+                    for operation, soap_action in declared.items()
+                    for action in (_action_uri(getattr(self.sdc_definitions.Actions, operation, "")), soap_action)
+                    if action
                 }
                 client.notifications = tuple(
                     key for key in client.get_available_subscriptions()
-                    if _action_uri(key.action) in notifications
+                    if _action_uri(key.action) in declared_actions
                 )
+                subscribed = {_action_uri(key.action) for key in client.notifications}
+                for operation, soap_action in declared.items():
+                    named = _action_uri(getattr(self.sdc_definitions.Actions, operation, ""))
+                    if named not in subscribed and soap_action not in subscribed:
+                        logger.warning(
+                            "the peer declares the notification %s.%s, which this consumer cannot subscribe to",
+                            name,
+                            operation,
+                        )
 
 
 def _error_text(exc: BaseException) -> str:
@@ -305,6 +416,24 @@ def _error_text(exc: BaseException) -> str:
         exc = exc.__cause__ or exc.__context__
     text = str(exc.args[1]) if isinstance(exc, OSError) and len(exc.args) > 1 else str(exc)
     return f"{exc.__class__.__name__}: {text}" if text else exc.__class__.__name__
+
+
+def _http_error_text(error: HTTPReturnCodeError) -> str:
+    """Say what a peer's HTTP error answer contained; the library's exception has an empty str()."""
+    text = f"HTTP {error.status} {error.reason}".strip()
+    try:
+        fault = error.soap_fault  # None when the peer sent no parsable fault
+        reason = next((item.text for item in fault.Reason.Text if item.text), None)
+        codes = [
+            str(getattr(code, "value", code)).rpartition("}")[2]
+            for code in (fault.Code.Value, getattr(fault.Code.Subcode, "Value", None))
+            if code is not None
+        ]
+    except Exception:  # noqa: BLE001 - a malformed fault must not hide the status line
+        return text
+    if reason:
+        text = f"{text}: {reason}"
+    return f"{text} ({', '.join(codes)})" if codes else text
 
 
 def _action_uri(action: object) -> str:
@@ -343,92 +472,89 @@ def _subscription_summary(consumer: SdcConsumer) -> str:
     return "; ".join(parts) or "no subscriptions"
 
 
-def _ensure_operation_report_subscription(consumer: SdcConsumer) -> None:
-    """Make sure OperationInvokedReports are subscribed, with a dedicated subscription if needed.
+def _short_action(action: str) -> str:
+    return action.rsplit("/", 1)[-1]
 
-    start_all() subscribes once per hosted service with every action that service offers.
-    When the provider groups SetService with other services, one action it dislikes (often
-    a periodic report) gets the whole combined subscription rejected, and sdc11073 only
-    logs that. Subscribing to OperationInvokedReport alone usually succeeds.
+
+def _active_report_actions(consumer: SdcConsumer) -> set[str]:
+    return {
+        action
+        for subscription_filter, active in (getattr(consumer, "subscription_status", None) or {}).items()
+        if active
+        for action in subscription_filter.split()
+    }
+
+
+def _declared_reports(consumer: SdcConsumer) -> list[tuple[Any, Any]]:
+    """Every report the peer declares, each with the hosted service it is subscribed at."""
+    description = getattr(consumer, "host_description", None)
+    reports = []
+    for hosted in description.relationship.Hosted if description is not None else ():
+        for port_type in hosted.Types or ():
+            client = consumer.client(port_type.localname)
+            if client is not None:
+                reports.extend((hosted, key) for key in client.get_available_subscriptions())
+    return reports
+
+
+def _missing_reports(consumer: SdcConsumer) -> list[str]:
+    """Short names of the declared reports that no active subscription delivers."""
+    active = _active_report_actions(consumer)
+    return sorted(
+        {
+            _short_action(_action_uri(key.action))
+            for _hosted, key in _declared_reports(consumer)
+            if _action_uri(key.action) not in active
+        },
+    )
+
+
+def _ensure_report_subscriptions(consumer: SdcConsumer) -> None:
+    """Subscribe, one report at a time, to every declared report the combined subscriptions missed.
+
+    start_all() subscribes once per hosted service with every action that service offers. One
+    action the peer dislikes, or a limit on how many subscribers it serves, gets the whole
+    combined request refused, and sdc11073 only logs that. Requested alone, the reports are
+    usually accepted. Without OperationInvokedReport a provider may refuse every operation,
+    without EpisodicOperationalStateReport action buttons go stale, and without the waveform
+    or description reports the consumer silently shows an incomplete device.
     """
-    if _operation_reports_subscribed(consumer):
-        return
-    client = consumer.set_service_client
-    hosted = next(
-        (
-            candidate
-            for candidate in consumer.host_description.relationship.Hosted
-            if any(port_type.localname == "SetService" for port_type in candidate.Types or ())
-        ),
-        None,
-    )
-    logger.warning(
-        "no active OperationInvokedReport subscription after connecting (%s); "
-        "retrying with a dedicated subscription",
-        _subscription_summary(consumer),
-    )
-    if hosted is None:
-        logger.warning("provider metadata names no hosted SetService to subscribe at")
-        return
-    keys = list(client.get_available_subscriptions())
-    filter_type = eventing_types.FilterType()
-    filter_type.text = " ".join(_action_uri(key.action) for key in keys)
-    filter_type.Dialect = DeviceEventingFilterDialectURI.ACTION
-    try:
-        consumer.do_subscribe(hosted, filter_type, keys)
-    except Exception:
-        logger.exception("dedicated OperationInvokedReport subscription failed")
-        return
-    if _operation_reports_subscribed(consumer):
-        logger.info("dedicated OperationInvokedReport subscription is active")
-
-
-def _ensure_metric_report_subscription(consumer: SdcConsumer) -> None:
-    """Restore metric, alert and operation-state reports after a combined subscription fails.
-
-    OperationInvokedReport carries execution results, not enabled/disabled state.
-    Without EpisodicOperationalStateReport, action buttons can remain stale.
-    """
-    client = getattr(consumer, "state_event_service_client", None)
-    if client is None:
-        return
-    keys = [
-        key for key in client.get_available_subscriptions()
-        if _action_uri(key.action).rsplit("/", 1)[-1] in (
-            "EpisodicMetricReport", "PeriodicMetricReport",
-            "EpisodicOperationalStateReport", "EpisodicAlertReport",
-        )
-    ]
-    if not keys:
-        return
-    hosted = next(
-        (
-            candidate for candidate in consumer.host_description.relationship.Hosted
-            if any(port_type.localname == "StateEventService" for port_type in candidate.Types or ())
-        ),
-        None,
-    )
-    for key in keys:
+    for hosted, key in _declared_reports(consumer):
         action = _action_uri(key.action)
-        if any(
-            active and action in subscription_filter.split()
-            for subscription_filter, active in consumer.subscription_status.items()
-        ):
+        if action in _active_report_actions(consumer):
             continue
         logger.warning(
             "no active %s subscription (%s); retrying alone",
-            action.rsplit("/", 1)[-1], _subscription_summary(consumer),
+            _short_action(action),
+            _subscription_summary(consumer),
         )
-        if hosted is None:
-            logger.warning("provider metadata names no StateEventService to subscribe at")
-            return
         filter_type = eventing_types.FilterType()
         filter_type.text = action
         filter_type.Dialect = DeviceEventingFilterDialectURI.ACTION
         try:
             consumer.do_subscribe(hosted, filter_type, [key])
         except Exception:
-            logger.exception("dedicated %s subscription failed", action.rsplit("/", 1)[-1])
+            logger.exception("dedicated %s subscription failed", _short_action(action))
+    missing = _missing_reports(consumer)
+    if missing:
+        logger.warning("the device still refuses: %s", ", ".join(missing))
+
+
+def _subscription_end_statement(request_data: Any) -> str:
+    """The status and reason a SubscriptionEnd message carries, e.g. "SourceCancelling: too many subscribers"."""
+    try:
+        message = eventing_types.SubscriptionEnd.from_node(request_data.message_data.p_msg.msg_node)
+    except Exception:  # sdc11073 reports a malformed message itself
+        return ""
+    reasons = (str(getattr(reason, "text", reason) or "") for reason in message.Reason)
+    return ": ".join(
+        part for part in ((message.Status or "").rpartition("/")[2], " / ".join(r for r in reasons if r)) if part
+    )
+
+
+def _ended_by_device(consumer: SdcConsumer) -> str:
+    """What the peer itself said when it ended its subscriptions; empty when it said nothing."""
+    return "; ".join(getattr(consumer, "peer_end_statements", ()))
 
 
 class RemoteDevice:
@@ -446,8 +572,12 @@ class RemoteDevice:
         self.epr = epr
         self.peer_certificate = peer_certificate
         self._lock = threading.RLock()
+        self._closing = False
         self._lost_reason: str | None = None
         self._lost_listeners: list[Callable[[str], None]] = []
+        self._bound_callbacks: list[Callable[[Any], None]] = []
+        # Why the latest set_value or run_action was refused. Empty after an accepted one.
+        self.last_invocation_detail = ""
         status = getattr(consumer, "subscription_status", None)
         self._metric_report_actions = _metric_report_actions(consumer) if status is not None else set()
         if status is not None:
@@ -490,9 +620,14 @@ class RemoteDevice:
                 logger.exception("connection-lost listener failed")
 
     def _on_subscription_status(self, status: dict[str, bool]) -> None:
+        if self._closing:
+            return  # our own unsubscribe ends every subscription; that is not the peer going away
         if not any(status.values()):
+            said = _ended_by_device(self._consumer)
             self.mark_connection_lost(
-                "the device has no active report subscriptions (it shut down, restarted or became unreachable)",
+                f"the device ended its subscriptions ({said})"
+                if said
+                else "the device has no active report subscriptions (it shut down, restarted or became unreachable)",
             )
         elif self._metric_report_actions and not any(
             active and self._metric_report_actions.intersection(subscription_filter.split())
@@ -515,17 +650,24 @@ class RemoteDevice:
             future = request()
         except ConsumerError:
             raise
+        except HTTPReturnCodeError as exc:
+            # The peer answered, so it is still there; it only refused this request.
+            msg = f"the device refused the request: {_http_error_text(exc)}"
+            raise ConsumerError(msg) from exc
         except (OSError, HTTPException) as exc:
             reason = f"the device could not be reached ({_error_text(exc)})"
             self.mark_connection_lost(reason)
             raise PeerConnectionLost(f"connection lost: {reason}") from exc
-        try:
-            return future.result(timeout=timeout)
-        except FutureTimeoutError as exc:
+        deadline = time.monotonic() + timeout
+        while True:
+            done, _ = wait_for_futures([future], timeout=max(0.0, min(deadline - time.monotonic(), LOST_CHECK_SECONDS)))
+            if done:
+                return future.result()
             if self._lost_reason is not None:
-                raise PeerConnectionLost(f"connection lost: {self._lost_reason}") from exc
-            msg = f"the device accepted the request but sent no final result within {timeout:g} s"
-            raise ConsumerError(msg) from exc
+                raise PeerConnectionLost(f"connection lost: {self._lost_reason}")
+            if time.monotonic() >= deadline:
+                msg = f"the device accepted the request but sent no final result within {timeout:g} s"
+                raise ConsumerError(msg)
 
     def operation_reports_subscribed(self) -> bool:
         """Whether an active subscription delivers this peer's OperationInvokedReports.
@@ -534,6 +676,16 @@ class RemoteDevice:
         (SDPi requires it), and sdc11073 only logs a failed or ended subscription.
         """
         return _operation_reports_subscribed(self._consumer)
+
+    def missing_reports(self) -> list[str]:
+        """Short names of the reports the peer declares but no active subscription delivers.
+
+        A peer can refuse a subscription without ending the connection, and the device then
+        shows up incomplete (for example without waveforms) with nothing to say why.
+        """
+        if getattr(self._consumer, "subscription_status", None) is None:
+            return []
+        return _missing_reports(self._consumer)
 
     def _require_operation_reports(self) -> None:
         if not self.operation_reports_subscribed():
@@ -780,16 +932,15 @@ class RemoteDevice:
             msg = "use Decimal, never float"
             raise TypeError(msg)
 
+        self.last_invocation_detail = ""
         metrics = self.metrics((metric_handle,))
         metric = metrics.get(metric_handle)
         if metric is None or not metric.operation_handles:
-            logger.warning("no set operation targets %s", metric_handle)
-            return msg_types.InvocationState.FAILED
+            return self._not_sent("no set operation targets %s", metric_handle)
 
         operation_handle = metric.selected_operation_handle
         if operation_handle is None:
-            logger.warning("no enabled set operation targets %s", metric_handle)
-            return msg_types.InvocationState.FAILED
+            return self._not_sent("no enabled set operation targets %s", metric_handle)
         client = self._consumer.set_service_client
 
         if metric.kind is MetricKind.NUMBER:
@@ -806,25 +957,27 @@ class RemoteDevice:
         else:
             string_value = str(value)
             if metric.operation_allowed_values and string_value not in metric.operation_allowed_values:
-                logger.warning(
-                    "%r is not allowed by set operation %s",
-                    string_value,
-                    operation_handle,
-                )
-                return msg_types.InvocationState.FAILED
+                return self._not_sent("%r is not allowed by set operation %s", string_value, operation_handle)
             report_part = self._send(lambda: client.set_string(operation_handle, string_value), timeout)
 
         info = report_part.InvocationInfo
+        self.last_invocation_detail = _failure_reason(info)
         logger.info(
             "set %s via %s -> %s%s",
             metric_handle,
             operation_handle,
             info.InvocationState,
-            f" ({info.InvocationErrorMessage})" if info.InvocationErrorMessage else "",
+            f" ({self.last_invocation_detail})" if self.last_invocation_detail else "",
         )
         if info.InvocationState in (msg_types.InvocationState.FINISHED, msg_types.InvocationState.FINISHED_MOD):
             self._reconcile_metric(metric_handle, value)
         return info.InvocationState
+
+    def _not_sent(self, message: str, *args: object) -> msg_types.InvocationState:
+        """FAILED for a request that never left this consumer, with the reason kept for the caller."""
+        logger.warning(message, *args)
+        self.last_invocation_detail = message % args
+        return msg_types.InvocationState.FAILED
 
     def _reconcile_metric(self, handle: str, requested: Decimal | str) -> None:
         """Read the actual value when a peer finishes a set without a metric notification.
@@ -911,22 +1064,22 @@ class RemoteDevice:
         Returns FAILED rather than raising when the action is unknown or disabled, so a caller
         has one failure mode to handle instead of two.
         """
+        self.last_invocation_detail = ""
         action = self.actions().get(action_handle)
         if action is None:
-            logger.warning("no action %s on this device", action_handle)
-            return msg_types.InvocationState.FAILED
+            return self._not_sent("no action %s on this device", action_handle)
         if not action.enabled:
-            logger.warning("action %s is disabled", action_handle)
-            return msg_types.InvocationState.FAILED
+            return self._not_sent("action %s is disabled", action_handle)
 
         client = self._consumer.set_service_client
         report_part = self._send(lambda: client.activate(action_handle, arguments=None), timeout)
         info = report_part.InvocationInfo
+        self.last_invocation_detail = _failure_reason(info)
         logger.info(
             "ran %s -> %s%s",
             action_handle,
             info.InvocationState,
-            f" ({info.InvocationErrorMessage})" if info.InvocationErrorMessage else "",
+            f" ({self.last_invocation_detail})" if self.last_invocation_detail else "",
         )
         return info.InvocationState
 
@@ -957,8 +1110,11 @@ class RemoteDevice:
                 operation_by_handle=on_operation_state,
             )
 
-        Callbacks run on sdc11073 threads. Never touch Qt widgets from them.
+        Callbacks run on sdc11073 threads. Never touch Qt widgets from them. The device keeps
+        every callback alive until it is closed and released, because the library alone would
+        drop a lambda or a local function immediately and silently.
         """
+        self._bound_callbacks.extend(callbacks.values())
         observableproperties.bind(self._mdib, **callbacks)
 
     def close(self) -> None:
@@ -967,6 +1123,7 @@ class RemoteDevice:
         A lost peer is not sent Unsubscribe requests: they could only fail or wait for a
         timeout, and would leave a traceback per subscription in the log.
         """
+        self._closing = True
         try:
             self._consumer.stop_all(unsubscribe=self._lost_reason is None)
         except Exception:  # noqa: BLE001 - teardown must not mask the original problem
@@ -992,6 +1149,10 @@ class ConsumerService:
         # networking thread, read from whichever thread asks for known_devices().
         self._last_seen: dict[str, float] = {}
         self._last_seen_lock = threading.Lock()
+        # The newest announcement of each provider, by EPR (guarded by the same lock). WSDiscovery
+        # keeps its first entry for an EPR that repeats its metadata version, so a provider that
+        # restarted on another port without a Bye would stay listed at the address it left.
+        self._announced: dict[str, Any] = {}
         self._discovery_listener: Callable[[], None] | None = None
         self._departure_listener: Callable[[str], None] | None = None
 
@@ -1015,9 +1176,9 @@ class ConsumerService:
         # Passive discovery: providers announce themselves with Hello on start and Bye on
         # a clean shutdown. Probe and resolve answers count as "heard from" as well.
         types = SdcV1Definitions.MedicalDeviceTypesFilter
-        self._discovery.set_remote_service_hello_callback(lambda _addr, service: self._heard(service.epr), types=types)
-        self._discovery.set_on_probe_matches_callback(lambda services: self._heard(*(s.epr for s in services)))
-        self._discovery.set_remote_service_resolve_match_callback(lambda service: self._heard(service.epr))
+        self._discovery.set_remote_service_hello_callback(lambda _addr, service: self._heard(service), types=types)
+        self._discovery.set_on_probe_matches_callback(lambda services: self._heard(*services))
+        self._discovery.set_remote_service_resolve_match_callback(lambda service: self._heard(service))
         self._discovery.set_remote_service_bye_callback(lambda _addr, epr: self._gone(epr))
         logger.info("discovery up on %s", self.ip)
 
@@ -1028,6 +1189,7 @@ class ConsumerService:
         self._tls_contexts = None
         with self._last_seen_lock:
             self._last_seen.clear()
+            self._announced.clear()
         if discovery is not None:
             discovery.stop()
 
@@ -1039,12 +1201,14 @@ class ConsumerService:
         """
         self._discovery_listener = listener
 
-    def _heard(self, *eprs: str) -> None:
+    def _heard(self, *services: Any) -> None:
         now = time.monotonic()
         with self._last_seen_lock:
-            for epr in eprs:
-                if epr:
-                    self._last_seen[epr] = now
+            for service in services:
+                if service.epr:
+                    self._last_seen[service.epr] = now
+                    if service.x_addrs:
+                        self._announced[service.epr] = service
         self._notify_listener()
 
     def set_departure_listener(self, listener: Callable[[str], None] | None) -> None:
@@ -1057,6 +1221,7 @@ class ConsumerService:
     def _gone(self, epr: str) -> None:
         with self._last_seen_lock:
             self._last_seen.pop(epr, None)
+            self._announced.pop(epr, None)
         departure = self._departure_listener
         if departure is not None:
             try:
@@ -1099,16 +1264,24 @@ class ConsumerService:
             return [device for device in devices if self._last_seen.get(device.epr, cutoff - 1) >= cutoff]
 
     def _devices_from(self, services: Iterable[Any]) -> list[DiscoveredDevice]:
-        return [
-            DiscoveredDevice(
-                epr=service.epr,
-                x_addrs=tuple(getattr(service, "x_addrs", ()) or ()),
-                scopes=_scope_uris(service),
-                service=service,
+        with self._last_seen_lock:
+            announced = dict(self._announced)
+        devices = []
+        for cached in services:
+            if self._own_epr is not None and cached.epr == self._own_epr:
+                continue
+            # The cache and the newest announcement differ only after a provider moved.
+            latest = announced.get(cached.epr)
+            service = latest if latest is not None and list(latest.x_addrs) != list(cached.x_addrs) else cached
+            devices.append(
+                DiscoveredDevice(
+                    epr=service.epr,
+                    x_addrs=tuple(getattr(service, "x_addrs", ()) or ()),
+                    scopes=_scope_uris(service),
+                    service=service,
+                ),
             )
-            for service in services
-            if self._own_epr is None or service.epr != self._own_epr
-        ]
+        return devices
 
     def __enter__(self) -> ConsumerService:
         self.start()
@@ -1156,6 +1329,20 @@ class ConsumerService:
 
     def connect(self, device: DiscoveredDevice) -> RemoteDevice:
         """Connect to a discovered provider and load its MDIB."""
+        try:
+            try:
+                return self._connect_once(device)
+            except ValidationError as exc:
+                if _EMPTY_SCHEMA_MESSAGE not in _error_text(exc):
+                    raise
+                logger.warning("a consumer for %s was built without usable schemas, building another", device.epr)
+                return self._connect_once(device)
+        except ValidationError as exc:
+            # sdc11073's ValidationError carries no text; the reason is on its lxml cause.
+            msg = f"a message was rejected by the XML schema validation ({_error_text(exc)})"
+            raise ConsumerError(msg) from exc
+
+    def _connect_once(self, device: DiscoveredDevice) -> RemoteDevice:
         if self.tls_config is not None:
             provider_address = next((address for address in device.x_addrs if address.startswith("https://")), None)
             if provider_address is None:
@@ -1174,24 +1361,25 @@ class ConsumerService:
                     "Enable TLS and configure certificates in the startup settings."
                 )
                 raise ConsumerError(msg)
-            consumer = _WsdlSdcConsumer.from_wsd_service(service, ssl_context_container=None)
+            with _CONSUMER_BUILD_LOCK:
+                consumer = _WsdlSdcConsumer.from_wsd_service(service, ssl_context_container=None)
         else:
             # The factory does not expose force_ssl_connect in sdc11073 3.0.0. Constructing
             # the same SDC-v1 consumer directly keeps a failed TLS handshake from retrying HTTP.
             components = default_components_factory()
             components.soap_client_class = partial(VerifiedSoapClient, tls_config=self.tls_config)
-            consumer = _WsdlSdcConsumer(
-                provider_address,
-                SdcV1Definitions,
-                self._tls_contexts,
-                force_ssl_connect=True,
-                alternative_hostname=self.tls_config.server_name,
-                components=components,
-            )
+            with _CONSUMER_BUILD_LOCK:
+                consumer = _WsdlSdcConsumer(
+                    provider_address,
+                    SdcV1Definitions,
+                    self._tls_contexts,
+                    force_ssl_connect=True,
+                    alternative_hostname=self.tls_config.server_name,
+                    components=components,
+                )
         try:
             consumer.start_all()
-            _ensure_operation_report_subscription(consumer)
-            _ensure_metric_report_subscription(consumer)
+            _ensure_report_subscriptions(consumer)
             peer_certificate = (
                 self.tls_config.verify_peer_certificate(
                     consumer.binary_peer_certificate,
@@ -1208,6 +1396,9 @@ class ConsumerService:
             except Exception:
                 logger.exception("error while rolling back consumer connection to %s", device.epr)
             cause = exc.__cause__ or exc
+            if isinstance(exc, HTTPReturnCodeError):
+                msg = f"the device answered with an error: {_http_error_text(exc)}"
+                raise ConsumerError(msg) from exc
             if self.tls_config is None and isinstance(exc, HTTPException) and isinstance(cause, BadStatusLine):
                 # A complete TLS alert identifies the protocol; a connection reset does not.
                 line = cause.line

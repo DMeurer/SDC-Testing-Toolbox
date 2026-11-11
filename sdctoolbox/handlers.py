@@ -3,16 +3,25 @@
 One handler serves every controllable metric. It does not need to know which metric it is
 dealing with, because the target handle travels with the call in
 ``params.operation_instance.operation_target_handle``.
+
+A handler that refuses a request returns a RefusedExecution. sdc11073 3.0.0 reports only the
+state of a result, so ReasonedSetService adds the error code and the text to the report.
+VersionedGetService does the same kind of repair for the Get service: the narrower answers
+leave out the MDIB versions that GetMdib reports.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from sdc11073.provider.operations import ExecuteParameters, ExecuteResult
+from sdc11073.provider.porttypes.getserviceimpl import GetService
+from sdc11073.provider.porttypes.setserviceimpl import SetService
 from sdc11073.xml_types import msg_types, pm_types
+from sdc11073.xml_types import pm_qnames as pm
 
 from .model import RemoteRange, numeric_value_in_ranges
 
@@ -25,10 +34,108 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("sdctoolbox.handlers")
 
+# Keeps a text that echoes a requested value from being repeated, in full, to every subscriber.
+MAX_REASON_LENGTH = 400
 
-def _failed(mdib: ProviderMdib, reason: str, target: str | None = None) -> ExecuteResult:
+# The request message each kind of operation accepts.
+_REQUESTS_BY_OPERATION = {
+    pm.SetValueOperationDescriptor: msg_types.SetValue,
+    pm.SetStringOperationDescriptor: msg_types.SetString,
+    pm.ActivateOperationDescriptor: msg_types.Activate,
+}
+
+
+@dataclass
+class RefusedExecution(ExecuteResult):
+    """A FAILED result that also says why."""
+
+    error: msg_types.InvocationError = msg_types.InvocationError.OTHER
+    error_message: str = ""
+
+
+def _failed(
+    mdib: ProviderMdib,
+    reason: str,
+    target: str | None = None,
+    error: msg_types.InvocationError = msg_types.InvocationError.OTHER,
+) -> RefusedExecution:
+    reason = reason if len(reason) <= MAX_REASON_LENGTH else reason[: MAX_REASON_LENGTH - 3] + "..."
     logger.warning("rejecting set operation: %s", reason)
-    return ExecuteResult(msg_types.InvocationState.FAILED, mdib.mdib_version_group, target)
+    return RefusedExecution(msg_types.InvocationState.FAILED, mdib.mdib_version_group, target, error, reason)
+
+
+def reporting_refusals(
+    handler: Callable[[ExecuteParameters], ExecuteResult],
+) -> Callable[[ExecuteParameters], ExecuteResult]:
+    """Leave a refusal on the operation, where ReasonedSetService finds it for the final report.
+
+    The operation worker runs one operation at a time and notifies right after the handler
+    returns, so the last refusal of an operation is the one its failed report is about.
+    """
+
+    def wrapped(params: ExecuteParameters) -> ExecuteResult:
+        params.operation_instance.refusal = None
+        result = handler(params)
+        if isinstance(result, RefusedExecution):
+            params.operation_instance.refusal = result
+        return result
+
+    return wrapped
+
+
+class ReasonedSetService(SetService):
+    """A SetService whose failed OperationInvokedReports carry InvocationError and InvocationErrorMessage."""
+
+    def notify_operation(  # noqa: PLR0913 - the signature is sdc11073's
+        self,
+        operation,  # noqa: ANN001
+        transaction_id,  # noqa: ANN001
+        invocation_state,  # noqa: ANN001
+        mdib_version_group,  # noqa: ANN001
+        operation_target=None,  # noqa: ANN001
+        error=None,  # noqa: ANN001
+        error_message=None,  # noqa: ANN001
+    ):
+        refusal = getattr(operation, "refusal", None)
+        if refusal is not None and error is None and invocation_state == msg_types.InvocationState.FAILED:
+            error, error_message = refusal.error, refusal.error_message
+        super().notify_operation(
+            operation, transaction_id, invocation_state, mdib_version_group, operation_target, error, error_message
+        )
+
+
+class VersionedGetService(GetService):
+    """A GetService whose partial reads carry MdDescription/@DescriptionVersion and MdState/@StateVersion.
+
+    GetMdib reports both, but sdc11073 copies only the children into the narrower answers, and an
+    absent version means 0. The MDIB lock is held so that the version is the one the answer shows.
+    """
+
+    def mk_get_mddescription_response_message(self, request_data, mdib, requested_handles):  # noqa: ANN001, ANN201
+        with mdib.mdib_lock:
+            response = super().mk_get_mddescription_response_message(request_data, mdib, requested_handles)
+            response.p_msg.payload_element[0].set("DescriptionVersion", str(mdib.mddescription_version))
+        return response
+
+    def _on_get_md_state(self, request_data):  # noqa: ANN001, ANN202
+        with self._mdib.mdib_lock:
+            response = super()._on_get_md_state(request_data)
+            response.p_msg.payload_element[0].set("StateVersion", str(self._mdib.mdstate_version))
+        return response
+
+
+def _wrong_request_kind(operation_entity: object, request: object) -> str | None:
+    """Say how a request does not fit the operation it addresses, or None when it does.
+
+    Only real request messages are judged; the handlers are also called with a bare argument.
+    """
+    expected = _REQUESTS_BY_OPERATION.get(operation_entity.node_type)
+    if expected is None or not isinstance(request, msg_types.AbstractSet) or isinstance(request, expected):
+        return None
+    return (
+        f"operation {operation_entity.handle!r} takes {expected.__name__} requests, "
+        f"not {type(request).__name__} requests"
+    )
 
 
 def apply_metric_value(state: object, value: object) -> None:
@@ -44,6 +151,13 @@ def apply_metric_value(state: object, value: object) -> None:
     state.ActivationState = pm_types.ComponentActivation.ON
 
 
+def _reason(error: Exception) -> str:
+    """The text of an exception; a KeyError would otherwise show its message in quotes."""
+    if isinstance(error, KeyError) and len(error.args) == 1 and isinstance(error.args[0], str):
+        return error.args[0]
+    return str(error)
+
+
 def make_set_handler(
     mdib: ProviderMdib,
     coerce_value: Callable[[str, object], Decimal | str],
@@ -57,11 +171,17 @@ def make_set_handler(
 
     It rejects a request when:
 
+    * the operation is no longer in the MDIB (``Unkn``),
+    * the request is not the message the operation takes, for example a ``SetString`` sent
+      to a ``SetValue`` operation (``Inv``),
     * the target metric no longer exists,
     * the operation is currently disabled (``OperatingMode`` other than ``En``),
     * the value does not parse as a number for a numeric target,
     * the value is not among ``AllowedValue`` for a choice target,
     * the value falls outside the operation's ``AllowedRange``.
+
+    Every rejection is a RefusedExecution: the report carries the InvocationError named
+    above, or ``Oth`` where none is, and a text that names the cause.
 
     The OperatingMode check is deliberate: ``ScoOperationsRegistry.handle_operation_request``
     does not look at it, so without this check a disabled control would still take effect.
@@ -87,7 +207,15 @@ def make_set_handler(
 
         operation_entity = mdib.entities.by_handle(operation_handle)
         if operation_entity is None:
-            return _failed(mdib, f"operation {operation_handle!r} vanished from the mdib")
+            return _failed(
+                mdib,
+                f"operation {operation_handle!r} vanished from the mdib",
+                error=msg_types.InvocationError.UNKNOWN_OPERATION,
+            )
+
+        mismatch = _wrong_request_kind(operation_entity, params.operation_request)
+        if mismatch is not None:
+            return _failed(mdib, mismatch, target_handle, msg_types.InvocationError.INVALID_VALUE)
 
         operating_mode = getattr(operation_entity.state, "OperatingMode", None)
         if operating_mode != pm_types.OperatingMode.ENABLED:
@@ -104,7 +232,7 @@ def make_set_handler(
         try:
             value = coerce_value(target_handle, requested)
         except (KeyError, TypeError, ValueError) as exc:
-            return _failed(mdib, str(exc), target_handle)
+            return _failed(mdib, _reason(exc), target_handle)
 
         if isinstance(value, Decimal):
             ranges = tuple(
@@ -136,7 +264,7 @@ def make_set_handler(
             target_handle,
         )
 
-    return handler
+    return reporting_refusals(handler)
 
 
 def make_activate_handler(
@@ -155,7 +283,9 @@ def make_activate_handler(
     result is exactly the values it moved.
 
     OperatingMode is enforced here for the same reason as in the set handler:
-    handle_operation_request never looks at it.
+    handle_operation_request never looks at it. Refusals are reported the same way too:
+    ``Inv`` for a request that is not an ``Activate``, ``Unkn`` for an operation that left the
+    MDIB, ``Oth`` with a text for anything else.
 
     :param execute_effects: provider-owned preparation, commit, and alert processing.
         A returned exception means the effects committed but reporting or subsequent alert
@@ -168,7 +298,15 @@ def make_activate_handler(
 
         operation_entity = mdib.entities.by_handle(operation_handle)
         if operation_entity is None:
-            return _failed(mdib, f"operation {operation_handle!r} vanished from the mdib")
+            return _failed(
+                mdib,
+                f"operation {operation_handle!r} vanished from the mdib",
+                error=msg_types.InvocationError.UNKNOWN_OPERATION,
+            )
+
+        mismatch = _wrong_request_kind(operation_entity, params.operation_request)
+        if mismatch is not None:
+            return _failed(mdib, mismatch, target_handle, msg_types.InvocationError.INVALID_VALUE)
 
         operating_mode = getattr(operation_entity.state, "OperatingMode", None)
         if operating_mode != pm_types.OperatingMode.ENABLED:
@@ -181,7 +319,7 @@ def make_activate_handler(
         try:
             version_group, alert_error = execute_effects(operation_handle)
         except (KeyError, TypeError, ValueError) as exc:
-            return _failed(mdib, str(exc), target_handle)
+            return _failed(mdib, _reason(exc), target_handle)
 
         if alert_error is not None:
             logger.error(
@@ -197,4 +335,4 @@ def make_activate_handler(
             target_handle,
         )
 
-    return handler
+    return reporting_refusals(handler)

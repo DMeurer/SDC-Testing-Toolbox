@@ -8,7 +8,7 @@ replaces tracked metrics, alerts, and actions by default, or appends them with `
 from __future__ import annotations
 
 import json
-import tempfile
+import uuid
 from dataclasses import dataclass, field, fields
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -49,6 +49,7 @@ from .model import (
     patient_measurement_wire_value,
     slugify,
     validate_decimal,
+    validate_xml_text,
 )
 
 if TYPE_CHECKING:
@@ -213,7 +214,7 @@ def list_presets(directory: str | Path | None = None) -> list[Preset]:
     found = []
     for path in sorted(folder.glob("*.json")):
         try:
-            data = json.loads(path.read_text(encoding="utf-8"), parse_float=Decimal)
+            data = json.loads(path.read_text(encoding="utf-8-sig"), parse_float=Decimal)
             device = parse(data)
         except (OSError, UnicodeError, ValueError, RecursionError, ConfigError):
             continue
@@ -541,6 +542,24 @@ def to_dict(service: ProviderService, *, include_values: bool = True) -> dict[st
     return payload
 
 
+def write_atomically(target: Path, data: str | bytes) -> None:
+    """Replace target in one step, keeping the old file whole if writing fails.
+
+    The temporary file is created by hand because tempfile treats a refused create as a name
+    clash on Windows and retries about two billion times, which froze a save into a folder
+    the user may not write to. Here a refused create is raised as it is, at once.
+    """
+    binary = isinstance(data, bytes)
+    temporary = target.parent / f".sdctoolbox-{uuid.uuid4().hex[:8]}.tmp"
+    output = temporary.open("xb" if binary else "x", encoding=None if binary else "utf-8")
+    try:
+        with output:
+            output.write(data)
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def save(service: ProviderService, path: str | Path, *, include_values: bool = True) -> Path:
     """Atomically replace a profile, preserving the old file if writing fails."""
     target = Path(path)
@@ -549,17 +568,7 @@ def save(service: ProviderService, path: str | Path, *, include_values: bool = T
 
         return save_mdib(service, target)
     payload = json.dumps(to_dict(service, include_values=include_values), indent=2) + "\n"
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=target.parent, suffix=".tmp", delete=False,
-        ) as output:
-            temporary = Path(output.name)
-            output.write(payload)
-        temporary.replace(target)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+    write_atomically(target, payload)
     return target
 
 
@@ -746,7 +755,12 @@ def _device_from_dict(data: Any) -> tuple[DeviceInfo | None, str]:
     _check_keys(data, known, "device")
     _check_types(data, {name: str for name in known}, "device")
     values = {key: value for key, value in data.items() if key != "instance_name"}
-    return DeviceInfo(**values), data.get("instance_name") or ""
+    instance_name = data.get("instance_name") or ""
+    try:
+        validate_xml_text(instance_name, "device instance_name")
+        return DeviceInfo(**values), instance_name
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
 
 
 def _required_coding_from_json(raw: Any, field: str) -> Coding:
@@ -907,6 +921,13 @@ def parse(data: Any) -> DeviceConfig:
         )
         raise ConfigError(msg)
 
+    # Never announced, but listed in the preset menu, and a profile refuses text XML cannot carry everywhere else.
+    for key in ("name", "description"):
+        try:
+            validate_xml_text(data.get(key, ""), f"top level.{key}")
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
+
     device, instance_name = _device_from_dict(data.get("device"))
     metrics = [metric_from_dict(entry) for entry in data.get("metrics", [])]
     alerts = [alert_from_dict(entry) for entry in data.get("alerts", [])]
@@ -948,12 +969,15 @@ def load_file(path: str | Path) -> DeviceConfig | NativeMdibConfig:
 
         return load_mdib_file(source)
     try:
-        text = source.read_text(encoding="utf-8")
+        text = source.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeError) as exc:
         msg = f"cannot read {source}: {exc}"
         raise ConfigError(msg) from exc
     try:
         data = json.loads(text, parse_float=Decimal)
+    except RecursionError as exc:
+        msg = f"{source} is nested too deeply to read"
+        raise ConfigError(msg) from exc
     except ValueError as exc:
         msg = f"{source} is not valid JSON: {exc}"
         raise ConfigError(msg) from exc

@@ -96,6 +96,7 @@ class FakeRemote:
         self.metrics_requests: list[frozenset[str] | None] = []
         self.lost_listeners: list = []
         self.lost_reason: str | None = None
+        self.last_invocation_detail = ""
 
     def close(self) -> None:
         self.close_count += 1
@@ -1389,6 +1390,29 @@ def connection_loss_clears_the_peer(app: QApplication, provider: ProviderService
     window.close()
 
 
+def refused_subscriptions_are_announced(app: QApplication, provider: ProviderService) -> None:
+    window, pane, _service = new_window(provider)
+    complete = controllable_peer("complete")
+    attach(pane, complete)
+    check(
+        pane.status_label.text() == "Connected to complete",
+        "a device that delivers every report is connected without a warning",
+    )
+    pane._on_disconnect()  # noqa: SLF001
+
+    partial = controllable_peer("partial")
+    partial.missing_reports = lambda: ["EpisodicComponentReport", "WaveformStream"]
+    attach(pane, partial)
+    text = pane.status_label.text()
+    check(
+        text.startswith("Connected to partial")
+        and "EpisodicComponentReport, WaveformStream" in text
+        and "refused" in text,
+        "the status names the reports the device refused",
+    )
+    window.close()
+
+
 def departure_of_connected_peer(app: QApplication, provider: ProviderService) -> None:
     window, pane, service = new_window(provider)
     remote = controllable_peer("leaving")
@@ -1489,9 +1513,14 @@ def failed_set_restores_device_value(app: QApplication, provider: ProviderServic
 
     remote.set_call.error = None
     remote.set_call.result = msg_types.InvocationState.FAILED
+    remote.last_invocation_detail = "Inv: the value is above the maximum"
     control.edit.setText("11")
     control._on_typed()  # noqa: SLF001
     check(wait_for(app, lambda: pane.invocation_label.text().startswith("refused")), "a refused set is reported")
+    check(
+        "above the maximum" in pane.invocation_label.text(),
+        f"a refused set tells the user why the device refused it: {pane.invocation_label.text()!r}",
+    )
     check(control.edit.text() == "7", "a refused set puts the device's value back into the card")
 
     remote.set_call.result = msg_types.InvocationState.FINISHED_MOD
@@ -1537,6 +1566,7 @@ def main() -> int:
         technical_only_range_is_visible(app, provider)
         passive_discovery_and_connect_next(app, provider)
         connection_loss_clears_the_peer(app, provider)
+        refused_subscriptions_are_announced(app, provider)
         departure_of_connected_peer(app, provider)
         https_mismatch_reaches_gui(app, provider)
         tls_alert_reaches_gui(app, provider)
