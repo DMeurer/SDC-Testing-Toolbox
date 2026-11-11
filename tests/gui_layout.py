@@ -105,6 +105,39 @@ def menu_key_checks(report: Report, fixture: WindowFixture) -> None:
         pump(app)
 
 
+def fullscreen_checks(report: Report, fixture: WindowFixture) -> None:
+    window, app = fixture.window, fixture.app
+    action = getattr(window, "fullscreen_action", None)
+    report.check(action is not None and action.isCheckable(), "View offers a fullscreen toggle")
+    if action is None:
+        return
+    editor = QLineEdit("fullscreen keyboard target", window)
+    editor.show()
+    pinned = window.always_show_menu
+    try:
+        window.set_always_show_menu(False)
+        for maximized in (False, True):
+            window.showMaximized() if maximized else window.showNormal()
+            window.activateWindow()
+            editor.setFocus()
+            pump(app)
+            QTest.keyClick(editor, Qt.Key_F11)
+            pump(app)
+            report.check(window.isFullScreen() and action.isChecked(),
+                         f"F11 enters fullscreen from child focus with the menu hidden (maximized={maximized})")
+            QTest.keyClick(editor, Qt.Key_F11)
+            pump(app)
+            report.check(not window.isFullScreen() and not action.isChecked()
+                         and window.isMaximized() == maximized,
+                         f"F11 restores the previous window state (maximized={maximized})")
+    finally:
+        window.showNormal()
+        window.set_always_show_menu(pinned)
+        editor.close()
+        editor.deleteLater()
+        pump(app)
+
+
 def theme_checks(report: Report, fixture: WindowFixture) -> None:
     window = fixture.window
     assert window is not None
@@ -410,6 +443,7 @@ def main() -> int:
         assert window is not None
 
         menu_key_checks(report, fixture)
+        fullscreen_checks(report, fixture)
         theme_checks(report, fixture)
 
         report.check(window.splitter.count() == 2, "split view contains both panels")
