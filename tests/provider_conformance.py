@@ -662,8 +662,59 @@ def check_only_services_with_an_implementation_are_advertised(report: Report) ->
         service.stop()
 
 
+def check_a_closed_consumer_leaves_no_thread_behind(report: Report) -> None:
+    """Closing a connection, or failing to make one, must end everything the consumer started.
+
+    sdc11073 starts a worker thread per consumer that waits on its notification queue for ever. Left
+    running, it kept the closed consumer, its MDIB and its sockets alive: a thread, about twenty
+    handles and a few megabytes per reconnect.
+    """
+
+    def settled_thread_count() -> int:
+        count = threading.active_count()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            time.sleep(0.3)
+            if threading.active_count() == count:
+                break
+            count = threading.active_count()
+        return count
+
+    service = ProviderService(instance_name="reconnect-conformance")
+    consumer = ConsumerService()
+    try:
+        service.start()
+        consumer.start()
+        _connect(consumer, service).close()  # whatever the first connection starts for good is not a leak
+        baseline = settled_thread_count()
+
+        for _ in range(4):
+            _connect(consumer, service).close()
+        report.check(
+            wait_until(lambda: threading.active_count() <= baseline, timeout=5),
+            "four connections that are closed again leave no thread running",
+            f"{threading.active_count()} threads, {baseline} before: {sorted(t.name for t in threading.enumerate())}",
+        )
+
+        with patch.object(SdcConsumer, "start_all", side_effect=RuntimeError("the peer refused")):
+            for _ in range(4):
+                try:
+                    _connect(consumer, service)
+                except RuntimeError:
+                    pass
+        report.check(
+            wait_until(lambda: threading.active_count() <= baseline, timeout=5),
+            "four connections that fail while starting leave no thread running",
+            f"{threading.active_count()} threads, {baseline} before: {sorted(t.name for t in threading.enumerate())}",
+        )
+    finally:
+        consumer.stop()
+        service.stop()
+
+
 def main() -> int:
     report = Report()
+    check_a_closed_consumer_leaves_no_thread_behind(report)
     check_limit_alarms_declare_the_limits_they_monitor(report)
     check_patient_is_bound_to_the_version_that_introduced_it(report)
     check_sample_streams_keep_their_declared_rate(report)

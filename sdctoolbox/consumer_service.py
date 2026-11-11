@@ -11,9 +11,10 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import traceback
 from concurrent.futures import wait as wait_for_futures
 from copy import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 from functools import partial
 from http.client import BadStatusLine, HTTPException
@@ -21,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from sdc11073 import observableproperties
 from sdc11073.consumer.consumerimpl import SdcConsumer, default_components_factory
+from sdc11073.consumer.request_handler_deferred import DispatchKeyRegistryDeferred
 from sdc11073.definitions_sdc import SdcV1Definitions
 from sdc11073.exceptions import ValidationError
 from sdc11073.mdib import ConsumerMdib
@@ -324,12 +326,44 @@ def _declared_notifications(wsdl: Any, port_type_name: str) -> dict[str, str | N
     }
 
 
+class _StoppableDispatcher(DispatchKeyRegistryDeferred):
+    """sdc11073's deferred request dispatcher, with a worker thread that can be ended.
+
+    The library starts one worker per consumer that waits on its queue for ever and offers no way
+    to stop it. Every connection, even a failed one, then left a thread behind that kept the closed
+    consumer, its MDIB and its sockets alive.
+    """
+
+    def _read_queue(self) -> None:
+        while (queued := self._queue.get()) is not None:
+            func, request, action = queued
+            try:
+                func(request)
+            except Exception:  # noqa: BLE001 - one failing handler must not end the worker
+                self._logger.error(  # noqa: PLE1205
+                    'method {} for action "{}" failed:{}', func.__name__, action, traceback.format_exc(),
+                )
+
+    def stop(self) -> None:
+        """End the worker once it has handled the requests it already accepted."""
+        self._queue.put(None)
+
+
 class _WsdlSdcConsumer(SdcConsumer):
     """Limit subscriptions before start_all groups actions by hosted service."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        components = kwargs.get("components") or default_components_factory()
+        kwargs["components"] = replace(components, action_dispatcher_class=_StoppableDispatcher)
         super().__init__(*args, **kwargs)
         self.peer_end_statements: list[str] = []
+
+    def stop_all(self, unsubscribe: bool = True) -> None:
+        """Stop everything, the notification worker included: a stopped consumer is gone for good."""
+        try:
+            super().stop_all(unsubscribe)
+        finally:
+            self._services_dispatcher.stop()
 
     def _on_subscription_end(self, request_data: Any) -> Any:
         # sdc11073 flags the subscription as ended before it stores the peer's status and reason,
