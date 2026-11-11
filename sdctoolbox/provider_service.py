@@ -20,6 +20,7 @@ from sdc11073.location import SdcLocation
 from sdc11073.mdib import ProviderMdib, mdibbase
 from sdc11073.provider import SdcProvider
 from sdc11073.provider.operations import ActivateOperation
+from sdc11073.provider.porttypes.getserviceimpl import GetService
 from sdc11073.provider.providerimpl import RoleProviderComponents, provider_components_async_factory
 from sdc11073.wsdiscovery import WSDiscovery
 from sdc11073.xml_types import pm_qnames as pm
@@ -29,7 +30,13 @@ from sdc11073.xml_types.xml_structure import DateOfBirthProperty
 
 from . import constants
 from .config import _unique_in
-from .handlers import ReasonedSetService, apply_metric_value, make_activate_handler, make_set_handler
+from .handlers import (
+    ReasonedSetService,
+    VersionedGetService,
+    apply_metric_value,
+    make_activate_handler,
+    make_set_handler,
+)
 from .http_server import configure_request_handler
 from .mdib_io import NativeMdibConfig, mdib_bytes, parse_mdib
 from . import native_mdib as native
@@ -315,6 +322,12 @@ class ProviderService:
 
             provider_components = provider_components_async_factory()
             provider_components.hosted_services["Set"] = [ReasonedSetService]
+            provider_components.hosted_services["Get"] = [
+                VersionedGetService if port_type is GetService else port_type
+                for port_type in provider_components.hosted_services["Get"]
+            ]
+            # sdc11073 hosts it but answers both of its operations with a 500 "not implemented".
+            provider_components.hosted_services.pop("ContainmentTree", None)
             if native_mode:
                 provider_components.scopes_factory = native.scopes
             if self.tls_config is not None:

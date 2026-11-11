@@ -6,6 +6,8 @@ dealing with, because the target handle travels with the call in
 
 A handler that refuses a request returns a RefusedExecution. sdc11073 3.0.0 reports only the
 state of a result, so ReasonedSetService adds the error code and the text to the report.
+VersionedGetService does the same kind of repair for the Get service: the narrower answers
+leave out the MDIB versions that GetMdib reports.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from sdc11073.provider.operations import ExecuteParameters, ExecuteResult
+from sdc11073.provider.porttypes.getserviceimpl import GetService
 from sdc11073.provider.porttypes.setserviceimpl import SetService
 from sdc11073.xml_types import msg_types, pm_types
 from sdc11073.xml_types import pm_qnames as pm
@@ -99,6 +102,26 @@ class ReasonedSetService(SetService):
         super().notify_operation(
             operation, transaction_id, invocation_state, mdib_version_group, operation_target, error, error_message
         )
+
+
+class VersionedGetService(GetService):
+    """A GetService whose partial reads carry MdDescription/@DescriptionVersion and MdState/@StateVersion.
+
+    GetMdib reports both, but sdc11073 copies only the children into the narrower answers, and an
+    absent version means 0. The MDIB lock is held so that the version is the one the answer shows.
+    """
+
+    def mk_get_mddescription_response_message(self, request_data, mdib, requested_handles):  # noqa: ANN001, ANN201
+        with mdib.mdib_lock:
+            response = super().mk_get_mddescription_response_message(request_data, mdib, requested_handles)
+            response.p_msg.payload_element[0].set("DescriptionVersion", str(mdib.mddescription_version))
+        return response
+
+    def _on_get_md_state(self, request_data):  # noqa: ANN001, ANN202
+        with self._mdib.mdib_lock:
+            response = super()._on_get_md_state(request_data)
+            response.p_msg.payload_element[0].set("StateVersion", str(self._mdib.mdstate_version))
+        return response
 
 
 def _wrong_request_kind(operation_entity: object, request: object) -> str | None:

@@ -583,6 +583,85 @@ def check_the_consumer_is_told_about_descriptors_that_disappear(report: Report) 
         service.stop()
 
 
+def check_partial_reads_carry_the_mdib_versions(report: Report) -> None:
+    """An absent DescriptionVersion or StateVersion means 0, so a partial read has to repeat the MDIB's own."""
+    service = ProviderService(instance_name="partial-read-conformance")
+    consumer = None
+    try:
+        service.start()
+        metric = service.add_metric(MetricSpec(label="Pressure", kind=MetricKind.NUMBER, initial_value=Decimal(50)))
+        service.set_value(metric, Decimal(51))
+        consumer = SdcConsumer(
+            provider_address=service._provider.get_xaddrs()[0],  # noqa: SLF001
+            sdc_definitions=SdcV1Definitions,
+            ssl_context_container=None,
+        )
+        consumer.start_all()
+        get = consumer.get_service_client
+
+        def versions(result, element: str, attribute: str) -> list[str | None]:
+            return [
+                node.get(attribute)
+                for node in result.p_msg.msg_node.iter()
+                if isinstance(node.tag, str) and node.tag.rpartition("}")[2] == element
+            ]
+
+        whole = get.get_mdib()
+        description_version = versions(whole, "MdDescription", "DescriptionVersion")
+        state_version = versions(whole, "MdState", "StateVersion")
+        report.check(
+            description_version not in ([], ["0"]) and state_version not in ([], ["0"]),
+            "the whole MDIB has moved past version 0, so a missing version would be told apart",
+            f"description {description_version}, state {state_version}",
+        )
+        for handles in (None, [metric]):
+            scope = "everything" if handles is None else "one handle"
+            from_description = versions(get.get_md_description(handles), "MdDescription", "DescriptionVersion")
+            report.check(
+                from_description == description_version,
+                f"GetMdDescription for {scope} names the description version of GetMdib",
+                f"answer {from_description}, GetMdib {description_version}",
+            )
+            from_state = versions(get.get_md_state(handles), "MdState", "StateVersion")
+            report.check(
+                from_state == state_version,
+                f"GetMdState for {scope} names the state version of GetMdib",
+                f"answer {from_state}, GetMdib {state_version}",
+            )
+    finally:
+        if consumer is not None:
+            consumer.stop_all()
+        service.stop()
+
+
+def check_only_services_with_an_implementation_are_advertised(report: Report) -> None:
+    """sdc11073 hosts a ContainmentTree service whose operations all answer a 500 "not implemented"."""
+    service = ProviderService(instance_name="advertised-services-conformance")
+    consumer = None
+    try:
+        service.start()
+        consumer = SdcConsumer(
+            provider_address=service._provider.get_xaddrs()[0],  # noqa: SLF001
+            sdc_definitions=SdcV1Definitions,
+            ssl_context_container=None,
+        )
+        consumer.start_all()
+        offered = sorted(
+            port_type.localname
+            for hosted in consumer.host_description.relationship.Hosted
+            for port_type in hosted.Types or ()
+        )
+        report.check(
+            "GetService" in offered and "ContainmentTreeService" not in offered,
+            "the provider offers its Get service but no ContainmentTree service it cannot answer",
+            str(offered),
+        )
+    finally:
+        if consumer is not None:
+            consumer.stop_all()
+        service.stop()
+
+
 def main() -> int:
     report = Report()
     check_limit_alarms_declare_the_limits_they_monitor(report)
@@ -593,6 +672,8 @@ def main() -> int:
     check_the_consumer_logs_why_a_peer_refused(report)
     check_a_silent_subscriber_cannot_hold_up_the_provider(report)
     check_the_consumer_is_told_about_descriptors_that_disappear(report)
+    check_partial_reads_carry_the_mdib_versions(report)
+    check_only_services_with_an_implementation_are_advertised(report)
     return report.summary()
 
 
