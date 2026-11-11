@@ -276,6 +276,7 @@ _SOURCE_OVERRIDES = {
 _LEGAL_BASENAME = re.compile(
     r"^(license|licence|copying|notice|authors|copyright)", re.IGNORECASE
 )
+_QT_WHEEL_NOTICE = "LicenseRef-Qt-Commercial.txt"
 _DEBIAN_COMMON_LICENSE = re.compile(r"/usr/share/common-licenses/([A-Za-z0-9.+-]+)")
 _QT_IMAGEFORMATS_PLUGIN = re.compile(
     r"/plugins/imageformats/(?:lib)?q(?:dds|icns|jp2|mng|tga|tiff|wbmp|webp)"
@@ -375,20 +376,92 @@ def _is_unused_qt_binary(path: str) -> bool:
     )
 
 
+# Libraries every Linux desktop provides and that must come from the host, so the bundle
+# works with the host's graphics driver, glibc and C++ runtime. This is the AppImage
+# excludelist of AppImageCommunity/pkg2appimage, file "excludelist" at commit
+# 15a64c20dc23a0154622ba25829364323903b6b5.
+LINUX_HOST_LIBRARIES = frozenset(
+    {
+        "ld-linux.so.2",
+        "ld-linux-x86-64.so.2",
+        "libanl.so.1",
+        "libBrokenLocale.so.1",
+        "libcidn.so.1",
+        "libc.so.6",
+        "libdl.so.2",
+        "libm.so.6",
+        "libmvec.so.1",
+        "libnss_compat.so.2",
+        "libnss_dns.so.2",
+        "libnss_files.so.2",
+        "libnss_hesiod.so.2",
+        "libnss_nisplus.so.2",
+        "libnss_nis.so.2",
+        "libpthread.so.0",
+        "libresolv.so.2",
+        "librt.so.1",
+        "libthread_db.so.1",
+        "libutil.so.1",
+        "libstdc++.so.6",
+        "libGL.so.1",
+        "libEGL.so.1",
+        "libGLdispatch.so.0",
+        "libGLX.so.0",
+        "libOpenGL.so.0",
+        "libdrm.so.2",
+        "libglapi.so.0",
+        "libgbm.so.1",
+        "libxcb.so.1",
+        "libX11.so.6",
+        "libX11-xcb.so.1",
+        "libwayland-client.so.0",
+        "libasound.so.2",
+        "libfontconfig.so.1",
+        "libfreetype.so.6",
+        "libharfbuzz.so.0",
+        "libcom_err.so.2",
+        "libexpat.so.1",
+        "libgcc_s.so.1",
+        "libgpg-error.so.0",
+        "libICE.so.6",
+        "libSM.so.6",
+        "libusb-1.0.so.0",
+        "libuuid.so.1",
+        "libz.so.1",
+        "libjack.so.0",
+        "libpipewire-0.3.so.0",
+        "libxcb-dri3.so.0",
+        "libxcb-dri2.so.0",
+        "libfribidi.so.0",
+        "libgmp.so.10",
+    }
+)
+
+
 def filter_binaries(
     binaries: Iterable[object], platform: str | None = None
 ) -> list[object]:
-    """Drop unused Qt payloads, plus Windows host/PATH contamination."""
+    """Drop unused Qt payloads, Windows host/PATH contamination and Linux host libraries."""
     platform = platform or runtime_platform.system()
     windows_root_text = os.environ.get("WINDIR")
     windows_root = _resolved(windows_root_text) if windows_root_text else None
     installed_base = _resolved(sysconfig.get_config_var("installed_base"))
     environment_root = _resolved(sys.prefix)
+    site_packages = {_resolved(sysconfig.get_paths()[key]) for key in ("purelib", "platlib")}
     result = []
     for entry in binaries:
         destination, source_text = _entry_parts(entry)
         if _is_unused_qt_binary(destination) or _is_unused_qt_binary(source_text):
             continue
+        if platform == "Linux":
+            name = destination.replace("\\", "/").rsplit("/", 1)[-1]
+            source = _resolved(source_text)
+            # A wheel's own copy stays; the host's copy (even under a /usr Python) does not.
+            if name in LINUX_HOST_LIBRARIES and not any(
+                source.is_relative_to(root) for root in site_packages
+            ):
+                print(f"legal inventory: leaving host library {source} to the host")
+                continue
         if platform != "Windows":
             result.append(entry)
             continue
@@ -1106,6 +1179,16 @@ def generate_payload(
         project_url = _project_url(distribution, name)
         notice_paths = _copy_distribution_notices(name, distribution, output)
         if name in {"pyside6", "pyside6-addons", "pyside6-essentials", "shiboken6"}:
+            notice = f"{LEGAL_ROOT}/licenses/{name}/{_QT_WHEEL_NOTICE}"
+            if notice not in notice_paths:
+                # The Linux wheels omit the notice that the Windows wheels ship.
+                target = output / Path(notice)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(
+                    project_root / LEGAL_ROOT / "licenses" / "pyside6" / _QT_WHEEL_NOTICE,
+                    target,
+                )
+                notice_paths.insert(0, notice)
             notice_paths.extend(
                 [
                     f"{LEGAL_ROOT}/licenses/qt/LGPL-3.0-only.txt",

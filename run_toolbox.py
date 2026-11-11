@@ -14,12 +14,16 @@ the EPR, so restarting under the same name keeps that device's identity on the n
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
 import os
+import signal
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QCoreApplication, QTimer
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 from sdc11073.loghelper import basic_logging_setup
 
@@ -131,7 +135,42 @@ def ask_how_to_start(args: argparse.Namespace) -> StartupSettings | None:
     return dialog.settings()
 
 
+def configure_application_identity() -> None:
+    """Name the application the way the installed Linux desktop entry expects."""
+    QCoreApplication.setApplicationName(constants.APP_NAME)
+    QGuiApplication.setDesktopFileName(constants.DESKTOP_ID)
+
+
+@contextlib.contextmanager
+def closing_on_ctrl_c() -> Iterator[None]:
+    """Make Ctrl+C in the console close every window, as the close button would.
+
+    Python's default handler raises KeyboardInterrupt in whatever Python code Qt calls next,
+    and PySide reports and swallows exceptions from such callbacks, so the toolbox never quit.
+    Python also runs handlers only between bytecodes, so an idle Qt loop needs a timer to wake it.
+    """
+
+    def close_windows(_signum: int, _frame: object) -> None:
+        # A second Ctrl+C interrupts a shutdown that hangs instead of closing windows again.
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+        app = QCoreApplication.instance()
+        if app is not None:
+            app.closeAllWindows()
+
+    previous = signal.signal(signal.SIGINT, close_windows)
+    wake = QTimer()
+    if QCoreApplication.instance() is not None:
+        wake.timeout.connect(lambda: None)
+        wake.start(200)
+    try:
+        yield
+    finally:
+        wake.stop()
+        signal.signal(signal.SIGINT, previous)
+
+
 def main(argv: list[str] | None = None) -> int:
+    configure_application_identity()
     argv = sys.argv[1:] if argv is None else argv
     args = parse_args(argv)
 
@@ -141,7 +180,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if interactive:
         app = QApplication(sys.argv)
-        settings = ask_how_to_start(args)
+        with closing_on_ctrl_c():
+            settings = ask_how_to_start(args)
         if settings is None:
             return 0
     else:
@@ -204,7 +244,8 @@ def main(argv: list[str] | None = None) -> int:
                 if preset.path.resolve() != startup_path:
                     config.load_file(preset.path)
             QTimer.singleShot(1000, window.close)
-        return app.exec()
+        with closing_on_ctrl_c():
+            return app.exec()
     except Exception as exc:  # noqa: BLE001 - a crash here should still say why
         if args.smoke_test:
             detail = f"smoke test failed: {exc}"

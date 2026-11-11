@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
+import lzma
 import marshal
+import os
 import re
+import shutil
 import struct
+import subprocess
 import sys
+import sysconfig
 import tarfile
 import zipfile
 import zlib
@@ -27,6 +33,7 @@ sys.path.insert(0, str(TESTS))
 from legal_payload import (  # noqa: I001 - ROOT must precede local imports
     ARTIFACT_ROOT,
     INVENTORY_NAME,
+    LINUX_HOST_LIBRARIES,
     REQUIRED_DOCUMENTS,
     filter_binaries,
     validate_payload,
@@ -41,9 +48,166 @@ PINNED_LEGAL_SHA256 = {
     "legal/licenses/qt/Qt-GPL-exception-1.0.txt": "40678d338ce53cd93f8b22b281a2ecbcaa3ee65ce60b25ffb0c462b0530846b2",
     "legal/licenses/openssl/Apache-2.0.txt": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a",
 }
+# Source tree only: Windows wheels ship their own CRLF copy of this notice.
+QT_WHEEL_NOTICE_SHA256 = "9b1f50aae6267f9d5e0ceb6775ee86450262c25ec7c0573e151fe5d3f18a4700"
+
+
+PACKAGE_BUNDLE_PREFIX = {
+    "deb": "opt/sdc-testing-toolbox/",
+    "rpm": "opt/sdc-testing-toolbox/",
+    "appimage": "usr/lib/sdc-testing-toolbox/",
+}
+
+
+def _package_kind(path: Path) -> str | None:
+    """deb, rpm or appimage by magic bytes; None for anything zip/tar should try."""
+    with path.open("rb") as stream:
+        head = stream.read(11)
+    if head.startswith(b"!<arch>\n"):
+        return "deb"
+    if head.startswith(b"\xed\xab\xee\xdb"):
+        return "rpm"
+    if head.startswith(b"\x7fELF"):
+        if head[8:11] == b"AI\x02":
+            return "appimage"
+        raise ValueError(f"unsupported or invalid archive: {path}")
+    return None
+
+
+def _tar_regular_files(data: bytes) -> dict[str, bytes]:
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as archive:
+        return {
+            member.name.removeprefix("./"): extracted.read()
+            for member in archive.getmembers()
+            if member.isfile() and (extracted := archive.extractfile(member)) is not None
+        }
+
+
+def _deb_members(data: bytes) -> dict[str, bytes]:
+    offset, members = 8, {}
+    while offset + 60 <= len(data):
+        header = data[offset : offset + 60]
+        if header[58:60] != b"`\n":
+            raise ValueError("deb has a malformed ar member header")
+        size = int(header[48:58])
+        members[header[:16].decode("ascii").strip().rstrip("/")] = data[
+            offset + 60 : offset + 60 + size
+        ]
+        offset += 60 + size + size % 2
+    payload = next((name for name in members if name.startswith("data.tar")), None)
+    if payload is None:
+        raise ValueError("deb has no data.tar member")
+    if payload.endswith(".zst"):
+        raise ValueError(f"deb payload {payload} uses zstd, which Python 3.12 cannot read")
+    return _tar_regular_files(members[payload])
+
+
+def _rpm_members(data: bytes) -> dict[str, bytes]:
+    offset = 96
+    for padded in (True, False):  # the signature header, then the main header
+        if data[offset : offset + 3] != b"\x8e\xad\xe8":
+            raise ValueError("rpm header magic missing")
+        entries, store = struct.unpack("!II", data[offset + 8 : offset + 16])
+        offset += 16 + 16 * entries + store
+        if padded:
+            offset += -offset % 8
+    payload = data[offset:]
+    if payload.startswith(b"\xfd7zXZ\x00"):
+        cpio = lzma.decompress(payload)
+    elif payload.startswith(b"\x1f\x8b"):
+        cpio = zlib.decompress(payload, 16 + zlib.MAX_WBITS)
+    elif payload.startswith(b"\x28\xb5\x2f\xfd"):
+        raise ValueError("rpm payload uses zstd, which Python 3.12 cannot read")
+    else:
+        raise ValueError("rpm payload compression is unsupported")
+    files, offset = {}, 0
+    while True:
+        if cpio[offset : offset + 6] not in (b"070701", b"070702"):
+            raise ValueError("rpm payload is not a newc cpio archive")
+        fields = [int(cpio[offset + 6 + 8 * i : offset + 14 + 8 * i], 16) for i in range(13)]
+        mode, size, name_size = fields[1], fields[6], fields[11]
+        name = cpio[offset + 110 : offset + 109 + name_size].decode("utf-8")
+        offset += 110 + name_size
+        offset += -offset % 4
+        content = cpio[offset : offset + size]
+        offset += size + -size % 4
+        if name == "TRAILER!!!":
+            return files
+        if mode & 0o170000 == 0o100000:
+            files[name.removeprefix("./").removeprefix("/")] = content
+
+
+def _appimage_members(path: Path) -> dict[str, bytes]:
+    if not sys.platform.startswith("linux"):
+        raise ValueError("AppImage inspection needs Linux")
+    with TemporaryDirectory(prefix="sdctoolbox-appimage-") as temporary:
+        runnable = Path(temporary) / "artifact.AppImage"
+        shutil.copyfile(path, runnable)
+        runnable.chmod(0o755)
+        try:
+            subprocess.run(
+                [str(runnable), "--appimage-extract"],
+                cwd=temporary, check=True, capture_output=True, timeout=600,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise ValueError(f"AppImage extraction failed: {error}") from error
+        root = Path(temporary) / "squashfs-root"
+        files = {}
+        for directory, _subdirectories, names in os.walk(root):
+            for name in names:
+                member = Path(directory) / name
+                if member.is_file() and not member.is_symlink():
+                    files[member.relative_to(root).as_posix()] = member.read_bytes()
+        return files
+
+
+def _package_members(path: Path) -> dict[str, bytes]:
+    """Every regular file a deb, rpm or AppImage installs, named without a leading ./."""
+    kind = _package_kind(path)
+    if kind == "appimage":
+        return _appimage_members(path)
+    if kind == "deb":
+        return _deb_members(path.read_bytes())
+    if kind == "rpm":
+        return _rpm_members(path.read_bytes())
+    raise ValueError(f"not a deb, rpm or AppImage: {path}")
+
+
+def _package_bundle(kind: str, members: dict[str, bytes]) -> list[tuple[str, bytes]]:
+    prefix = PACKAGE_BUNDLE_PREFIX[kind]
+    return [
+        (f"{ARTIFACT_ROOT}/{name.removeprefix(prefix)}", data)
+        for name, data in members.items()
+        if name.startswith(prefix)
+    ]
+
+
+def _package_extras_errors(kind: str, members: dict[str, bytes], license_text: bytes | None) -> list[str]:
+    """What a package must install besides the bundle: its license copy and firewall files."""
+    errors = []
+    license_copy = {
+        "deb": "usr/share/doc/sdc-testing-toolbox/copyright",
+        "rpm": "usr/share/licenses/sdc-testing-toolbox/LICENSE",
+    }.get(kind)
+    if license_copy and (license_text is None or members.get(license_copy) != license_text):
+        errors.append(f"{license_copy} is missing or differs from the bundle LICENSE")
+    firewall = (
+        ("usr/share/sdc-testing-toolbox/firewall/firewalld/", "usr/share/sdc-testing-toolbox/firewall/ufw/")
+        if kind == "appimage"
+        else ("usr/lib/firewalld/services/", "etc/ufw/applications.d/")
+    )
+    errors.extend(
+        f"{directory}sdc-testing-toolbox{suffix} is missing"
+        for directory, suffix in zip(firewall, (".xml", ""))
+        if f"{directory}sdc-testing-toolbox{suffix}" not in members
+    )
+    return errors
 
 
 def _archive_files(path: Path) -> list[tuple[str, bytes]]:
+    kind = _package_kind(path)
+    if kind is not None:
+        return _package_bundle(kind, _package_members(path))
     if zipfile.is_zipfile(path):
         with zipfile.ZipFile(path) as archive:
             return [
@@ -483,6 +647,47 @@ def check_binary_filter(report: Report) -> None:
         "non-Windows filtering retains a non-Qt binary",
     )
 
+    site_packages = Path(sysconfig.get_paths()["platlib"])
+    host_stack = [
+        ("libstdc++.so.6", "/usr/lib/x86_64-linux-gnu/libstdc++.so.6", "BINARY"),
+        ("libfontconfig.so.1", "/usr/lib/x86_64-linux-gnu/libfontconfig.so.1", "BINARY"),
+        # A system Python lives in /usr too, so its prefix must not make a host library "ours".
+        (
+            "libgcc_s.so.1",
+            str(Path(sysconfig.get_config_var("installed_base")) / "lib" / "libgcc_s.so.1"),
+            "BINARY",
+        ),
+    ]
+    bundled = [
+        ("libxcb-cursor.so.0", "/usr/lib/x86_64-linux-gnu/libxcb-cursor.so.0", "BINARY"),
+        (
+            "PySide6/Qt/lib/libz.so.1",
+            str(site_packages / "PySide6" / "Qt" / "lib" / "libz.so.1"),
+            "BINARY",
+        ),
+    ]
+    report.check(
+        filter_binaries(host_stack + bundled, platform="Linux") == bundled,
+        "Linux filtering leaves excludelist system libraries to the host",
+    )
+    under_python = [
+        (name, str(Path(sysconfig.get_config_var("installed_base")) / "lib" / name), "BINARY")
+        for name in ("libstdc++.so.6", "libfontconfig.so.1")
+    ]
+    report.check(
+        filter_binaries(under_python, platform="Windows") == under_python
+        and filter_binaries(under_python, platform="Linux") == []
+        and filter_binaries(bundled[1:], platform="Windows") == bundled[1:],
+        "Windows filtering is unchanged by the Linux host-library list",
+    )
+    report.check(
+        len(LINUX_HOST_LIBRARIES) == 52
+        and {"libstdc++.so.6", "libgcc_s.so.1", "libfontconfig.so.1"} <= LINUX_HOST_LIBRARIES
+        and "libxcb-cursor.so.0" not in LINUX_HOST_LIBRARIES,
+        "the Linux host-library list is the pinned excludelist",
+        f"{len(LINUX_HOST_LIBRARIES)} names",
+    )
+
 
 def legal_fixture() -> tuple[dict[str, bytes], dict[str, object]]:
     """A complete, offline artifact; the executable table contains no runnable code."""
@@ -725,10 +930,179 @@ def check_qt_imageformat_sources(report: Report) -> None:
             report.check(any("qtimageformats" in error for error in errors), "Qt validation rejects a wrong-version imageformats archive", "; ".join(errors))
 
 
+def check_qt_wheel_notice_fallback(report: Report) -> None:
+    vendored = ROOT / "legal/licenses/pyside6/LicenseRef-Qt-Commercial.txt"
+    vendored_bytes = vendored.read_bytes() if vendored.is_file() else None
+    report.check(
+        vendored_bytes is not None
+        and hashlib.sha256(vendored_bytes).hexdigest() == QT_WHEEL_NOTICE_SHA256,
+        "source tree pins the upstream PySide6 notice that Linux wheels omit",
+    )
+    wheel_notice = b"wheel notice fixture\r\n"
+    with TemporaryDirectory(prefix="sdctoolbox-qt-notice-") as temporary:
+        root = Path(temporary)
+        distributions = {}
+        binaries = []
+        for name in (
+            "pyside6", "pyside6-essentials", "shiboken6", "sdc11073",
+            "cryptography", "pyinstaller", "pyinstaller-hooks-contrib",
+        ):
+            metadata = Message()
+            metadata["Name"] = name
+            metadata["License"] = "MIT"
+            metadata["Home-page"] = "https://example.test/project"
+            files = [f"{name}/module.bin"]
+            if name == "pyside6-essentials":
+                files.append(f"{name}.dist-info/licenses/LicenseRef-Qt-Commercial.txt")
+            elif name not in {"pyside6", "shiboken6"}:
+                files.append(f"{name}/LICENSE")
+            for relative in files:
+                (root / relative).parent.mkdir(parents=True, exist_ok=True)
+                (root / relative).write_bytes(wheel_notice)
+            distributions[name] = SimpleNamespace(
+                metadata=metadata, version="6.11.2", requires=[], files=files,
+                locate_file=lambda relative: root / relative,
+            )
+            binaries.append((f"{name}/module.bin", str(root / name / "module.bin"), "BINARY"))
+        with patch.object(legal_payload, "_distributions", return_value=distributions), patch.object(
+            legal_payload, "_linked_library_names", return_value=set(),
+        ):
+            legal_payload.generate_payload(ROOT, root / "output", [], binaries, [])
+        generated = json.loads((root / "output" / INVENTORY_NAME).read_text(encoding="utf-8"))
+        components = {component["name"]: component for component in generated["components"]}
+        qt_texts = [
+            "legal/licenses/qt/LGPL-3.0-only.txt",
+            "legal/licenses/qt/GPL-3.0-only.txt",
+            "legal/licenses/qt/Qt-GPL-exception-1.0.txt",
+        ]
+        for name, source, expected in (
+            ("pyside6", "vendored for a wheel without it", vendored_bytes),
+            ("pyside6-essentials", "from its own wheel", wheel_notice),
+            ("shiboken6", "vendored for a wheel without it", vendored_bytes),
+        ):
+            notice = f"legal/licenses/{name}/LicenseRef-Qt-Commercial.txt"
+            copied = root / "output" / notice
+            notice_paths = components[name]["notice_paths"]
+            report.check(
+                notice_paths == [notice, *qt_texts]
+                and copied.is_file()
+                and copied.read_bytes() == expected,
+                f"{name} carries the Qt notice {source}",
+                str(notice_paths),
+            )
+
+
+def _tar_xz(members: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:xz") as archive:
+        for name, data in members.items():
+            info = tarfile.TarInfo(f"./{name}")
+            info.size = len(data)
+            info.mode = 0o644
+            archive.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+def _fixture_deb(path: Path, members: dict[str, bytes], data_name: str = "data.tar.xz") -> None:
+    parts = {
+        "debian-binary": b"2.0\n",
+        "control.tar.xz": _tar_xz({"control": b"Package: fixture\n"}),
+        data_name: _tar_xz(members),
+    }
+    out = bytearray(b"!<arch>\n")
+    for name, data in parts.items():
+        out += f"{name:<16}{0:<12}{0:<6}{0:<6}{100644:<8}{len(data):<10}`\n".encode()
+        out += data + b"\n" * (len(data) % 2)
+    path.write_bytes(bytes(out))
+
+
+def _fixture_rpm(path: Path, members: dict[str, bytes]) -> None:
+    """An rpm with empty signature and main headers and an xz newc cpio payload."""
+    cpio = bytearray()
+    entries = [*((f"./{name}", 0o100644, data) for name, data in members.items())]
+    entries.append(("TRAILER!!!", 0, b""))
+    for inode, (name, mode, data) in enumerate(entries, 1):
+        encoded = name.encode() + b"\0"
+        fields = (inode, mode, 0, 0, 1, 0, len(data), 0, 0, 0, 0, len(encoded), 0)
+        cpio += b"070701" + b"".join(f"{value:08x}".encode() for value in fields) + encoded
+        cpio += b"\0" * (-len(cpio) % 4)
+        cpio += data
+        cpio += b"\0" * (-len(cpio) % 4)
+    empty_header = b"\x8e\xad\xe8\x01\0\0\0\0" + struct.pack("!II", 0, 0)
+    lead = b"\xed\xab\xee\xdb" + b"\0" * 92
+    path.write_bytes(lead + empty_header + empty_header + lzma.compress(bytes(cpio)))
+
+
+def check_package_formats(report: Report) -> None:
+    fixture, _inventory = legal_fixture()
+    license_text = fixture[f"{ARTIFACT_ROOT}/LICENSE"]
+    installed = {
+        f"opt/sdc-testing-toolbox/{name.split('/', 1)[1]}": data for name, data in fixture.items()
+    }
+    firewall = {
+        "usr/lib/firewalld/services/sdc-testing-toolbox.xml": b"<service/>",
+        "etc/ufw/applications.d/sdc-testing-toolbox": b"[SDC-Testing-Toolbox]\n",
+    }
+    packages = {
+        "deb": {**installed, **firewall, "usr/share/doc/sdc-testing-toolbox/copyright": license_text},
+        "rpm": {**installed, **firewall, "usr/share/licenses/sdc-testing-toolbox/LICENSE": license_text},
+    }
+    with TemporaryDirectory(prefix="sdctoolbox-packages-") as temporary:
+        for kind, members in packages.items():
+            path = Path(temporary) / f"fixture.{kind}"
+            (_fixture_deb if kind == "deb" else _fixture_rpm)(path, members)
+            files = _archive_files(path)
+            report.check(
+                sorted(files) == sorted(fixture.items()),
+                f"{kind} bundle files map onto the {ARTIFACT_ROOT} root",
+                f"{len(files)} files",
+            )
+            errors = validate_payload(files)
+            report.check(not errors, f"{kind} fixture legal payload validates", "; ".join(errors))
+            report.check(
+                _package_extras_errors(kind, _package_members(path), license_text) == [],
+                f"{kind} fixture installs its license copy and firewall definitions",
+            )
+            report.check(
+                _package_extras_errors(kind, installed, license_text) != [],
+                f"{kind} check notices a missing license copy and firewall definitions",
+            )
+
+        zstd = Path(temporary) / "zstd.deb"
+        _fixture_deb(zstd, installed, data_name="data.tar.zst")
+        try:
+            _archive_files(zstd)
+        except ValueError as error:
+            report.check("zstd" in str(error), "deb with a zstd payload is refused by name", str(error))
+        else:
+            report.check(False, "deb with a zstd payload is refused by name")
+
+        appimage = Path(temporary) / "stub.AppImage"
+        appimage.write_bytes(b"\x7fELF\x02\x01\x01\0AI\x02" + b"\0" * 64)
+        try:
+            _archive_files(appimage)
+        except ValueError as error:
+            expected = "AppImage" if sys.platform.startswith("linux") else "needs Linux"
+            report.check(expected in str(error), "AppImage stub is recognised but not extracted", str(error))
+        else:
+            report.check(False, "AppImage stub is recognised but not extracted")
+
+        plain_elf = Path(temporary) / "plain.elf"
+        plain_elf.write_bytes(b"\x7fELF\x02\x01\x01\0\0\0\0" + b"\0" * 64)
+        try:
+            _archive_files(plain_elf)
+        except ValueError as error:
+            report.check("unsupported" in str(error), "an ELF that is not an AppImage is unsupported", str(error))
+        else:
+            report.check(False, "an ELF that is not an AppImage is unsupported")
+
+
 def check_sources(report: Report) -> None:
     check_binary_filter(report)
     check_debian_common_notices(report)
     check_qt_imageformat_sources(report)
+    check_qt_wheel_notice_fallback(report)
+    check_package_formats(report)
     license_text = (ROOT / "LICENSE").read_text(encoding="utf-8")
     report.check(
         "GNU GENERAL PUBLIC LICENSE\n                       Version 3, 29 June 2007"
@@ -804,11 +1178,23 @@ def check_sources(report: Report) -> None:
 def check_archive(report: Report, archive_path: Path) -> None:
     report.require(archive_path.is_file(), "artifact archive exists", str(archive_path))
     try:
-        files = _archive_files(archive_path)
-    except (OSError, ValueError, tarfile.TarError, zipfile.BadZipFile) as error:
+        kind = _package_kind(archive_path)
+        members = _package_members(archive_path) if kind else None
+        files = _package_bundle(kind, members) if kind else _archive_files(archive_path)
+    except (
+        OSError, ValueError, lzma.LZMAError, struct.error, zlib.error,
+        tarfile.TarError, zipfile.BadZipFile,
+    ) as error:
         report.check(False, "artifact archive opens", str(error))
         return
     report.check(bool(files), "artifact archive contains files", str(len(files)))
+    if members is not None:
+        errors = _package_extras_errors(kind, members, dict(files).get(f"{ARTIFACT_ROOT}/LICENSE"))
+        report.check(
+            not errors,
+            f"{kind} installs its license copy and firewall definitions",
+            "; ".join(errors),
+        )
     inventory_count = sum(
         name.replace("\\", "/").endswith(f"/{INVENTORY_NAME}") for name, _value in files
     )
@@ -1148,7 +1534,9 @@ def check_archive(report: Report, archive_path: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--artifact", type=Path, help="validate an extracted final ZIP or tar archive"
+        "--artifact",
+        type=Path,
+        help="validate a final zip, tar.gz, deb, rpm or AppImage (AppImage needs Linux)",
     )
     arguments = parser.parse_args()
 

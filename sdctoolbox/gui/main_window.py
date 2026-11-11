@@ -17,7 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import config
+from .. import config, ports
 from ..mdib_io import NativeMdibConfig
 from .consumer_pane import ConsumerPane
 from .consumer_tabs import ConsumerTabs
@@ -91,6 +91,9 @@ class TitledPanel(QWidget):
 class MainWindow(QMainWindow):
     """Hosts the provider and consumer panels in whichever layout is selected."""
 
+    # A port fallback is reported on whichever thread bound the socket; this hops to the GUI.
+    _port_warning = Signal(str)
+
     def __init__(self, service: ProviderService) -> None:
         super().__init__()
         self.service = service
@@ -130,6 +133,19 @@ class MainWindow(QMainWindow):
         self.set_use_widgets(enabled=True)
 
         self._show_status_hint()
+
+        # Stays in the status bar: a firewall that blocks the toolbox is easy to miss otherwise.
+        self.port_warning_label = QLabel()
+        self.statusBar().addPermanentWidget(self.port_warning_label)
+        self._port_warning.connect(self._show_port_warnings)
+        self._show_port_warnings()
+        self._unsubscribe_port_warnings = ports.subscribe_fallback_warnings(self._port_warning.emit)
+
+    def _show_port_warnings(self, _message: str = "") -> None:
+        warnings = ports.fallback_warnings()
+        self.port_warning_label.setText(warnings[-1] if warnings else "")
+        self.port_warning_label.setToolTip("\n".join(warnings))
+        self.port_warning_label.setVisible(bool(warnings))
 
     # -- layout --------------------------------------------------------------------
 
@@ -476,6 +492,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: ANN001, N802 - Qt naming
         """Drop the consumer's subscriptions and discovery socket on the way out."""
+        self._unsubscribe_port_warnings()
         self.provider_pane.bridge.close()
         self.network_tabs.shutdown()
         super().closeEvent(event)

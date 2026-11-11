@@ -22,13 +22,12 @@ from sdc11073.provider import SdcProvider
 from sdc11073.provider.operations import ActivateOperation
 from sdc11073.provider.porttypes.getserviceimpl import GetService
 from sdc11073.provider.providerimpl import RoleProviderComponents, provider_components_async_factory
-from sdc11073.wsdiscovery import WSDiscovery
 from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types import pm_types
 from sdc11073.xml_types.dpws_types import ThisDeviceType, ThisModelType
 from sdc11073.xml_types.xml_structure import DateOfBirthProperty
 
-from . import constants
+from . import constants, ports
 from .config import _unique_in
 from .handlers import (
     ReasonedSetService,
@@ -40,6 +39,7 @@ from .handlers import (
 from .http_server import configure_request_handler
 from .mdib_io import NativeMdibConfig, mdib_bytes, parse_mdib
 from . import native_mdib as native
+from .ports import RangeWSDiscovery
 from .model import (
     DEFAULT_PATIENT,
     ActionSpec,
@@ -70,6 +70,8 @@ if TYPE_CHECKING:
     from .config import DeviceConfig
 
 logger = logging.getLogger("sdctoolbox.provider")
+
+ports.install()
 
 
 @dataclass
@@ -208,7 +210,7 @@ class ProviderService:
         self._restarting = False
         self._lifecycle_lock = threading.RLock()
 
-        self._discovery: WSDiscovery | None = None
+        self._discovery: RangeWSDiscovery | None = None
         self._provider: SdcProvider | None = None
         self._mdib: ProviderMdib | None = None
         self._sco: AbstractScoOperationsRegistry | None = None
@@ -272,7 +274,7 @@ class ProviderService:
         try:
             # Validate key, certificate, CA bundle, and TLS policy before any listener exists.
             self._tls_contexts = self.tls_config.create_contexts() if self.tls_config is not None else None
-            self._discovery = WSDiscovery(self.ip)
+            self._discovery = RangeWSDiscovery(self.ip)
             self._discovery.start()
 
             self._native_mode = native_mode

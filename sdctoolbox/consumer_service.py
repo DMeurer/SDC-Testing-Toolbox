@@ -28,12 +28,11 @@ from sdc11073.exceptions import ValidationError
 from sdc11073.mdib import ConsumerMdib, mdibbase
 from sdc11073.mdib.consumermdibxtra import ConsumerMdibMethods
 from sdc11073.pysoap.soapclient import HTTPReturnCodeError
-from sdc11073.wsdiscovery import WSDiscovery
 from sdc11073.xml_types import eventing_types, msg_types, pm_types
 from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types.dpws_types import DeviceEventingFilterDialectURI
 
-from . import constants
+from . import constants, ports
 from .http_server import configure_request_handler
 from .model import (
     MetricKind,
@@ -46,12 +45,15 @@ from .model import (
     patient_info_from_biceps,
     validate_decimal,
 )
+from .ports import RangeWSDiscovery
 from .security import CertificateInfo, TlsConfig, VerifiedSoapClient, endpoint_host
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
 logger = logging.getLogger("sdctoolbox.consumer")
+
+ports.install()
 
 # Discovery pacing. Providers answer a probe within about half a second; re-probing covers
 # lost multicast datagrams without flooding the segment.
@@ -1183,7 +1185,7 @@ class ConsumerService:
         self._own_epr = own_epr
         self.tls_config = tls_config
         self._tls_contexts = None
-        self._discovery: WSDiscovery | None = None
+        self._discovery: RangeWSDiscovery | None = None
         # When each provider was last heard from, by EPR. Written from sdc11073's
         # networking thread, read from whichever thread asks for known_devices().
         self._last_seen: dict[str, float] = {}
@@ -1203,7 +1205,7 @@ class ConsumerService:
         # The consumer hosts the HTTPS endpoint for provider event callbacks, so validate
         # its full mTLS identity before discovery starts as well.
         self._tls_contexts = self.tls_config.create_contexts() if self.tls_config is not None else None
-        self._discovery = WSDiscovery(self.ip)
+        self._discovery = RangeWSDiscovery(self.ip)
         try:
             self._discovery.start()
         except Exception:

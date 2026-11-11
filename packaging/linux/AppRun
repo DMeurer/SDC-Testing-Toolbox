@@ -1,0 +1,3 @@
+#!/bin/sh
+here="${APPDIR:-$(dirname "$(readlink -f "$0")")}"
+exec "$here/usr/lib/sdc-testing-toolbox/SDC-Testing-Toolbox" "$@"

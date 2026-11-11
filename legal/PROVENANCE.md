@@ -17,6 +17,14 @@ The Qt texts are byte-for-byte copies from the Qt 6.11.2 release repositories:
   `24627cd36e1593adf22eb1f2950e4248e7bcc1ec` (tag `v6.11.2`), retrieved from
   https://code.qt.io/cgit/pyside/pyside-setup.git/plain/LICENSES/Qt-GPL-exception-1.0.txt?id=24627cd36e1593adf22eb1f2950e4248e7bcc1ec
   (SHA-256 `40678d338ce53cd93f8b22b281a2ecbcaa3ee65ce60b25ffb0c462b0530846b2`).
+- `licenses/pyside6/LicenseRef-Qt-Commercial.txt` is
+  `pyside-setup/LICENSES/LicenseRef-Qt-Commercial.txt` at the same commit and
+  tag, retrieved from
+  https://code.qt.io/cgit/pyside/pyside-setup.git/plain/LICENSES/LicenseRef-Qt-Commercial.txt?id=24627cd36e1593adf22eb1f2950e4248e7bcc1ec
+  (SHA-256 `9b1f50aae6267f9d5e0ceb6775ee86450262c25ec7c0573e151fe5d3f18a4700`).
+  The Windows PySide6 and shiboken6 wheels ship this text (with CRLF line
+  endings) and the build copies it from them; the Linux wheels omit it, so the
+  build copies this file for each of those components instead.
 
 The Python text is copied at build time from `LICENSE.txt` in the installed
 CPython distribution when present. GitHub's Linux toolcache omits that file, so

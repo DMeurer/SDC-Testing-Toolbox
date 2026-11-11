@@ -135,7 +135,7 @@ def assert_provider_reset(service: ProviderService, discovery: Tracker, provider
 
 def provider_dependencies(discovery: Tracker, provider: Tracker | None = None):
     patches = [
-        patch.object(provider_module, "WSDiscovery", lambda _ip: discovery),
+        patch.object(provider_module, "RangeWSDiscovery", lambda _ip: discovery),
         patch.object(provider_module, "make_set_handler", lambda *_args, **_kwargs: object()),
         patch.object(provider_module, "make_activate_handler", lambda *_args, **_kwargs: object()),
     ]
@@ -267,7 +267,7 @@ def provider_stop_failures() -> None:
 def consumer_discovery_start_failure() -> None:
     service = ConsumerService()
     discovery = Tracker(fail_start="discovery start failed")
-    with patch.object(consumer_module, "WSDiscovery", lambda _ip: discovery):
+    with patch.object(consumer_module, "RangeWSDiscovery", lambda _ip: discovery):
         raises("discovery start failed", service.start)
     check(discovery.stop_count == 1, "consumer discovery start failure rolls back exactly once")
     check(not discovery.active and service._discovery is None, "consumer discovery failure resets state")
@@ -336,7 +336,7 @@ def a_restarted_provider_is_listed_at_its_new_address() -> None:
 
     discovery = AnnouncingDiscovery()
     service = ConsumerService()
-    with patch.object(consumer_module, "WSDiscovery", lambda _ip: discovery):
+    with patch.object(consumer_module, "RangeWSDiscovery", lambda _ip: discovery):
         service.start()
     try:
         steps = (

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<service>
+  <short>SDC Testing Toolbox</short>
+  <description>IEEE 11073 SDC learning tool. Opens WS-Discovery on UDP 3702 and the toolbox's own TCP and UDP ports 21073-21172, where its devices and consumers listen.</description>
+  <port protocol="udp" port="3702"/>
+  <port protocol="udp" port="21073-21172"/>
+  <port protocol="tcp" port="21073-21172"/>
+</service>

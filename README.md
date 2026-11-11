@@ -64,15 +64,105 @@ tar -C dist -czf dist/SDC-Testing-Toolbox-linux-x86_64.tar.gz SDC-Testing-Toolbo
 
 The workflow's Linux archive targets x86-64 desktop distributions with glibc 2.35 or newer
 because it is built on Ubuntu 22.04. A local build inherits its build host's glibc baseline.
-The archive contains application-specific shared libraries as separate files, while normal desktop system
-libraries remain host dependencies. Keep the bundle together after extracting it; the
-executable is `SDC-Testing-Toolbox/SDC-Testing-Toolbox`.
+The archive contains application-specific shared libraries as separate files. Common desktop
+libraries come from the host instead, among them glibc, the C++ runtime,
+fontconfig and FreeType, X11/xcb, the Wayland client libraries and OpenGL/EGL. The `depends`
+lists in `packaging/linux/nfpm.yaml` name all of them for each package manager. Keep the bundle
+together after extracting it; the executable is `SDC-Testing-Toolbox/SDC-Testing-Toolbox`.
+
+The same bundle also becomes a `.deb`, an `.rpm` and an AppImage (see
+[Install on Linux](#install-on-linux)). After the PyInstaller step, run:
+
+```bash
+.venv/bin/python packaging/linux/build_packages.py
+```
+
+It writes the three files to `dist/`. The first run downloads the pinned packaging tools
+(nfpm, appimagetool and the AppImage runtime) into `build/packaging-tools` and refuses any
+download whose SHA-256 does not match. It also refuses to package a bundle that needs a newer
+glibc than the packages declare.
 
 The `Build application` GitHub Actions workflow performs both native builds, smoke-tests the
 actual packaged applications, validates the final archives' legal payloads, and uploads Windows
-and Linux archives as release candidates. Run it
-manually when an artifact is needed; it also runs for pull requests to `develop` and version
-tags.
+and Linux archives as release candidates. On Linux it also builds the `.deb`, `.rpm` and
+AppImage, validates their legal payloads, and installs each one in clean containers of six
+distributions. Run it manually when an artifact is needed; it also runs for pull requests to
+`develop` and version tags.
+
+## Install on Linux
+
+The `Build application` workflow uploads the Linux packages as the
+`SDC-Testing-Toolbox-linux-packages` artifact. They are not signed and not published in a
+package repository.
+
+The CI matrix installs and starts them on clean Ubuntu 22.04, Ubuntu 24.04, Debian 12, Fedora (latest),
+openSUSE Tumbleweed and AlmaLinux 10 containers: each distribution's native package, plus the
+AppImage on all six. Other x86-64 distributions with glibc 2.35 or newer are expected to work
+but are not tested.
+
+The packages install the application to `/opt/sdc-testing-toolbox`, add the
+`sdc-testing-toolbox` command and a desktop menu entry, and pull in the host libraries listed
+above. Replace `<version>` and `<release>` with the values in the downloaded filename:
+
+```bash
+# Debian and Ubuntu
+sudo apt install ./sdc-testing-toolbox_<version>-<release>_amd64.deb
+sudo apt purge sdc-testing-toolbox
+
+# Fedora and AlmaLinux
+sudo dnf install ./sdc-testing-toolbox-<version>-<release>.x86_64.rpm
+sudo dnf remove sdc-testing-toolbox
+
+# openSUSE
+sudo zypper install --allow-unsigned-rpm ./sdc-testing-toolbox-<version>-<release>.x86_64.rpm
+sudo zypper remove sdc-testing-toolbox
+```
+
+The AppImage needs no installation, but it expects the same host libraries. These are normally
+available on a full desktop; minimal installations may need to install them:
+
+```bash
+chmod +x SDC-Testing-Toolbox-<version>-<release>-x86_64.AppImage
+./SDC-Testing-Toolbox-<version>-<release>-x86_64.AppImage
+```
+
+Without FUSE, for example in a container, pass `--appimage-extract-and-run` as the first
+argument, or set `APPIMAGE_EXTRACT_AND_RUN=1`.
+
+### Firewall
+
+The toolbox uses WS-Discovery on UDP 3702 and normally binds every other port that peers connect to in
+21073–21172, TCP and UDP. Installing a package does not open them and does not touch the
+firewall. It only installs a firewalld service and a ufw application profile, which you
+switch on yourself:
+
+```bash
+# firewalld (Fedora, openSUSE, AlmaLinux): the first reload picks up the new service
+sudo firewall-cmd --reload
+sudo firewall-cmd --permanent --add-service=sdc-testing-toolbox
+sudo firewall-cmd --reload
+
+# ufw (Ubuntu, Debian)
+sudo ufw allow SDC-Testing-Toolbox
+```
+
+A firewalld reload drops rules that were added without `--permanent`. Add `--zone=<zone>` if
+the network interface is not in the default zone.
+
+The AppImage cannot install system files. Copy the definitions first, either from this
+repository's `packaging/linux/` or from the AppImage (`--appimage-extract` puts them in
+`squashfs-root/usr/share/sdc-testing-toolbox/firewall/`):
+
+```bash
+sudo cp packaging/linux/firewalld/sdc-testing-toolbox.xml /etc/firewalld/services/
+sudo cp packaging/linux/ufw/sdc-testing-toolbox /etc/ufw/applications.d/
+```
+
+If every port in the range is already taken, the toolbox binds a port the OS picks instead.
+It logs a warning such as `TCP port 40312 is outside 21073-21172 because no port in that range
+was free; the shipped firewall definitions do not cover it`, and the main window keeps the
+latest one in its status bar. With the firewall on, peers cannot reach that port: close other
+toolbox instances or open the port yourself.
 
 ## License
 
@@ -573,6 +663,8 @@ Linux and once on Windows through `tests/run_suites.py`. Qt jobs use
 | `tests/multi_provider.py` | independent connection tabs, hidden backend reports, per-provider writes and lifecycle/settings isolation |
 | `tests/gui_audit_regressions.py` | truthful missing/current values, active drafts, cleanup handoffs, plot bounds and scope updates |
 | `tests/acceptance_readiness.py` | bounded provider readiness waits and subprocess cleanup |
+| `tests/port_range.py` | provider, consumer and discovery sockets bind in 21073–21172, exclusively, with the fallback warning |
+| `tests/linux_packaging.py` | desktop entry, firewall definitions, package versions, glibc floor and AppImage layout |
 
 The manifest selects platform-appropriate suites, including TLS configuration and helper checks
 on both systems. A separate Windows step checks the console-rendered signal summary under strict
@@ -600,7 +692,7 @@ Run the same default set that continuous integration runs locally with:
 
 `tests/gui_smoke.py` remains a manual broad regression script because it is intentionally long and duplicates the focused GUI suites while also starting a live peer. Run it when changing interactions that cross several GUI areas; it uses the offscreen backend and needs no display.
 
-The packaging jobs separately launch each built Windows and Linux application with `--smoke-test`. `tests/acceptance_provider.py` is a subprocess fixture used by acceptance scripts, not a standalone suite.
+The packaging jobs separately launch each built Windows and Linux application with `--smoke-test`. The `install-packages` jobs run `packaging/linux/install_test.sh` on each Linux package in a clean container: install, smoke-test offscreen and under X11 with the GTK theme, then check the native packages' firewall definitions are present but not enabled and uninstall them. AppImage tests first install the expected host libraries and run without FUSE. Run it locally as root in a matching container, for example `sh packaging/linux/install_test.sh dist/<package>`. `tests/acceptance_provider.py` is a subprocess fixture used by acceptance scripts, not a standalone suite.
 
 `provider_core.py` is the odd one out: it is about what the MDIB must never be left in. Its first section deliberately writes a descriptor BICEPS cannot serialise *without* the rollback, watches the orphan appear, and only then checks that the guarded path leaves nothing behind — so a passing run means the check is still capable of failing.
 
@@ -743,3 +835,5 @@ with ConsumerService() as service:
 
 WS-Discovery in sdc11073 binds to a **single IPv4 address**. On a machine with several adapters (VPN, Hyper-V, Wi-Fi Direct, Bluetooth PAN) you have to say which one, hence the
 `--ip` argument everywhere. Loopback is the default so two instances on one machine can talk without involving the network.
+
+Each provider and consumer listens on the first free TCP port in 21073–21172, and the discovery reply socket takes the first free UDP port in that range. Only the multicast listener stays on UDP 3702. A firewall therefore needs UDP 3702 plus TCP and UDP 21073–21172 open; see [Firewall](#firewall), including the warning when the range is exhausted.

@@ -84,6 +84,10 @@ CODE_DIMENSIONLESS = "262656"
 # Windows, while the sdc11073 tutorial hard-codes "Loopback Pseudo-Interface 1".
 DEFAULT_IP = "127.0.0.1"
 
+# Every port peers connect to (HTTP listeners, the WS-Discovery reply socket) is bound in this
+# range, so the shipped firewall definitions can open exactly it. Discovery itself stays on 3702.
+PORT_RANGE = range(21073, 21173)
+
 # EPRs are derived from this namespace plus an instance name, so restarting an instance
 # with the same name keeps its identity.
 EPR_NAMESPACE = uuid.UUID("{7c2e4a10-6b3d-4f8e-9c21-0d5a8e3f1b47}")
@@ -118,6 +122,15 @@ MANUFACTURER_URL = "https://d-meurer.com"
 MODEL_NAME = "Fictional SDC Device"
 MODEL_NUMBER = "0.1"
 FIRMWARE_VERSION = "0.1"
+
+# --------------------------------------------------------------------------------------
+# Desktop identity
+# --------------------------------------------------------------------------------------
+
+# The window class Linux desktops match against the installed desktop entry's
+# StartupWMClass, and that entry's file name, so the dock shows the icon.
+APP_NAME = "SDC-Testing-Toolbox"
+DESKTOP_ID = "sdc-testing-toolbox"
 
 
 def epr_for(instance_name: str) -> uuid.UUID:

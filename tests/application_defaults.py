@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import _thread
 import contextlib
 import io
+import signal
 import sys
+import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -19,6 +22,8 @@ from acceptance_provider import PEER_INSTANCE
 from gui_test_support import application
 from script_support import Report
 import shiboken6
+from PySide6.QtCore import QMetaObject, Qt
+from PySide6.QtWidgets import QDialog, QWidget
 
 import run_toolbox
 from examples import console
@@ -656,6 +661,110 @@ def check_main_window_applies_parsed_profile() -> None:
     )
 
 
+class CtrlCPress:
+    """Deliver SIGINT from another thread, as a console Ctrl+C does, while Qt waits for events.
+
+    The caller calls done() once the event loop is over. If that has not happened 10 s after the
+    press, a queued C++ closeAllWindows ends the loop and sets forced, so a broken handler fails
+    the check instead of hanging the suite.
+    """
+
+    def __init__(self, app) -> None:
+        self.forced = False
+        self._finished = threading.Event()
+        threading.Thread(target=self._press, args=(app,), daemon=True).start()
+
+    def _press(self, app) -> None:
+        if self._finished.wait(0.3):
+            return
+        _thread.interrupt_main()
+        if not self._finished.wait(10):
+            self.forced = True
+            QMetaObject.invokeMethod(app, "closeAllWindows", Qt.QueuedConnection)
+
+    def done(self) -> None:
+        self._finished.set()
+
+
+def check_ctrl_c_closes_the_toolbox(*, in_startup_dialog: bool) -> None:
+    app = application()
+    events: list[str] = []
+    presses: list[CtrlCPress] = []
+    previous_handler = signal.getsignal(signal.SIGINT)
+
+    def press_then(run_loop):
+        presses.append(CtrlCPress(app))
+        try:
+            return run_loop()
+        finally:
+            presses[-1].done()
+
+    class ApplicationBoundary:
+        def exec(self) -> int:
+            return press_then(app.exec)
+
+    class Dialog(QDialog):
+        def __init__(self, **_kwargs: object) -> None:
+            super().__init__()
+
+        def exec(self) -> int:
+            self.show()
+            return press_then(super().exec)
+
+    class FakeProvider:
+        def __init__(self, **_kwargs: object) -> None:
+            events.append("provider")
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            events.append("provider-stop")
+
+    class Window(QWidget):
+        def __init__(self, _service: FakeProvider) -> None:
+            super().__init__()
+
+        def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
+            # A second Ctrl+C during shutdown must interrupt it rather than be swallowed.
+            if signal.getsignal(signal.SIGINT) is signal.default_int_handler:
+                events.append("window-close")
+            super().closeEvent(event)
+
+    argv = [] if in_startup_dialog else ["--name", "ctrl-c-check", "--ip", "127.0.0.1"]
+    with (
+        patch.object(run_toolbox, "QApplication", lambda _argv: ApplicationBoundary()),
+        patch.object(run_toolbox, "StartupDialog", Dialog),
+        patch.object(run_toolbox, "ProviderService", FakeProvider),
+        patch.object(run_toolbox, "MainWindow", Window),
+        patch.object(run_toolbox, "basic_logging_setup", lambda **_kwargs: None),
+    ):
+        try:
+            result: object = run_toolbox.main(argv)
+        except KeyboardInterrupt:
+            result = "KeyboardInterrupt"
+
+    phase = "startup dialog" if in_startup_dialog else "main window"
+    if in_startup_dialog:
+        closed_like_the_button = events == []
+    else:
+        closed_like_the_button = (
+            events[:2] == ["provider", "window-close"] and events[-1] == "provider-stop"
+        )
+    REPORT.check(
+        result == 0
+        and len(presses) == 1
+        and not presses[0].forced
+        and closed_like_the_button,
+        f"Ctrl+C in the {phase} closes the toolbox like its close button",
+        f"result={result!r}, forced={[press.forced for press in presses]}, events={events}",
+    )
+    check(
+        signal.getsignal(signal.SIGINT) is previous_handler,
+        f"Ctrl+C handling in the {phase} restores the previous SIGINT handler",
+    )
+
+
 def main() -> int:
     _app = application()
     print("Application default tests")
@@ -687,6 +796,8 @@ def main() -> int:
     check_main_window_applies_parsed_profile()
     for mode in ("command-line", "dialog", "smoke-failure", "smoke-success"):
         check_gui_profile_application_startup(mode)
+    check_ctrl_c_closes_the_toolbox(in_startup_dialog=True)
+    check_ctrl_c_closes_the_toolbox(in_startup_dialog=False)
     return REPORT.summary()
 
 
