@@ -997,7 +997,8 @@ class ConsumerPane(QWidget):
         if state in FINISHED_STATES:
             self.invocation_label.setText(f"accepted ({state})")
         else:
-            self.invocation_label.setText(f"refused ({state})")
+            reason = self.remote.last_invocation_detail if self.remote is not None else ""
+            self.invocation_label.setText(f"refused ({state}) - {reason}" if reason else f"refused ({state})")
         self.refresh_values()
         self._restore_device_value(self._invoked_handle)
 

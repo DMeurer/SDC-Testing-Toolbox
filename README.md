@@ -130,7 +130,7 @@ The remote-control checkbox is offered only for number, text and choice sources.
 
 The **Network** panel is everybody else's. *Scan* finds providers, *Connect* loads one, and you get its containment tree above and its metrics below.
 Rows the device will accept writes for are marked writable; select one and the editor underneath adapts to it — a combo box for a choice, a plain field with the permitted range for a number.
-The result of a write is reported as the provider's own `InvocationState`.
+The result of a write is reported as the provider's own `InvocationState`, followed by the error code and text the provider gave when it refused.
 
 Each Network tab is an independent connection. Use **+** (**Ctrl+T**) to add one, then
 Scan/Connect in that tab. The tab's close button (or **Ctrl+W** while focused inside
@@ -197,7 +197,7 @@ consumer> list
 consumer> set m.zoom_level 9
 accepted, m.zoom_level is now 9
 consumer> set m.zoom_level 500
-refused by the provider (Fail)
+refused by the provider (Fail) - Oth: 500 is above the maximum 100 of 'm.zoom_level'
 ```
 
 Numbers can carry limits. Those become two different things in BICEPS, because the standard separates what a device can produce from what a caller may ask for:

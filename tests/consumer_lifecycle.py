@@ -96,6 +96,7 @@ class FakeRemote:
         self.metrics_requests: list[frozenset[str] | None] = []
         self.lost_listeners: list = []
         self.lost_reason: str | None = None
+        self.last_invocation_detail = ""
 
     def close(self) -> None:
         self.close_count += 1
@@ -1512,9 +1513,14 @@ def failed_set_restores_device_value(app: QApplication, provider: ProviderServic
 
     remote.set_call.error = None
     remote.set_call.result = msg_types.InvocationState.FAILED
+    remote.last_invocation_detail = "Inv: the value is above the maximum"
     control.edit.setText("11")
     control._on_typed()  # noqa: SLF001
     check(wait_for(app, lambda: pane.invocation_label.text().startswith("refused")), "a refused set is reported")
+    check(
+        "above the maximum" in pane.invocation_label.text(),
+        f"a refused set tells the user why the device refused it: {pane.invocation_label.text()!r}",
+    )
     check(control.edit.text() == "7", "a refused set puts the device's value back into the card")
 
     remote.set_call.result = msg_types.InvocationState.FINISHED_MOD

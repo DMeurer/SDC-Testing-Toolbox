@@ -448,8 +448,31 @@ def check_the_consumer_logs_why_a_peer_refused(report: Report) -> None:
         consumer_log.addHandler(capture)
         consumer_log.setLevel(logging.INFO)
         refused_set = remote.set_value(number, Decimal(500))
+        set_reason = remote.last_invocation_detail
         refused_action = remote.run_action(broken_action)
+        action_reason = remote.last_invocation_detail
         report.check(refused_set is FAILED and refused_action is FAILED, "the toolbox consumer sees both refusals")
+        report.check(
+            set_reason.startswith("Oth: ") and "maximum" in set_reason,
+            "the consumer keeps the peer's reason for a refused set",
+            set_reason,
+        )
+        report.check(
+            action_reason.startswith("Oth: ") and "not a number" in action_reason,
+            "the consumer keeps the peer's reason for a refused action",
+            action_reason,
+        )
+        report.check(
+            remote.set_value(number, Decimal(20)) is not FAILED and remote.last_invocation_detail == "",
+            "an accepted set leaves no reason behind",
+            remote.last_invocation_detail,
+        )
+        report.check(
+            remote.set_value("no-such-metric", Decimal(1)) is FAILED
+            and "no-such-metric" in remote.last_invocation_detail,
+            "a request the consumer never sends says why it was refused",
+            remote.last_invocation_detail,
+        )
         set_line = next((line for line in lines if line.startswith("set ")), "")
         action_line = next((line for line in lines if line.startswith("ran ")), "")
         report.check(

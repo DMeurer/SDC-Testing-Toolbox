@@ -763,7 +763,8 @@ class ConsumerShell(Cmd):
             time.sleep(0.6)
             print(f"accepted, {handle} is now {show(self.remote.metrics()[handle].value)}")
         else:
-            print(f"refused by the provider ({state})")
+            reason = self.remote.last_invocation_detail
+            print(f"refused by the provider ({state})" + (f" - {reason}" if reason else ""))
 
     def do_watch(self, line: str) -> None:
         """watch [seconds]  -  print changes as they arrive."""

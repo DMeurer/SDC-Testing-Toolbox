@@ -85,6 +85,17 @@ class ConsoleCommandsTest(unittest.TestCase):
         self.assertEqual(self.provider.get_value("m.choice"), "001")
         self.assertEqual(self.provider.get_value("m.number"), Decimal("7.5"))
 
+    def test_consumer_shows_why_the_provider_refused(self) -> None:
+        shell = console.ConsumerShell(SimpleNamespace(ip=constants.DEFAULT_IP))
+        shell.remote = SimpleNamespace(
+            set_value=lambda _handle, _value: msg_types.InvocationState.FAILED,
+            last_invocation_detail="Oth: above the maximum 30",
+            close=lambda: None,
+        )
+        output = self.run_commands(shell, ["set m.number 80"])
+        self.assertIn("refused by the provider (Fail)", output)
+        self.assertIn("above the maximum 30", output)
+
     def test_unknown_provider_handle_does_not_stop_following_commands(self) -> None:
         output = self.run_commands(
             console.ProviderShell(self.provider),

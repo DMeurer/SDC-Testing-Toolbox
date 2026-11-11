@@ -147,12 +147,11 @@ def _operation_is_enabled(state: Any) -> bool:
     return isinstance(mode, str) and mode == pm_types.OperatingMode.ENABLED
 
 
-def _failure_detail(info: Any) -> str:
-    """The error code and texts a peer gave for an invocation, as a log suffix."""
+def _failure_reason(info: Any) -> str:
+    """The error code and texts a peer gave for an invocation, empty when it gave none."""
     code = _enum_value(getattr(info, "InvocationError", None))
     texts = ", ".join(text.text for text in info.InvocationErrorMessage or () if text.text)
-    detail = ": ".join(part for part in (code, texts) if part)
-    return f" ({detail})" if detail else ""
+    return ": ".join(part for part in (code, texts) if part)
 
 
 def _seconds(duration: Any) -> Decimal | None:
@@ -577,6 +576,8 @@ class RemoteDevice:
         self._lost_reason: str | None = None
         self._lost_listeners: list[Callable[[str], None]] = []
         self._bound_callbacks: list[Callable[[Any], None]] = []
+        # Why the latest set_value or run_action was refused. Empty after an accepted one.
+        self.last_invocation_detail = ""
         status = getattr(consumer, "subscription_status", None)
         self._metric_report_actions = _metric_report_actions(consumer) if status is not None else set()
         if status is not None:
@@ -931,16 +932,15 @@ class RemoteDevice:
             msg = "use Decimal, never float"
             raise TypeError(msg)
 
+        self.last_invocation_detail = ""
         metrics = self.metrics((metric_handle,))
         metric = metrics.get(metric_handle)
         if metric is None or not metric.operation_handles:
-            logger.warning("no set operation targets %s", metric_handle)
-            return msg_types.InvocationState.FAILED
+            return self._not_sent("no set operation targets %s", metric_handle)
 
         operation_handle = metric.selected_operation_handle
         if operation_handle is None:
-            logger.warning("no enabled set operation targets %s", metric_handle)
-            return msg_types.InvocationState.FAILED
+            return self._not_sent("no enabled set operation targets %s", metric_handle)
         client = self._consumer.set_service_client
 
         if metric.kind is MetricKind.NUMBER:
@@ -957,25 +957,27 @@ class RemoteDevice:
         else:
             string_value = str(value)
             if metric.operation_allowed_values and string_value not in metric.operation_allowed_values:
-                logger.warning(
-                    "%r is not allowed by set operation %s",
-                    string_value,
-                    operation_handle,
-                )
-                return msg_types.InvocationState.FAILED
+                return self._not_sent("%r is not allowed by set operation %s", string_value, operation_handle)
             report_part = self._send(lambda: client.set_string(operation_handle, string_value), timeout)
 
         info = report_part.InvocationInfo
+        self.last_invocation_detail = _failure_reason(info)
         logger.info(
             "set %s via %s -> %s%s",
             metric_handle,
             operation_handle,
             info.InvocationState,
-            _failure_detail(info),
+            f" ({self.last_invocation_detail})" if self.last_invocation_detail else "",
         )
         if info.InvocationState in (msg_types.InvocationState.FINISHED, msg_types.InvocationState.FINISHED_MOD):
             self._reconcile_metric(metric_handle, value)
         return info.InvocationState
+
+    def _not_sent(self, message: str, *args: object) -> msg_types.InvocationState:
+        """FAILED for a request that never left this consumer, with the reason kept for the caller."""
+        logger.warning(message, *args)
+        self.last_invocation_detail = message % args
+        return msg_types.InvocationState.FAILED
 
     def _reconcile_metric(self, handle: str, requested: Decimal | str) -> None:
         """Read the actual value when a peer finishes a set without a metric notification.
@@ -1062,22 +1064,22 @@ class RemoteDevice:
         Returns FAILED rather than raising when the action is unknown or disabled, so a caller
         has one failure mode to handle instead of two.
         """
+        self.last_invocation_detail = ""
         action = self.actions().get(action_handle)
         if action is None:
-            logger.warning("no action %s on this device", action_handle)
-            return msg_types.InvocationState.FAILED
+            return self._not_sent("no action %s on this device", action_handle)
         if not action.enabled:
-            logger.warning("action %s is disabled", action_handle)
-            return msg_types.InvocationState.FAILED
+            return self._not_sent("action %s is disabled", action_handle)
 
         client = self._consumer.set_service_client
         report_part = self._send(lambda: client.activate(action_handle, arguments=None), timeout)
         info = report_part.InvocationInfo
+        self.last_invocation_detail = _failure_reason(info)
         logger.info(
             "ran %s -> %s%s",
             action_handle,
             info.InvocationState,
-            _failure_detail(info),
+            f" ({self.last_invocation_detail})" if self.last_invocation_detail else "",
         )
         return info.InvocationState
 
