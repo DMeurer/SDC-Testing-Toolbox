@@ -24,6 +24,7 @@ import sys
 import tempfile
 import threading
 import time
+from concurrent.futures import Future
 from contextlib import contextmanager
 from copy import deepcopy
 from decimal import Decimal
@@ -3331,8 +3332,9 @@ def check_foreign_consumer_operations(report: Report) -> None:
 
         def _future(self, state=msg_types.InvocationState.FINISHED):
             info = SimpleNamespace(InvocationState=state, InvocationErrorMessage=None)
-            result = SimpleNamespace(InvocationInfo=info)
-            return SimpleNamespace(result=lambda timeout: result)
+            future = Future()
+            future.set_result(SimpleNamespace(InvocationInfo=info))
+            return future
 
         def set_numeric_value(self, handle, value):
             self.calls.append(("number", handle, value))
