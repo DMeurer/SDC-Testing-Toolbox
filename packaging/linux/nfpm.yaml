@@ -17,6 +17,9 @@ deb:
 rpm:
   compression: xz
 
+scripts:
+  preremove: ${packaging}/preremove.sh
+
 contents:
   - src: ${bundle}
     dst: /opt/sdc-testing-toolbox

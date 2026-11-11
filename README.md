@@ -134,7 +134,9 @@ argument, or set `APPIMAGE_EXTRACT_AND_RUN=1`.
 The toolbox uses WS-Discovery on UDP 3702 and normally binds every other port that peers connect to in
 21073–21172, TCP and UDP. Installing a package does not open them and does not touch the
 firewall. It only installs a firewalld service and a ufw application profile, which you
-switch on yourself:
+switch on yourself. Uninstalling removes the service from every firewalld zone and policy
+first, because firewalld otherwise discards its whole configuration once the service file is
+gone:
 
 ```bash
 # firewalld (Fedora, openSUSE, AlmaLinux): the first reload picks up the new service
@@ -692,7 +694,7 @@ Run the same default set that continuous integration runs locally with:
 
 `tests/gui_smoke.py` remains a manual broad regression script because it is intentionally long and duplicates the focused GUI suites while also starting a live peer. Run it when changing interactions that cross several GUI areas; it uses the offscreen backend and needs no display.
 
-The packaging jobs separately launch each built Windows and Linux application with `--smoke-test`. The `install-packages` jobs run `packaging/linux/install_test.sh` on each Linux package in a clean container: install, smoke-test offscreen and under X11 with the GTK theme, then check the native packages' firewall definitions are present but not enabled and uninstall them. AppImage tests first install the expected host libraries and run without FUSE. Run it locally as root in a matching container, for example `sh packaging/linux/install_test.sh dist/<package>`. `tests/acceptance_provider.py` is a subprocess fixture used by acceptance scripts, not a standalone suite.
+The packaging jobs separately launch each built Windows and Linux application with `--smoke-test`. The `install-packages` jobs run `packaging/linux/install_test.sh` on each Linux package in a clean container: install, smoke-test offscreen and under X11 with the GTK theme, then check the native packages' firewall definitions are present but not enabled, uninstall them and check that a firewalld zone using the service stays valid. AppImage tests first install the expected host libraries and run without FUSE. Run it locally as root in a matching container, for example `sh packaging/linux/install_test.sh dist/<package>`. `tests/acceptance_provider.py` is a subprocess fixture used by acceptance scripts, not a standalone suite.
 
 `provider_core.py` is the odd one out: it is about what the MDIB must never be left in. Its first section deliberately writes a descriptor BICEPS cannot serialise *without* the rollback, watches the orphan appear, and only then checks that the guarded path leaves nothing behind — so a passing run means the check is still capable of failing.
 

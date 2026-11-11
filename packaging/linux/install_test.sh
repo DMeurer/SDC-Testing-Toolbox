@@ -162,21 +162,28 @@ if [ $kind = deb ]; then
     ufw app info SDC-Testing-Toolbox >"$work/firewall.txt"
     ports="3702/udp 21073:21172/tcp 21073:21172/udp"
     grep -qx 'ENABLED=no' /etc/ufw/ufw.conf || fail "ufw is enabled"
-    for script in preinst postinst prerm postrm; do
+    for script in preinst postinst postrm; do
         [ ! -e "/var/lib/dpkg/info/sdc-testing-toolbox.$script" ] || fail "package has a $script script"
     done
+    [ -e /var/lib/dpkg/info/sdc-testing-toolbox.prerm ] || fail "package has no prerm script"
+    pkg_install firewalld
 else
     pkg_install firewalld
     firewall-offline-cmd --info-service=sdc-testing-toolbox >"$work/firewall.txt"
     ports="3702/udp 21073-21172/tcp 21073-21172/udp"
-    if firewall-cmd --state >/dev/null 2>&1; then
-        fail "firewalld is running"
-    fi
-    [ -z "$(rpm -q --scripts sdc-testing-toolbox)" ] || fail "package has scriptlets"
+    scriptlets=$(rpm -q --scripts sdc-testing-toolbox | grep -o '^[a-z]* scriptlet' | tr '\n' ' ')
+    [ "$scriptlets" = "preuninstall scriptlet " ] || fail "unexpected scriptlets: $scriptlets"
+fi
+if firewall-cmd --state >/dev/null 2>&1; then
+    fail "firewalld is running"
 fi
 for port in $ports; do
     grep -q "$port" "$work/firewall.txt" || fail "firewall definition lacks $port"
 done
+
+# A zone that still named the service after uninstall would make firewalld drop
+# the whole user configuration on its next start.
+firewall-offline-cmd --add-service=sdc-testing-toolbox >/dev/null
 
 step "7: uninstall"
 case $pm in
@@ -189,5 +196,6 @@ for path in /opt/sdc-testing-toolbox /usr/bin/sdc-testing-toolbox; do
         fail "$path is still there"
     fi
 done
+firewall-offline-cmd --check-config >/dev/null 2>&1 || fail "firewalld configuration is invalid after uninstall"
 
 echo "PASS: $kind"

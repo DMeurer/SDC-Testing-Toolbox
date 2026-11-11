@@ -172,7 +172,9 @@ class PackageBuild(unittest.TestCase):
         ):
             self.assertIn(expected, text)
         self.assertEqual(text.count("compression: xz"), 2)
-        self.assertNotIn("scripts:", text)
+        # Only a pre-remove script, which keeps firewalld zones valid after uninstall.
+        self.assertIn(f"preremove: {PACKAGING.resolve().as_posix()}/preremove.sh", text)
+        self.assertNotRegex(text, r"(preinstall|postinstall|postremove):")
 
     def test_nfpm_declares_measured_dependencies(self) -> None:
         text = build_packages.render_nfpm_config(
