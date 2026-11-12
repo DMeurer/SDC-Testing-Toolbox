@@ -18,7 +18,7 @@ from sdc11073.xml_types.wsd_types import ScopesType
 
 from .handlers import RefusedExecution, reporting_refusals
 from .model import (
-    AlertSpec, MetricKind, MetricSpec, RemoteRange, coerce_metric_value, numeric_value_in_ranges,
+    AlertSpec, DeviceInfo, MetricKind, MetricSpec, RemoteRange, coerce_metric_value, numeric_value_in_ranges,
 )
 
 logger = logging.getLogger("sdctoolbox.native_mdib")
@@ -29,6 +29,24 @@ def label(descriptor) -> str:
     """Use a supplied concept description, otherwise the descriptor handle."""
     texts = getattr(getattr(descriptor, "Type", None), "ConceptDescription", ())
     return next((text.text for text in texts if text.text), descriptor.Handle)
+
+
+def device_identity(mdib) -> tuple[DeviceInfo, str | None]:
+    """ThisModel fields and serial number from the first MDS MetaData; toolbox defaults otherwise."""
+    mds = next(iter(mdib.entities.by_node_type(pm.MdsDescriptor)), None)
+    meta = getattr(getattr(mds, "descriptor", None), "MetaData", None)
+    if meta is None:
+        return DeviceInfo(), None
+
+    def first(values) -> str | None:
+        return next((getattr(value, "text", value) for value in values or () if getattr(value, "text", value)), None)
+
+    defaults = DeviceInfo()
+    return DeviceInfo(
+        manufacturer=first(meta.Manufacturer) or defaults.manufacturer,
+        model_name=first(meta.ModelName) or defaults.model_name,
+        model_number=meta.ModelNumber or defaults.model_number,
+    ), first(meta.SerialNumber)
 
 
 def metric_specs(mdib) -> dict[str, MetricSpec]:

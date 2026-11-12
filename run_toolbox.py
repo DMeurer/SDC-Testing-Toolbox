@@ -31,7 +31,7 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 from sdc11073.loghelper import basic_logging_setup
 
-from sdctoolbox import config, constants
+from sdctoolbox import config, constants, native_mdib
 from sdctoolbox.gui.main_window import MainWindow
 from sdctoolbox.gui.startup_dialog import StartupDialog, StartupSettings
 from sdctoolbox.gui.styling import set_dark_mode
@@ -59,6 +59,15 @@ def instance_name_argument(value: str) -> str:
     return value
 
 
+def friendly_name_argument(value: str) -> str:
+    """Refuse a friendly name XML cannot carry, like the instance name."""
+    try:
+        validate_xml_text(value, "friendly name")
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    return value
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
@@ -72,6 +81,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=constants.DEFAULT_INSTANCE_NAME,
         type=instance_name_argument,
         help="instance name, decides the EPR",
+    )
+    parser.add_argument(
+        "--friendly-name",
+        type=friendly_name_argument,
+        help="name the device announces; overrides the config file (default: the preset's, or --name for an MDIB)",
     )
     parser.add_argument("--config", help="config file to load on startup")
     parser.add_argument("--theme", choices=("light", "dark"), help="initial GUI colour theme")
@@ -126,8 +140,35 @@ def settings_from_args(args: argparse.Namespace) -> StartupSettings:
         name=args.name,
         ip=args.ip,
         config_path=args.config,
+        friendly_name=args.friendly_name or None,
         verbose=args.verbose,
         tls_config=tls_config,
+    )
+
+
+def make_service(
+    settings: StartupSettings,
+    device_config: config.DeviceConfig | NativeMdibConfig | None,
+) -> ProviderService:
+    """Build the provider with the identity the settings and the config file give it.
+
+    An MDIB preset is announced exactly as named on the command line: no prefix is added,
+    and who made it comes from its own MDS MetaData.
+    """
+    serial_number = None
+    friendly_name = settings.friendly_name
+    if isinstance(device_config, NativeMdibConfig):
+        device, serial_number = native_mdib.device_identity(parse_mdib(device_config.xml))
+        friendly_name = friendly_name or settings.name
+    else:
+        device = device_config.device if device_config is not None else None
+    return ProviderService(
+        ip=settings.ip,
+        instance_name=settings.name,
+        friendly_name=friendly_name,
+        device=device,
+        tls_config=settings.tls_config,
+        serial_number=serial_number,
     )
 
 
@@ -223,13 +264,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     native_config = isinstance(device_config, NativeMdibConfig)
-    device = device_config.device if device_config is not None and not native_config else None
-    service = ProviderService(
-        ip=settings.ip,
-        instance_name=settings.name,
-        device=device,
-        tls_config=settings.tls_config,
-    )
+    service = make_service(settings, device_config)
     window = None
     try:
         if native_config:

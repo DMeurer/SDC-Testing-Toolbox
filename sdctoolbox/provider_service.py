@@ -190,6 +190,7 @@ class ProviderService:
             friendly_name: str | None = None,
             device: DeviceInfo | None = None,
             tls_config: TlsConfig | None = None,
+            serial_number: str | None = None,
     ) -> None:
         # Both end up in ThisDevice. Text XML cannot carry made the provider start and answer
         # discovery, and then fail every connect, so refuse it before anything exists.
@@ -203,6 +204,9 @@ class ProviderService:
         # changed later - run_toolbox reads the config before starting for that reason.
         self.device = device or DeviceInfo()
         self.friendly_name = friendly_name or self.device.friendly_name or f"Toolbox {instance_name}"
+        if serial_number is not None:
+            validate_xml_text(serial_number, "serial number")
+        self.serial_number = serial_number or instance_name
         self.epr = constants.epr_for(instance_name)
         self.tls_config = tls_config
         self._tls_contexts = None
@@ -317,7 +321,7 @@ class ProviderService:
             this_device = ThisDeviceType(
                 friendly_name=self.friendly_name,
                 firmware_version=self.device.firmware_version,
-                serial_number=self.instance_name,
+                serial_number=self.serial_number,
             )
 
             # SdcProvider only builds SCO registries when a role_provider_class is present
