@@ -369,8 +369,9 @@ class ProviderService:
             self._provider.start_all(start_rtsample_loop=False)
             if self._tls_contexts is not None:
                 configure_request_handler(self._provider._http_server)  # noqa: SLF001 - library has no server factory hook
-            self._adapter = Sdc11073V3Adapter(self._mdib)
-            self._adapter.bind(self._provider, self._sco)
+            if from_mdib_file or self._sco is not None:
+                self._adapter = Sdc11073V3Adapter(self._mdib)
+                self._adapter.bind(self._provider, self._sco)
             if initialize_contexts:
                 self.set_location(LocationInfo(**constants.DEFAULT_LOCATION))
                 self.set_patient(DEFAULT_PATIENT)
