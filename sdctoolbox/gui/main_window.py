@@ -341,7 +341,8 @@ class MainWindow(QMainWindow):
         if not filename:
             return None
         try:
-            written = config.save(self.service, config.export_path(filename, selected_filter))
+            written = config.save(self.service, config.export_path(filename, selected_filter),
+                                  behaviour=selected_filter == config.MDIB_BEHAVIOUR_FILE_FILTER)
         except (OSError, config.ConfigError) as exc:
             QMessageBox.warning(self, "Could not export", str(exc))
             return None

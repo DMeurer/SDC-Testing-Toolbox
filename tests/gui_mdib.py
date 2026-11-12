@@ -70,7 +70,7 @@ class GuiMdibTests(unittest.TestCase):
         self.assertIn('Value="20"', tip)
         self.assertNotIn('Value="12.5"', tip)
 
-    def test_forbidden_console_commands_reject_without_ending_the_session(self) -> None:
+    def test_console_edits_a_loaded_mdib_in_place(self) -> None:
         from examples.console import ProviderShell
 
         self.window.apply_config(NativeMdibConfig(original_mdib()), "original.xml")
@@ -83,10 +83,11 @@ class GuiMdibTests(unittest.TestCase):
                     shell.onecmd(command)
                 except ValueError as exc:
                     self.fail(f"{command} terminated the command loop: {exc}")
-        self.assertEqual(output.getvalue().count("rejected"), 2)
+        self.assertNotIn("rejected", output.getvalue())
+        self.assertTrue(self.service.generator_running)
         self.assertIs(self.service.mdib, graph)
 
-    def test_import_rebinds_only_provider_and_safe_scalar_editor(self) -> None:
+    def test_import_rebinds_only_provider_and_keeps_every_editor(self) -> None:
         old_pane = self.window.provider_pane
         tabs = self.window.network_tabs
         self.window.set_use_widgets(False)
@@ -99,14 +100,13 @@ class GuiMdibTests(unittest.TestCase):
         self.assertFalse(pane.use_widgets)
         self.assertEqual(pane.table.rowCount(), 3)
         self.assertIsNotNone(pane.native_tree)
-        self.assertFalse(pane.new_button.isEnabled())
-        self.assertFalse(pane.context_button.isEnabled())
+        self.assertTrue(pane.new_button.isEnabled())
+        self.assertTrue(pane.context_button.isEnabled())
         pane.select_handle("demo.rate")
-        self.assertFalse(pane.remove_button.isEnabled())
+        self.assertTrue(pane.remove_button.isEnabled())
         self.assertTrue(pane.apply_button.isEnabled())
         pane.select_alert_handle("demo.alarm")
-        self.assertFalse(pane.toggle_alert_button.isEnabled())
-        self.assertFalse(pane.acknowledge_button.isEnabled())
+        self.assertTrue(pane.toggle_alert_button.isEnabled())
         profile = config.parse({"version": 3, "metrics": [{"label": "Managed again", "kind": "text"}]})
         self.assertTrue(self.window.apply_config(profile, "managed.json"))
         self.assertTrue(self.window.provider_pane.new_button.isEnabled())
@@ -156,7 +156,8 @@ class GuiMdibTests(unittest.TestCase):
                 shell.do_remove("demo.rate")
             self.assertIsInstance(config.load_file(target), NativeMdibConfig)
             self.assertIn("reconnect", output.getvalue().lower())
-            self.assertIn("rejected", output.getvalue().lower())
+            self.assertIn("removed demo.rate", output.getvalue().lower())
+            self.assertIsNone(self.service.mdib.entities.by_handle("demo.rate"))
             dialog.deleteLater()
 
     def test_command_line_starts_from_native_snapshot(self) -> None:
@@ -167,6 +168,33 @@ class GuiMdibTests(unittest.TestCase):
             cwd=root, capture_output=True, text=True, timeout=45,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_loaded_mdib_is_editable_in_the_pane(self) -> None:
+        self.window.apply_config(NativeMdibConfig(original_mdib()), "original.xml")
+        pane = self.window.provider_pane
+        for button in (pane.new_button, pane.context_button, pane.new_alert_button):
+            self.assertTrue(button.isEnabled(), button.text())
+        rows = [row for row in range(pane.table.rowCount()) if "demo.rate" in
+                " ".join(pane.table.item(row, column).text() for column in range(pane.table.columnCount())
+                         if pane.table.item(row, column) is not None)]
+        self.assertTrue(rows)
+        pane.table.selectRow(rows[0])
+        self.assertTrue(pane.remove_button.isEnabled())
+        self.assertTrue(pane.board.card("demo.wave") is not None)
+
+    def test_export_offers_plain_and_behaviour_mdib(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+        from sdctoolbox.model import ActionSpec
+
+        self.window.apply_config(NativeMdibConfig(original_mdib()), "original.xml")
+        self.service.add_action(ActionSpec("Run", "demo.root", effects={"demo.mode": "RUN"}))
+        with tempfile.TemporaryDirectory() as directory:
+            for selected, expected in ((config.MDIB_FILE_FILTER, False), (config.MDIB_BEHAVIOUR_FILE_FILTER, True)):
+                target = Path(directory) / f"{expected}.xml"
+                with patch.object(QFileDialog, "getSaveFileName", return_value=(str(target), selected)) as dialog:
+                    self.assertEqual(self.window.export_config(), target)
+                self.assertEqual(dialog.call_args.kwargs["selectedFilter"], config.MDIB_FILE_FILTER)
+                self.assertEqual(b"urn:sdc-testing-toolbox:behaviour" in target.read_bytes(), expected)
 
     def test_failed_activation_rebinds_recovered_provider_without_retiring_consumers(self) -> None:
         old_pane = self.window.provider_pane
