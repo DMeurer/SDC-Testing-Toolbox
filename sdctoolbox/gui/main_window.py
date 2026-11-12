@@ -40,6 +40,7 @@ from .menu_keys import BareAltTracker
 from .no_wheel import NoWheelTabBar
 from .provider_pane import ProviderPane
 from .styling import is_dark, set_dark_mode
+from .window_actions import FullscreenAction
 
 if TYPE_CHECKING:
     from ..provider_service import ProviderService
@@ -280,6 +281,8 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.split_view_action)
 
         view_menu.addSeparator()
+        self.fullscreen_action = FullscreenAction(self)
+        view_menu.addAction(self.fullscreen_action)
         self.dark_mode_action = QAction("&Dark mode", self)
         self.dark_mode_action.setCheckable(True)
         self.dark_mode_action.setChecked(is_dark(self))

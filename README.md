@@ -205,6 +205,18 @@ Give it any argument and it starts straight away instead, which is what you want
 .venv\Scripts\python.exe run_toolbox.py --name beta --config presets\insufflator.json
 ```
 
+Use `--theme light` or `--theme dark` to select the initial colours; otherwise normal mode
+uses the platform default. `--fullscreen` opens the main window fullscreen. For example:
+
+```powershell
+.venv\Scripts\python.exe run_toolbox.py --name monitor --ip 192.168.1.20 --theme dark --fullscreen
+```
+
+When launching over SSH, the application still needs access to a graphical desktop:
+use the correct display/session environment and authorization (for example, `DISPLAY`
+and X11 authorization), or graphical forwarding. Startup options do not create a display
+server. `--ip` is the discovery interface on the machine running the application.
+
 Start it twice under different names to have two devices find each other. The name decides the EPR, so restarting under the same name keeps that device's identity on the network — and two instances must not share one.
 
 The **My device** panel is the device you publish. *New data source…* creates a number, text, choice, waveform or distribution.
@@ -228,6 +240,7 @@ The menu bar is on screen by default.\
 *View → Always show menu bar* hides it until you press **Alt**, if you would rather have the room.\
 *View → Split view* (F8) swaps between the two panels sitting side by side with a movable divider, and the same two stacked as tabs.\
 *View → Use widgets if possible* (F9) swaps the metric tables for a control per metric.\
+*View → Fullscreen* (**F11**) toggles fullscreen and restores the previous normal/maximized window.\
 *View → Dark mode* switches between dark (checked) and light (unchecked) colours for this session.
 
 ## Widgets
@@ -641,7 +654,8 @@ This is a focused SDC learning fixture, not an IEEE 11073 conformance claim. IEE
 
 The pull-request workflow runs the manifest-selected deterministic and policy suites once on
 Linux and once on Windows through `tests/run_suites.py`. Qt jobs use
-`QT_QPA_PLATFORM=offscreen`; Linux installs `libegl1` before importing PySide6:
+`QT_QPA_PLATFORM=offscreen`; Linux installs `libegl1` before importing PySide6, plus
+`requirements-build.txt` because its licensing and import-bootstrap suites load the build tooling:
 
 | Suite | Covers |
 |-------|--------|

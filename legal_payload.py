@@ -18,7 +18,7 @@ import zlib
 from collections import defaultdict, deque
 from collections.abc import Iterable, Mapping
 from importlib import metadata
-from pathlib import Path
+from pathlib import Path, PurePath
 
 INVENTORY_NAME = "DEPENDENCY_INVENTORY.json"
 LEGAL_ROOT = "legal"
@@ -277,7 +277,16 @@ _LEGAL_BASENAME = re.compile(
     r"^(license|licence|copying|notice|authors|copyright)", re.IGNORECASE
 )
 _QT_WHEEL_NOTICE = "LicenseRef-Qt-Commercial.txt"
-_DEBIAN_COMMON_LICENSE = re.compile(r"/usr/share/common-licenses/([A-Za-z0-9.+-]+)")
+_DEBIAN_COMMON_LICENSE = re.compile(
+    r"/usr/share/common-licenses/([A-Za-z0-9+-]+(?:\.[A-Za-z0-9+-]+)*)"
+)
+_DEBIAN_DEP5_FORMAT = re.compile(r"^Format:", re.MULTILINE)
+_USRMERGE_DIRECTORIES = ("bin", "sbin", "lib", "lib32", "lib64", "libx32")
+# Qt's Windows wheels ship this file; its manylinux wheels ship no license files.
+_QT_WHEEL_COMMERCIAL_NOTICES = frozenset(
+    f"{LEGAL_ROOT}/licenses/{name}/LicenseRef-Qt-Commercial.txt"
+    for name in ("pyside6", "pyside6-essentials", "shiboken6")
+)
 _QT_IMAGEFORMATS_PLUGIN = re.compile(
     r"/plugins/imageformats/(?:lib)?q(?:dds|icns|jp2|mng|tga|tiff|wbmp|webp)"
     r"\.(?:dll|so(?:\.\d+)*)$",
@@ -1011,6 +1020,35 @@ def _qt_native_components(
     return components
 
 
+def _debian_common_licenses(copyright_text: str) -> list[str]:
+    # Some packages cite SPDX-style GPL-2.0 for Debian's GPL-2 file.
+    return sorted(
+        {
+            re.sub(r"^(L?GPL-\d)\.0$", r"\1", name)
+            for name in _DEBIAN_COMMON_LICENSE.findall(copyright_text)
+        }
+    )
+
+
+def _dpkg_owner(source: PurePath) -> str | None:
+    path = source.as_posix()
+    candidates = [path]
+    # Merged-/usr hosts resolve /lib to /usr/lib, but older dpkg databases record /lib.
+    for directory in _USRMERGE_DIRECTORIES:
+        if path.startswith(f"/usr/{directory}/"):
+            candidates.append(path.removeprefix("/usr"))
+    for candidate in candidates:
+        query = subprocess.run(
+            ["dpkg-query", "-S", candidate],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if query.returncode == 0:
+            return query.stdout.split(":", 1)[0]
+    return None
+
+
 def _debian_native_components(
     native_paths: dict[Path, set[str]], output: Path
 ) -> list[dict[str, object]]:
@@ -1018,17 +1056,11 @@ def _debian_native_components(
         return []
     owners: dict[str, set[str]] = defaultdict(set)
     for source, paths in native_paths.items():
-        query = subprocess.run(
-            ["dpkg-query", "-S", str(source)],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if query.returncode != 0:
+        package = _dpkg_owner(source)
+        if package is None:
             raise RuntimeError(
                 f"cannot assign packaged Linux library to a Debian package: {source}"
             )
-        package = query.stdout.split(":", 1)[0]
         owners[package].update(paths)
 
     components = []
@@ -1037,33 +1069,44 @@ def _debian_native_components(
             [
                 "dpkg-query",
                 "-W",
-                "-f=${Version}\t${Homepage}\t${source:Package}\n",
+                "-f=${Version}\t${Homepage}\t${source:Package}\t${source:Version}\n",
                 package,
             ],
             check=True,
             capture_output=True,
             text=True,
         )
-        version, homepage, source_package = query.stdout.rstrip("\n").split("\t")
-        copyright_file = Path("/usr/share/doc") / package.split(":", 1)[0] / "copyright"
+        version, homepage, source_package, source_version = (
+            query.stdout.rstrip("\n").split("\t")
+        )
+        package_name = package.split(":", 1)[0]
+        copyright_file = Path("/usr/share/doc") / package_name / "copyright"
         if not copyright_file.is_file():
             raise RuntimeError(
-                f"Debian package has no machine-readable notice file: {package}"
+                f"Debian package has no copyright file: {package}"
             )
         copyright_text = copyright_file.read_text(encoding="utf-8", errors="replace")
-        licenses = sorted(
-            set(re.findall(r"^License:\s*([^\n]+)", copyright_text, re.MULTILINE))
-        )
-        if not licenses:
-            raise RuntimeError(
-                f"Debian copyright file declares no license: {copyright_file}"
+        if _DEBIAN_DEP5_FORMAT.search(copyright_text):
+            licenses = sorted(
+                set(re.findall(r"^License:\s*([^\n]+)", copyright_text, re.MULTILINE))
             )
+            if not licenses:
+                raise RuntimeError(
+                    f"Debian copyright file declares no license: {copyright_file}"
+                )
+        else:
+            # Free-form copyright files are shipped verbatim; their prose is not parsed.
+            licenses = [
+                "LicenseRef-Debian-"
+                + re.sub(r"[^A-Za-z0-9.-]", "-", package_name)
+                + "-copyright"
+            ]
         notice = f"{LEGAL_ROOT}/licenses/debian/{package.replace(':', '_')}/copyright"
         target = output / Path(notice)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(copyright_file, target)
         notice_paths = [notice]
-        for common in sorted(set(_DEBIAN_COMMON_LICENSE.findall(copyright_text))):
+        for common in _debian_common_licenses(copyright_text):
             source = Path("/usr/share/common-licenses") / common
             if source.is_file():
                 destination = f"{LEGAL_ROOT}/licenses/debian/common/{common}"
@@ -1071,7 +1114,7 @@ def _debian_native_components(
                 common_target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(source, common_target)
                 notice_paths.append(destination)
-        source_name = source_package or package.split(":", 1)[0]
+        source_name = source_package or package_name
         components.append(
             _native_component(
                 output,
@@ -1081,7 +1124,8 @@ def _debian_native_components(
                 project_url=homepage
                 or f"https://packages.ubuntu.com/search?keywords={source_name}",
                 source_archive_urls=[
-                    f"https://packages.ubuntu.com/source/jammy/{source_name}"
+                    "https://launchpad.net/ubuntu/+source/"
+                    f"{source_name}/{source_version or version}"
                 ],
                 notice_paths=notice_paths,
                 artifact_paths=owners[package],
@@ -1937,6 +1981,12 @@ def validate_payload(
                     f"{label}: no corresponding artifact or executable module evidence"
                 )
         rules = _CORE_NOTICE_RULES.get(raw_name or "")
+        if rules and system == "Linux":
+            rules = tuple(
+                rule
+                for rule in rules
+                if rule[0] in notices or rule[0] not in _QT_WHEEL_COMMERCIAL_NOTICES
+            )
         if rules:
             expected_paths = [path for path, _phrases in rules]
             if notices != expected_paths:
@@ -2150,9 +2200,14 @@ def validate_payload(
                 copyright_bytes.decode("utf-8", errors="replace")
                 if copyright_bytes else ""
             )
-            common_licenses = sorted(set(_DEBIAN_COMMON_LICENSE.findall(copyright_text)))
+            common_licenses = _debian_common_licenses(copyright_text)
+            copyright_phrases = (
+                ("Format:", "License:")
+                if _DEBIAN_DEP5_FORMAT.search(copyright_text)
+                else ("Copyright",)
+            )
             rules = (
-                (copyright_path, ("Format:", "License:")),
+                (copyright_path, copyright_phrases),
                 *(
                     (f"{LEGAL_ROOT}/licenses/debian/common/{common}", ())
                     for common in common_licenses

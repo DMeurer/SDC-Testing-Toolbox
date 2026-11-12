@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import socket
 import ssl
 from http.server import BaseHTTPRequestHandler
@@ -9,6 +10,7 @@ from http.server import BaseHTTPRequestHandler
 from sdc11073.httpserver.httprequesthandler import DispatchingRequestHandler
 
 TLS_HANDSHAKE_TIMEOUT = 5.0
+WSAESHUTDOWN = 10058
 
 
 class DeferredHandshakeSocket(ssl.SSLSocket):
@@ -57,10 +59,11 @@ class ShutdownAwareRequestHandler(DispatchingRequestHandler):
             super().handle_one_request()
         except BrokenPipeError as exc:
             traceback = exc.__traceback__.tb_next
-            # Windows SSL reads can report WSAESHUTDOWN after sdc11073 server_close.
+            # After sdc11073 server_close, OpenSSL's failed alert write surfaces as
+            # WSAESHUTDOWN on Windows and EPIPE on Linux.
             # shortcut: CPython/sdc11073 3.0 shutdown markers; recheck when their server lifecycle changes.
             if not (
-                exc.errno == 10058
+                exc.errno in (WSAESHUTDOWN, errno.EPIPE)
                 and isinstance(self.connection, ssl.SSLSocket)
                 and self.server.dispatcher is None
                 and self.connection._sslobj is None  # noqa: SLF001 - cleared by local SSLSocket.shutdown

@@ -38,9 +38,12 @@ identified by embedded file version. OpenSSL references its own Apache-2.0
 text, while Microsoft runtime DLLs reference the Microsoft Visual C++
 2015-2022 Runtime terms; neither uses the unrelated Python license. On Linux,
 copied native libraries are
-assigned to installed Debian packages with `dpkg-query`; package versions and
-copyright files enter the inventory and payload, while PyInstaller's standard
-system-library exclusions remain host dependencies.
+assigned to installed Debian packages with `dpkg-query`, including `/lib` and
+`/usr/lib` aliases on merged-`/usr` hosts. Package versions, versioned Ubuntu
+source-package URLs, and copyright files enter the inventory and payload.
+Machine-readable copyright files contribute their `License:` fields; free-form
+files are shipped verbatim and recorded as a package-specific `LicenseRef`.
+PyInstaller's standard system-library exclusions remain host dependencies.
 
 ## Runtime Components
 

@@ -7,6 +7,9 @@ so scripts and shortcuts keep working unattended:
     .venv/Scripts/python.exe run_toolbox.py --name alpha
     .venv/Scripts/python.exe run_toolbox.py --name beta --config presets/insufflator.json
 
+Use --theme {light,dark} and --fullscreen; F11 toggles fullscreen later.
+SSH launches need access to a desktop display/session or graphical forwarding.
+
 Start it twice under different names to watch two devices find each other. The name decides
 the EPR, so restarting under the same name keeps that device's identity on the network.
 """
@@ -21,6 +24,7 @@ import signal
 import sys
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Literal
 
 from PySide6.QtCore import QCoreApplication, QTimer
 from PySide6.QtGui import QGuiApplication
@@ -30,6 +34,7 @@ from sdc11073.loghelper import basic_logging_setup
 from sdctoolbox import config, constants
 from sdctoolbox.gui.main_window import MainWindow
 from sdctoolbox.gui.startup_dialog import StartupDialog, StartupSettings
+from sdctoolbox.gui.styling import set_dark_mode
 from sdctoolbox.model import validate_xml_text
 from sdctoolbox.network import normalize_ipv4
 from sdctoolbox.provider_service import ProviderService
@@ -69,6 +74,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="instance name, decides the EPR",
     )
     parser.add_argument("--config", help="config file to load on startup")
+    parser.add_argument("--theme", choices=("light", "dark"), help="initial GUI colour theme")
+    parser.add_argument("--fullscreen", action="store_true", help="start fullscreen; F11 restores the window")
     parser.add_argument("--verbose", action="store_true", help="show sdc11073 logging")
     parser.add_argument("--tls-cert", help="local PEM certificate or certificate chain")
     parser.add_argument("--tls-key", help="local PEM private key")
@@ -169,6 +176,14 @@ def closing_on_ctrl_c() -> Iterator[None]:
         signal.signal(signal.SIGINT, previous)
 
 
+def create_application(theme: Literal["light", "dark"] | None) -> QApplication:
+    """Apply an explicit theme before any dialog or main window is constructed."""
+    app = QApplication(sys.argv)
+    if theme is not None:
+        set_dark_mode(theme == "dark")
+    return app
+
+
 def main(argv: list[str] | None = None) -> int:
     configure_application_identity()
     argv = sys.argv[1:] if argv is None else argv
@@ -179,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
     interactive = not argv
 
     if interactive:
-        app = QApplication(sys.argv)
+        app = create_application(args.theme)
         with closing_on_ctrl_c():
             settings = ask_how_to_start(args)
         if settings is None:
@@ -192,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
         except TlsConfigError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
-        app = QApplication(sys.argv)
+        app = create_application(args.theme)
 
     basic_logging_setup(level=logging.INFO if settings.verbose else logging.WARNING)
 
@@ -225,7 +240,10 @@ def main(argv: list[str] | None = None) -> int:
         if settings.config_path and device_config is not None and not native_config:
             if not window.apply_config(device_config, settings.config_path):
                 return 2
-        window.show()
+        if args.fullscreen:
+            window.fullscreen_action.trigger()
+        else:
+            window.show()
         if args.smoke_test:
             bundled_files = {path.name for path in constants.PRESET_DIR.iterdir() if path.suffix.lower() in (".json", ".xml")}
             if bundled_files != constants.SHIPPED_PRESET_FILES:
