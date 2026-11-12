@@ -20,6 +20,7 @@ sys.path.insert(0, str(TESTS))
 
 from acceptance_provider import PEER_INSTANCE
 from gui_test_support import application
+from PySide6.QtGui import QPalette
 from script_support import Report
 import shiboken6
 from PySide6.QtCore import QMetaObject, Qt
@@ -136,6 +137,67 @@ def check_invalid_name_is_reported() -> None:
         len(shown) == 1 and "device name contains characters" in shown[0] and not accepted,
         "the startup dialog explains a name XML cannot carry instead of starting with it",
     )
+
+
+def check_display_startup() -> None:
+    app = application()
+    original_palette = app.palette()
+    original_scheme = app.styleHints().colorScheme()
+    try:
+        for theme in ("light", "dark"):
+            for fullscreen in (False, True):
+                argv = ["--name", "display-startup", "--ip", "127.0.0.1", "--theme", theme]
+                if fullscreen:
+                    argv.append("--fullscreen")
+                stderr = io.StringIO()
+                try:
+                    with contextlib.redirect_stderr(stderr):
+                        run_toolbox.parse_args(argv)
+                except SystemExit:
+                    REPORT.check(False, f"{theme}/{fullscreen} display options are accepted", stderr.getvalue())
+                    continue
+                windows, first_paints = [], []
+
+                class ObservedWindow(main_window.MainWindow):
+                    def __init__(self, service):
+                        super().__init__(service)
+                        windows.append(self)
+
+                    def paintEvent(self, event):  # noqa: N802 - Qt API
+                        first_paints.append((self.palette().color(QPalette.Window).lightness() < 128,
+                                             self.dark_mode_action.isChecked(), self.isFullScreen(),
+                                             self.fullscreen_action.isChecked()))
+                        super().paintEvent(event)
+
+                def event_loop():
+                    app.processEvents()
+                    return 0
+
+                try:
+                    with (
+                        patch.object(run_toolbox, "QApplication", return_value=SimpleNamespace(exec=event_loop)),
+                        patch.object(run_toolbox, "MainWindow", ObservedWindow),
+                        patch.object(run_toolbox, "ask_how_to_start",
+                                     side_effect=AssertionError("complete CLI must not open the startup dialog")),
+                    ):
+                        result = run_toolbox.main(argv)
+                    REPORT.check(result == 0 and len(windows) == 1
+                                 and first_paints
+                                 and first_paints[0] == (theme == "dark", theme == "dark", fullscreen, fullscreen),
+                                 f"{theme}/{fullscreen} is active and menu-synchronized on the first visible frame",
+                                 str(first_paints))
+                finally:
+                    for window in windows:
+                        window.close()
+                        window.network_pane._worker.wait(3.0)
+                        window.provider_pane.bridge.close()
+                        shiboken6.delete(window)
+        code, error = parse_failure(["--theme", "sepia"])
+        REPORT.check(code == 2 and "invalid choice" in error and "--theme" in error,
+                     "an unsupported startup theme is rejected by the CLI", error)
+    finally:
+        app.styleHints().setColorScheme(original_scheme)
+        app.setPalette(original_palette)
 
 
 def check_gui_startup_reuses_profile(*, interactive: bool) -> None:
@@ -788,6 +850,7 @@ def main() -> int:
     check_tls_arguments()
     check_invalid_ip_precedes_construction()
     check_invalid_name_is_reported()
+    check_display_startup()
     check_startup_dialog_retains_profile()
     check_gui_startup_reuses_profile(interactive=False)
     check_gui_startup_reuses_profile(interactive=True)
