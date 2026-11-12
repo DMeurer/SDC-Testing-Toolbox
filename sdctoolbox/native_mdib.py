@@ -88,6 +88,15 @@ def adopt(mdib) -> Adopted:
     return result
 
 
+def _coerced_or_raw(coerce, target: str, value: str):
+    # A live device accepts an action whose effect it would refuse and refuses it on activation;
+    # a reloaded export must behave the same instead of failing to load.
+    try:
+        return coerce(target, value)
+    except (KeyError, TypeError, ValueError):
+        return value
+
+
 def apply_behaviour(mdib, behaviour: dict[str, dict], specs: dict[str, MetricSpec], coerce) -> dict[str, ActionSpec]:
     """Put stored toolbox behaviour back onto adopted specs, and return the actions it defines."""
     actions = {}
@@ -96,7 +105,7 @@ def apply_behaviour(mdib, behaviour: dict[str, dict], specs: dict[str, MetricSpe
         if "effects" in values:
             if entity is None or entity.node_type != pm.ActivateOperationDescriptor:
                 raise ValueError(f"toolbox action behaviour on {handle!r}, which is not an ActivateOperation")
-            effects = {target: coerce(target, value) for target, value in values["effects"].items()}
+            effects = {target: _coerced_or_raw(coerce, target, value) for target, value in values["effects"].items()}
             actions[handle] = ActionSpec(label=label(entity.descriptor), target_handle=entity.descriptor.OperationTarget,
                                          effects=effects, handle=handle, note=values["note"])
             continue

@@ -649,6 +649,19 @@ class BehaviourExtensionTests(unittest.TestCase):
             config.save(service, target, behaviour=True)
             return target.read_bytes()
 
+    def test_action_with_a_refused_effect_reloads_and_is_still_refused(self) -> None:
+        from sdctoolbox.model import ActionSpec
+
+        action = self.service.add_action(ActionSpec("Bad", "demo.root", effects={"demo.mode": "INVALID"}))
+        reloaded = ProviderService(instance_name="behaviour-refused")
+        reloaded.start(self.io.parse_mdib(self.export(behaviour=True)))
+        self.addCleanup(reloaded.stop)
+        self.assertEqual(reloaded.list_actions()[action].effects, {"demo.mode": "INVALID"})
+        operation = reloaded._provider.get_operation_by_handle(action)
+        self.assertEqual(operation.execute_operation(None, SimpleNamespace(argument=None)).invocation_state,
+                         msg_types.InvocationState.FAILED)
+        self.assertEqual(reloaded.get_value("demo.mode"), "RUN")
+
     def test_malformed_toolbox_extension_names_the_item(self) -> None:
         from sdctoolbox.config import ConfigError
 
