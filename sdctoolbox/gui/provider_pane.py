@@ -144,7 +144,7 @@ class ProviderPane(QWidget):
 
         # The same metrics, shown either as a control each or as one row each. Both are
         # always built; the View menu decides which is on top.
-        self.board = WidgetBoard(deletable=not self.service.native_mode)
+        self.board = WidgetBoard(deletable=not self.service.from_mdib_file)
         self.board.value_requested.connect(self._on_widget_value_requested)
         self.board.delete_requested.connect(self._on_card_delete_requested)
         self.metric_stack = QStackedWidget()
@@ -253,7 +253,7 @@ class ProviderPane(QWidget):
         self.native_tree = None
         self._native_items = {}
         self._native_state_items = {}
-        if self.service.native_mode:
+        if self.service.from_mdib_file:
             self.native_tree = QTreeWidget()
             self.native_tree.setHeaderLabels(["Handle", "Descriptor", "Current state"])
             self.native_tree.setUniformRowHeights(True)
@@ -271,7 +271,7 @@ class ProviderPane(QWidget):
         layout.addLayout(buttons)
         layout.addWidget(self.transport_label)
         layout.addWidget(self.context_label)
-        if self.service.native_mode:
+        if self.service.from_mdib_file:
             hint = QLabel("Native MDIB snapshot: scalar edits only. Alarms and samples retain their supplied state; "
                           "generators and action behaviour are not inferred. Hover containment entries for XML.")
             hint.setWordWrap(True)
@@ -315,7 +315,7 @@ class ProviderPane(QWidget):
             ],
         )
         self.board.show_values({handle: self._displayable(handle, spec) for handle, spec in specs.items()})
-        if self.service.native_mode:
+        if self.service.from_mdib_file:
             # Native snapshots have no incoming stream to seed a newly created waveform card.
             self.board.append_samples({handle: self.service.get_samples(handle) for handle, card in waveform_cards.items()
                                        if card is not self.board.card(handle)})
@@ -364,7 +364,7 @@ class ProviderPane(QWidget):
                     self.table.setItem(row, column, item)
 
                 control = QTableWidgetItem()
-                if self.service.native_mode:
+                if self.service.from_mdib_file:
                     control.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
                     operation = self.service.operation_handle_for(handle)
                     control.setText("enabled" if operation and self._control_enabled(handle) else "disabled" if operation else "n/a")
@@ -623,7 +623,7 @@ class ProviderPane(QWidget):
             self.toggle_alert_button.setText("Clear" if present else "Raise")
             self.toggle_alert_button.setToolTip("")
         self._update_signal_buttons(handle, spec)
-        if self.service.native_mode:
+        if self.service.from_mdib_file:
             for button in (self.remove_alert_button, self.toggle_alert_button, self.acknowledge_button,
                            self.stop_latched_button, self.delegate_button):
                 button.setEnabled(False)
@@ -831,7 +831,7 @@ class ProviderPane(QWidget):
         if self._refreshing:
             return
         handle = self.selected_handle()
-        self.remove_button.setEnabled(handle is not None and not self.service.native_mode)
+        self.remove_button.setEnabled(handle is not None and not self.service.from_mdib_file)
         if handle is None:
             self._editor_definition = None
             self.editor_label.setText("Select a data source to change its value")
@@ -862,7 +862,7 @@ class ProviderPane(QWidget):
             self.value_edit.setPlaceholderText(spec.range_text() if spec.has_range else "")
         if spec.has_range:
             self.editor_label.setText(f"{spec.label} ({spec.range_text()}):")
-        self._set_editor_enabled(enabled=not (self.service.native_mode and spec.is_sample_array))
+        self._set_editor_enabled(enabled=not (self.service.from_mdib_file and spec.is_sample_array))
 
     def _set_editor_enabled(self, *, enabled: bool) -> None:
         self.editor_stack.setEnabled(enabled)

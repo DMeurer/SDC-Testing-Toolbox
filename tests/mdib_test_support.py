@@ -59,3 +59,28 @@ def original_mdib() -> bytes:
         </pm:MdState>
       </msg:Mdib>
     </msg:GetMdibResponse>'''.encode()
+
+
+def adoption_mdib() -> bytes:
+    """The fixture with an active alert system, an imported limit alarm and a paused present alarm.
+
+    demo.paused is present although paused. Nothing the user does to other alarms may "correct"
+    it: loading keeps the file's state, and only a change to that alarm itself re-derives it.
+    """
+    data = original_mdib().replace(
+        b'<pm:State DescriptorHandle="demo.alerts" xsi:type="pm:AlertSystemState" ActivationState="Psd"/>',
+        b'<pm:State DescriptorHandle="demo.alerts" xsi:type="pm:AlertSystemState" ActivationState="On"/>'
+        b'<pm:State DescriptorHandle="demo.limit" xsi:type="pm:LimitAlertConditionState" ActivationState="On"'
+        b' Presence="false" MonitoredAlertLimits="All"><pm:Limits Lower="5" Upper="40"/></pm:State>'
+        b'<pm:State DescriptorHandle="demo.limit.signal" xsi:type="pm:AlertSignalState" ActivationState="On" Presence="Off"/>'
+        b'<pm:State DescriptorHandle="demo.paused" xsi:type="pm:AlertConditionState" ActivationState="Psd" Presence="true"/>',
+    )
+    return data.replace(
+        b'<pm:AlertSignal Handle="demo.signal"',
+        b'<pm:AlertCondition Handle="demo.limit" xsi:type="pm:LimitAlertConditionDescriptor" Kind="Phy" Priority="Hi">'
+        b'<pm:Type Code="demo-limit" CodingSystem="urn:sdc-testing-toolbox:private"><pm:ConceptDescription>Rate limit</pm:ConceptDescription></pm:Type>'
+        b'<pm:Source>demo.rate</pm:Source><pm:MaxLimits Lower="0" Upper="50"/></pm:AlertCondition>'
+        b'<pm:AlertCondition Handle="demo.paused" Kind="Tec" Priority="Lo"><pm:Source>demo.mode</pm:Source></pm:AlertCondition>'
+        b'<pm:AlertSignal Handle="demo.limit.signal" ConditionSignaled="demo.limit" Manifestation="Aud" Latching="false"/>'
+        b'<pm:AlertSignal Handle="demo.signal"',
+    )

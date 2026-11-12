@@ -46,7 +46,7 @@ def check_native_preset(report: Report, path: Path) -> None:
     service = ProviderService(instance_name=f"preset-{path.stem}")
     service.start(parse_mdib(snapshot.xml))
     try:
-        report.check(service.native_mode, "loads as a native graph rather than a JSON conversion")
+        report.check(service.from_mdib_file, "loads as a native graph rather than a JSON conversion")
         report.check(not service.generator_running, "keeps native sample blocks without inventing generators")
         report.check(not service.mdib.context_states.objects, "contains no patient data")
         restored = parse_mdib(mdib_bytes(service.mdib))

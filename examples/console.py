@@ -637,7 +637,7 @@ class ProviderShell(Cmd):
             return
         try:
             snapshot = config.load_file(path)
-            restart = isinstance(snapshot, NativeMdibConfig) or self.service.native_mode
+            restart = isinstance(snapshot, NativeMdibConfig) or self.service.from_mdib_file
             if restart:
                 print("Replacing the MDIB restarts the provider; connected consumers must reconnect.")
             metrics, alarms = config.apply_to(self.service, snapshot)

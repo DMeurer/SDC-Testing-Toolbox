@@ -1,11 +1,13 @@
-"""Read-only UI projections and explicit operation capabilities for native MDIBs.
+"""Adopting an MDIB from a file into the provider's bookkeeping, and its operation capabilities.
 
-These projections never rebuild the imported graph or define simulation behaviour.
+Adoption only reads the graph. It never rebuilds or corrects it: whatever the file says is
+what the provider publishes until the user changes something.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from decimal import Decimal
 from urllib.parse import quote, urlencode
 
@@ -49,6 +51,43 @@ def device_identity(mdib) -> tuple[DeviceInfo, str | None]:
     ), first(meta.SerialNumber)
 
 
+@dataclass
+class Adopted:
+    """The bookkeeping ProviderService keeps for a graph it built itself, derived from a file."""
+
+    specs: dict[str, MetricSpec] = field(default_factory=dict)
+    alerts: dict[str, AlertSpec] = field(default_factory=dict)
+    alert_truths: dict[str, bool] = field(default_factory=dict)
+    alert_signals: dict[str, list[str]] = field(default_factory=dict)
+    operations: dict[str, str] = field(default_factory=dict)
+    sections: dict[str, str] = field(default_factory=dict)
+
+
+def adopt(mdib) -> Adopted:
+    """Derive specs, alarms, signals, set operations and sections from an imported graph."""
+    result = Adopted(specs=metric_specs(mdib), alerts=alert_specs(mdib))
+    for channel in mdib.entities.by_node_type(pm.ChannelDescriptor):
+        result.sections.setdefault(label(channel.descriptor), channel.handle)
+    for handle, spec in result.alerts.items():
+        source = result.specs.get(spec.source_handle)
+        if spec.has_limits and (source is None or source.kind is not MetricKind.NUMBER):
+            # Nothing numeric to compare against, so only a manual change can move it.
+            spec.lower_limit = spec.upper_limit = None
+        # The truth is what the file says; it is re-derived only when its own source changes.
+        result.alert_truths[handle] = bool(mdib.entities.by_handle(handle).state.Presence)
+        result.alert_signals[handle] = []
+    for entity in mdib.entities.by_node_type(pm.AlertSignalDescriptor):
+        signals = result.alert_signals.get(entity.descriptor.ConditionSignaled)
+        if signals is not None:
+            signals.append(entity.handle)
+    for handle, entity in mdib.entities.items():
+        if entity.node_type in (pm.SetValueOperationDescriptor, pm.SetStringOperationDescriptor):
+            target = entity.descriptor.OperationTarget
+            if target not in result.operations or entity.state.OperatingMode == pm_types.OperatingMode.ENABLED:
+                result.operations[target] = handle
+    return result
+
+
 def metric_specs(mdib) -> dict[str, MetricSpec]:
     """Project only metrics the existing cards can accurately represent."""
     result = {}
@@ -66,6 +105,9 @@ def metric_specs(mdib) -> dict[str, MetricSpec]:
             "resolution": getattr(descriptor, "Resolution", None),
             "minimum": getattr(bounds, "Lower", None), "maximum": getattr(bounds, "Upper", None),
         }
+        parent = mdib.entities.by_handle(entity.parent_handle)
+        if parent is not None and parent.node_type == pm.ChannelDescriptor:
+            fields["section"] = label(parent.descriptor)
         if kind is MetricKind.CHOICE:
             fields["allowed_values"] = tuple(value.Value for value in descriptor.AllowedValue)
         elif kind is MetricKind.WAVEFORM:
@@ -88,8 +130,15 @@ def alert_specs(mdib) -> dict[str, AlertSpec]:
         if not descriptor.is_alert_condition_descriptor:
             continue
         limits = getattr(entity.state, "Limits", None)
+        monitored = getattr(entity.state, "MonitoredAlertLimits", None)
+        off = pm_types.AlertConditionMonitoredLimits
+        if monitored in (off.LOW_OFF, off.NONE):
+            limits = pm_types.Range(upper=limits.Upper) if monitored is off.LOW_OFF else None
+        elif monitored is off.HIGH_OFF:
+            limits = pm_types.Range(lower=limits.Lower)
+        source = descriptor.Source[0] if len(descriptor.Source) == 1 else ", ".join(descriptor.Source)
         result[handle] = AlertSpec(
-            handle=handle, label=label(descriptor), source_handle=", ".join(descriptor.Source),
+            handle=handle, label=label(descriptor), source_handle=source,
             kind=descriptor.Kind, priority=getattr(entity.state, "ActualPriority", None) or descriptor.Priority,
             lower_limit=getattr(limits, "Lower", None), upper_limit=getattr(limits, "Upper", None),
         )

@@ -210,7 +210,9 @@ class ProviderService:
         self.epr = constants.epr_for(instance_name)
         self.tls_config = tls_config
         self._tls_contexts = None
-        self._native_mode = False
+        self._from_mdib_file = False
+        # Metrics taken from a file are validated against their own descriptor, not a spec.
+        self._adopted_metrics: set[str] = set()
         self._restarting = False
         self._lifecycle_lock = threading.RLock()
 
@@ -261,15 +263,15 @@ class ProviderService:
         return self._mdib
 
     @property
-    def native_mode(self) -> bool:
-        """Whether the live graph came from a native snapshot rather than a managed profile."""
-        return self._native_mode
+    def from_mdib_file(self) -> bool:
+        """Whether the live graph was loaded from an MDIB file rather than built on the bootstrap."""
+        return self._from_mdib_file
 
     def start(self, native_mdib: ProviderMdib | None = None) -> None:
         """Bring the provider up and announce it on the network."""
-        self._start_graph(native_mdib, native_mode=native_mdib is not None, initialize_contexts=native_mdib is None)
+        self._start_graph(native_mdib, from_mdib_file=native_mdib is not None, initialize_contexts=native_mdib is None)
 
-    def _start_graph(self, mdib: ProviderMdib | None, *, native_mode: bool, initialize_contexts: bool = False) -> None:
+    def _start_graph(self, mdib: ProviderMdib | None, *, from_mdib_file: bool, initialize_contexts: bool = False) -> None:
         """Activate an existing graph without resetting its imported states."""
         if self._discovery is not None or self._provider is not None or self._mdib is not None:
             msg = "provider is already started"
@@ -281,20 +283,19 @@ class ProviderService:
             self._discovery = RangeWSDiscovery(self.ip)
             self._discovery.start()
 
-            self._native_mode = native_mode
+            self._from_mdib_file = from_mdib_file
             self._mdib = mdib if mdib is not None else ProviderMdib.from_mdib_file(str(constants.BOOTSTRAP_MDIB_PATH))
             mdib = self._mdib
             mdib.sequence_id = uuid.uuid4().urn
-            if native_mode:
-                self._specs = native.metric_specs(mdib)
-                self._alerts = native.alert_specs(mdib)
-                for entity in mdib.entities.by_node_type(pm.AlertSignalDescriptor):
-                    self._alert_signals.setdefault(entity.descriptor.ConditionSignaled, []).append(entity.handle)
-                for handle, entity in mdib.entities.items():
-                    if entity.node_type in (pm.SetValueOperationDescriptor, pm.SetStringOperationDescriptor):
-                        target = entity.descriptor.OperationTarget
-                        if target not in self._operations or entity.state.OperatingMode == pm_types.OperatingMode.ENABLED:
-                            self._operations[target] = handle
+            if from_mdib_file:
+                adopted = native.adopt(mdib)
+                self._specs = adopted.specs
+                self._alerts = adopted.alerts
+                self._alert_truths = adopted.alert_truths
+                self._alert_signals = adopted.alert_signals
+                self._operations = adopted.operations
+                self._sections = adopted.sections
+                self._adopted_metrics = set(adopted.specs)
             # The handler tells us which metric it touched once its transaction has closed, so a
             # value written by a remote consumer raises a limit alarm exactly as a local edit
             # does. It cannot be done from a metrics observable: sdc11073 fires those while
@@ -302,7 +303,7 @@ class ProviderService:
             self._handler = make_set_handler(
                 self._mdib,
                 coerce_value=self._coerce_value,
-                on_applied=None if native_mode else self._on_metric_applied,
+                on_applied=self._on_metric_applied,
                 execution_lock=self._lock,
             )
             self._activate_handler = make_activate_handler(
@@ -330,7 +331,7 @@ class ProviderService:
             def role_provider_factory(mdib, sco, log_prefix):  # noqa: ANN001, ANN202
                 self._sco = sco
                 return native.SnapshotProduct(mdib, sco, log_prefix, self._handler,
-                                              None if native_mode else self._activate_handler)
+                                              None if from_mdib_file else self._activate_handler)
 
             provider_components = provider_components_async_factory()
             provider_components.hosted_services["Set"] = [ReasonedSetService]
@@ -340,7 +341,7 @@ class ProviderService:
             ]
             # sdc11073 hosts it but answers both of its operations with a 500 "not implemented".
             provider_components.hosted_services.pop("ContainmentTree", None)
-            if native_mode:
+            if from_mdib_file:
                 provider_components.scopes_factory = native.scopes
             if self.tls_config is not None:
                 provider_components.soap_client_class = partial(VerifiedSoapClientAsync, tls_config=self.tls_config)
@@ -362,7 +363,7 @@ class ProviderService:
             self._provider.start_all(start_rtsample_loop=False)
             if self._tls_contexts is not None:
                 configure_request_handler(self._provider._http_server)  # noqa: SLF001 - library has no server factory hook
-            if native_mode or self._sco is not None:
+            if from_mdib_file or self._sco is not None:
                 self._adapter = Sdc11073V3Adapter(self._mdib)
             if self._sco is not None:
                 self._adapter.bind(self._provider, self._sco)
@@ -374,7 +375,7 @@ class ProviderService:
                 # contexts, so without this the provider would never answer a Probe or Resolve.
                 self._provider.publish()
 
-            if self._sco is None and not native_mode:
+            if self._sco is None and not from_mdib_file:
                 msg = "no SCO registry was created - the bootstrap MDIB is missing its Sco element"
                 raise RuntimeError(msg)
         except Exception:
@@ -387,24 +388,24 @@ class ProviderService:
         logger.info("provider %r up on %s, EPR %s", self.instance_name, self.ip, self.epr.urn)
 
     def _require_managed(self) -> None:
-        if self.native_mode:
+        if self.from_mdib_file:
             raise ValueError("native MDIB snapshots support scalar edits, not toolbox graph/context/behaviour changes")
 
     def replace_mdib(self, config: NativeMdibConfig) -> tuple[int, int]:
         """Validate before restarting; restore the previous provider on activation failure."""
-        return self._replace_graph(parse_mdib(config.xml), native_mode=True)
+        return self._replace_graph(parse_mdib(config.xml), from_mdib_file=True)
 
-    def _replace_graph(self, candidate: ProviderMdib, *, native_mode: bool, after_start=None) -> tuple[int, int]:
+    def _replace_graph(self, candidate: ProviderMdib, *, from_mdib_file: bool, after_start=None) -> tuple[int, int]:
         with self._lifecycle_lock:
             running = self.generator_running
             self.stop_generator()
             names = ("_operations", "_specs", "_alerts", "_alert_truths", "_alert_signals", "_actions",
-                     "_sections", "_pending_alert_sources", "_mds_mode_before_demo")
+                     "_sections", "_pending_alert_sources", "_mds_mode_before_demo", "_adopted_metrics")
             try:
                 with self._lock:
                     self._restarting = True
                     previous_xml = mdib_bytes(self.mdib)
-                    previous_mode = self.native_mode
+                    previous_mode = self.from_mdib_file
                     bookkeeping = {name: deepcopy(getattr(self, name)) for name in names}
                     generator = self._sample_generator.snapshot()
             except Exception:
@@ -414,7 +415,7 @@ class ProviderService:
                 raise
             try:
                 self.stop()
-                self._start_graph(candidate, native_mode=native_mode, initialize_contexts=not native_mode)
+                self._start_graph(candidate, from_mdib_file=from_mdib_file, initialize_contexts=not from_mdib_file)
                 with self._lock:
                     self._restarting = False
                     if after_start is not None:
@@ -429,7 +430,7 @@ class ProviderService:
                     if previous_mode:
                         self._operations.clear()
                         self._alert_signals.clear()
-                    self._start_graph(parse_mdib(previous_xml), native_mode=previous_mode)
+                    self._start_graph(parse_mdib(previous_xml), from_mdib_file=previous_mode)
                     self._sample_generator.restore(generator)
                     self._restarting = False
                     if running:
@@ -479,6 +480,7 @@ class ProviderService:
             self._pending_alert_sources.clear()
             self._actions.clear()
             self._sections.clear()
+            self._adopted_metrics.clear()
             self._sample_generator.clear()
             self._mds_mode_before_demo = None
         logger.info("provider %r stopped", self.instance_name)
@@ -635,11 +637,11 @@ class ProviderService:
 
     def import_profile(self, device: DeviceConfig, *, replace: bool = True) -> tuple[int, int]:
         """Preflight, apply, and if needed compensate one profile as an indivisible operation."""
-        if self.native_mode:
+        if self.from_mdib_file:
             if not replace:
                 raise ValueError("cannot append a JSON profile to a native MDIB; replace the device instead")
             candidate = ProviderMdib.from_mdib_file(str(constants.BOOTSTRAP_MDIB_PATH))
-            return self._replace_graph(candidate, native_mode=False,
+            return self._replace_graph(candidate, from_mdib_file=False,
                                        after_start=lambda: self.import_profile(device, replace=True))
         was_running = self.generator_running
         if was_running:
@@ -1055,8 +1057,7 @@ class ProviderService:
 
         # Outside the transaction on purpose: writing the alarm state needs a transaction of
         # its own, and the metric one still holds the lock until the with block closes.
-        if not self.native_mode:
-            self._evaluate_alerts({handle})
+        self._evaluate_alerts({handle})
 
     def get_value(self, handle: str):  # noqa: ANN201 - the value type depends on the metric kind
         """Read back the current value of one of our own metrics.
@@ -1249,7 +1250,8 @@ class ProviderService:
             if spec.has_limits:
                 self._evaluate_alerts({spec.source_handle})
             else:
-                self._coordinate_alert_transition()
+                # Names the new alarm so its system signals are published without re-deriving the others.
+                self._coordinate_alert_transition(condition_truths={handle: False})
             return handle
 
     def remove_alert(self, handle: str) -> None:
@@ -1287,7 +1289,6 @@ class ProviderService:
         Limit-condition truth is always derived from its numeric source and cannot be
         overridden manually.
         """
-        self._require_managed()
         with self._lock:
             spec = self._alerts.get(handle)
             if spec is None:
@@ -1332,7 +1333,6 @@ class ProviderService:
 
     def acknowledge_alert(self, handle: str) -> int:
         """Acknowledge each currently generated ``On`` signal of a present condition."""
-        self._require_managed()
         with self._lock:
             if handle not in self._alert_signals:
                 msg = f"no alarm with handle {handle!r}"
@@ -1346,7 +1346,6 @@ class ProviderService:
 
     def stop_latched_signals(self, handle: str) -> int:
         """Deliberately stop signals that are currently latching after a cleared condition."""
-        self._require_managed()
         with self._lock:
             if handle not in self._alert_signals:
                 msg = f"no alarm with handle {handle!r}"
@@ -1361,7 +1360,6 @@ class ProviderService:
         The legacy method name describes the learning scenario, not a complete Clause 6
         handoff. This only writes ``Location`` and derives local system-signal activation.
         """
-        self._require_managed()
         with self._lock:
             entity = self.mdib.entities.by_handle(signal_handle)
             if entity is None:
@@ -1390,7 +1388,7 @@ class ProviderService:
             return
 
         with self._lock:
-            if self._mdib is None or self.native_mode or self._restarting:
+            if self._mdib is None or self._restarting:
                 return
             self._pending_alert_sources.update(source_handles)
             if not self._alert_evaluator_lock.acquire(blocking=False):
@@ -1432,6 +1430,8 @@ class ProviderService:
                 for handle, spec in self._alerts.items()
                 if spec.has_limits and spec.source_handle in source_handles
             ]
+        if not alerts:
+            return None, None
 
         try:
             condition_truths = {}
@@ -1482,22 +1482,44 @@ class ProviderService:
             handle = sorted(unknown_conditions)[0]
             msg = f"no alarm with handle {handle!r}"
             raise KeyError(msg)
+        signal_owner = {
+            signal_handle: condition_handle
+            for condition_handle, signal_handles in self._alert_signals.items()
+            for signal_handle in signal_handles
+        }
+        for signal_handle in signal_locations:
+            if signal_handle not in signal_owner or self.mdib.entities.by_handle(signal_handle) is None:
+                msg = f"no alarm signal with handle {signal_handle!r}"
+                raise KeyError(msg)
         self._alert_truths.update(condition_truths)
         self._alert_truths.update(dict.fromkeys(retiring_handles, False))
-        alert_system = self.mdib.entities.by_handle(constants.ALERT_SYSTEM_HANDLE)
-        if alert_system is None:
-            raise RuntimeError("the MDIB has no parent AlertSystem")
 
-        handles = set(self._alerts)
+        # Only what was asked about is re-derived. An imported alarm keeps the state its file
+        # gave it until something happens to that alarm itself.
+        requested = (
+            set(condition_truths)
+            | retiring_handles
+            | {handle for handle in (acknowledge_handle, stop_latches_handle) if handle is not None}
+            | {signal_owner[signal_handle] for signal_handle in signal_locations}
+        )
+        nothing_named = not (condition_truths or retiring_handles or signal_locations
+                             or acknowledge_handle or stop_latches_handle)
+        handles = set(self._alerts) if nothing_named else requested & self._alerts.keys()
 
         changed = []
         affected_signals = 0
         next_condition_presence = {}
+        alert_systems = {}
         for handle in sorted(handles):
             condition = self.mdib.entities.by_handle(handle)
             if condition is None or handle not in self._alerts:
                 msg = f"no alarm with handle {handle!r}"
                 raise KeyError(msg)
+            alert_system = self.mdib.entities.by_handle(condition.parent_handle)
+            if alert_system is None or alert_system.node_type != pm.AlertSystemDescriptor:
+                msg = f"alarm {handle!r} has no parent AlertSystem"
+                raise RuntimeError(msg)
+            alert_systems[alert_system.handle] = alert_system
             signals = [
                 signal
                 for signal in (
@@ -1553,49 +1575,42 @@ class ProviderService:
                 signal.state.Presence = presence
                 changed.append(signal)
 
-        known_signals = {
-            signal_handle
-            for signal_handles in self._alert_signals.values()
-            for signal_handle in signal_handles
-        }
         for signal_handle, location in signal_locations.items():
-            if signal_handle not in known_signals:
-                msg = f"no alarm signal with handle {signal_handle!r}"
-                raise KeyError(msg)
             signal = self.mdib.entities.by_handle(signal_handle)
-            if signal is None:
-                msg = f"no alarm signal with handle {signal_handle!r}"
-                raise KeyError(msg)
             if signal.state.Location != location:
                 signal.state.Location = location
                 changed.append(signal)
+            parent = self.mdib.entities.by_handle(signal.parent_handle)
+            if parent is not None and parent.node_type == pm.AlertSystemDescriptor:
+                alert_systems[parent.handle] = parent
 
-        physiological, technical = self._present_alarm_conditions(
-            alert_system,
-            next_condition_presence,
-        )
-        system_signals = self._system_signal_activation(
-            alert_system,
-            signal_locations,
-            excluding_conditions=retiring_handles,
-        )
-        current_system_signals = [
-            (entry.Manifestation, entry.State)
-            for entry in alert_system.state.SystemSignalActivation
-        ]
-        parent_changed = (
-            list(alert_system.state.PresentPhysiologicalAlarmConditions or ()) != physiological
-            or list(alert_system.state.PresentTechnicalAlarmConditions or ()) != technical
-            or current_system_signals != system_signals
-        )
-        if parent_changed:
-            alert_system.state.PresentPhysiologicalAlarmConditions = physiological
-            alert_system.state.PresentTechnicalAlarmConditions = technical
-            alert_system.state.SystemSignalActivation = [
-                pm_types.SystemSignalActivation(manifestation=manifestation, state=activation)
-                for manifestation, activation in system_signals
+        for alert_system in alert_systems.values():
+            physiological, technical = self._present_alarm_conditions(
+                alert_system,
+                next_condition_presence,
+            )
+            system_signals = self._system_signal_activation(
+                alert_system,
+                signal_locations,
+                excluding_conditions=retiring_handles,
+            )
+            current_system_signals = [
+                (entry.Manifestation, entry.State)
+                for entry in alert_system.state.SystemSignalActivation
             ]
-            changed.append(alert_system)
+            parent_changed = (
+                list(alert_system.state.PresentPhysiologicalAlarmConditions or ()) != physiological
+                or list(alert_system.state.PresentTechnicalAlarmConditions or ()) != technical
+                or current_system_signals != system_signals
+            )
+            if parent_changed:
+                alert_system.state.PresentPhysiologicalAlarmConditions = physiological
+                alert_system.state.PresentTechnicalAlarmConditions = technical
+                alert_system.state.SystemSignalActivation = [
+                    pm_types.SystemSignalActivation(manifestation=manifestation, state=activation)
+                    for manifestation, activation in system_signals
+                ]
+                changed.append(alert_system)
 
         if not changed:
             return None, affected_signals
@@ -1622,7 +1637,9 @@ class ProviderService:
         }
         for handle in sorted(self._alerts):
             condition = self.mdib.entities.by_handle(handle)
-            if condition is None or not presence_overrides.get(handle, bool(condition.state.Presence)):
+            if condition is None or condition.parent_handle != alert_system.handle:
+                continue
+            if not presence_overrides.get(handle, bool(condition.state.Presence)):
                 continue
             if condition.state.ActivationState is not pm_types.AlertActivation.ON:
                 continue
@@ -1658,7 +1675,7 @@ class ProviderService:
                 continue
             for signal_handle in signal_handles:
                 signal = self.mdib.entities.by_handle(signal_handle)
-                if signal is None:
+                if signal is None or signal.parent_handle != alert_system.handle:
                     continue
                 location = location_overrides.get(signal_handle, signal.state.Location)
                 if location is pm_types.AlertSignalPrimaryLocation.REMOTE:
@@ -1687,7 +1704,7 @@ class ProviderService:
 
     def get_location(self) -> LocationInfo:
         """Where this device says it is."""
-        state = self._native_context_state(pm.LocationContextDescriptor) if self.native_mode else self._associated_context_state(constants.LOCATION_CONTEXT_HANDLE)
+        state = self._native_context_state(pm.LocationContextDescriptor) if self.from_mdib_file else self._associated_context_state(constants.LOCATION_CONTEXT_HANDLE)
         detail = getattr(state, "LocationDetail", None) if state is not None else None
         if detail is None:
             return LocationInfo()
@@ -1727,7 +1744,7 @@ class ProviderService:
 
     def get_patient(self) -> PatientInfo:
         """Who the device says it is attached to."""
-        state = self._native_context_state(pm.PatientContextDescriptor) if self.native_mode else self._associated_context_state(constants.PATIENT_CONTEXT_HANDLE)
+        state = self._native_context_state(pm.PatientContextDescriptor) if self.from_mdib_file else self._associated_context_state(constants.PATIENT_CONTEXT_HANDLE)
         core = getattr(state, "CoreData", None) if state is not None else None
         return patient_info_from_biceps(core)
 
@@ -2088,7 +2105,7 @@ class ProviderService:
     def _coerce_value(self, handle: str, value: object) -> Decimal | str:
         if self._restarting:
             raise ValueError("provider replacement is in progress")
-        if self.native_mode:
+        if handle in self._adopted_metrics:
             return native.coerce_value(self.mdib, handle, value, self._specs.get(handle))
         spec = self._specs.get(handle)
         if spec is None:

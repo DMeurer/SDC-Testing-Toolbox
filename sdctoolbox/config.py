@@ -504,7 +504,7 @@ def to_dict(service: ProviderService, *, include_values: bool = True) -> dict[st
     :param include_values: record each metric's current value as its initial_value, so that
         reloading the file reproduces what is on screen rather than an empty device.
     """
-    if getattr(service, "native_mode", False):
+    if getattr(service, "from_mdib_file", False):
         raise ConfigError("native MDIB state cannot be exported as a JSON profile; export an .xml MDIB instead")
     metrics = []
     for handle, spec in sorted(service.list_metrics().items()):

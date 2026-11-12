@@ -205,13 +205,13 @@ class NativeProviderTests(unittest.TestCase):
     def test_native_replacement_is_discoverable_again(self) -> None:
         self.service.start()
         self.service.replace_mdib(self.io.NativeMdibConfig(original_mdib()))
-        self.assertTrue(self.service.native_mode)
+        self.assertTrue(self.service.from_mdib_file)
         self.assert_discoverable()
 
     def test_native_start_preserves_graph_state_contexts_and_does_not_generate(self) -> None:
         self.start_native()
         service = self.service
-        self.assertTrue(service.native_mode)
+        self.assertTrue(service.from_mdib_file)
         self.assertNotEqual(service.mdib.sequence_id, "urn:uuid:11111111-1111-1111-1111-111111111111")
         self.assertEqual(len(service.list_metrics()), 3)
         self.assertEqual(len(service.list_alerts()), 1)
@@ -224,10 +224,6 @@ class NativeProviderTests(unittest.TestCase):
         self.assertEqual(service.get_value("demo.rate"), Decimal("45"))
         self.assertTrue(service.alert_present("demo.alarm"), "native alarms must not acquire invented rules")
         self.assertEqual(service.get_samples("demo.wave"), [Decimal("0"), Decimal("1.5"), Decimal("-0.5")])
-        with self.assertRaises(ValueError):
-            service.add_metric(MetricSpec("not permitted", MetricKind.NUMBER))
-        with self.assertRaises(ValueError):
-            service.enable_control("demo.rate")
 
     def test_context_state_target_is_published_but_unsupported_execution_fails(self) -> None:
         root = etree.fromstring(original_mdib())
@@ -304,7 +300,7 @@ class NativeProviderTests(unittest.TestCase):
         with patch.object(self.service, "_start_graph", side_effect=fail_once):
             with self.assertRaisesRegex(RuntimeError, "injected activation failure"):
                 self.service.replace_mdib(self.io.NativeMdibConfig(original_mdib()))
-        self.assertFalse(self.service.native_mode)
+        self.assertFalse(self.service.from_mdib_file)
         self.assertEqual(self.service.get_value(handle), Decimal("8"))
         self.assertEqual(self.service.get_patient(), previous_patient)
         self.assertNotEqual(self.service.mdib.sequence_id, previous_sequence)
@@ -317,7 +313,7 @@ class NativeProviderTests(unittest.TestCase):
     def test_native_replacement_and_failed_recovery_are_explicit(self) -> None:
         self.service.start()
         self.service.replace_mdib(self.io.NativeMdibConfig(original_mdib()))
-        self.assertTrue(self.service.native_mode)
+        self.assertTrue(self.service.from_mdib_file)
         self.assertEqual(self.service.get_value("demo.rate"), Decimal("12.5"))
         with patch.object(self.service, "_start_graph", side_effect=RuntimeError("injected startup failure")):
             with self.assertRaisesRegex(RuntimeError, "import failed:.*recovery also failed:"):
@@ -335,9 +331,106 @@ class NativeProviderTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.service.import_profile(profile, replace=False)
         self.service.import_profile(profile)
-        self.assertFalse(self.service.native_mode)
+        self.assertFalse(self.service.from_mdib_file)
         self.assertEqual(len(self.service.list_metrics()), 1)
         self.assertIn("m.back_to_json", self.service.list_metrics())
+
+
+RUNTIME_COUNTERS = ("MdibVersion", "SequenceId", "InstanceId", "DescriptionVersion", "StateVersion")
+
+
+def canonical(payload: bytes) -> str:
+    """An exported MDIB without the runtime counters on its four aggregate elements.
+
+    Sibling order is not data here (the library writes entities in dictionary order), so
+    every element's children are compared sorted.
+    """
+    root = etree.fromstring(payload)
+    mdib = root[0]
+    for node in (root, mdib, mdib.find(f"{{{PM}}}MdDescription"), mdib.find(f"{{{PM}}}MdState")):
+        for name in RUNTIME_COUNTERS:
+            node.attrib.pop(name, None)
+
+    def text(node) -> str:
+        children = sorted(text(child) for child in node if isinstance(child.tag, str))
+        return f"<{node.tag} {sorted(node.attrib.items())} {(node.text or '').strip()!r}>{''.join(children)}</>"
+
+    return text(root)
+
+
+class AdoptedMdibTests(unittest.TestCase):
+    """A file MDIB joins the normal bookkeeping without any of its data changing."""
+
+    def setUp(self) -> None:
+        self.io = importlib.import_module("sdctoolbox.mdib_io")
+        self.service = ProviderService(instance_name=f"adopt-{self._testMethodName}")
+        self.addCleanup(self.service.stop)
+
+    def start(self, data: bytes | None = None) -> None:
+        from mdib_test_support import adoption_mdib
+
+        self.data = data or adoption_mdib()
+        self.service.start(self.io.parse_mdib(self.data))
+
+    def test_loading_changes_nothing_but_runtime_counters(self) -> None:
+        from mdib_test_support import adoption_mdib
+
+        for data in (original_mdib(), adoption_mdib(), (Path(__file__).resolve().parent.parent / "presets" / "mdib-demo-monitor.xml").read_bytes()):
+            with self.subTest(size=len(data)):
+                service = ProviderService(instance_name=f"adopt-unchanged-{len(data)}")
+                service.start(self.io.parse_mdib(data))
+                try:
+                    self.assertEqual(canonical(self.io.mdib_bytes(service.mdib)),
+                                     canonical(self.io.mdib_bytes(self.io.parse_mdib(data))))
+                finally:
+                    service.stop()
+
+    def test_origin_flag(self) -> None:
+        self.start()
+        self.assertTrue(self.service.from_mdib_file)
+        bootstrap = ProviderService(instance_name="adopt-bootstrap")
+        bootstrap.start()
+        self.addCleanup(bootstrap.stop)
+        self.assertFalse(bootstrap.from_mdib_file)
+
+    def test_imported_metrics_and_alarms_join_the_bookkeeping(self) -> None:
+        self.start()
+        metrics = self.service.list_metrics()
+        self.assertEqual(metrics["demo.rate"].section, "demo.channel")
+        self.assertEqual(self.service.sections()["demo.channel"], "demo.channel")
+        alerts = self.service.list_alerts()
+        self.assertEqual((alerts["demo.limit"].source_handle, alerts["demo.limit"].lower_limit,
+                          alerts["demo.limit"].upper_limit), ("demo.rate", Decimal("5"), Decimal("40")))
+        self.assertFalse(alerts["demo.alarm"].has_limits)
+        self.assertEqual(self.service.signal_handles_for("demo.limit"), ["demo.limit.signal"])
+
+    def test_imported_limit_alarm_follows_its_source_only_after_a_change(self) -> None:
+        self.start()
+        self.assertFalse(self.service.alert_present("demo.limit"))
+        self.service.set_value("demo.rate", Decimal("45"))
+        self.assertTrue(self.service.alert_present("demo.limit"))
+        self.assertEqual(self.service.signal_states("demo.limit")[0].presence, str(pm_types.AlertSignalPresence.ON))
+        self.service.set_value("demo.rate", Decimal("20"))
+        self.assertFalse(self.service.alert_present("demo.limit"))
+
+    def test_other_imported_alarms_are_not_rederived_by_unrelated_changes(self) -> None:
+        self.start()
+        self.service.set_value("demo.rate", Decimal("45"))
+        self.service.set_alert_presence("demo.alarm", False)
+        self.assertTrue(self.service.alert_present("demo.paused"), "a paused but present imported alarm was rewritten")
+        self.assertFalse(self.service.alert_present("demo.alarm"))
+        self.service.set_alert_presence("demo.alarm", True)
+        self.assertTrue(self.service.alert_present("demo.alarm"))
+        self.assertEqual(self.service.signal_states("demo.alarm")[0].presence, str(pm_types.AlertSignalPresence.ON))
+        present = self.service.mdib.entities.by_handle("demo.alerts").state
+        self.assertIn("demo.limit", present.PresentPhysiologicalAlarmConditions)
+        self.assertIn("demo.alarm", present.PresentTechnicalAlarmConditions)
+
+    def test_imported_signal_acknowledge_and_delegation(self) -> None:
+        self.start()
+        self.service.set_value("demo.rate", Decimal("45"))
+        self.assertEqual(self.service.acknowledge_alert("demo.limit"), 1)
+        self.assertEqual(self.service.signal_states("demo.limit")[0].presence, str(pm_types.AlertSignalPresence.ACK))
 
 
 class ConfigMdibTests(unittest.TestCase):

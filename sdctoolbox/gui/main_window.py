@@ -329,14 +329,14 @@ class MainWindow(QMainWindow):
 
     def export_config(self) -> Path | None:
         """Ask for a filename and write this device's configuration to it."""
-        native_mode = self.service.native_mode
-        suggested = f"{self.service.instance_name}{'.xml' if native_mode else config.FILE_SUFFIX}"
+        from_mdib_file = self.service.from_mdib_file
+        suggested = f"{self.service.instance_name}{'.xml' if from_mdib_file else config.FILE_SUFFIX}"
         filename, selected_filter = QFileDialog.getSaveFileName(
             self,
             "Export config",
             suggested,
             CONFIG_FILE_FILTER,
-            selectedFilter=config.MDIB_FILE_FILTER if native_mode else config.JSON_FILE_FILTER,
+            selectedFilter=config.MDIB_FILE_FILTER if from_mdib_file else config.JSON_FILE_FILTER,
         )
         if not filename:
             return None
@@ -376,7 +376,7 @@ class MainWindow(QMainWindow):
         except config.ConfigError as exc:
             QMessageBox.warning(self, "Could not import", str(exc))
             return False
-        restart = isinstance(device_config, NativeMdibConfig) or self.service.native_mode
+        restart = isinstance(device_config, NativeMdibConfig) or self.service.from_mdib_file
         existing = len(self.service.list_metrics()) + len(self.service.list_alerts()) + len(self.service.list_actions())
         if confirm and (existing or restart):
             detail = "\n\nThe provider will restart; connected consumers must reconnect." if restart else ""
