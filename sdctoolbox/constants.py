@@ -53,6 +53,8 @@ ACTION_HANDLE_PREFIX = "act."
 # published from a preset has a containment tree with parts rather than one flat channel.
 VMD_HANDLE_PREFIX = "vmd."
 CHANNEL_HANDLE_PREFIX = "ch."
+# Where an unsectioned metric goes in a loaded graph that has no channel of its own.
+DEFAULT_SECTION = "Default"
 
 # An alert condition and the signals that announce it. One condition can drive several
 # signals, which is the distinction BICEPS draws and the reason they are separate objects.

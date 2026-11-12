@@ -63,8 +63,9 @@ LEGACY_CONFIG_VERSION = 1
 
 FILE_SUFFIX = ".sdcprofile.json"
 JSON_FILE_FILTER = "SDC toolbox config (*.json)"
-MDIB_FILE_FILTER = "Native MDIB (*.xml)"
-FILE_FILTER = f"{JSON_FILE_FILTER};;{MDIB_FILE_FILTER};;All files (*)"
+MDIB_FILE_FILTER = "MDIB (*.xml)"
+MDIB_BEHAVIOUR_FILE_FILTER = "MDIB with toolbox behaviour (*.xml)"
+FILE_FILTER = f"{JSON_FILE_FILTER};;{MDIB_FILE_FILTER};;{MDIB_BEHAVIOUR_FILE_FILTER};;All files (*)"
 
 _TOP_LEVEL_KEYS = {"version", "name", "description", "device", "metrics", "alerts", "actions", "contexts"}
 _METRIC_KEYS = {
@@ -119,7 +120,7 @@ class ConfigError(Exception):
 def export_path(filename: str | Path, selected_filter: str) -> Path:
     """Respect an explicit export format without silently changing a conflicting suffix."""
     target = Path(filename)
-    suffix = {JSON_FILE_FILTER: ".json", MDIB_FILE_FILTER: ".xml"}.get(selected_filter)
+    suffix = {JSON_FILE_FILTER: ".json", MDIB_FILE_FILTER: ".xml", MDIB_BEHAVIOUR_FILE_FILTER: ".xml"}.get(selected_filter)
     if suffix is not None:
         if target.suffix and target.suffix.lower() != suffix:
             raise ConfigError(f"filename suffix {target.suffix!r} conflicts with the selected {suffix} format")
@@ -197,7 +198,7 @@ class Preset:
     def summary(self) -> str:
         """What the file contains, for a menu entry or a dropdown."""
         parts = [f"{self.metrics} data source(s)", f"{self.alerts} alarm(s)"]
-        return ("Native MDIB; " if self.path.suffix.lower() == ".xml" else "") + ", ".join(parts)
+        return ("MDIB; " if self.path.suffix.lower() == ".xml" else "") + ", ".join(parts)
 
 
 def list_presets(directory: str | Path | None = None) -> list[Preset]:
@@ -560,13 +561,16 @@ def write_atomically(target: Path, data: str | bytes) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def save(service: ProviderService, path: str | Path, *, include_values: bool = True) -> Path:
-    """Atomically replace a profile, preserving the old file if writing fails."""
+def save(service: ProviderService, path: str | Path, *, include_values: bool = True, behaviour: bool = False) -> Path:
+    """Atomically replace a profile, preserving the old file if writing fails.
+
+    :param behaviour: for an .xml target, also write the toolbox behaviour as extensions.
+    """
     target = Path(path)
     if target.suffix.lower() == ".xml":
         from .mdib_io import save_mdib
 
-        return save_mdib(service, target)
+        return save_mdib(service, target, behaviour=behaviour)
     payload = json.dumps(to_dict(service, include_values=include_values), indent=2) + "\n"
     write_atomically(target, payload)
     return target

@@ -20,7 +20,7 @@ from sdc11073.xml_types.wsd_types import ScopesType
 
 from .handlers import RefusedExecution, reporting_refusals
 from .model import (
-    AlertSpec, DeviceInfo, MetricKind, MetricSpec, RemoteRange, coerce_metric_value, numeric_value_in_ranges,
+    ActionSpec, AlertSpec, DeviceInfo, MetricKind, MetricSpec, RemoteRange, coerce_metric_value, numeric_value_in_ranges,
 )
 
 logger = logging.getLogger("sdctoolbox.native_mdib")
@@ -86,6 +86,27 @@ def adopt(mdib) -> Adopted:
             if target not in result.operations or entity.state.OperatingMode == pm_types.OperatingMode.ENABLED:
                 result.operations[target] = handle
     return result
+
+
+def apply_behaviour(mdib, behaviour: dict[str, dict], specs: dict[str, MetricSpec], coerce) -> dict[str, ActionSpec]:
+    """Put stored toolbox behaviour back onto adopted specs, and return the actions it defines."""
+    actions = {}
+    for handle, values in behaviour.items():
+        entity = mdib.entities.by_handle(handle)
+        if "effects" in values:
+            if entity is None or entity.node_type != pm.ActivateOperationDescriptor:
+                raise ValueError(f"toolbox action behaviour on {handle!r}, which is not an ActivateOperation")
+            effects = {target: coerce(target, value) for target, value in values["effects"].items()}
+            actions[handle] = ActionSpec(label=label(entity.descriptor), target_handle=entity.descriptor.OperationTarget,
+                                         effects=effects, handle=handle, note=values["note"])
+            continue
+        spec = specs.get(handle)
+        if spec is None or not spec.is_sample_array:
+            raise ValueError(f"toolbox generator behaviour on {handle!r}, which is not a sample array metric")
+        for name in ("shape", "cycle_samples", "distribution_shape"):
+            if name in values:
+                setattr(spec, name, values[name])
+    return actions
 
 
 def metric_specs(mdib) -> dict[str, MetricSpec]:
@@ -162,10 +183,12 @@ def coerce_value(mdib, handle: str, value: object, spec: MetricSpec | None) -> D
 class SnapshotProduct(BaseProduct):
     """Register existing operations without creating descriptors or resetting state."""
 
-    def __init__(self, mdib, sco, log_prefix, set_handler, activate_handler=None):
+    def __init__(self, mdib, sco, log_prefix, set_handler, activate_handler=None, runs_action=lambda _handle: False):
         super().__init__(mdib, sco, log_prefix)
         self._set_handler = set_handler
         self._activate_handler = activate_handler
+        # Only actions whose effects the toolbox knows are run; any other Activate is refused.
+        self._runs_action = runs_action
 
     def make_operation_instance(self, descriptor, operation_cls_getter):
         target = self._mdib.entities.by_handle(descriptor.OperationTarget)
@@ -176,7 +199,8 @@ class SnapshotProduct(BaseProduct):
             and target.node_type in (pm.StringMetricDescriptor, pm.EnumStringMetricDescriptor)
         ):
             handler = self._set_handler
-        elif descriptor.NODETYPE == pm.ActivateOperationDescriptor and self._activate_handler is not None:
+        elif (descriptor.NODETYPE == pm.ActivateOperationDescriptor and self._activate_handler is not None
+              and self._runs_action(descriptor.Handle)):
             handler = self._activate_handler
         operation_class = operation_cls_getter(descriptor.NODETYPE)
         if operation_class is None:

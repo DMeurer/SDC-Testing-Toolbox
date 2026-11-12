@@ -37,6 +37,7 @@ from .handlers import (
     make_set_handler,
 )
 from .http_server import configure_request_handler
+from . import mdib_io
 from .mdib_io import NativeMdibConfig, mdib_bytes, parse_mdib
 from . import native_mdib as native
 from .ports import RangeWSDiscovery
@@ -296,6 +297,10 @@ class ProviderService:
                 self._operations = adopted.operations
                 self._sections = adopted.sections
                 self._adopted_metrics = set(adopted.specs)
+                self._actions = native.apply_behaviour(
+                    mdib, getattr(mdib, "toolbox_behaviour", {}), adopted.specs,
+                    lambda target, value: native.coerce_value(mdib, target, value, adopted.specs.get(target)),
+                )
             # The handler tells us which metric it touched once its transaction has closed, so a
             # value written by a remote consumer raises a limit alarm exactly as a local edit
             # does. It cannot be done from a metrics observable: sdc11073 fires those while
@@ -329,9 +334,10 @@ class ProviderService:
             # (see providerimpl._setup_components). We therefore always supply one, and use the
             # factory to capture the registry instance instead of reaching into private state.
             def role_provider_factory(mdib, sco, log_prefix):  # noqa: ANN001, ANN202
-                self._sco = sco
-                return native.SnapshotProduct(mdib, sco, log_prefix, self._handler,
-                                              None if from_mdib_file else self._activate_handler)
+                if self._sco is None or sco.sco_descriptor_container.parent_handle == self._anchor_mds():
+                    self._sco = sco
+                return native.SnapshotProduct(mdib, sco, log_prefix, self._handler, self._activate_handler,
+                                              runs_action=lambda handle: handle in self._actions)
 
             provider_components = provider_components_async_factory()
             provider_components.hosted_services["Set"] = [ReasonedSetService]
@@ -363,10 +369,8 @@ class ProviderService:
             self._provider.start_all(start_rtsample_loop=False)
             if self._tls_contexts is not None:
                 configure_request_handler(self._provider._http_server)  # noqa: SLF001 - library has no server factory hook
-            if from_mdib_file or self._sco is not None:
-                self._adapter = Sdc11073V3Adapter(self._mdib)
-            if self._sco is not None:
-                self._adapter.bind(self._provider, self._sco)
+            self._adapter = Sdc11073V3Adapter(self._mdib)
+            self._adapter.bind(self._provider, self._sco)
             if initialize_contexts:
                 self.set_location(LocationInfo(**constants.DEFAULT_LOCATION))
                 self.set_patient(DEFAULT_PATIENT)
@@ -387,10 +391,6 @@ class ProviderService:
 
         logger.info("provider %r up on %s, EPR %s", self.instance_name, self.ip, self.epr.urn)
 
-    def _require_managed(self) -> None:
-        if self.from_mdib_file:
-            raise ValueError("native MDIB snapshots support scalar edits, not toolbox graph/context/behaviour changes")
-
     def replace_mdib(self, config: NativeMdibConfig) -> tuple[int, int]:
         """Validate before restarting; restore the previous provider on activation failure."""
         return self._replace_graph(parse_mdib(config.xml), from_mdib_file=True)
@@ -404,7 +404,7 @@ class ProviderService:
             try:
                 with self._lock:
                     self._restarting = True
-                    previous_xml = mdib_bytes(self.mdib)
+                    previous_xml = mdib_bytes(self.mdib, self.behaviour_extensions() if self.from_mdib_file else None)
                     previous_mode = self.from_mdib_file
                     bookkeeping = {name: deepcopy(getattr(self, name)) for name in names}
                     generator = self._sample_generator.snapshot()
@@ -514,7 +514,7 @@ class ProviderService:
                 sections=dict(self._sections),
                 library=self._adapter.snapshot(),
                 pending_alert_sources=set(self._pending_alert_sources),
-                mds_operating_mode=mdib.entities.by_handle(constants.MDS_HANDLE).state.OperatingMode,
+                mds_operating_mode=mdib.entities.by_handle(self._anchor_mds()).state.OperatingMode,
                 mds_mode_before_demo=self._mds_mode_before_demo,
                 sample_generator=self._sample_generator.snapshot(),
                 generator_running=self.generator_running,
@@ -629,17 +629,16 @@ class ProviderService:
         for state in snapshot.context_states:
             if state.ContextAssociation == pm_types.ContextAssociation.ASSOCIATED:
                 associated[state.DescriptorHandle] = state
+        location = self._context_descriptor(pm.LocationContextDescriptor, create=False)
         for handle in sorted(handles):
-            if handle != constants.LOCATION_CONTEXT_HANDLE:
+            if handle != location:
                 self._adapter.compensate_context(handle, associated.get(handle))
-        if constants.LOCATION_CONTEXT_HANDLE in handles:
+        if location in handles:
             self._adapter.restore_location(snapshot.library.provider_location)
 
     def import_profile(self, device: DeviceConfig, *, replace: bool = True) -> tuple[int, int]:
         """Preflight, apply, and if needed compensate one profile as an indivisible operation."""
-        if self.from_mdib_file:
-            if not replace:
-                raise ValueError("cannot append a JSON profile to a native MDIB; replace the device instead")
+        if self.from_mdib_file and replace:
             candidate = ProviderMdib.from_mdib_file(str(constants.BOOTSTRAP_MDIB_PATH))
             return self._replace_graph(candidate, from_mdib_file=False,
                                        after_start=lambda: self.import_profile(device, replace=True))
@@ -684,11 +683,11 @@ class ProviderService:
                         self.add_action(action)
                     if device.location is not None:
                         field = "contexts.location"
-                        touched_contexts.add(constants.LOCATION_CONTEXT_HANDLE)
+                        touched_contexts.add(self._context_descriptor(pm.LocationContextDescriptor, create=True))
                         self.set_location(device.location)
                     if device.patient is not None:
                         field = "contexts.patient"
-                        touched_contexts.add(constants.PATIENT_CONTEXT_HANDLE)
+                        touched_contexts.add(self._context_descriptor(pm.PatientContextDescriptor, create=True))
                         self.set_patient(device.patient)
                     pending = set(self._pending_alert_sources)
                     self._pending_alert_sources.clear()
@@ -757,6 +756,9 @@ class ProviderService:
 
         section_handles = set()
         for section in {spec.section for spec in device.metrics if spec.section}:
+            existing = self._sections.get(section)
+            if existing is not None and existing not in removed and self.mdib.entities.by_handle(existing) is not None:
+                continue
             slug = slugify(section)
             vmd_handle = constants.VMD_HANDLE_PREFIX + slug
             channel_handle = constants.CHANNEL_HANDLE_PREFIX + slug
@@ -767,9 +769,9 @@ class ProviderService:
                 vmd = None
             if channel_handle in removed:
                 channel = None
-            if vmd is not None and (vmd.node_type != pm.VmdDescriptor or vmd.parent_handle != constants.MDS_HANDLE):
+            if vmd is not None and (vmd.node_type != pm.VmdDescriptor or vmd.parent_handle != self._anchor_mds()):
                 raise ValueError(
-                    f"sections[{section}]: {vmd_handle!r} must be a VmdDescriptor under {constants.MDS_HANDLE!r}",
+                    f"sections[{section}]: {vmd_handle!r} must be a VmdDescriptor under {self._anchor_mds()!r}",
                 )
             if channel is not None and (
                 channel.node_type != pm.ChannelDescriptor or channel.parent_handle != vmd_handle
@@ -885,7 +887,6 @@ class ProviderService:
         The descriptor is written inside a descriptor transaction, which makes sdc11073 emit
         a DescriptionModificationReport, so connected consumers see the new metric appear.
         """
-        self._require_managed()
         with self._lock:
             # Mutable specs must validate before even a lazy section can be published.
             spec.validate_text()
@@ -947,7 +948,6 @@ class ProviderService:
 
     def remove_metric(self, handle: str) -> None:
         """Delete a data source and everything that depends on it."""
-        self._require_managed()
         with self._lock:
             metric_entity = self.mdib.entities.by_handle(handle)
             section_entities = []
@@ -973,9 +973,15 @@ class ProviderService:
             dependent_handles.update(alert_handles)
             dependent_handles.update(signal_handles)
 
-            operation_handle = self._operations.get(handle)
-            if operation_handle is not None:
-                dependent_handles.add(operation_handle)
+            # A loaded graph may have several operations on one metric, not only the one we track.
+            operation_handles = sorted(
+                entity.handle
+                for _, entity in self.mdib.entities.items()
+                if entity.descriptor.is_operational_descriptor
+                and entity.descriptor.OperationTarget == handle
+                and entity.handle not in self._actions
+            )
+            dependent_handles.update(operation_handles)
 
             action_handles = self._dependent_action_handles(
                 dependent_handles,
@@ -984,9 +990,9 @@ class ProviderService:
             if alert_handles:
                 self._coordinate_alert_transition(retiring_handles=set(alert_handles))
             for action_handle in action_handles:
-                self._sco.unregister_operation_by_handle(action_handle)
-            if operation_handle is not None:
-                self._sco.unregister_operation_by_handle(operation_handle)
+                self._adapter.unregister_operation(action_handle)
+            for operation_handle in operation_handles:
+                self._adapter.unregister_operation(operation_handle)
 
             # Drop the bookkeeping before committing. Leaving the transaction fires
             # deleted_descriptors_by_handle synchronously, and any observer that reacts by
@@ -1007,7 +1013,7 @@ class ProviderService:
 
             removal_handles = [
                 *action_handles,
-                *([operation_handle] if operation_handle is not None else []),
+                *operation_handles,
                 *signal_handles,
                 *alert_handles,
                 handle,
@@ -1083,7 +1089,6 @@ class ProviderService:
         operation descriptor and emits a DescriptionModificationReport. On later calls it
         merely flips OperatingMode back to En.
         """
-        self._require_managed()
         with self._lock:
             spec = self._specs.get(handle)
             if spec is None:
@@ -1112,7 +1117,7 @@ class ProviderService:
                     ),
                 )
                 # register_operation calls set_mdib, which creates the descriptor for us.
-                self._sco.register_operation(operation)
+                self._sco_for_edits().register_operation(operation)
                 self._operations[handle] = operation_handle
                 logger.info("registered operation %s targeting %s", operation_handle, handle)
 
@@ -1128,7 +1133,6 @@ class ProviderService:
         an internal dict and leaves its descriptor advertised to consumers, which would show
         an editor with nothing behind it.
         """
-        self._require_managed()
         with self._lock:
             operation_handle = self._operations.get(handle)
             if operation_handle is None:
@@ -1148,7 +1152,6 @@ class ProviderService:
         the source metric from then on. Without them it stays a plain AlertCondition that
         only ``set_alert_presence`` moves.
         """
-        self._require_managed()
         with self._lock:
             spec.validate_text()
             source = self.mdib.entities.by_handle(spec.source_handle)
@@ -1164,7 +1167,8 @@ class ProviderService:
 
             handle = spec.handle or self._unique_handle(constants.ALERT_HANDLE_PREFIX + spec.slug)
             node_type = pm.LimitAlertConditionDescriptor if spec.has_limits else pm.AlertConditionDescriptor
-            entity = self.mdib.entities.new_entity(node_type, handle, constants.ALERT_SYSTEM_HANDLE)
+            alert_system = self._alert_system_for_edits()
+            entity = self.mdib.entities.new_entity(node_type, handle, alert_system)
 
             descriptor = entity.descriptor
             descriptor.Type = pm_types.CodedValue(
@@ -1224,7 +1228,7 @@ class ProviderService:
                 signal = self.mdib.entities.new_entity(
                     pm.AlertSignalDescriptor,
                     signal_handle,
-                    constants.ALERT_SYSTEM_HANDLE,
+                    alert_system,
                 )
                 signal.descriptor.ConditionSignaled = handle
                 signal.descriptor.Manifestation = manifestation
@@ -1256,7 +1260,6 @@ class ProviderService:
 
     def remove_alert(self, handle: str) -> None:
         """Delete an alarm condition together with its signals."""
-        self._require_managed()
         with self._lock:
             signal_handles = sorted(self._alert_signals.get(handle, []))
             dependent_handles = {handle, *signal_handles}
@@ -1264,7 +1267,7 @@ class ProviderService:
             if handle in self._alerts:
                 self._coordinate_alert_transition(retiring_handles={handle})
             for action_handle in action_handles:
-                self._sco.unregister_operation_by_handle(action_handle)
+                self._adapter.unregister_operation(action_handle)
                 self._actions.pop(action_handle, None)
 
             self._alert_signals.pop(handle, None)
@@ -1704,7 +1707,7 @@ class ProviderService:
 
     def get_location(self) -> LocationInfo:
         """Where this device says it is."""
-        state = self._native_context_state(pm.LocationContextDescriptor) if self.from_mdib_file else self._associated_context_state(constants.LOCATION_CONTEXT_HANDLE)
+        state = self._associated_context_state(self._context_descriptor(pm.LocationContextDescriptor, create=False))
         detail = getattr(state, "LocationDetail", None) if state is not None else None
         if detail is None:
             return LocationInfo()
@@ -1724,14 +1727,15 @@ class ProviderService:
         state by hand: a location is also a WS-Discovery scope, so changing it has to
         re-announce the device or consumers would keep filtering on the old one.
         """
-        self._require_managed()
         with self._lock:
             info.validate_text()
             if self._provider is None:
                 msg = "provider is not started"
                 raise RuntimeError(msg)
+            handle = self._context_descriptor(pm.LocationContextDescriptor, create=True)
             self._provider.set_location(
-                SdcLocation(
+                location_context_descriptor_handle=handle,
+                location=SdcLocation(
                     fac=info.facility or None,
                     bldng=info.building or None,
                     flr=info.floor or None,
@@ -1744,7 +1748,7 @@ class ProviderService:
 
     def get_patient(self) -> PatientInfo:
         """Who the device says it is attached to."""
-        state = self._native_context_state(pm.PatientContextDescriptor) if self.from_mdib_file else self._associated_context_state(constants.PATIENT_CONTEXT_HANDLE)
+        state = self._associated_context_state(self._context_descriptor(pm.PatientContextDescriptor, create=False))
         core = getattr(state, "CoreData", None) if state is not None else None
         return patient_info_from_biceps(core)
 
@@ -1755,15 +1759,11 @@ class ProviderService:
         overwritten, so the MDIB keeps the history of who was attached when. That is why
         this cannot simply write over one state the way a metric does.
         """
-        self._require_managed()
         if info.is_empty():
             self.clear_patient()
             return
         with self._lock:
-            entity = self.mdib.entities.by_handle(constants.PATIENT_CONTEXT_HANDLE)
-            if entity is None:
-                msg = f"the bootstrap MDIB has no {constants.PATIENT_CONTEXT_HANDLE}"
-                raise RuntimeError(msg)
+            entity = self.mdib.entities.by_handle(self._context_descriptor(pm.PatientContextDescriptor, create=True))
 
             core = pm_types.PatientDemographicsCoreData()
             core.Givenname = info.given_name or None
@@ -1809,21 +1809,16 @@ class ProviderService:
 
     def clear_patient(self) -> None:
         """Detach whoever is currently associated, without putting anyone in their place."""
-        self._require_managed()
         with self._lock:
-            entity = self.mdib.entities.by_handle(constants.PATIENT_CONTEXT_HANDLE)
+            handle = self._context_descriptor(pm.PatientContextDescriptor, create=False)
+            entity = self.mdib.entities.by_handle(handle) if handle is not None else None
             if entity is None:
                 return
             with self.mdib.context_state_transaction() as mgr:
                 disassociated = mgr.disassociate_all(entity.handle)
             logger.info("detached %d patient context state(s)", len(disassociated))
 
-    def _native_context_state(self, node_type):
-        states = [state for entity in self.mdib.entities.by_node_type(node_type)
-                  for state in entity.states.values() if state.ContextAssociation == pm_types.ContextAssociation.ASSOCIATED]
-        return states[0] if len(states) == 1 else None
-
-    def _associated_context_state(self, descriptor_handle: str):  # noqa: ANN202 - an sdc11073 state
+    def _associated_context_state(self, descriptor_handle: str | None):  # noqa: ANN202 - an sdc11073 state
         """The currently associated state of a context, or None when there is none.
 
         A context descriptor holds many states and at most one of them is associated. The
@@ -1852,7 +1847,6 @@ class ProviderService:
         else lands in metric_updates and leaves as an EpisodicMetricReport. So a waveform
         needs the rt transaction and a distribution must not use it.
         """
-        self._require_managed()
         with self._lock:
             spec = self._specs.get(handle)
             if spec is None:
@@ -1873,7 +1867,6 @@ class ProviderService:
 
     def start_generator(self) -> None:
         """Begin generating samples for every unpinned sample-array metric."""
-        self._require_managed()
         if self._profile_import_active:
             self._generator_start_deferred = True
             return
@@ -1905,7 +1898,6 @@ class ProviderService:
         to "take this value". Registering it with the SCO creates the descriptor and emits
         the report, the same route a set operation takes.
         """
-        self._require_managed()
         with self._lock:
             spec.validate_text()
             if self.mdib.entities.by_handle(spec.target_handle) is None:
@@ -1921,7 +1913,7 @@ class ProviderService:
                 operation_handler=self._activate_handler,
                 coded_value=_coded_value(spec.effective_type(), spec.label),
             )
-            self._sco.register_operation(operation)
+            self._sco_for_edits().register_operation(operation)
             self._actions[handle] = spec
             self._set_operating_mode(handle, pm_types.OperatingMode.ENABLED)
             logger.info("added action %r (%s) on %s", spec.label, handle, operation_target)
@@ -1929,7 +1921,6 @@ class ProviderService:
 
     def remove_action(self, handle: str) -> None:
         """Delete an action and every action that transitively targets it."""
-        self._require_managed()
         with self._lock:
             if handle not in self._actions:
                 return
@@ -1939,7 +1930,7 @@ class ProviderService:
                 action_handles.append(handle)
 
             for action_handle in action_handles:
-                self._sco.unregister_operation_by_handle(action_handle)
+                self._adapter.unregister_operation(action_handle)
                 self._actions.pop(action_handle, None)
 
             with self.mdib.descriptor_transaction() as mgr:
@@ -1948,6 +1939,11 @@ class ProviderService:
                     if entity is not None:
                         mgr.remove_entity(entity)
             logger.info("removed action %s and %d dependent action(s)", handle, len(action_handles) - 1)
+
+    def behaviour_extensions(self) -> dict[str, list]:
+        """Toolbox behaviour per descriptor, for an MDIB export that should carry it."""
+        with self._lock:
+            return mdib_io.behaviour_elements(self._specs, self._actions)
 
     def list_actions(self) -> dict[str, ActionSpec]:
         """The specs of every action we published, keyed by handle."""
@@ -1959,7 +1955,6 @@ class ProviderService:
         Deliberately routed through the same effects the remote path uses, so a button here
         and an invocation over the network cannot drift apart.
         """
-        self._require_managed()
         _, alert_error = self._execute_action_effects(handle)
         if alert_error is not None:
             raise alert_error.with_traceback(alert_error.__traceback__)
@@ -2206,15 +2201,22 @@ class ProviderService:
         against each metric.
         """
         if not section:
-            return constants.CHANNEL_HANDLE
+            if self.mdib.entities.by_handle(constants.CHANNEL_HANDLE) is not None:
+                return constants.CHANNEL_HANDLE
+            # A loaded graph has no bootstrap channel. Its first one keeps it unchanged.
+            channel = self._child_of_type(None, pm.ChannelDescriptor)
+            return channel if channel is not None else self._channel_for(constants.DEFAULT_SECTION)
+        existing = self._sections.get(section)
+        if existing is not None and self.mdib.entities.by_handle(existing) is not None:
+            return existing
 
         slug = slugify(section)
         vmd_handle = f"{constants.VMD_HANDLE_PREFIX}{slug}"
         channel_handle = f"{constants.CHANNEL_HANDLE_PREFIX}{slug}"
         vmd = self.mdib.entities.by_handle(vmd_handle)
         channel = self.mdib.entities.by_handle(channel_handle)
-        if vmd is not None and (vmd.node_type != pm.VmdDescriptor or vmd.parent_handle != constants.MDS_HANDLE):
-            msg = f"section {section!r} requires {vmd_handle!r} to be a VmdDescriptor under {constants.MDS_HANDLE!r}"
+        if vmd is not None and (vmd.node_type != pm.VmdDescriptor or vmd.parent_handle != self._anchor_mds()):
+            msg = f"section {section!r} requires {vmd_handle!r} to be a VmdDescriptor under {self._anchor_mds()!r}"
             raise ValueError(msg)
         if channel is not None and (
             channel.node_type != pm.ChannelDescriptor or channel.parent_handle != vmd_handle
@@ -2232,7 +2234,7 @@ class ProviderService:
         # The Vmd has to be committed before the Channel can name it: new_entity looks the
         # parent up in mdib.descriptions, so an uncommitted one is not there yet.
         if vmd is None:
-            vmd = self.mdib.entities.new_entity(pm.VmdDescriptor, vmd_handle, constants.MDS_HANDLE)
+            vmd = self.mdib.entities.new_entity(pm.VmdDescriptor, vmd_handle, self._anchor_mds())
             vmd.descriptor.Type = _coded_value(coding, section)
             self._create_entities([vmd])
 
@@ -2320,6 +2322,61 @@ class ProviderService:
                 handles.add(vmd_handle)
         return entities, handles
 
+    def _anchor_mds(self) -> str:
+        """The MDS edits go into: the bootstrap's, or the first one of a loaded graph."""
+        entity = self.mdib.entities.by_handle(constants.MDS_HANDLE)
+        if entity is not None and entity.node_type == pm.MdsDescriptor:
+            return entity.handle
+        return self.mdib.entities.by_node_type(pm.MdsDescriptor)[0].handle
+
+    def _child_of_type(self, parent: str | None, node_type) -> str | None:  # noqa: ANN001
+        """The first descriptor of a type under parent, or anywhere in the graph for None."""
+        for entity in self.mdib.entities.by_node_type(node_type):
+            if parent is None or entity.parent_handle == parent:
+                return entity.handle
+        return None
+
+    def _ensure_child(self, parent: str, node_type, handle: str, prepare=None) -> str:  # noqa: ANN001
+        """Reuse the graph's own container, and create one only when an edit needs it."""
+        existing = self._child_of_type(parent, node_type)
+        if existing is not None:
+            return existing
+        entity = self.mdib.entities.new_entity(node_type, self._unique_handle(handle), parent)
+        if prepare is not None:
+            prepare(entity)
+        self._create_entities([entity])
+        logger.info("created %s %s for an edit", node_type.localname, entity.handle)
+        return entity.handle
+
+    def _alert_system_for_edits(self) -> str:
+        def switched_on(entity) -> None:  # noqa: ANN001
+            entity.state.ActivationState = pm_types.AlertActivation.ON
+        return self._ensure_child(self._anchor_mds(), pm.AlertSystemDescriptor, constants.ALERT_SYSTEM_HANDLE,
+                                  switched_on)
+
+    def _sco_for_edits(self):  # noqa: ANN202 - an sdc11073 registry
+        if self._sco is None:
+            if self._adapter is None:
+                raise RuntimeError("provider adapter is not available")
+            self._sco = self._adapter.add_sco(self._anchor_mds(), self._unique_handle(constants.SCO_HANDLE))
+            logger.info("created %s for an edit", self._sco.sco_descriptor_container.Handle)
+        return self._sco
+
+    def _context_descriptor(self, node_type, *, create: bool) -> str | None:  # noqa: ANN001
+        """The patient or location context in use: the bootstrap's, the file's, or a new one."""
+        preferred = {
+            pm.PatientContextDescriptor: constants.PATIENT_CONTEXT_HANDLE,
+            pm.LocationContextDescriptor: constants.LOCATION_CONTEXT_HANDLE,
+        }[node_type]
+        entity = self.mdib.entities.by_handle(preferred)
+        if entity is not None and entity.node_type == node_type:
+            return preferred
+        existing = self._child_of_type(None, node_type)
+        if existing is not None or not create:
+            return existing
+        system = self._ensure_child(self._anchor_mds(), pm.SystemContextDescriptor, constants.SYSTEM_CONTEXT_HANDLE)
+        return self._ensure_child(system, node_type, preferred)
+
     def _unique_handle(self, candidate: str) -> str:
         if self.mdib.entities.by_handle(candidate) is None:
             return candidate
@@ -2404,7 +2461,7 @@ class ProviderService:
 
     def _set_demo_mode(self) -> None:
         """Keep the containing MDS coherent with generated Demo metric values."""
-        current = self.mdib.entities.by_handle(constants.MDS_HANDLE).state.OperatingMode
+        current = self.mdib.entities.by_handle(self._anchor_mds()).state.OperatingMode
         if current is not pm_types.MdsOperatingMode.DEMO:
             self._mds_mode_before_demo = current
         self._set_mds_operating_mode(pm_types.MdsOperatingMode.DEMO)
@@ -2417,12 +2474,12 @@ class ProviderService:
         self._mds_mode_before_demo = None
         if prior_mode is None:
             return
-        mds = self.mdib.entities.by_handle(constants.MDS_HANDLE)
+        mds = self.mdib.entities.by_handle(self._anchor_mds())
         if mds is not None and mds.state.OperatingMode is pm_types.MdsOperatingMode.DEMO:
             self._set_mds_operating_mode(prior_mode)
 
     def _set_mds_operating_mode(self, mode: pm_types.MdsOperatingMode) -> None:
-        entity = self.mdib.entities.by_handle(constants.MDS_HANDLE)
+        entity = self.mdib.entities.by_handle(self._anchor_mds())
         if entity is None or entity.state.OperatingMode is mode:
             return
         entity.state.OperatingMode = mode
