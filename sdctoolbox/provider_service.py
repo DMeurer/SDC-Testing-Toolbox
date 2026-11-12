@@ -214,6 +214,8 @@ class ProviderService:
         self._from_mdib_file = False
         # Metrics taken from a file are validated against their own descriptor, not a spec.
         self._adopted_metrics: set[str] = set()
+        # Sample arrays a loaded behaviour export marks as generated.
+        self._file_generated: set[str] = set()
         self._restarting = False
         self._lifecycle_lock = threading.RLock()
 
@@ -271,6 +273,8 @@ class ProviderService:
     def start(self, native_mdib: ProviderMdib | None = None) -> None:
         """Bring the provider up and announce it on the network."""
         self._start_graph(native_mdib, from_mdib_file=native_mdib is not None, initialize_contexts=native_mdib is None)
+        if self._file_generated:
+            self.start_generator()
 
     def _start_graph(self, mdib: ProviderMdib | None, *, from_mdib_file: bool, initialize_contexts: bool = False) -> None:
         """Activate an existing graph without resetting its imported states."""
@@ -297,10 +301,18 @@ class ProviderService:
                 self._operations = adopted.operations
                 self._sections = adopted.sections
                 self._adopted_metrics = set(adopted.specs)
+                behaviour = getattr(mdib, "toolbox_behaviour", {})
                 self._actions = native.apply_behaviour(
-                    mdib, getattr(mdib, "toolbox_behaviour", {}), adopted.specs,
+                    mdib, behaviour, adopted.specs,
                     lambda target, value: native.coerce_value(mdib, target, value, adopted.specs.get(target)),
                 )
+                self._file_generated = {handle for handle, values in behaviour.items() if values.get("generate")}
+                if self._file_generated:
+                    # A behaviour export names every generated array; the others keep the file's samples.
+                    self._sample_generator.pinned.update(
+                        handle for handle, spec in adopted.specs.items()
+                        if spec.is_sample_array and handle not in self._file_generated
+                    )
             # The handler tells us which metric it touched once its transaction has closed, so a
             # value written by a remote consumer raises a limit alarm exactly as a local edit
             # does. It cannot be done from a metrics observable: sdc11073 fires those while
@@ -401,7 +413,8 @@ class ProviderService:
             running = self.generator_running
             self.stop_generator()
             names = ("_operations", "_specs", "_alerts", "_alert_truths", "_alert_signals", "_actions",
-                     "_sections", "_pending_alert_sources", "_mds_mode_before_demo", "_adopted_metrics")
+                     "_sections", "_pending_alert_sources", "_mds_mode_before_demo", "_adopted_metrics",
+                     "_file_generated")
             try:
                 with self._lock:
                     self._restarting = True
@@ -421,6 +434,8 @@ class ProviderService:
                     self._restarting = False
                     if after_start is not None:
                         after_start()
+                if self._file_generated:
+                    self.start_generator()
                 return len(self.list_metrics()), len(self.list_alerts())
             except Exception as error:
                 try:
@@ -482,6 +497,7 @@ class ProviderService:
             self._actions.clear()
             self._sections.clear()
             self._adopted_metrics.clear()
+            self._file_generated.clear()
             self._sample_generator.clear()
             self._mds_mode_before_demo = None
         logger.info("provider %r stopped", self.instance_name)
@@ -1944,7 +1960,14 @@ class ProviderService:
     def behaviour_extensions(self) -> dict[str, list]:
         """Toolbox behaviour per descriptor, for an MDIB export that should carry it."""
         with self._lock:
-            return mdib_io.behaviour_elements(self._specs, self._actions)
+            # Arrays the toolbox added or a file marked always generate; imported ones only while it runs.
+            driven = (set(self._specs) - self._adopted_metrics) | self._file_generated
+            generated = {
+                handle for handle, spec in self._specs.items()
+                if spec.is_sample_array and handle not in self._sample_generator.pinned
+                and (handle in driven or self.generator_running)
+            }
+            return mdib_io.behaviour_elements(self._specs, self._actions, generated)
 
     def list_actions(self) -> dict[str, ActionSpec]:
         """The specs of every action we published, keyed by handle."""

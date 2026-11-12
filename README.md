@@ -356,10 +356,11 @@ existing JSON presets remain available.
 An XML export is **one file containing both `MdDescription` and `MdState`**, including
 current sample blocks and all context states/history. *File → Export config* offers two
 choices: **MDIB (*.xml)** writes plain BICEPS, a minimal file for other tools; **MDIB with
-toolbox behaviour (*.xml)** also stores what BICEPS has no place for (waveform and
-distribution generator shapes, action effects and notes) as `ext:Extension` elements in the
-`urn:sdc-testing-toolbox:behaviour` namespace with `MustUnderstand="false"`, so the device
-loads back complete. The console's `export snapshot.xml` writes the plain form. Combined
+toolbox behaviour (*.xml)** also stores what BICEPS has no place for (which waveforms and
+distributions the generator drives and their shapes, action effects and notes) as
+`ext:Extension` elements in the `urn:sdc-testing-toolbox:behaviour` namespace with
+`MustUnderstand="false"`, so the device loads back complete: the generator starts for the
+marked sample arrays, and unmarked ones keep the samples from the file. The console's `export snapshot.xml` writes the plain form. Combined
 `GetMdibResponse`, message `Mdib`, and participant `MdibContainer` inputs are accepted.
 Separate description/state files are not supported. Invalid XML, unsafe DTD/entity
 declarations, broken references and content the pinned library cannot preserve are
@@ -370,7 +371,8 @@ Duration fields must use the pinned library's SDPi-compatible hour/minute/second
 Loading an MDIB replaces the whole device and **restarts the provider**. Connected
 consumers must reconnect. The instance name/EPR, network binding and TLS settings remain
 local. **Loading changes nothing in the file's data**: no name prefix, no default patient or
-location, no recomputed alarms and no generator; only the SequenceId and version counters
+location, no recomputed alarms and no generator unless the file's toolbox behaviour marks
+sample arrays as generated; only the SequenceId and version counters
 are runtime values. The announced manufacturer, model and serial number come from the MDS
 `MetaData` when present. Toolbox behaviour extensions are read on load and kept out of the
 published MDIB, so consumers never see them; extensions in other namespaces stay as they are.

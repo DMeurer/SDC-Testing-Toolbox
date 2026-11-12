@@ -42,7 +42,7 @@ def _read_behaviour(element, handle: str) -> dict:
     name = etree.QName(element).localname
     try:
         if name == "Generator":
-            result = {}
+            result = {"generate": True}
             if element.get("Shape") is not None:
                 result["shape"] = WaveformShape(element.get("Shape"))
             if element.get("CycleSamples") is not None:
@@ -85,8 +85,13 @@ def _strip_behaviour(mdib_node) -> dict[str, dict]:
     return result
 
 
-def behaviour_elements(specs: dict[str, MetricSpec], actions: dict[str, ActionSpec]) -> dict[str, list]:
-    """The toolbox elements to attach per descriptor handle; defaults are left out."""
+def behaviour_elements(specs: dict[str, MetricSpec], actions: dict[str, ActionSpec],
+                       generated: set[str] = frozenset()) -> dict[str, list]:
+    """The toolbox elements to attach per descriptor handle; default settings are left out.
+
+    Every sample array in ``generated`` gets a Generator element, even with default settings,
+    because its presence is what makes a reload start the generator for it.
+    """
     defaults = MetricSpec("defaults", MetricKind.NUMBER)
     result: dict[str, list] = {}
     for handle, spec in specs.items():
@@ -98,7 +103,7 @@ def behaviour_elements(specs: dict[str, MetricSpec], actions: dict[str, ActionSp
                 attributes["CycleSamples"] = str(spec.cycle_samples)
         elif spec.kind is MetricKind.DISTRIBUTION and spec.distribution_shape is not defaults.distribution_shape:
             attributes["DistributionShape"] = spec.distribution_shape.value
-        if attributes:
+        if handle in generated:
             result[handle] = [etree.Element(_tb("Generator"), attributes)]
     for handle, action in actions.items():
         # Written even without effects, so a reload knows the toolbox may run this action.

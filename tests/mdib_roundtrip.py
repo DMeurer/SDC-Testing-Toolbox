@@ -649,6 +649,37 @@ class BehaviourExtensionTests(unittest.TestCase):
             config.save(service, target, behaviour=True)
             return target.read_bytes()
 
+    def reload(self, payload: bytes) -> ProviderService:
+        service = ProviderService(instance_name=f"reloaded-{self._testMethodName}")
+        self.addCleanup(service.stop)
+        service.start(self.io.parse_mdib(payload))
+        return service
+
+    def test_generated_waveforms_are_marked_and_generate_again_after_reload(self) -> None:
+        sine = self.service.add_metric(MetricSpec("Sine", MetricKind.WAVEFORM, minimum=Decimal("0"), maximum=Decimal("10")))
+        self.assertTrue(self.service.generator_running)
+        payload = self.export(behaviour=True)
+        markers = {node.getparent().getparent().get("Handle")
+                   for node in etree.fromstring(payload).iter(f"{{{BEHAVIOUR}}}Generator")}
+        self.assertIn(sine, markers, "a default sine is generated too, so it needs a marker")
+        self.assertIn("demo.wave", markers, "an imported waveform the running generator drives is marked")
+        self.assertTrue(self.reload(payload).generator_running)
+        self.assertFalse(self.reload(self.export(behaviour=False)).generator_running, "a plain file stays static")
+
+    def test_unmarked_waveforms_keep_their_file_samples_while_others_generate(self) -> None:
+        wave, _ = self.configure()  # generator stopped: the imported demo.wave is not driven
+        exported = self.service.get_samples("demo.wave")
+        payload = self.export(behaviour=True)
+        markers = {node.getparent().getparent().get("Handle")
+                   for node in etree.fromstring(payload).iter(f"{{{BEHAVIOUR}}}Generator")}
+        self.assertEqual(markers, {wave})
+        reloaded = self.reload(payload)
+        self.assertTrue(reloaded.generator_running)
+        reloaded.stop_generator()
+        reloaded._sample_generator.publish_once(force=True)
+        self.assertEqual(reloaded.get_samples("demo.wave"), exported)
+        self.assertTrue(reloaded.get_samples(wave))
+
     def test_action_with_a_refused_effect_reloads_and_is_still_refused(self) -> None:
         from sdctoolbox.model import ActionSpec
 
