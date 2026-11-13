@@ -360,7 +360,7 @@ toolbox behaviour (*.xml)** also stores what BICEPS has no place for (which wave
 distributions the generator drives and their shapes, action effects and notes) as
 `ext:Extension` elements in the `urn:sdc-testing-toolbox:behaviour` namespace with
 `MustUnderstand="false"`, so the device loads back complete: the generator starts for the
-marked sample arrays, and unmarked ones keep the samples from the file. The console's `export snapshot.xml` writes the plain form. Combined
+marked sample arrays, and unmarked ones keep the samples from the file. The console's `export snapshot.xml` writes the plain form and `export --behaviour snapshot.xml` the one with behaviour. Combined
 `GetMdibResponse`, message `Mdib`, and participant `MdibContainer` inputs are accepted.
 Separate description/state files are not supported. Invalid XML, unsafe DTD/entity
 declarations, broken references and content the pinned library cannot preserve are

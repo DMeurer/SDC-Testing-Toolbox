@@ -160,6 +160,25 @@ class GuiMdibTests(unittest.TestCase):
             self.assertIsNone(self.service.mdib.entities.by_handle("demo.rate"))
             dialog.deleteLater()
 
+    def test_console_export_writes_behaviour_on_request(self) -> None:
+        from examples.console import ProviderShell
+        from sdctoolbox.model import ActionSpec
+
+        self.window.apply_config(NativeMdibConfig(original_mdib()), "original.xml")
+        self.service.add_action(ActionSpec("Run", "demo.root", effects={"demo.mode": "RUN"}))
+        shell = ProviderShell(self.service)
+        with tempfile.TemporaryDirectory() as directory:
+            plain, marked = Path(directory) / "plain.xml", Path(directory) / "with behaviour.xml"
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                shell.do_export(str(plain))
+                shell.do_export(f"--behaviour {marked}")
+                shell.do_export(f"--behaviour {Path(directory) / 'profile.json'}")
+            self.assertNotIn(b"urn:sdc-testing-toolbox:behaviour", plain.read_bytes())
+            self.assertIn(b"urn:sdc-testing-toolbox:behaviour", marked.read_bytes())
+            self.assertFalse((Path(directory) / "profile.json").exists())
+            self.assertIn("--behaviour needs an .xml file", output.getvalue())
+
     def test_command_line_starts_from_native_snapshot(self) -> None:
         root = Path(__file__).resolve().parent.parent
         result = subprocess.run(
