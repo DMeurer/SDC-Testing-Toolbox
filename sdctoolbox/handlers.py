@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 from sdc11073.provider.operations import ExecuteParameters, ExecuteResult
 from sdc11073.provider.porttypes.getserviceimpl import GetService
 from sdc11073.provider.porttypes.setserviceimpl import SetService
+from sdc11073.provider.subscriptionmgr_async import SubscriptionsManagerPathAsync
 from sdc11073.xml_types import msg_types, pm_types
 from sdc11073.xml_types import pm_qnames as pm
 
@@ -81,6 +82,20 @@ def reporting_refusals(
         return result
 
     return wrapped
+
+
+class QuietSubscriptionsManager(SubscriptionsManagerPathAsync):
+    """Skip reports nobody subscribed to.
+
+    The library builds every report and waits for its send thread even when there is no one
+    to send it to. A generated waveform reports four times a second, so on a host with many
+    providers those empty hand-offs were most of the CPU time.
+    """
+
+    def send_to_subscribers(self, payload, action: str, mdib_version_group) -> None:  # noqa: ANN001
+        if not self._get_subscriptions_for_action(action):
+            return
+        super().send_to_subscribers(payload, action, mdib_version_group)
 
 
 class ReasonedSetService(SetService):

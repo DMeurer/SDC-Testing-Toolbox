@@ -10,8 +10,10 @@ from __future__ import annotations
 import errno
 import logging
 import os
+import re
 import socket
 import threading
+from collections import deque
 from typing import TYPE_CHECKING
 
 from sdc11073.consumer import consumerimpl
@@ -147,7 +149,39 @@ class RangeHttpServerThread(HttpServerThreadBase):
             self.logger.info("http server stopped.")
 
 
+# The action URI of a WS-Discovery 1.1 message, read from the raw datagram before any parsing.
+_DISCOVERY_ACTION = re.compile(
+    rb"<(?:[\w.-]+:)?Action\b[^>]*>\s*http://docs\.oasis-open\.org/ws-dd/ns/discovery/2009/01/(\w+)\s*<",
+)
+# All a provider's discovery does is answer these; Hello, Bye and the match replies of other
+# devices are for consumers.
+PROVIDER_ACTIONS = frozenset({b"Probe", b"Resolve"})
+
+
 class _RangeNetworkingThread(networkingthread.NetworkingThread):
+    def __init__(self, *args, accepted_actions: frozenset[bytes] | None = None, **kwargs) -> None:  # noqa: ANN002, ANN003
+        super().__init__(*args, **kwargs)
+        self._accepted_actions = accepted_actions
+        self._recent: deque[bytes] = deque(maxlen=200)
+        self._recent_set: set[bytes] = set()
+
+    def _add_to_recv_queue(self, addr: str, data: bytes) -> None:
+        # Every discovery socket on the network gets every multicast datagram, and SOAP-over-UDP
+        # sends each message up to five times byte for byte. The library validates each copy
+        # against the schema before it notices the repeat, which with hundreds of providers is
+        # most of their startup time. Drop repeats and, for a provider, what it never answers.
+        if data in self._recent_set:
+            return
+        if len(self._recent) == self._recent.maxlen:
+            self._recent_set.discard(self._recent[0])
+        self._recent.append(data)
+        self._recent_set.add(data)
+        if self._accepted_actions is not None:
+            action = _DISCOVERY_ACTION.search(data)
+            if action is not None and action.group(1) not in self._accepted_actions:
+                return
+        super()._add_to_recv_queue(addr, data)
+
     def _create_multi_out_uni_in_out_socket(self, addr: str, multicast_ttl: int) -> socket.SocketType:
         # shortcut: copy of sdc11073 3.0's method with the bind replaced; recheck on upgrade.
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -167,7 +201,13 @@ class RangeWSDiscovery(WSDiscovery):
     """WS-Discovery whose unicast reply socket is bound inside the port range.
 
     Probe matches and resolve matches come back to this socket, so a firewall must let it in.
+    ``accepted_actions`` limits which discovery messages are parsed at all; a provider passes
+    PROVIDER_ACTIONS.
     """
+
+    def __init__(self, *args, accepted_actions: frozenset[bytes] | None = None, **kwargs) -> None:  # noqa: ANN002, ANN003
+        super().__init__(*args, **kwargs)
+        self._accepted_actions = accepted_actions
 
     def _start_threads(self) -> None:
         # shortcut: copy of sdc11073 3.0's method with our thread class; recheck on upgrade.
@@ -179,6 +219,7 @@ class RangeWSDiscovery(WSDiscovery):
             self._logger,
             self.multicast_port,
             self.multicast_ttl,
+            accepted_actions=self._accepted_actions,
         )
         self._networking_thread.start()
 

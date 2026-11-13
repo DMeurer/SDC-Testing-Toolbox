@@ -30,6 +30,7 @@ from sdc11073.xml_types.xml_structure import DateOfBirthProperty
 from . import constants, ports
 from .config import _unique_in
 from .handlers import (
+    QuietSubscriptionsManager,
     ReasonedSetService,
     VersionedGetService,
     apply_metric_value,
@@ -40,7 +41,7 @@ from .http_server import configure_request_handler
 from . import mdib_io
 from .mdib_io import NativeMdibConfig, mdib_bytes, parse_mdib
 from . import native_mdib as native
-from .ports import RangeWSDiscovery
+from .ports import PROVIDER_ACTIONS, RangeWSDiscovery
 from .model import (
     DEFAULT_PATIENT,
     ActionSpec,
@@ -285,7 +286,7 @@ class ProviderService:
         try:
             # Validate key, certificate, CA bundle, and TLS policy before any listener exists.
             self._tls_contexts = self.tls_config.create_contexts() if self.tls_config is not None else None
-            self._discovery = RangeWSDiscovery(self.ip)
+            self._discovery = RangeWSDiscovery(self.ip, accepted_actions=PROVIDER_ACTIONS)
             self._discovery.start()
 
             self._from_mdib_file = from_mdib_file
@@ -353,6 +354,8 @@ class ProviderService:
 
             provider_components = provider_components_async_factory()
             provider_components.hosted_services["Set"] = [ReasonedSetService]
+            provider_components.subscriptions_manager_class = dict.fromkeys(
+                provider_components.subscriptions_manager_class, QuietSubscriptionsManager)
             provider_components.hosted_services["Get"] = [
                 VersionedGetService if port_type is GetService else port_type
                 for port_type in provider_components.hosted_services["Get"]

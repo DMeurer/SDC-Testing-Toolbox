@@ -29,6 +29,7 @@ from gui_test_support import application, pump, wait_for
 import shiboken6
 from sdc11073.consumer import consumerimpl
 from sdc11073.provider import providerimpl
+from sdc11073.wsdiscovery import networkingthread
 
 from sdctoolbox import constants, ports
 from sdctoolbox.consumer_service import ConsumerService
@@ -282,6 +283,55 @@ def force_fallback() -> None:
     """Make one bind fall back by filling a one-port range."""
     with occupied_range(free_port_pair(), 1, "TCP"), socket.socket() as sock:
         ports.bind_in_range(sock, LOOPBACK, "TCP")
+
+
+def discovery_datagram(action: str, message_id: str) -> bytes:
+    return (
+        '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:a="http://www.w3.org/2005/08/addressing">'
+        f"<s:Header><a:Action>http://docs.oasis-open.org/ws-dd/ns/discovery/2009/01/{action}</a:Action>"
+        f"<a:MessageID>urn:uuid:{message_id}</a:MessageID></s:Header><s:Body/></s:Envelope>"
+    ).encode()
+
+
+class DiscoveryIntake(unittest.TestCase):
+    """Every discovery socket on a host gets every multicast datagram, each sent up to five times.
+
+    With hundreds of providers, parsing all of that is what made startup slow.
+    """
+
+    def received(self, discovery, datagrams: list[bytes]) -> list[bytes]:  # noqa: ANN001
+        """The datagrams that are handed on for parsing, in order."""
+        passed: list[bytes] = []
+        with patch.object(networkingthread.NetworkingThread, "_add_to_recv_queue",
+                          lambda _self, _addr, data: passed.append(data)):
+            for data in datagrams:
+                discovery._networking_thread._add_to_recv_queue((LOOPBACK, 3702), data)  # noqa: SLF001
+        return [data for data in passed if data in datagrams]
+
+    def start(self, discovery):  # noqa: ANN001, ANN201
+        discovery.start()
+        self.addCleanup(discovery.stop)
+        return discovery
+
+    def test_repeated_datagrams_are_parsed_once(self) -> None:
+        discovery = self.start(ports.RangeWSDiscovery(LOOPBACK))
+        hello, other = discovery_datagram("Hello", "repeat-1"), discovery_datagram("Hello", "repeat-2")
+        self.assertEqual(self.received(discovery, [hello] * 5 + [other]), [hello, other])
+
+    def test_consumer_discovery_still_reads_announcements(self) -> None:
+        discovery = self.start(ports.RangeWSDiscovery(LOOPBACK))
+        messages = [discovery_datagram(action, f"consumer-{action}") for action in ("Hello", "Bye", "ProbeMatches")]
+        self.assertEqual(self.received(discovery, messages), messages)
+
+    def test_provider_discovery_only_reads_what_it_answers(self) -> None:
+        service = ProviderService(ip=LOOPBACK, instance_name="port-range-intake")
+        self.addCleanup(service.stop)
+        service.start()
+        ignored = [discovery_datagram(action, f"provider-{action}")
+                   for action in ("Hello", "Bye", "ProbeMatches", "ResolveMatches")]
+        answered = [discovery_datagram(action, f"provider-{action}") for action in ("Probe", "Resolve")]
+        unknown = [b"<not-discovery/>"]
+        self.assertEqual(self.received(service._discovery, ignored + answered + unknown), answered + unknown)  # noqa: SLF001
 
 
 class PortWarningInMainWindow(unittest.TestCase):

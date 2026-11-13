@@ -9,6 +9,7 @@ from __future__ import annotations
 import sys
 import threading
 import unittest
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,8 +22,10 @@ from sdc11073.consumer.consumerimpl import SdcConsumer
 from sdc11073.definitions_sdc import SdcV1Definitions
 from sdc11073.mdib import ConsumerMdib
 from sdc11073.mdib.mdibbase import EntityGetter
+from sdc11073.provider.subscriptionmgr_async import AsyncioEventLoopThread
 
 from sdctoolbox.consumer_service import RemoteDevice
+from sdctoolbox.model import MetricKind, MetricSpec
 from sdctoolbox.provider_service import ProviderService
 
 
@@ -59,6 +62,24 @@ class ScalingTests(unittest.TestCase):
 
     def test_reset_copies_a_constant_number_of_entities_per_metric(self) -> None:
         self.assert_linear(reset=True)
+
+    def test_reports_without_subscribers_do_not_wake_the_send_thread(self) -> None:
+        # A generated waveform reports four times a second; with hundreds of providers per
+        # host the empty hand-offs to each provider's send thread were most of the CPU time.
+        calls = []
+        original = AsyncioEventLoopThread.run_coro
+
+        def counting(self, coro):  # noqa: ANN001, ANN202
+            calls.append(coro)
+            return original(self, coro)
+
+        with ProviderService(ip="127.0.0.1", instance_name="scaling-quiet") as service:
+            handle = service.add_metric(MetricSpec("Quiet", MetricKind.NUMBER, initial_value=Decimal("1")))
+            with patch.object(AsyncioEventLoopThread, "run_coro", counting):
+                for value in range(10):
+                    service.set_value(handle, Decimal(value))
+            self.assertEqual(service.get_value(handle), Decimal("9"))
+        self.assertEqual(len(calls), 0)
 
     def test_consumer_reads_do_not_copy_the_remote_mdib(self) -> None:
         # The GUI polls these; each used to deep-copy every entity, even for one metric.
