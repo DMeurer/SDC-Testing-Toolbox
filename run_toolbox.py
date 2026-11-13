@@ -34,7 +34,8 @@ from sdc11073.loghelper import basic_logging_setup
 from sdctoolbox import config, constants, native_mdib
 from sdctoolbox.gui.main_window import MainWindow
 from sdctoolbox.gui.startup_dialog import StartupDialog, StartupSettings
-from sdctoolbox.gui.styling import set_dark_mode
+from sdctoolbox.gui.icons import app_icon
+from sdctoolbox.gui.styling import apply_theme_style, set_dark_mode
 from sdctoolbox.model import validate_xml_text
 from sdctoolbox.network import normalize_ipv4
 from sdctoolbox.provider_service import ProviderService
@@ -220,8 +221,11 @@ def closing_on_ctrl_c() -> Iterator[None]:
 def create_application(theme: Literal["light", "dark"] | None) -> QApplication:
     """Apply an explicit theme before any dialog or main window is constructed."""
     app = QApplication(sys.argv)
+    QGuiApplication.setWindowIcon(app_icon())
     if theme is not None:
         set_dark_mode(theme == "dark")
+    else:
+        apply_theme_style()
     return app
 
 

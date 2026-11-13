@@ -446,6 +446,11 @@ def main() -> int:
         fullscreen_checks(report, fixture)
         theme_checks(report, fixture)
 
+        report.check(not window.split_view_enabled and not window.split_view_action.isChecked(),
+                     "the window starts with tabs, not split view")
+        report.check(window.tabs.count() == 2, "tabs hold both panels at start")
+        window.set_split_view(True)
+        pump(app)
         report.check(window.splitter.count() == 2, "split view contains both panels")
         report.check(window.splitter.orientation() == Qt.Horizontal, "split panels are side by side")
         report.check(not window.splitter.childrenCollapsible(), "neither split panel can collapse")

@@ -229,7 +229,10 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         pane = window.provider_pane
 
         print("\n1. Window layout")
-        report.check(window.split_view_enabled, "starts split")
+        report.check(not window.split_view_enabled, "starts as tabs")
+        window.split_view_action.setChecked(True)
+        pump(app)
+        report.check(window.split_view_enabled, "split view can be switched on")
         report.check(window.splitter.count() == 2, "two panels", str(window.splitter.count()))  # noqa: PLR2004
         report.check(
             window.splitter.orientation() == Qt.Horizontal,
@@ -340,7 +343,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
 
         print("\n1c. Switching layout")
         report.check(window.split_view_action.isCheckable(), "split view is a checkbox")
-        report.check(window.split_view_action.isChecked(), "and starts on")
+        report.check(window.split_view_action.isChecked(), "and is ticked while split")
 
         window.split_view_action.setChecked(False)
         pump(app)
