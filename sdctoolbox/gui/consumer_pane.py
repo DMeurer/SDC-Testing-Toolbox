@@ -70,6 +70,8 @@ if TYPE_CHECKING:
     from ..model import RemoteMetric
 
 logger = logging.getLogger("sdctoolbox.gui.consumer")
+# A burst of discovery answers is listed once, this long after its first answer.
+DEVICE_REFRESH_DELAY_MS = 200
 
 COLUMNS = ["Handle", "Label", "Kind", "Value", "Range", "Unit", "Writable"]
 COL_HANDLE, COL_LABEL, COL_KIND, COL_VALUE, COL_RANGE, COL_UNIT, COL_WRITABLE = range(len(COLUMNS))
@@ -168,6 +170,7 @@ class ConsumerPane(QWidget):
         # Every EPR listed this session. "Connect next" only reacts to one outside this set,
         # so a known device restarting under the same name does not trigger it.
         self._seen_eprs: set[str] = set()
+        self._device_refresh_pending = False
         self._listed_snapshot: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
         # The metric the in-flight set targets, so its card can show the device's answer.
         self._invoked_handle: str | None = None
@@ -364,7 +367,7 @@ class ConsumerPane(QWidget):
         again), a slow background probe keeps entries fresh, and a short refresh tick lets
         providers that vanished without a Bye age out of the list.
         """
-        self.discovery_changed.connect(self._refresh_devices)
+        self.discovery_changed.connect(self._schedule_device_refresh)
         self.service.set_discovery_listener(self.discovery_changed.emit)
         self.provider_departed.connect(self._on_provider_departed)
         self.service.set_departure_listener(self.provider_departed.emit)
@@ -378,6 +381,22 @@ class ConsumerPane(QWidget):
         self._probe_timer.timeout.connect(self._background_probe)
         self._probe_timer.start()
         self._background_probe()
+
+    def _schedule_device_refresh(self) -> None:
+        """List what discovery knows once per burst of discovery traffic.
+
+        Hundreds of providers answer one probe within half a second, each answer firing this
+        signal. Listing every device again per answer, in every connection tab, saturated the
+        GUI thread; a new device now shows up at most DEVICE_REFRESH_DELAY_MS later.
+        """
+        if self._device_refresh_pending or self._shutdown:
+            return
+        self._device_refresh_pending = True
+        QTimer.singleShot(DEVICE_REFRESH_DELAY_MS, self, self._run_device_refresh)
+
+    def _run_device_refresh(self) -> None:
+        self._device_refresh_pending = False
+        self._refresh_devices()
 
     def _background_probe(self) -> None:
         if self._shutdown:

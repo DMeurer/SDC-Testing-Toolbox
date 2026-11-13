@@ -32,6 +32,7 @@ from sdc11073.provider.subscriptionmgr_async import AsyncioEventLoopThread
 
 from sdctoolbox import config
 from sdctoolbox.consumer_service import RemoteDevice
+from sdctoolbox.gui.consumer_pane import ConsumerPane
 from sdctoolbox.gui.main_window import MainWindow
 from sdctoolbox.gui.provider_pane import ProviderPane
 from sdctoolbox.model import MetricKind, MetricSpec
@@ -195,6 +196,38 @@ class ScalingTests(unittest.TestCase):
             finally:
                 window.close()
                 app.processEvents()
+
+
+    def test_a_burst_of_discovery_answers_refreshes_the_device_list_once(self) -> None:
+        # 450 providers answer a probe within half a second; listing them again for every
+        # answer, in every connection tab, saturated the GUI thread.
+        app = QApplication.instance() or QApplication([])
+        pane = ConsumerPane("127.0.0.1")
+        try:
+            refreshes = []
+            original = ConsumerPane._refresh_devices
+            with patch.object(ConsumerPane, "_refresh_devices", lambda self: (refreshes.append(1), original(self))):
+                for _ in range(50):
+                    pane.discovery_changed.emit()
+                    app.processEvents()
+                self.assertTrue(wait_until(lambda: refreshes, timeout=2, pump=app.processEvents))
+                wait_until(lambda: False, timeout=0.5, pump=app.processEvents, check_boundary=False)
+            self.assertLessEqual(len(refreshes), 2, "50 discovery events")
+        finally:
+            pane.shutdown()
+            pane.deleteLater()
+            app.processEvents()
+
+
+    def test_generated_samples_are_published_without_copying_entities(self) -> None:
+        # 80 generated waveforms at four blocks a second copied 320 whole entities a second.
+        with ProviderService(ip="127.0.0.1", instance_name="scaling-samples") as service:
+            service.import_profile(big_device(40))
+            service.stop_generator()
+            waves = [h for h, spec in service.list_metrics().items() if spec.is_sample_array]
+            before = {h: service.get_samples(h) for h in waves}
+            self.assertEqual(entity_copies(service._sample_generator.publish_once), 0)  # noqa: SLF001
+            self.assertTrue(all(service.get_samples(h) != before[h] for h in waves), "new blocks were published")
 
 
 if __name__ == "__main__":

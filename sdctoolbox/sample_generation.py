@@ -7,10 +7,12 @@ import math
 import random
 import threading
 import time
+from copy import deepcopy
 from dataclasses import dataclass
 from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal, localcontext
 from typing import TYPE_CHECKING
 
+from sdc11073.mdib import mdibbase
 from sdc11073.xml_types import msg_qnames, pm_types
 from sdc11073.xml_types.dataconverters import DecimalConverter
 
@@ -73,11 +75,17 @@ class SamplePublisher:
         determination_time: float,
     ) -> _PreparedSamples:
         prepared = [fixed_point_decimal(validate_decimal(sample, "sample"), "sample") for sample in samples]
-        entity = self._mdib().entities.by_handle(handle)
-        if entity is None:
-            msg = f"no metric with handle {handle!r}"
-            raise KeyError(msg)
-        ranges = entity.descriptor.TechnicalRange
+        mdib = self._mdib()
+        with mdib.mdib_lock:
+            descriptor = mdib.descriptions.handle.get_one(handle, allow_none=True)
+            state = mdib.states.descriptor_handle.get_one(handle, allow_none=True) if descriptor else None
+            if state is None:
+                msg = f"no metric with handle {handle!r}"
+                raise KeyError(msg)
+            # Only the state is changed and written; the library's entity getter would also
+            # deep-copy the descriptor, for every waveform four times a second.
+            entity = mdibbase.Entity(mdib, descriptor, deepcopy(state))
+            ranges = list(descriptor.TechnicalRange)
         # Sample granularity is not a setpoint grid: enforce bounds, not StepWidth.
         for sample in prepared:
             if ranges and not any(
@@ -135,9 +143,10 @@ class SamplePublisher:
 
     def _committed(self, prepared: Sequence[_PreparedSamples]) -> set[str]:
         committed = set()
+        mdib = self._mdib()
         for item in prepared:
-            entity = self._mdib().entities.by_handle(item.handle)
-            if entity is not None and entity.state.StateVersion > item.old_state_version:
+            state = mdib.states.descriptor_handle.get_one(item.handle, allow_none=True)
+            if state is not None and state.StateVersion > item.old_state_version:
                 committed.add(item.handle)
         return committed
 
