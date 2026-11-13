@@ -14,7 +14,7 @@ from decimal import Decimal
 from html import escape
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QSignalBlocker, Qt
+from PySide6.QtCore import QSignalBlocker, Qt, QTimer
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -36,7 +36,7 @@ from sdc11073.xml_types import pm_types
 from lxml import etree
 
 from ..model import MetricKind
-from ..mdib_io import mdib_bytes
+from ..mdib_io import live_entities, mdib_bytes
 from .context_dialog import ContextDialog
 from .decimal_input import DecimalInputError, parse_decimal_input
 from .helpers import (
@@ -105,6 +105,7 @@ class ProviderPane(QWidget):
         # Guards against the table's own updates being mistaken for user clicks.
         self._refreshing = False
         self._editor_definition = None
+        self._pending_rebuilds: list = []
 
         self._build_ui()
 
@@ -117,8 +118,8 @@ class ProviderPane(QWidget):
         self.bridge.descriptors_updated.connect(self._on_descriptors_changed, Qt.QueuedConnection)
         self.bridge.descriptors_deleted.connect(self._on_descriptors_changed, Qt.QueuedConnection)
         self.bridge.operations_changed.connect(self._on_operations_changed, Qt.QueuedConnection)
-        self.bridge.alerts_changed.connect(lambda _: self.refresh_alerts())
-        self.bridge.contexts_changed.connect(lambda _: self.refresh_contexts())
+        self.bridge.alerts_changed.connect(lambda _: self._schedule(self.refresh_alerts))
+        self.bridge.contexts_changed.connect(lambda _: self._schedule(self.refresh_contexts))
         # Waveforms travel as a WaveformStream, not an EpisodicMetricReport, so they
         # never reach metrics_changed.
         self.bridge.waveforms_changed.connect(self._on_waveforms_changed)
@@ -391,9 +392,19 @@ class ProviderPane(QWidget):
     def _refresh_native_tree(self) -> None:
         """Keep every imported entity inspectable, including ones without a metric card."""
         self.native_tree.clear()
-        entities = dict(self.service.mdib.entities.items())
+        mdib = self.service.mdib
+        with mdib.mdib_lock:
+            # Handles, types and state handles only, read in place rather than copied.
+            entities = {
+                entity.handle: (entity.node_type.localname, entity.parent_handle, [
+                    (getattr(state, "Handle", None) or entity.handle, state.NODETYPE.localname)
+                    for state in (entity.states if entity.descriptor.is_context_descriptor else [entity.state])
+                    if state is not None
+                ])
+                for entity in live_entities(mdib, include_contexts=True)
+            }
+            snapshot = etree.fromstring(mdib_bytes(mdib))[0]
         specs = self.service.list_metrics()
-        snapshot = etree.fromstring(mdib_bytes(self.service.mdib))[0]
         descriptor_nodes = {}
 
         def collect_descriptors(parent):
@@ -406,12 +417,12 @@ class ProviderPane(QWidget):
         state_nodes = {node.get("Handle") or node.get("DescriptorHandle"): node for node in snapshot.find(pm.MdState)}
         self._native_state_items = {}
         self._native_items = {
-            handle: QTreeWidgetItem([handle, entity.node_type.localname, ""])
-            for handle, entity in entities.items()
+            handle: QTreeWidgetItem([handle, node_type, ""])
+            for handle, (node_type, _parent, _states) in entities.items()
         }
-        for handle, entity in entities.items():
+        for handle, (_node_type, parent_handle, states) in entities.items():
             item = self._native_items[handle]
-            parent = self._native_items.get(entity.parent_handle)
+            parent = self._native_items.get(parent_handle)
             if parent is None:
                 self.native_tree.addTopLevelItem(item)
             else:
@@ -419,11 +430,9 @@ class ProviderPane(QWidget):
             descriptor_node = descriptor_nodes.get(handle)
             if descriptor_node is not None:
                 item.setToolTip(1, f"<pre>{escape(etree.tostring(descriptor_node, encoding='unicode'))}</pre>")
-            states = entity.states.values() if hasattr(entity, "states") else [entity.state]
-            for state in states:
-                state_handle = getattr(state, "Handle", handle)
+            for state_handle, state_type in states:
                 node = state_nodes[state_handle]
-                child = QTreeWidgetItem([state_handle, state.NODETYPE.localname, ""])
+                child = QTreeWidgetItem([state_handle, state_type, ""])
                 child.setToolTip(1, f"<pre>{escape(etree.tostring(node, encoding='unicode'))}</pre>")
                 item.addChild(child)
                 self._native_state_items[state_handle] = child
@@ -522,18 +531,34 @@ class ProviderPane(QWidget):
             for descriptor in descriptors_by_handle.values()
         }
         if node_types & (METRIC_DESCRIPTOR_TYPES | SET_OPERATION_DESCRIPTOR_TYPES):
-            self.refresh()
+            self._schedule(self.refresh)
         if node_types & ALERT_DESCRIPTOR_TYPES:
-            self.refresh_alerts()
+            self._schedule(self.refresh_alerts)
         if pm.ActivateOperationDescriptor in node_types:
-            self.refresh_actions()
+            self._schedule(self.refresh_actions)
+
+    def _schedule(self, rebuild) -> None:  # noqa: ANN001
+        """Rebuild a view once the current burst of MDIB signals has been delivered.
+
+        Importing a profile changes hundreds of descriptors and operations, each arriving as
+        its own signal. Rebuilding the pane for every one left the window "Not Responding".
+        """
+        if not self._pending_rebuilds:
+            QTimer.singleShot(0, self, self._run_scheduled)
+        if rebuild not in self._pending_rebuilds:
+            self._pending_rebuilds.append(rebuild)
+
+    def _run_scheduled(self) -> None:
+        pending, self._pending_rebuilds = self._pending_rebuilds, []
+        for rebuild in pending:
+            rebuild()
 
     def _on_operations_changed(self, states_by_handle: dict) -> None:
         """Follow operation modes in metric controls and local action availability."""
         changed_handles = set(states_by_handle)
         action_handles = set(self.service.list_actions())
         if changed_handles & action_handles:
-            self.refresh_actions()
+            self._schedule(self.refresh_actions)
 
         metric_operation_handles = {
             operation_handle
@@ -541,7 +566,7 @@ class ProviderPane(QWidget):
             if (operation_handle := self.service.operation_handle_for(metric_handle)) is not None
         }
         if changed_handles & metric_operation_handles:
-            self.refresh()
+            self._schedule(self.refresh)
 
     # -- alarms --------------------------------------------------------------------
 
@@ -968,8 +993,9 @@ class ProviderPane(QWidget):
 
     def _operation_enabled(self, handle: str) -> bool:
         """Whether an operation is currently available, including its BICEPS default."""
-        entity = self.service.mdib.entities.by_handle(handle)
-        if entity is None:
+        # Read in place: the library's entity getter deep-copies, and this runs for every row.
+        state = self.service.mdib.states.descriptor_handle.get_one(handle, allow_none=True)
+        if state is None:
             return False
-        mode = getattr(entity.state, "OperatingMode", None)
+        mode = getattr(state, "OperatingMode", None)
         return mode is None or mode == pm_types.OperatingMode.ENABLED

@@ -6,18 +6,22 @@ large import quadratic. These tests count those copies instead of timing, so the
 
 from __future__ import annotations
 
+import os
 import sys
+import tempfile
 import threading
 import unittest
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 from perf_stress import big_device
+from PySide6.QtWidgets import QApplication
 from script_support import wait_until
 from sdc11073.consumer.consumerimpl import SdcConsumer
 from sdc11073.definitions_sdc import SdcV1Definitions
@@ -26,8 +30,13 @@ from sdc11073.httpserver.compression import GzipCompressionHandler
 from sdc11073.mdib.mdibbase import EntityGetter
 from sdc11073.provider.subscriptionmgr_async import AsyncioEventLoopThread
 
+from sdctoolbox import config
 from sdctoolbox.consumer_service import RemoteDevice
+from sdctoolbox.gui.main_window import MainWindow
+from sdctoolbox.gui.provider_pane import ProviderPane
 from sdctoolbox.model import MetricKind, MetricSpec
+from sdctoolbox.mdib_io import parse_mdib
+from sdctoolbox.native_mdib import adopt
 from sdctoolbox.provider_service import ProviderService
 
 
@@ -128,6 +137,64 @@ class ScalingTests(unittest.TestCase):
             finally:
                 consumer.stop_all()
         self.assertNotIn(0, compressed)
+
+
+    def test_provider_pane_rebuilds_once_per_burst_and_without_copies(self) -> None:
+        # A profile import sends one operation change per controllable metric; rebuilding the
+        # whole pane for each, with a copied entity per row, left the window "Not Responding".
+        app = QApplication.instance() or QApplication([])
+        with ProviderService(ip="127.0.0.1", instance_name="scaling-pane") as service:
+            service.import_profile(big_device(40))
+            pane = ProviderPane(service)
+            try:
+                operations = [h for m in service.list_metrics() if (h := service.operation_handle_for(m))]
+                rebuilds = []
+                original = ProviderPane.refresh
+                with patch.object(ProviderPane, "refresh", lambda self: (rebuilds.append(1), original(self))):
+                    for operation in operations:
+                        pane.bridge.operations_changed.emit({operation: None})
+                    for _ in range(5):
+                        app.processEvents()
+                self.assertEqual(len(rebuilds), 1, f"{len(operations)} operation changes")
+                self.assertEqual(entity_copies(pane.refresh), 0)
+
+                # Adding alarms emits alerts_changed on the GUI thread itself, once per alarm.
+                alarm_rebuilds = []
+                original_alerts = ProviderPane.refresh_alerts
+                with patch.object(ProviderPane, "refresh_alerts",
+                                  lambda self: (alarm_rebuilds.append(1), original_alerts(self))):
+                    for alarm in service.list_alerts():
+                        pane.bridge.alerts_changed.emit({alarm: None})
+                    for _ in range(5):
+                        app.processEvents()
+                self.assertEqual(len(alarm_rebuilds), 1, f"{len(service.list_alerts())} alarm changes")
+            finally:
+                pane.bridge.close()
+                pane.deleteLater()
+                app.processEvents()
+
+
+    def test_a_loaded_mdib_is_adopted_and_shown_without_copies(self) -> None:
+        # Adopting the file and drawing its containment tree each copied every entity.
+        app = QApplication.instance() or QApplication([])
+        with ProviderService(ip="127.0.0.1", instance_name="scaling-native") as service:
+            service.import_profile(big_device(60))
+            path = config.save(service, Path(tempfile.mkdtemp()) / "big.xml", behaviour=True)
+            native = config.load_file(path)
+            mdib = parse_mdib(native.xml)
+            self.assertEqual(entity_copies(lambda: adopt(mdib)), 0, "adopt")
+            window = MainWindow(service)
+            try:
+                rebuilds = []
+                original = ProviderPane.refresh
+                with patch.object(ProviderPane, "refresh", lambda self: (rebuilds.append(1), original(self))):
+                    self.assertTrue(window.apply_config(native, path))
+                self.assertEqual(len(rebuilds), 1, "a replaced pane is drawn once")
+                self.assertIsNotNone(window.provider_pane.native_tree)
+                self.assertEqual(entity_copies(window.provider_pane.refresh), 0, "pane with native tree")
+            finally:
+                window.close()
+                app.processEvents()
 
 
 if __name__ == "__main__":

@@ -34,6 +34,7 @@ from sdc11073.xml_types.dpws_types import DeviceEventingFilterDialectURI
 
 from . import constants, ports
 from .http_server import configure_request_handler
+from .mdib_io import live_entities
 from .model import (
     MetricKind,
     PatientInfo,
@@ -203,35 +204,6 @@ def _ranges(value: Any) -> tuple[RemoteRange, ...]:
         for item in _sequence(value)
         if item is not None
     )
-
-
-@dataclass(frozen=True)
-class _LiveEntity:
-    handle: str
-    node_type: Any
-    descriptor: Any
-    state: Any
-    parent_handle: str | None
-
-
-def _live_entities(mdib: Any, handles: Iterable[str] | None = None) -> list[_LiveEntity]:
-    """Single-state descriptors with their states, read in place.
-
-    sdc11073's entity getters deep-copy every entity they return, which made each GUI refresh
-    copy the whole remote MDIB. Callers hold ``mdib.mdib_lock`` while reading these and copy
-    only immutable values out, which keeps the snapshots they build defensive.
-    """
-    if handles is None:
-        descriptors = list(mdib.descriptions.objects)
-    else:
-        lookup = mdib.descriptions.handle
-        descriptors = [d for handle in handles if (d := lookup.get_one(handle, allow_none=True)) is not None]
-    states = mdib.states.descriptor_handle
-    return [
-        _LiveEntity(d.Handle, d.NODETYPE, d, states.get_one(d.Handle, allow_none=True), d.parent_handle)
-        for d in descriptors
-        if not d.is_context_descriptor
-    ]
 
 
 def _first_bounds(ranges: tuple[RemoteRange, ...]) -> tuple[Any, Any]:
@@ -796,7 +768,7 @@ class RemoteDevice:
             operations_by_target = self._operation_index(wanted)
             result: dict[str, RemoteMetric] = {}
 
-            for entity in _live_entities(self._mdib, wanted):
+            for entity in live_entities(self._mdib, wanted):
                 handle = entity.handle
                 node_type = getattr(entity, "node_type", None)
                 kind = METRIC_NODE_TYPES.get(node_type)
@@ -902,7 +874,7 @@ class RemoteDevice:
         """
         by_target: dict[str, list[_SetOperation]] = {}
 
-        for entity in _live_entities(self._mdib):
+        for entity in live_entities(self._mdib):
             handle = entity.handle
             node_type = getattr(entity, "node_type", None)
             if node_type not in SET_OPERATION_NODE_TYPES:
@@ -933,7 +905,7 @@ class RemoteDevice:
         listed against it.
         """
         with self._lock, self._mdib.mdib_lock:
-            entities = _live_entities(self._mdib)
+            entities = live_entities(self._mdib)
             signals_by_condition: dict[str, dict[str, str]] = {}
             for entity in entities:
                 handle = entity.handle
@@ -1113,7 +1085,7 @@ class RemoteDevice:
         """
         with self._lock, self._mdib.mdib_lock:
             found: dict[str, RemoteAction] = {}
-            for entity in _live_entities(self._mdib):
+            for entity in live_entities(self._mdib):
                 handle = entity.handle
                 if getattr(entity, "node_type", None) != pm.ActivateOperationDescriptor:
                     continue

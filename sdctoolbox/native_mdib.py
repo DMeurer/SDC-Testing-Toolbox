@@ -19,6 +19,7 @@ from sdc11073.xml_types import pm_types
 from sdc11073.xml_types.wsd_types import ScopesType
 
 from .handlers import RefusedExecution, reporting_refusals
+from .mdib_io import live_entities
 from .model import (
     ActionSpec, AlertSpec, DeviceInfo, MetricKind, MetricSpec, RemoteRange, coerce_metric_value, numeric_value_in_ranges,
 )
@@ -65,22 +66,32 @@ class Adopted:
 
 def adopt(mdib) -> Adopted:
     """Derive specs, alarms, signals, set operations and sections from an imported graph."""
-    result = Adopted(specs=metric_specs(mdib), alerts=alert_specs(mdib))
-    for channel in mdib.entities.by_node_type(pm.ChannelDescriptor):
-        result.sections.setdefault(label(channel.descriptor), channel.handle)
+    with mdib.mdib_lock:
+        return _adopt(live_entities(mdib))
+
+
+def _adopt(entities: list) -> Adopted:
+    by_handle = {entity.handle: entity for entity in entities}
+    result = Adopted(specs=_metric_specs(entities, by_handle), alerts=_alert_specs(entities))
+    for channel in entities:
+        if channel.node_type == pm.ChannelDescriptor:
+            result.sections.setdefault(label(channel.descriptor), channel.handle)
     for handle, spec in result.alerts.items():
         source = result.specs.get(spec.source_handle)
         if spec.has_limits and (source is None or source.kind is not MetricKind.NUMBER):
             # Nothing numeric to compare against, so only a manual change can move it.
             spec.lower_limit = spec.upper_limit = None
         # The truth is what the file says; it is re-derived only when its own source changes.
-        result.alert_truths[handle] = bool(mdib.entities.by_handle(handle).state.Presence)
+        result.alert_truths[handle] = bool(by_handle[handle].state.Presence)
         result.alert_signals[handle] = []
-    for entity in mdib.entities.by_node_type(pm.AlertSignalDescriptor):
+    for entity in entities:
+        if entity.node_type != pm.AlertSignalDescriptor:
+            continue
         signals = result.alert_signals.get(entity.descriptor.ConditionSignaled)
         if signals is not None:
             signals.append(entity.handle)
-    for handle, entity in mdib.entities.items():
+    for entity in entities:
+        handle = entity.handle
         if entity.node_type in (pm.SetValueOperationDescriptor, pm.SetStringOperationDescriptor):
             target = entity.descriptor.OperationTarget
             if target not in result.operations or entity.state.OperatingMode == pm_types.OperatingMode.ENABLED:
@@ -120,8 +131,15 @@ def apply_behaviour(mdib, behaviour: dict[str, dict], specs: dict[str, MetricSpe
 
 def metric_specs(mdib) -> dict[str, MetricSpec]:
     """Project only metrics the existing cards can accurately represent."""
+    with mdib.mdib_lock:
+        entities = live_entities(mdib)
+        return _metric_specs(entities, {entity.handle: entity for entity in entities})
+
+
+def _metric_specs(entities: list, by_handle: dict) -> dict[str, MetricSpec]:
     result = {}
-    for handle, entity in mdib.entities.items():
+    for entity in entities:
+        handle = entity.handle
         kind = KINDS.get(entity.node_type)
         if kind is None:
             continue
@@ -135,7 +153,7 @@ def metric_specs(mdib) -> dict[str, MetricSpec]:
             "resolution": getattr(descriptor, "Resolution", None),
             "minimum": getattr(bounds, "Lower", None), "maximum": getattr(bounds, "Upper", None),
         }
-        parent = mdib.entities.by_handle(entity.parent_handle)
+        parent = by_handle.get(entity.parent_handle)
         if parent is not None and parent.node_type == pm.ChannelDescriptor:
             fields["section"] = label(parent.descriptor)
         if kind is MetricKind.CHOICE:
@@ -154,8 +172,14 @@ def metric_specs(mdib) -> dict[str, MetricSpec]:
 
 def alert_specs(mdib) -> dict[str, AlertSpec]:
     """Project alarm labels and limits for the existing, read-only alarm table."""
+    with mdib.mdib_lock:
+        return _alert_specs(live_entities(mdib))
+
+
+def _alert_specs(entities: list) -> dict[str, AlertSpec]:
     result = {}
-    for handle, entity in mdib.entities.items():
+    for entity in entities:
+        handle = entity.handle
         descriptor = entity.descriptor
         if not descriptor.is_alert_condition_descriptor:
             continue

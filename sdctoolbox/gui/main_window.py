@@ -407,11 +407,13 @@ class MainWindow(QMainWindow):
             return False
 
         if getattr(self.service, "_mdib", None) is not previous_mdib:
+            # A new pane draws itself; drawing it again doubled the cost of a large import.
             self._replace_provider_pane()
-        self.provider_pane.refresh()
-        self.provider_pane.refresh_alerts()
-        self.provider_pane.refresh_actions()
-        self.provider_pane.refresh_contexts()
+        else:
+            self.provider_pane.refresh()
+            self.provider_pane.refresh_alerts()
+            self.provider_pane.refresh_actions()
+            self.provider_pane.refresh_contexts()
         self.statusBar().showMessage(
             f"Imported {metrics} data source(s) and {alarms} alarm(s) "
             f"from {Path(source).name}",

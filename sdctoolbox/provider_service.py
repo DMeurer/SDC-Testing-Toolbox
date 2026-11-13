@@ -1089,10 +1089,9 @@ class ProviderService:
         Returns None both when the metric has no value yet and when it no longer exists, so
         that observers reacting to a deletion do not have to guard against a race.
         """
-        entity = self.mdib.entities.by_handle(handle)
-        if entity is None:
-            return None
-        return getattr(getattr(entity.state, "MetricValue", None), "Value", None)
+        # Read in place (values are immutable): the GUI calls this for every row it draws.
+        with self.mdib.mdib_lock:
+            return getattr(getattr(self._state(handle), "MetricValue", None), "Value", None)
 
     def list_metrics(self) -> dict[str, MetricSpec]:
         """Return the specs of all data sources we created, keyed by handle."""
@@ -1873,11 +1872,9 @@ class ProviderService:
 
     def get_samples(self, handle: str) -> list[Decimal]:
         """The samples currently published for a sample-array metric."""
-        entity = self.mdib.entities.by_handle(handle)
-        if entity is None:
-            return []
-        value = getattr(entity.state, "MetricValue", None)
-        return list(getattr(value, "Samples", None) or [])
+        with self.mdib.mdib_lock:
+            value = getattr(self._state(handle), "MetricValue", None)
+            return list(getattr(value, "Samples", None) or [])
 
     def start_generator(self) -> None:
         """Begin generating samples for every unpinned sample-array metric."""
