@@ -32,7 +32,7 @@
       "maximum": "100",
       "sample_period": "0.04",
       "shape": "noise",
-      "cycle_samples": 30
+      "cycle_seconds": "1.20"
     },
     {
       "handle": "m.colour_histogram",

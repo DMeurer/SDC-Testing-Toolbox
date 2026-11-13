@@ -91,7 +91,7 @@ class ProviderShell(Cmd):
     # -- commands ------------------------------------------------------------------
 
     def do_add(self, line: str) -> None:
-        """add <kind> <label...> [choice values...] [min..max] [--shape S] [--cycle N]
+        """add <kind> <label...> [choice values...] [min..max] [--shape S] [--cycle SECONDS]
 
         Creates a data source, remote-controllable where the standard allows it. Both
         sample-array kinds start generating as soon as they exist.
@@ -100,13 +100,13 @@ class ProviderShell(Cmd):
             add number Zoom level 1..100
             add text Patient note
             add choice Mode IDLE RUN PAUSE
-            add waveform Pleth 0..100 --shape pulse --cycle 50
+            add waveform Pleth 0..100 --shape pulse --cycle 1
             add waveform ECG -1..2 --shape ecg
             add distribution Spectrum 0..60 --shape spectrum
 
         --shape names the curve for a waveform or the shape for a distribution; `shapes`
-        lists what is available. --cycle is how many samples make one cycle of a waveform,
-        which with the sample period is what sets its rate.
+        lists what is available. --cycle is how many seconds one cycle of a waveform takes;
+        the sample period only sets how finely that cycle is drawn.
 
         In every case min..max is the range of the *values*. A distribution's domain -
         what those values are spread over - defaults to 0..1; use the window to set it.
@@ -140,12 +140,12 @@ class ProviderShell(Cmd):
             else:
                 distribution_shape = chosen
 
-        cycle_samples = 40
+        cycle_seconds = Decimal(4)
         if cycle_name:
             try:
-                cycle_samples = int(cycle_name)
-            except ValueError:
-                print(f"--cycle wants a whole number, not {cycle_name!r}")
+                cycle_seconds = Decimal(cycle_name)
+            except InvalidOperation:
+                print(f"--cycle wants a number of seconds, not {cycle_name!r}")
                 return
 
         minimum = maximum = None
@@ -183,7 +183,7 @@ class ProviderShell(Cmd):
                 controllable=kind.controllable,
                 initial_value=values[0] if values else None,
                 shape=shape,
-                cycle_samples=cycle_samples,
+                cycle_seconds=cycle_seconds,
                 distribution_shape=distribution_shape,
             )
             handle = self.service.add_metric(spec)

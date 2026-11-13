@@ -841,8 +841,8 @@ class ProviderService:
                     fixed_point_decimal(value, name)
             if spec.is_sample_array:
                 if spec.kind is MetricKind.WAVEFORM:
-                    spec.waveform_cycle_sample_count()
                     spec.generated_waveform_block_sample_count()
+                    spec.waveform_cycle_sample_count()
                 spec.generated_sample_range()
             if spec.kind is MetricKind.DISTRIBUTION:
                 domain_step(spec)
@@ -948,8 +948,8 @@ class ProviderService:
                 # MetricSpec is mutable, so repeat this preflight immediately before any
                 # lazy section, descriptor, bookkeeping, or generator mutation.
                 if spec.kind is MetricKind.WAVEFORM:
-                    spec.waveform_cycle_sample_count()
                     spec.generated_waveform_block_sample_count()
+                    spec.waveform_cycle_sample_count()
                 spec.generated_sample_range()
             if spec.kind is MetricKind.DISTRIBUTION:
                 lower = spec.domain_minimum if spec.domain_minimum is not None else Decimal("0")
@@ -1234,7 +1234,7 @@ class ProviderService:
         handle: str,
         *,
         shape: WaveformShape | None = None,
-        cycle_samples: int | None = None,
+        cycle_seconds: Decimal | None = None,
         distribution_shape: DistributionShape | None = None,
     ) -> None:
         """Change the curve a sample array is generated with; it applies from the next block."""
@@ -1245,7 +1245,7 @@ class ProviderService:
                 raise KeyError(msg)
             changes = {
                 name: value
-                for name, value in (("shape", shape), ("cycle_samples", cycle_samples),
+                for name, value in (("shape", shape), ("cycle_seconds", cycle_seconds),
                                     ("distribution_shape", distribution_shape))
                 if value is not None
             }

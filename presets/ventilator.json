@@ -72,7 +72,7 @@
       "maximum": "60",
       "sample_period": "0.02",
       "shape": "flow",
-      "cycle_samples": 200
+      "cycle_seconds": "4"
     },
     {
       "handle": "m.insp_pressure",
@@ -134,7 +134,7 @@
       "maximum": "40",
       "sample_period": "0.02",
       "shape": "respiration",
-      "cycle_samples": 200
+      "cycle_seconds": "4"
     },
     {
       "handle": "m.peak_pressure",
@@ -256,7 +256,7 @@
       "maximum": "800",
       "sample_period": "0.02",
       "shape": "respiration",
-      "cycle_samples": 200
+      "cycle_seconds": "4"
     }
   ],
   "alerts": [

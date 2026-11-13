@@ -675,7 +675,7 @@ class BehaviourExtensionTests(unittest.TestCase):
         from sdctoolbox.model import ActionSpec, WaveformShape
 
         wave = self.service.add_metric(MetricSpec("Pleth", MetricKind.WAVEFORM, shape=WaveformShape.SQUARE,
-                                                  cycle_samples=25, minimum=Decimal("0"), maximum=Decimal("10")))
+                                                  cycle_seconds=Decimal("2.5"), minimum=Decimal("0"), maximum=Decimal("10")))
         self.service.stop_generator()
         action = self.service.add_action(ActionSpec("Run", "demo.root", effects={"demo.mode": "RUN", "demo.rate": Decimal("20")},
                                                     note="starts the demo"))
@@ -711,7 +711,15 @@ class BehaviourExtensionTests(unittest.TestCase):
         self.assertNotIn(BEHAVIOUR.encode(), live, "toolbox behaviour must not be published")
         self.assertIn(b"urn:sdc-testing-toolbox:test-extension", live)
         spec = reloaded.list_metrics()[wave]
-        self.assertEqual((spec.shape.value, spec.cycle_samples), ("square", 25))
+        self.assertEqual((spec.shape.value, spec.cycle_seconds), ("square", Decimal("2.5")))
+        self.assertIn(b'CycleSeconds="2.5"', payload)
+
+        # An export from before cycles were durations counted samples at its own period.
+        older = payload.replace(b'CycleSeconds="2.5"', b'CycleSamples="25"')
+        legacy = ProviderService(instance_name="behaviour-legacy")
+        legacy.start(self.io.parse_mdib(older))
+        self.addCleanup(legacy.stop)
+        self.assertEqual(legacy.list_metrics()[wave].cycle_seconds, Decimal("2.5"))
         restored = reloaded.list_actions()[action]
         self.assertEqual(restored.effects, {"demo.mode": "RUN", "demo.rate": Decimal("20")})
         self.assertEqual(restored.note, "starts the demo")

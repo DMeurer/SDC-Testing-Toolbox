@@ -64,7 +64,7 @@
       "maximum": "600",
       "sample_period": "0.1",
       "shape": "pulse",
-      "cycle_samples": 30
+      "cycle_seconds": "3"
     },
     {
       "handle": "m.occlusion_pressure",

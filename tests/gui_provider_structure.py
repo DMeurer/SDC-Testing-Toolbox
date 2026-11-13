@@ -115,11 +115,11 @@ def check_live_edits(report: Report) -> None:
         dialog = EditSourceDialog(service, wave)
         report.check(dialog.allowed_minimum_edit.isHidden(), "a waveform has no allowed range to edit")
         dialog.shape_box.setCurrentIndex(dialog.shape_box.findData(WaveformShape.SQUARE))
-        dialog.cycle_edit.setText("80")
+        dialog.cycle_edit.setText("8")
         dialog._on_accept()  # noqa: SLF001
         spec = service.list_metrics()[wave]
-        report.check((spec.shape, spec.cycle_samples) == (WaveformShape.SQUARE, 80), "the dialog changes the curve",
-                     f"{spec.shape} {spec.cycle_samples}")
+        report.check((spec.shape, spec.cycle_seconds) == (WaveformShape.SQUARE, 8), "the dialog changes the curve",
+                     f"{spec.shape} {spec.cycle_seconds}")
         dialog.deleteLater()
 
         alarm = service.add_alert(AlertSpec("Edit alarm", rate, lower_limit=Decimal(5), upper_limit=Decimal(90)))

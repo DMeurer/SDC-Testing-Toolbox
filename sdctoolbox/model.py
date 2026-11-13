@@ -444,9 +444,11 @@ class MetricSpec:
     sample_period: Decimal | None = None
     # The curve to generate. Nothing in BICEPS; see WaveformShape.
     shape: WaveformShape = WaveformShape.SINE
-    # How many samples make one full cycle of that curve. A heartbeat and a breath are the
-    # same shape machinery at very different rates, and this is what separates them.
-    cycle_samples: int = 40
+    # How long one full cycle of that curve takes, in seconds. A heartbeat and a breath are
+    # the same shape machinery at very different rates, and this is what separates them. A
+    # duration rather than a sample count, so the sample period sets the resolution of the
+    # curve and never its speed.
+    cycle_seconds: Decimal = Decimal(4)
 
     # -- distribution only -------------------------------------------------------------
     # DistributionSampleArrayMetricDescriptor/DomainUnit: what the samples are distributed
@@ -505,8 +507,8 @@ class MetricSpec:
         if self.kind is MetricKind.WAVEFORM:
             if self.sample_period is None:
                 self.sample_period = DEFAULT_SAMPLE_PERIOD
-            self.waveform_cycle_sample_count()
             self.generated_waveform_block_sample_count()
+            self.waveform_cycle_sample_count()
             self.shape = _coerce_enum(WaveformShape, self.shape, "shape")
         elif self.sample_period is not None:
             msg = f"sample_period is only meaningful for {MetricKind.WAVEFORM.value} metrics"
@@ -717,19 +719,21 @@ class MetricSpec:
             raise ValueError(msg)
         return max(1, round(ratio))
 
-    def waveform_cycle_sample_count(self) -> int:
-        """Validate and return the mutable waveform cycle length."""
+    def waveform_cycle_sample_count(self) -> float:
+        """Validate the cycle length and return how many samples one cycle spans."""
         if self.kind is not MetricKind.WAVEFORM:
             msg = f"{self.kind.value} metrics do not have waveform cycles"
             raise ValueError(msg)
-        if (
-            isinstance(self.cycle_samples, bool)
-            or not isinstance(self.cycle_samples, int)
-            or self.cycle_samples < 2  # noqa: PLR2004
-        ):
-            msg = f"cycle_samples must be an integer of at least 2, not {self.cycle_samples!r}"
+        if not isinstance(self.cycle_seconds, Decimal):
+            msg = f"cycle_seconds must be a Decimal, not {self.cycle_seconds!r}"
             raise ValueError(msg)
-        return self.cycle_samples
+        validate_decimal(self.cycle_seconds, "cycle_seconds", positive=True, float_representable=True)
+        period = self.sample_period if self.sample_period is not None else DEFAULT_SAMPLE_PERIOD
+        samples = float(self.cycle_seconds) / float(period)
+        if not math.isfinite(samples) or samples < 2:  # noqa: PLR2004
+            msg = f"cycle_seconds {self.cycle_seconds} must span at least two samples of {period} s"
+            raise ValueError(msg)
+        return samples
 
     def domain_text(self) -> str:
         """The distribution's domain as something readable, e.g. '0 to 100 Hz'."""

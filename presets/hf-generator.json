@@ -155,7 +155,7 @@
       "maximum": "600",
       "sample_period": "0.05",
       "shape": "sine",
-      "cycle_samples": 60
+      "cycle_seconds": "3"
     },
     {
       "handle": "m.instrument",

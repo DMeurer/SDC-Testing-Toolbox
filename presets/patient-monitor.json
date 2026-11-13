@@ -32,7 +32,7 @@
       "maximum": "160",
       "sample_period": "0.02",
       "shape": "arterial",
-      "cycle_samples": 50
+      "cycle_seconds": "1"
     },
     {
       "handle": "m.alarm_volume",
@@ -83,7 +83,7 @@
       "maximum": "2",
       "sample_period": "0.008",
       "shape": "ecg",
-      "cycle_samples": 125
+      "cycle_seconds": "1"
     },
     {
       "handle": "m.heart_rate",
@@ -185,7 +185,7 @@
       "maximum": "100",
       "sample_period": "0.02",
       "shape": "pulse",
-      "cycle_samples": 50
+      "cycle_seconds": "1"
     },
     {
       "handle": "m.pulse_rate",

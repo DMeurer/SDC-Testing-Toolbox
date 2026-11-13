@@ -8,6 +8,7 @@ one is chosen and a field that does not apply is worse than absent.
 from __future__ import annotations
 
 import math
+from decimal import Decimal
 
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -75,7 +76,7 @@ OFFERED_DISTRIBUTIONS: list[tuple[str, DistributionShape]] = [
 
 # What a manually created waveform gets if nothing is said. Forty samples a cycle at the
 # default period is a four second cycle, which is slow enough to watch.
-DEFAULT_CYCLE_SAMPLES = 40
+DEFAULT_CYCLE_SECONDS = Decimal(4)
 
 
 def shape_combo() -> NoWheelComboBox:
@@ -148,7 +149,7 @@ class NewMetricDialog(QDialog):
         self.sample_period_edit.setPlaceholderText(str(DEFAULT_SAMPLE_PERIOD))
         self.shape_box = shape_combo()
         self.cycle_edit = QLineEdit()
-        self.cycle_edit.setPlaceholderText(str(DEFAULT_CYCLE_SAMPLES))
+        self.cycle_edit.setPlaceholderText(str(DEFAULT_CYCLE_SECONDS))
         self.rate_hint = QLabel("")
         mute(self.rate_hint)
         cycle_row = QHBoxLayout()
@@ -192,7 +193,7 @@ class NewMetricDialog(QDialog):
         form.addRow("Range", self.limits_widget)
         form.addRow("Sample period", self.sample_period_edit)
         form.addRow("Shape", self.shape_box)
-        form.addRow("Samples per cycle", self.cycle_widget)
+        form.addRow("Cycle length (s)", self.cycle_widget)
         form.addRow("Distribution", self.distribution_box)
         form.addRow("Domain unit", self.domain_unit_edit)
         form.addRow("Domain", self.domain_widget)
@@ -256,24 +257,20 @@ class NewMetricDialog(QDialog):
     def _update_rate_hint(self) -> None:
         """Say what the sample period and cycle length come out as.
 
-        Samples per cycle is not a number anybody thinks in. What they want to know is how
-        fast the thing beats, so work it out for them rather than making them do it.
+        A cycle length is exact but not how anybody thinks of a heartbeat. What they want to
+        know is how fast the thing beats, so work it out for them.
         """
         try:
-            period = parse_decimal_input(
-                self.sample_period_edit.text().strip() or str(DEFAULT_SAMPLE_PERIOD),
-                "sample period",
-                positive=True,
-            )
-            cycle = int(self.cycle_edit.text().strip() or DEFAULT_CYCLE_SAMPLES)
-            seconds = float(period) * cycle
+            seconds = float(parse_decimal_input(
+                self.cycle_edit.text().strip() or str(DEFAULT_CYCLE_SECONDS), "cycle length", positive=True,
+            ))
         except (ArithmeticError, DecimalInputError, OverflowError, ValueError):
             self.rate_hint.setText("")
             return
-        if cycle < 2 or not math.isfinite(seconds) or seconds <= 0:  # noqa: PLR2004
+        if not math.isfinite(seconds) or seconds <= 0:
             self.rate_hint.setText("")
             return
-        self.rate_hint.setText(f"= {seconds:.2f} s per cycle, {60.0 / seconds:.0f}/min")
+        self.rate_hint.setText(f"= {60.0 / seconds:.0f}/min")
 
     def _set_row_visible(self, widget: QWidget, *, visible: bool) -> None:
         """Show or hide a form row, label included.
@@ -413,7 +410,7 @@ class NewMetricDialog(QDialog):
                 return
 
         sample_period = None
-        cycle_samples = DEFAULT_CYCLE_SAMPLES
+        cycle_seconds = DEFAULT_CYCLE_SECONDS
         if kind is MetricKind.WAVEFORM:
             raw = self.sample_period_edit.text().strip() or str(DEFAULT_SAMPLE_PERIOD)
             try:
@@ -422,14 +419,14 @@ class NewMetricDialog(QDialog):
                 self._fail(str(exc))
                 return
 
-            raw = self.cycle_edit.text().strip() or str(DEFAULT_CYCLE_SAMPLES)
+            raw = self.cycle_edit.text().strip() or str(DEFAULT_CYCLE_SECONDS)
             try:
-                cycle_samples = int(raw)
-            except ValueError:
-                self._fail(f"{raw!r} is not a whole number of samples per cycle.")
+                cycle_seconds = parse_decimal_input(raw, "cycle length", positive=True)
+            except DecimalInputError as exc:
+                self._fail(str(exc))
                 return
-            if cycle_samples < 2:  # noqa: PLR2004
-                self._fail("A cycle needs at least two samples.")
+            if cycle_seconds < 2 * sample_period:
+                self._fail(f"A cycle needs at least two samples, so at least {2 * sample_period} s.")
                 return
 
         domain_unit = ""
@@ -477,7 +474,7 @@ class NewMetricDialog(QDialog):
                 initial_value=values[0] if values else None,
                 sample_period=sample_period,
                 shape=self._shape,
-                cycle_samples=cycle_samples,
+                cycle_seconds=cycle_seconds,
                 distribution_shape=self._distribution_shape,
                 domain_unit_label=domain_unit,
                 domain_minimum=domain_minimum,

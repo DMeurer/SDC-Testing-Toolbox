@@ -261,17 +261,32 @@ def check_generator(report: Report, service: ProviderService) -> None:
     block, _ = service._next_block(wave, spec)  # noqa: SLF001
     report.check(spec.shape is WaveformShape.SQUARE and set(block) <= {Decimal(0), Decimal(10)},
                  "a square curve only reaches the two extremes", str(sorted(set(block))))
-    service.set_generator(wave, cycle_samples=80)
-    report.check(service.list_metrics()[wave].cycle_samples == 80
+    service.set_generator(wave, cycle_seconds=Decimal(8))
+    report.check(service.list_metrics()[wave].cycle_seconds == 8
                  and service.list_metrics()[wave].shape is WaveformShape.SQUARE, "the cycle changes, the curve stays")
-    report.check(_raises_kw(service, wave, cycle_samples=0),
-                 "a cycle of 0 samples is refused")
+    report.check(_raises_kw(service, wave, cycle_seconds=Decimal("0.1")),
+                 "a cycle shorter than two samples is refused")
     report.check(_raises_kw(service, wave, distribution_shape=DistributionShape.FLAT),
                  "a distribution curve on a waveform is refused")
     report.check(descriptor_version(service, wave) == version
                  and service.mdib.entities.by_handle(wave).descriptor.SamplePeriod == period,
                  "the descriptor and its SamplePeriod stay")
     service.remove_metric(wave)
+
+
+def check_cycle_is_time_based(report: Report, service: ProviderService) -> None:
+    """The sample period sets the resolution of a curve, never its speed."""
+    slow = service.add_metric(MetricSpec("Live slow", MetricKind.WAVEFORM, minimum=Decimal(0), maximum=Decimal(10),
+                                         sample_period=Decimal("0.1"), cycle_seconds=Decimal(2)))
+    fast = service.add_metric(MetricSpec("Live fast", MetricKind.WAVEFORM, minimum=Decimal(0), maximum=Decimal(10),
+                                         sample_period=Decimal("0.05"), cycle_seconds=Decimal(2)))
+    slow_block, _ = service._next_block(slow, service.list_metrics()[slow])  # noqa: SLF001
+    fast_block, _ = service._next_block(fast, service.list_metrics()[fast])  # noqa: SLF001
+    same_moments = all(abs(fast_block[2 * index] - sample) <= Decimal("0.1") for index, sample in enumerate(slow_block))
+    report.check(same_moments, "a sine at 0.05 s per sample matches the 0.1 s one at the same moments",
+                 f"{slow_block} vs {fast_block[::2]}")
+    service.remove_metric(slow)
+    service.remove_metric(fast)
 
 
 def _raises_kw(service: ProviderService, handle: str, **changes: object) -> bool:
@@ -296,6 +311,7 @@ def main() -> int:
         check_alert_limits(report, service)
         check_metric_activation(report, service)
         check_generator(report, service)
+        check_cycle_is_time_based(report, service)
     finally:
         service.stop()
     print()

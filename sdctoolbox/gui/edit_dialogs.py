@@ -145,9 +145,9 @@ class EditSourceDialog(_EditDialog):
 
         self.shape_box = shape_combo()
         self.shape_box.setCurrentIndex(self.shape_box.findData(spec.shape))
-        self.cycle_edit = QLineEdit(str(spec.cycle_samples))
+        self.cycle_edit = QLineEdit(str(spec.cycle_seconds))
         self.form.addRow("Shape", self.shape_box)
-        self.form.addRow("Samples per cycle", self.cycle_edit)
+        self.form.addRow("Cycle length (s)", self.cycle_edit)
         self._show(self.shape_box, spec.kind is MetricKind.WAVEFORM)
         self._show(self.cycle_edit, spec.kind is MetricKind.WAVEFORM)
 
@@ -179,13 +179,9 @@ class EditSourceDialog(_EditDialog):
         if spec.kind is MetricKind.WAVEFORM:
             if selected_shape(self.shape_box) is not spec.shape:
                 result["shape"] = selected_shape(self.shape_box)
-            try:
-                cycle = int(self.cycle_edit.text().strip())
-            except ValueError as exc:
-                msg = f"Samples per cycle must be a whole number, not {self.cycle_edit.text()!r}."
-                raise DecimalInputError(msg) from exc
-            if cycle != spec.cycle_samples:
-                result["cycle_samples"] = cycle
+            cycle = parse_decimal_input(self.cycle_edit.text(), "cycle length", positive=True)
+            if cycle != spec.cycle_seconds:
+                result["cycle_seconds"] = cycle
         if spec.kind is MetricKind.DISTRIBUTION:
             shape = OFFERED_DISTRIBUTIONS[self.distribution_box.currentIndex()][1]
             if shape is not spec.distribution_shape:
@@ -200,7 +196,7 @@ class EditSourceDialog(_EditDialog):
             self.service.set_allowed_range(self.handle, *changes["allowed_range"])
         if "allowed_values" in changes:
             self.service.set_allowed_values(self.handle, changes["allowed_values"])
-        curve = {name: changes[name] for name in ("shape", "cycle_samples", "distribution_shape") if name in changes}
+        curve = {name: changes[name] for name in ("shape", "cycle_seconds", "distribution_shape") if name in changes}
         if curve:
             self.service.set_generator(self.handle, **curve)
         if "active" in changes:

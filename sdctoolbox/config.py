@@ -30,6 +30,7 @@ from .constants import (
     VMD_HANDLE_PREFIX,
 )
 from .model import (
+    DEFAULT_SAMPLE_PERIOD,
     ActionSpec,
     AlertKind,
     AlertManifestation,
@@ -83,6 +84,8 @@ _METRIC_KEYS = {
     "initial_value",
     "sample_period",
     "shape",
+    "cycle_seconds",
+    # Older profiles counted the cycle in samples; read only, as a duration at their period.
     "cycle_samples",
     "domain_unit",
     "domain_minimum",
@@ -359,7 +362,7 @@ def metric_to_dict(handle: str, spec: MetricSpec) -> dict[str, Any]:
     if spec.kind is MetricKind.WAVEFORM:
         entry["sample_period"] = str(spec.sample_period)
         entry["shape"] = spec.shape.value
-        entry["cycle_samples"] = spec.cycle_samples
+        entry["cycle_seconds"] = str(spec.cycle_seconds)
     if spec.kind is MetricKind.DISTRIBUTION:
         domain_unit = _coding_to_json(spec.domain_unit_coding, spec.domain_unit_label)
         if domain_unit is not None:
@@ -643,6 +646,15 @@ def metric_from_dict(entry: dict[str, Any]) -> MetricSpec:
     elif initial is not None:
         initial = _expect_type(initial, str, f"metrics[{label}].initial_value")
 
+    sample_period = _decimal_or_none(entry.get("sample_period"), f"metrics[{label}].sample_period")
+    cycle_seconds = _decimal_or_none(entry.get("cycle_seconds"), f"metrics[{label}].cycle_seconds")
+    if "cycle_samples" in entry:
+        if cycle_seconds is not None:
+            msg = f"metrics[{label}]: give cycle_seconds or the older cycle_samples, not both"
+            raise ConfigError(msg)
+        period = sample_period if sample_period is not None else DEFAULT_SAMPLE_PERIOD
+        cycle_seconds = Decimal(entry["cycle_samples"]) * period
+
     allowed_values = entry.get("allowed_values", [])
     for index, value in enumerate(allowed_values):
         _expect_type(value, str, f"metrics[{label}].allowed_values[{index}]")
@@ -672,14 +684,14 @@ def metric_from_dict(entry: dict[str, Any]) -> MetricSpec:
             controllable=entry.get("controllable", False),
             handle=entry.get("handle") or None,
             initial_value=initial,
-            sample_period=_decimal_or_none(entry.get("sample_period"), f"metrics[{label}].sample_period"),
+            sample_period=sample_period,
             shape=_enum_or_default(
                 WaveformShape,
                 entry.get("shape"),
                 WaveformShape.SINE,
                 f"metrics[{label}].shape",
             ),
-            cycle_samples=entry.get("cycle_samples", 40),
+            **({"cycle_seconds": cycle_seconds} if cycle_seconds is not None else {}),
             distribution_shape=_enum_or_default(
                 DistributionShape,
                 entry.get("distribution_shape"),

@@ -164,7 +164,7 @@
       "maximum": "30",
       "sample_period": "0.1",
       "shape": "respiration",
-      "cycle_samples": 60
+      "cycle_seconds": "6"
     },
     {
       "handle": "m.target_pressure",

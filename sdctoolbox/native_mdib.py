@@ -143,9 +143,11 @@ def apply_behaviour(mdib, behaviour: dict[str, dict], specs: dict[str, MetricSpe
         spec = specs.get(handle)
         if spec is None or not spec.is_sample_array:
             raise ValueError(f"toolbox generator behaviour on {handle!r}, which is not a sample array metric")
-        for name in ("shape", "cycle_samples", "distribution_shape"):
+        for name in ("shape", "cycle_seconds", "distribution_shape"):
             if name in values:
                 setattr(spec, name, values[name])
+        if "cycle_samples" in values and spec.sample_period is not None:
+            spec.cycle_seconds = Decimal(values["cycle_samples"]) * spec.sample_period
     return actions
 
 
