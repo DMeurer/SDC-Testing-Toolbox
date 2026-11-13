@@ -25,9 +25,15 @@ from PySide6.QtWidgets import QWidget
 from ...model import MAX_DECIMAL_WIRE_CHARS
 from ..styling import muted_colour
 
-# How many samples a scrolling plot keeps. At the default 0.1s period that is half a minute
-# of history, which is enough to see a shape without making the repaint expensive.
+# How many samples a scrolling plot keeps when it does not know the sample period.
 HISTORY = 300
+
+# How much signal a paced trace spans, in seconds. Fixed, so every waveform scrolls at the
+# same width per second and a finer sample period only adds resolution, as on a monitor.
+PLOT_SECONDS = 10.0
+# shortcut: periods under PLOT_SECONDS / MAX_WINDOW_SAMPLES (2 ms) show a shorter window;
+# decimate instead if such rates ever matter.
+MAX_WINDOW_SAMPLES = 5000
 
 PLOT_HEIGHT = 76
 
@@ -86,11 +92,10 @@ class SamplePlot(QWidget):
 
         self._fixed_low = minimum if minimum is not None and minimum.is_finite() else None
         self._fixed_high = maximum if maximum is not None and maximum.is_finite() else None
-        self._samples: deque[Decimal] = deque(maxlen=HISTORY if scrolling else None)
-
         # Seconds between two samples, from the descriptor. Without it there is no way to
         # know how fast to reveal, so a plot that has none shows blocks as they arrive.
         self._sample_period = float(sample_period) if sample_period else 0.0
+        self._samples: deque[Decimal] = deque(maxlen=self._window() if scrolling else None)
         self._pending: deque[Decimal] = deque()
         # Fractional samples carried between frames, so a rate that does not divide evenly
         # into the frame interval does not round down to nothing every time.
@@ -124,6 +129,33 @@ class SamplePlot(QWidget):
     def target(self) -> list[float]:
         """The block a distribution's bars are moving towards."""
         return [float(sample) for sample in self._target]
+
+    def _window(self) -> int:
+        if self._sample_period <= 0:
+            return HISTORY
+        if self._sample_period < PLOT_SECONDS / MAX_WINDOW_SAMPLES:
+            return MAX_WINDOW_SAMPLES
+        return max(2, round(PLOT_SECONDS / self._sample_period))
+
+    @property
+    def window_samples(self) -> int | None:
+        """How many samples the trace spans."""
+        return self._samples.maxlen
+
+    def trace_x(self, width: int) -> list[float]:
+        """Where each kept sample is drawn.
+
+        A paced trace places samples by time: the newest at the right edge and each older one
+        a fixed distance further left, so it moves at the same speed from its first sample on.
+        Without a period there is no time base, so the samples are spread across the width.
+        """
+        count = len(self._samples)
+        if self.paced:
+            step = (width - 1) / self._samples.maxlen
+            right = MARGIN + width - 1
+            return [right - (count - 1 - index) * step for index in range(count)]
+        step = (width - 1) / max(1, count - 1) if count > 1 else 0.0
+        return [MARGIN + index * step for index in range(count)]
 
     @property
     def paced(self) -> bool:
@@ -348,7 +380,7 @@ class SamplePlot(QWidget):
 
         if self.scrolling:
             polygon = QPolygonF(
-                [QPointF(MARGIN + index * step, y_for(fraction)) for index, fraction in enumerate(fractions)],
+                [QPointF(x, y_for(fraction)) for x, fraction in zip(self.trace_x(width), fractions, strict=True)],
             )
             painter.drawPolyline(polygon)
         else:

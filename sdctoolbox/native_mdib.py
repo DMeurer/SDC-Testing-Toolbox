@@ -7,7 +7,7 @@ what the provider publishes until the user changes something.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from urllib.parse import quote, urlencode
 
@@ -80,7 +80,7 @@ def _adopt(entities: list) -> Adopted:
         source = result.specs.get(spec.source_handle)
         if spec.has_limits and (source is None or source.kind is not MetricKind.NUMBER):
             # Nothing numeric to compare against, so only a manual change can move it.
-            spec.lower_limit = spec.upper_limit = None
+            spec.lower_limit = spec.upper_limit = spec.max_lower_limit = spec.max_upper_limit = None
         # The truth is what the file says; it is re-derived only when its own source changes.
         result.alert_truths[handle] = bool(by_handle[handle].state.Presence)
         result.alert_signals[handle] = []
@@ -96,7 +96,27 @@ def _adopt(entities: list) -> Adopted:
             target = entity.descriptor.OperationTarget
             if target not in result.operations or entity.state.OperatingMode == pm_types.OperatingMode.ENABLED:
                 result.operations[target] = handle
+    for target, handle in result.operations.items():
+        spec = result.specs.get(target)
+        if spec is not None:
+            result.specs[target] = _with_operation_state(spec, by_handle[handle].state)
     return result
+
+
+def _with_operation_state(spec: MetricSpec, state) -> MetricSpec:  # noqa: ANN001 - an sdc11073 state
+    """Take over the operation's AllowedRange or AllowedValues where the spec can hold them."""
+    changes = {}
+    ranges = getattr(state, "AllowedRange", None) or ()
+    if spec.kind is MetricKind.NUMBER and len(ranges) == 1:
+        changes = {"allowed_minimum": ranges[0].Lower, "allowed_maximum": ranges[0].Upper}
+    values = list(getattr(getattr(state, "AllowedValues", None), "Value", None) or ())
+    if spec.kind is MetricKind.CHOICE and values and values != list(spec.allowed_values):
+        changes = {"operation_values": tuple(values)}
+    try:
+        return replace(spec, **changes)
+    except (TypeError, ValueError) as exc:
+        logger.info("operation state of %s stays as the file has it: %s", spec.handle, exc)
+        return spec
 
 
 def _coerced_or_raw(coerce, target: str, value: str):
@@ -123,9 +143,11 @@ def apply_behaviour(mdib, behaviour: dict[str, dict], specs: dict[str, MetricSpe
         spec = specs.get(handle)
         if spec is None or not spec.is_sample_array:
             raise ValueError(f"toolbox generator behaviour on {handle!r}, which is not a sample array metric")
-        for name in ("shape", "cycle_samples", "distribution_shape"):
+        for name in ("shape", "cycle_seconds", "distribution_shape"):
             if name in values:
                 setattr(spec, name, values[name])
+        if "cycle_samples" in values and spec.sample_period is not None:
+            spec.cycle_seconds = Decimal(values["cycle_samples"]) * spec.sample_period
     return actions
 
 
@@ -163,6 +185,8 @@ def _metric_specs(entities: list, by_handle: dict) -> dict[str, MetricSpec]:
         elif kind is MetricKind.DISTRIBUTION:
             domain = descriptor.DistributionRange
             fields.update(domain_minimum=domain.Lower, domain_maximum=domain.Upper)
+        activation = getattr(entity.state, "ActivationState", None)
+        fields["active"] = activation != pm_types.ComponentActivation.OFF
         try:
             result[handle] = MetricSpec(**fields)
         except (ValueError, TypeError) as exc:
@@ -191,11 +215,19 @@ def _alert_specs(entities: list) -> dict[str, AlertSpec]:
         elif monitored is off.HIGH_OFF:
             limits = pm_types.Range(lower=limits.Lower)
         source = descriptor.Source[0] if len(descriptor.Source) == 1 else ", ".join(descriptor.Source)
-        result[handle] = AlertSpec(
+        spec = AlertSpec(
             handle=handle, label=label(descriptor), source_handle=source,
-            kind=descriptor.Kind, priority=getattr(entity.state, "ActualPriority", None) or descriptor.Priority,
+            kind=descriptor.Kind, priority=descriptor.Priority,
+            actual_priority=getattr(entity.state, "ActualPriority", None),
             lower_limit=getattr(limits, "Lower", None), upper_limit=getattr(limits, "Upper", None),
         )
+        max_limits = getattr(descriptor, "MaxLimits", None)
+        if spec.has_limits and max_limits is not None:
+            try:
+                spec = replace(spec, max_lower_limit=max_limits.Lower, max_upper_limit=max_limits.Upper)
+            except (TypeError, ValueError) as exc:
+                logger.info("MaxLimits of %s do not enclose its limits: %s", handle, exc)
+        result[handle] = spec
     return result
 
 

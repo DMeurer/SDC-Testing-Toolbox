@@ -101,7 +101,8 @@ class SamplePublisher:
         entity.state.MetricValue.DeterminationTime = determination_time
         entity.state.MetricValue.MetricQuality.Validity = pm_types.MeasurementValidity.VALID
         entity.state.MetricValue.MetricQuality.Mode = pm_types.GenerationMode.DEMO
-        entity.state.ActivationState = pm_types.ComponentActivation.ON
+        if entity.state.ActivationState != pm_types.ComponentActivation.OFF:
+            entity.state.ActivationState = pm_types.ComponentActivation.ON
 
         # Catch conversion failures before entering a transaction. sdc11073 commits its
         # copied state before report serialization, at which point rollback is impossible.
@@ -281,6 +282,7 @@ class DemoSampleGenerator:
                 (handle, spec)
                 for handle, spec in self._specs().items()
                 if spec.is_sample_array
+                and spec.active
                 and handle not in self.pinned
                 and handle not in self.quarantined
                 and (force or self.deadlines.get(handle, now) <= now)

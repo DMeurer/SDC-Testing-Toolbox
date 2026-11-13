@@ -163,7 +163,9 @@ def apply_metric_value(state: object, value: object) -> None:
         state.mk_metric_value()
     state.MetricValue.Value = value
     state.MetricValue.MetricQuality.Validity = pm_types.MeasurementValidity.VALID
-    state.ActivationState = pm_types.ComponentActivation.ON
+    # A value makes a metric On, except one deliberately switched Off: that stays Off.
+    if state.ActivationState != pm_types.ComponentActivation.OFF:
+        state.ActivationState = pm_types.ComponentActivation.ON
 
 
 def _reason(error: Exception) -> str:
@@ -243,6 +245,9 @@ def make_set_handler(
         target_entity = mdib.entities.by_handle(target_handle)
         if target_entity is None:
             return _failed(mdib, f"target {target_handle!r} does not exist", target_handle)
+        # Only a metric switched Off refuses; other states (e.g. StndBy in a file) behave as before.
+        if getattr(target_entity.state, "ActivationState", None) == pm_types.ComponentActivation.OFF:
+            return _failed(mdib, f"metric {target_handle!r} is switched off", target_handle)
 
         try:
             value = coerce_value(target_handle, requested)

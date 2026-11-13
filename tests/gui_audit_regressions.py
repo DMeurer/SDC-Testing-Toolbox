@@ -142,6 +142,24 @@ class GuiAuditRegressions(unittest.TestCase):
         finally:
             shiboken6.delete(bridge)
 
+    def test_waveform_activation_change_is_reported_as_a_metric_change(self) -> None:
+        mdib = consumer_mdib()
+        bridge = MdibBridge(mdib)
+        changed = []
+        bridge.metrics_changed.connect(lambda values: changed.append(set(values)), Qt.DirectConnection)
+        try:
+            mdib.waveform_by_handle = {"wave": NS(ActivationState="On", MetricValue=NS(Samples=[D(1)]))}
+            mdib.waveform_by_handle = {"wave": NS(ActivationState="On", MetricValue=NS(Samples=[D(2)]))}
+            self.assertEqual(changed, [], "blocks of an unchanged activation reread nothing")
+            mdib.waveform_by_handle = {"wave": NS(ActivationState="Off", MetricValue=NS(Samples=[D(2)]))}
+            self.assertEqual(changed, [{"wave"}], "switching a waveform off is a metric change")
+            mdib.waveform_by_handle = {"wave": NS(ActivationState="Off", MetricValue=NS(Samples=[D(2)]))}
+            self.assertEqual(changed, [{"wave"}], "only once")
+            mdib.waveform_by_handle = {"late": NS(ActivationState="Off", MetricValue=NS(Samples=[]))}
+            self.assertEqual(changed[-1], {"late"}, "a waveform first seen Off is reported too")
+        finally:
+            bridge.close()
+
     def test_real_bridge_acquired_sdk_callbacks_are_suppressed_before_qt_deletion(self) -> None:
         for mode in ("disconnect", "shutdown"):
             for observable, signal_name in BRIDGE_SIGNALS:

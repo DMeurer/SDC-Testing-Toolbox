@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -80,7 +81,12 @@ def _read_behaviour(element, handle: str) -> dict:
             result = {"generate": True}
             if element.get("Shape") is not None:
                 result["shape"] = WaveformShape(element.get("Shape"))
-            if element.get("CycleSamples") is not None:
+            if element.get("CycleSeconds") is not None:
+                result["cycle_seconds"] = Decimal(element.get("CycleSeconds"))
+                if not result["cycle_seconds"].is_finite() or result["cycle_seconds"] <= 0:
+                    raise ValueError("CycleSeconds must be positive")
+            elif element.get("CycleSamples") is not None:
+                # Older exports counted the cycle in samples; the reader turns it into a duration.
                 result["cycle_samples"] = int(element.get("CycleSamples"))
                 if result["cycle_samples"] < 1:
                     raise ValueError("CycleSamples must be positive")
@@ -97,7 +103,7 @@ def _read_behaviour(element, handle: str) -> dict:
                     raise ValueError("every effect needs a Target and a Value")
                 effects[target] = value
             return {"note": element.get("Note", ""), "effects": effects}
-    except ValueError as exc:
+    except (ValueError, InvalidOperation) as exc:
         raise ValueError(f"toolbox behaviour of {handle!r}: {exc}") from exc
     raise ValueError(f"toolbox behaviour of {handle!r}: unknown element {name!r}")
 
@@ -134,8 +140,8 @@ def behaviour_elements(specs: dict[str, MetricSpec], actions: dict[str, ActionSp
         if spec.kind is MetricKind.WAVEFORM:
             if spec.shape is not defaults.shape:
                 attributes["Shape"] = spec.shape.value
-            if spec.cycle_samples != defaults.cycle_samples:
-                attributes["CycleSamples"] = str(spec.cycle_samples)
+            if spec.cycle_seconds != defaults.cycle_seconds:
+                attributes["CycleSeconds"] = str(spec.cycle_seconds)
         elif spec.kind is MetricKind.DISTRIBUTION and spec.distribution_shape is not defaults.distribution_shape:
             attributes["DistributionShape"] = spec.distribution_shape.value
         if handle in generated:

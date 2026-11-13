@@ -546,6 +546,41 @@ class EditableMdibTests(unittest.TestCase):
         imported.set_location(LocationInfo(facility="OTHER"))
         self.assertEqual(imported.get_location().facility, "OTHER")
 
+    def test_runtime_states_reload_from_an_mdib_file(self) -> None:
+        from sdctoolbox import config
+        from sdctoolbox.model import AlertPriority, AlertSpec
+
+        self.start(bare_mds())
+        rate = self.service.add_metric(MetricSpec("Rate", MetricKind.NUMBER, controllable=True,
+                                                  minimum=Decimal("0"), maximum=Decimal("100"), initial_value=Decimal("50")))
+        mode = self.service.add_metric(MetricSpec("Mode", MetricKind.CHOICE, controllable=True,
+                                                  allowed_values=("A", "B", "C"), initial_value="A"))
+        alarm = self.service.add_alert(AlertSpec("Rate high", rate, upper_limit=Decimal("80")))
+        self.service.set_allowed_range(rate, Decimal("20"), Decimal("40"))
+        self.service.set_allowed_values(mode, ["A", "B"])
+        self.service.set_metric_active(mode, active=False)
+        self.service.set_alert_limits(alarm, Decimal("10"), Decimal("90"))
+        self.service.set_alert_priority(alarm, AlertPriority.HIGH)
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "states.xml"
+            config.save(self.service, target)
+            reloaded = ProviderService(instance_name="states-reloaded")
+            reloaded.start(self.io.parse_mdib(target.read_bytes()))
+        self.addCleanup(reloaded.stop)
+
+        metrics, alert = reloaded.list_metrics(), reloaded.list_alerts()[alarm]
+        self.assertEqual(metrics[rate].effective_allowed_range(), (Decimal("20"), Decimal("40")))
+        self.assertEqual((metrics[rate].minimum, metrics[rate].maximum), (Decimal("0"), Decimal("100")))
+        self.assertEqual(metrics[mode].operation_values, ("A", "B"))
+        self.assertFalse(metrics[mode].active)
+        self.assertEqual((alert.lower_limit, alert.upper_limit), (Decimal("10"), Decimal("90")))
+        self.assertEqual(alert.effective_max_limits(), (Decimal("0"), Decimal("100")))
+        self.assertIs(alert.actual_priority, AlertPriority.HIGH)
+        self.assertIs(alert.priority, AlertPriority.MEDIUM)
+        # Still editable after the reload.
+        reloaded.set_allowed_range(rate, Decimal("10"), Decimal("60"))
+        reloaded.set_alert_limits(alarm, Decimal("0"), Decimal("100"))
+
     def test_an_edited_graph_reloads_unchanged(self) -> None:
         from sdctoolbox import config
         from sdctoolbox.model import ActionSpec, AlertSpec, LocationInfo, PatientInfo
@@ -640,7 +675,7 @@ class BehaviourExtensionTests(unittest.TestCase):
         from sdctoolbox.model import ActionSpec, WaveformShape
 
         wave = self.service.add_metric(MetricSpec("Pleth", MetricKind.WAVEFORM, shape=WaveformShape.SQUARE,
-                                                  cycle_samples=25, minimum=Decimal("0"), maximum=Decimal("10")))
+                                                  cycle_seconds=Decimal("2.5"), minimum=Decimal("0"), maximum=Decimal("10")))
         self.service.stop_generator()
         action = self.service.add_action(ActionSpec("Run", "demo.root", effects={"demo.mode": "RUN", "demo.rate": Decimal("20")},
                                                     note="starts the demo"))
@@ -676,7 +711,15 @@ class BehaviourExtensionTests(unittest.TestCase):
         self.assertNotIn(BEHAVIOUR.encode(), live, "toolbox behaviour must not be published")
         self.assertIn(b"urn:sdc-testing-toolbox:test-extension", live)
         spec = reloaded.list_metrics()[wave]
-        self.assertEqual((spec.shape.value, spec.cycle_samples), ("square", 25))
+        self.assertEqual((spec.shape.value, spec.cycle_seconds), ("square", Decimal("2.5")))
+        self.assertIn(b'CycleSeconds="2.5"', payload)
+
+        # An export from before cycles were durations counted samples at its own period.
+        older = payload.replace(b'CycleSeconds="2.5"', b'CycleSamples="25"')
+        legacy = ProviderService(instance_name="behaviour-legacy")
+        legacy.start(self.io.parse_mdib(older))
+        self.addCleanup(legacy.stop)
+        self.assertEqual(legacy.list_metrics()[wave].cycle_seconds, Decimal("2.5"))
         restored = reloaded.list_actions()[action]
         self.assertEqual(restored.effects, {"demo.mode": "RUN", "demo.rate": Decimal("20")})
         self.assertEqual(restored.note, "starts the demo")

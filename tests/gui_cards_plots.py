@@ -236,12 +236,34 @@ def check_delayed_plot_pacing(report: Report) -> None:
             plot.deleteLater()
 
 
+def check_fixed_time_window(report: Report) -> None:
+    """A trace moves at the same width per second whatever its sample period."""
+    speeds = {}
+    for period, expected in ((Decimal("0.1"), 100), (Decimal("0.02"), 500)):
+        plot = PaintProbe(sample_period=period)
+        try:
+            report.check(plot.window_samples == expected,
+                         f"at {period} s per sample the plot keeps {plot_module.PLOT_SECONDS:g} s", str(plot.window_samples))
+            plot.add_samples([Decimal(index % 7) for index in range(20)])
+            plot.flush()
+            xs = plot.trace_x(plot.width() - 2 * plot_module.MARGIN)
+            report.check(xs[-1] == plot_module.MARGIN + plot.width() - 2 * plot_module.MARGIN - 1,
+                         f"at {period} s per sample the newest sample sits at the right edge")
+            speeds[period] = (xs[-1] - xs[-2]) / float(period)
+        finally:
+            plot.clear()
+            plot.deleteLater()
+    slow, fast = speeds.values()
+    report.check(abs(slow - fast) < 1e-6, "the trace scrolls the same pixels per second at both periods", str(speeds))
+
+
 def main() -> int:
     report = Report()
     app = application()
     print("GUI cards and plots (offscreen)")
     check_exact_plot_painting(report)
     check_delayed_plot_pacing(report)
+    check_fixed_time_window(report)
     with WindowFixture("gui-cards-plots") as fixture:
         app = fixture.app
         service = fixture.service

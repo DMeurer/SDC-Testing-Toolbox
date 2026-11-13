@@ -58,6 +58,8 @@ class MdibBridge(QObject):
         self._mdib = mdib
         self._emission_lock = threading.RLock()
         self._closed = False
+        # Last ActivationState seen per waveform; only touched by _on_waveforms.
+        self._waveform_activations: dict[str, object] = {}
         bindings = {
             "metrics_by_handle": self._on_metrics,
             "new_descriptors_by_handle": self._on_descriptors_added,
@@ -123,12 +125,22 @@ class MdibBridge(QObject):
         Copying the values out now is the only point at which the block is definitely the
         one this event means.
         """
-        blocks = {}
+        blocks, switched = {}, {}
         for handle, state in values.items():
             metric_value = getattr(state, "MetricValue", None)
             # A descriptor being created also lands here, with no MetricValue yet.
             blocks[handle] = list(getattr(metric_value, "Samples", None) or [])
+            # A waveform's ActivationState arrives here too, never as a metric report, and
+            # it decides whether its card is greyed. Pass a change on as a metric change.
+            activation = getattr(state, "ActivationState", None)
+            # Unseen counts as On: the cards were built from the MDIB, where unknown reads as On.
+            previous = self._waveform_activations.get(handle, "On")
+            self._waveform_activations[handle] = activation
+            if (activation or "On") != (previous or "On"):
+                switched[handle] = state
         self._emit("waveforms_changed", blocks)
+        if switched:
+            self._emit("metrics_changed", switched)
 
     def _on_peer_restarted(self, changed: bool) -> None:  # noqa: FBT001 - the observable is a flag
         if changed:

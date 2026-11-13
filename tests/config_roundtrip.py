@@ -97,12 +97,15 @@ def snapshot(service: ProviderService) -> dict:
                 "initial_value": None if spec.is_sample_array else service.get_value(handle),
                 "sample_period": spec.sample_period,
                 "shape": spec.shape.value,
-                "cycle_samples": spec.cycle_samples,
+                "cycle_seconds": spec.cycle_seconds,
                 "domain_unit_label": spec.domain_unit_label,
                 "domain_unit_coding": coding_snapshot(spec.domain_unit_coding),
                 "domain_minimum": spec.domain_minimum,
                 "domain_maximum": spec.domain_maximum,
                 "distribution_shape": spec.distribution_shape.value,
+                "allowed_range": spec.effective_allowed_range(),
+                "operation_values": spec.operation_values,
+                "active": spec.active,
             }
             for handle, spec in service.list_metrics().items()
         },
@@ -120,6 +123,8 @@ def snapshot(service: ProviderService) -> dict:
                 "lower_limit": spec.lower_limit,
                 "upper_limit": spec.upper_limit,
                 "delegable": spec.delegable,
+                "max_limits": service._max_limits(spec),  # noqa: SLF001 - what MaxLimits carries
+                "actual_priority": spec.actual_priority,
             }
             for handle, spec in service.list_alerts().items()
         },
@@ -358,7 +363,7 @@ def build_reference(service: ProviderService) -> None:
             maximum=Decimal("100"),
             sample_period=Decimal("0.05"),
             shape=WaveformShape.SQUARE,
-            cycle_samples=37,
+            cycle_seconds=Decimal("1.85"),
         ),
     )
     service.add_metric(
@@ -389,6 +394,12 @@ def build_reference(service: ProviderService) -> None:
         ),
     )
     service.add_alert(AlertSpec(label="Service due", source_handle="m.zoom_level"))
+    # Runtime states, edited after creation, survive the file too.
+    service.set_allowed_range("m.zoom_level", Decimal("5"), Decimal("50"))
+    service.set_allowed_values("m.mode", ["IDLE", "RUN"])
+    service.set_metric_active("m.patient_note", active=False)
+    service.set_alert_limits("al.zoom_high", Decimal("3"), Decimal("80"))
+    service.set_alert_priority("al.service_due", AlertPriority.LOW)
     service.add_action(
         ActionSpec(
             label="Set inspection mode",
@@ -1944,7 +1955,7 @@ def check_mutated_waveform_preflight(report: Report, service: ProviderService) -
     try:
         cases = (
             *[("sample_period", value) for value in (None, Decimal("0"), Decimal("-0.1"), Decimal("NaN"), Decimal("1E-100"), 0.1)],
-            *[("cycle_samples", value) for value in (None, Decimal("40"), True, 1)],
+            *[("cycle_seconds", value) for value in (None, 40, True, Decimal("0.01"))],
         )
         for replace in (True, False):
             for field, invalid in cases:
@@ -1959,6 +1970,26 @@ def check_mutated_waveform_preflight(report: Report, service: ProviderService) -
                 )
     finally:
         service.remove_metric(witness)
+
+
+def check_cycle_seconds(report: Report) -> None:
+    """A cycle is a duration; old profiles that counted samples keep their speed."""
+    legacy = config.parse({"metrics": [
+        {"label": "Old wave", "kind": "waveform", "sample_period": "0.02", "cycle_samples": 50},
+        {"label": "Old default", "kind": "waveform", "cycle_samples": 30},
+    ]})
+    report.check([spec.cycle_seconds for spec in legacy.metrics] == [Decimal("1.00"), Decimal("3.0")],
+                 "cycle_samples from an older profile becomes the same duration",
+                 str([spec.cycle_seconds for spec in legacy.metrics]))
+    entry = config.metric_to_dict("m.old_wave", legacy.metrics[0])
+    report.check(entry.get("cycle_seconds") == "1.00" and "cycle_samples" not in entry,
+                 "profiles are written with cycle_seconds", str(entry))
+    try:
+        config.parse({"metrics": [{"label": "Both", "kind": "waveform", "cycle_samples": 50, "cycle_seconds": "1"}]})
+        both = False
+    except config.ConfigError:
+        both = True
+    report.check(both, "a profile may not give the cycle both ways")
 
 
 def check_derived_step_preflight(report: Report, service: ProviderService) -> None:
@@ -2858,6 +2889,7 @@ def run_checks(report: Report, workdir: Path) -> None:
         check_control_capability_roundtrip(report, regressions)
         check_descriptor_text_preflight(report, regressions)
         check_mutated_waveform_preflight(report, regressions)
+        check_cycle_seconds(report)
         check_xml_profile_preflight(report, regressions)
         check_derived_step_preflight(report, regressions)
         check_derived_sample_range_preflight(report, regressions)

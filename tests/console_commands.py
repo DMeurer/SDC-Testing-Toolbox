@@ -56,6 +56,16 @@ class ConsoleCommandsTest(unittest.TestCase):
         self.assertIn("rejected", output.lower())
         self.assertEqual(self.provider.get_value("m.number"), Decimal(9))
 
+    def test_waveform_cycle_is_given_in_seconds(self) -> None:
+        self.provider.stop_generator = lambda: None
+        output = self.run_commands(
+            console.ProviderShell(self.provider),
+            ["add waveform Pleth 0..100 --shape pulse --cycle 1.5", "add waveform Bad 0..1 --cycle x"],
+        )
+        waves = [spec for spec in self.provider.list_metrics().values() if spec.kind is MetricKind.WAVEFORM]
+        self.assertEqual([spec.cycle_seconds for spec in waves], [Decimal("1.5")])
+        self.assertIn("number of seconds", output)
+
     def test_provider_uses_target_metric_type(self) -> None:
         self.run_commands(
             console.ProviderShell(self.provider),

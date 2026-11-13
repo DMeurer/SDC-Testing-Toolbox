@@ -133,10 +133,14 @@ class ChoiceWidget(MetricWidget):
         self.box.addItems(list(self.spec.allowed_values))
         show_choice_value(self.box, None)
         self.box.activated.connect(self._on_activated)
+        # What a read-only choice shows instead: a disabled drop-down greys the value out.
+        self.value_label = QLabel(NO_VALUE)
+        constrain_dynamic_label(self.value_label)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.box)
+        layout.addWidget(self.value_label)
 
     def _on_activated(self, index: int) -> None:
         # activated rather than currentIndexChanged: only fire on a real click, not when
@@ -144,12 +148,15 @@ class ChoiceWidget(MetricWidget):
         self.request(self.box.itemText(index))
 
     def show_value(self, value: Any) -> None:
+        self.value_label.setText(NO_VALUE if value is None else str(value))
         if self.busy_editing():
             return
         show_choice_value(self.box, value)
 
     def set_editable(self, editable: bool) -> None:  # noqa: FBT001
         self.box.setEnabled(editable)
+        self.box.setVisible(editable)
+        self.value_label.setVisible(not editable)
 
     def busy_editing(self) -> bool:
         return self.box.view().isVisible()
@@ -209,6 +216,7 @@ class SliderWidget(MetricWidget):
         self.slider.setPageStep(max(1, self._steps // 10))
         self.slider.valueChanged.connect(self._on_moved)
         self.slider.sliderReleased.connect(self._on_released)
+        self._focus_policy = self.slider.focusPolicy()
 
         self.readout = QLabel(NO_VALUE)
         constrain_dynamic_label(self.readout)
@@ -276,7 +284,9 @@ class SliderWidget(MetricWidget):
         self.readout.setText(_trim(value))
 
     def set_editable(self, editable: bool) -> None:  # noqa: FBT001
-        self.slider.setEnabled(editable)
+        # Inert rather than disabled, so the position still reads at full contrast.
+        self.slider.setAttribute(Qt.WA_TransparentForMouseEvents, not editable)
+        self.slider.setFocusPolicy(self._focus_policy if editable else Qt.NoFocus)
 
     def busy_editing(self) -> bool:
         return self.slider.isSliderDown()
@@ -396,6 +406,7 @@ class StepperWidget(MetricWidget):
         self.edit.setReadOnly(not editable)
         for button in self.buttons:
             button.setEnabled(editable)
+            button.setVisible(editable)
 
     def busy_editing(self) -> bool:
         return self.edit.hasFocus() or self.edit.isModified()
@@ -433,6 +444,7 @@ class TextWidget(MetricWidget):
     def set_editable(self, editable: bool) -> None:  # noqa: FBT001
         self.edit.setReadOnly(not editable)
         self.apply.setEnabled(editable)
+        self.apply.setVisible(editable)
 
     def busy_editing(self) -> bool:
         return self.edit.hasFocus() or self.edit.isModified()

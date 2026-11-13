@@ -194,10 +194,10 @@ def check_sample_arrays(report: Report, service: ProviderService) -> None:
     cycle_before_phase = dict(service._sample_generator.phases)  # noqa: SLF001
     cycle_before_pinned = set(service._sample_generator.pinned)  # noqa: SLF001
     cycle_before_generator = service.generator_running
-    invalid_cycles = (None, Decimal("40"), True, 1)
+    invalid_cycles = (None, 40, True, Decimal("0.01"), Decimal("NaN"))
     cycle_rejections = 0
     for invalid_cycle in invalid_cycles:
-        mutated_cycle.cycle_samples = invalid_cycle
+        mutated_cycle.cycle_seconds = invalid_cycle
         try:
             service.add_metric(mutated_cycle)
         except ValueError:
