@@ -243,6 +243,9 @@ def make_set_handler(
         target_entity = mdib.entities.by_handle(target_handle)
         if target_entity is None:
             return _failed(mdib, f"target {target_handle!r} does not exist", target_handle)
+        activation = getattr(target_entity.state, "ActivationState", None)
+        if activation not in (None, pm_types.ComponentActivation.ON):
+            return _failed(mdib, f"metric {target_handle!r} is {activation}, not On", target_handle)
 
         try:
             value = coerce_value(target_handle, requested)

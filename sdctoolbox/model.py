@@ -465,6 +465,18 @@ class MetricSpec:
     # tree sees a device with parts rather than one flat list of metrics.
     section: str = ""
 
+    # -- runtime state, editable while the provider runs ------------------------------
+    # SetValueOperationState/AllowedRange: what a remote caller may ask for. None falls back
+    # to minimum/maximum. Must stay inside them, since the state may not leave its descriptor.
+    allowed_minimum: Decimal | None = None
+    allowed_maximum: Decimal | None = None
+    # SetStringOperationState/AllowedValues: the choices a remote caller may pick. Empty
+    # means all of allowed_values.
+    operation_values: tuple[str, ...] = ()
+    # AbstractMetricState/@ActivationState On (True) or Off (False). An Off metric keeps its
+    # last value but generates no samples, refuses remote sets and raises no alarms.
+    active: bool = True
+
     def __post_init__(self) -> None:
         self.validate_text()
         if self.controllable and not self.kind.controllable:
@@ -548,6 +560,7 @@ class MetricSpec:
         if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
             msg = f"minimum {self.minimum} is greater than maximum {self.maximum}"
             raise ValueError(msg)
+        self._validate_runtime_state()
         if self.kind in SAMPLE_ARRAY_KINDS:
             self.generated_sample_range()
         if self.kind in SAMPLE_ARRAY_KINDS and self.initial_value is not None:
@@ -555,6 +568,47 @@ class MetricSpec:
             raise ValueError(msg)
         if self.initial_value is not None:
             self.initial_value = coerce_metric_value(self, self.initial_value)
+
+    def _validate_runtime_state(self) -> None:
+        if not isinstance(self.active, bool):
+            msg = "active must be a bool"
+            raise TypeError(msg)
+        for name in ("allowed_minimum", "allowed_maximum"):
+            limit = getattr(self, name)
+            if limit is None:
+                continue
+            if not isinstance(limit, Decimal):
+                msg = f"{name} must be a Decimal, never a float"
+                raise TypeError(msg)
+            fixed_point_decimal(limit, name)
+            if self.kind is not MetricKind.NUMBER:
+                msg = f"{name} is only meaningful for {MetricKind.NUMBER.value} metrics"
+                raise ValueError(msg)
+        lower, upper = self.effective_allowed_range()
+        for bound, name in ((lower, "allowed minimum"), (upper, "allowed maximum")):
+            if bound is None:
+                continue
+            if (self.minimum is not None and bound < self.minimum) or (self.maximum is not None and bound > self.maximum):
+                msg = f"{name} {bound} is outside the technical range {self.range_text()}"
+                raise ValueError(msg)
+        if lower is not None and upper is not None and lower > upper:
+            msg = f"allowed minimum {lower} is greater than allowed maximum {upper}"
+            raise ValueError(msg)
+        self.operation_values = tuple(self.operation_values)
+        if self.operation_values and self.kind is not MetricKind.CHOICE:
+            msg = f"operation_values is only meaningful for {MetricKind.CHOICE.value} metrics"
+            raise ValueError(msg)
+        unknown = [value for value in self.operation_values if value not in self.allowed_values]
+        if unknown:
+            msg = f"{', '.join(unknown)} is not one of the metric's allowed values"
+            raise ValueError(msg)
+
+    def effective_allowed_range(self) -> tuple[Decimal | None, Decimal | None]:
+        """What a remote caller may ask for: the allowed range, or the technical one."""
+        return (
+            self.allowed_minimum if self.allowed_minimum is not None else self.minimum,
+            self.allowed_maximum if self.allowed_maximum is not None else self.maximum,
+        )
 
     def validate_text(self) -> None:
         """Validate descriptor text again when a mutable spec reaches a write boundary."""
@@ -794,6 +848,12 @@ class AlertSpec:
     # SignalDelegationSupported on every signal; without it a delegation is refused.
     delegable: bool = False
     signals: tuple[AlertSignalSpec, ...] = field(default_factory=_default_alert_signals)
+    # LimitAlertConditionDescriptor/MaxLimits: how far the limits may ever move. None falls
+    # back to the limit itself, so an alarm made without them cannot be widened.
+    max_lower_limit: Decimal | None = None
+    max_upper_limit: Decimal | None = None
+    # AlertConditionState/@ActualPriority. None means the descriptor's priority applies.
+    actual_priority: AlertPriority | None = None
 
     def __post_init__(self) -> None:
         self.validate_text()
@@ -803,6 +863,8 @@ class AlertSpec:
         # here so every entry point gets the same treatment.
         self.kind = _coerce_enum(AlertKind, self.kind, "kind")
         self.priority = _coerce_enum(AlertPriority, self.priority, "priority")
+        if self.actual_priority is not None:
+            self.actual_priority = _coerce_enum(AlertPriority, self.actual_priority, "actual_priority")
         self.signals = tuple(self.signals)
         if not self.signals:
             msg = "an alarm needs at least one signal"
@@ -811,7 +873,7 @@ class AlertSpec:
             msg = "signals must be AlertSignalSpec values"
             raise TypeError(msg)
 
-        for name in ("lower_limit", "upper_limit"):
+        for name in ("lower_limit", "upper_limit", "max_lower_limit", "max_upper_limit"):
             limit = getattr(self, name)
             if limit is not None and not isinstance(limit, Decimal):
                 msg = f"{name} must be a Decimal, never a float"
@@ -824,6 +886,16 @@ class AlertSpec:
             and self.lower_limit > self.upper_limit
         ):
             msg = f"lower_limit {self.lower_limit} is above upper_limit {self.upper_limit}"
+            raise ValueError(msg)
+        if (self.max_lower_limit is not None or self.max_upper_limit is not None) and not self.has_limits:
+            msg = "max limits need a lower or upper limit"
+            raise ValueError(msg)
+        max_lower, max_upper = self.effective_max_limits()
+        if any(
+            limit is not None and ((max_lower is not None and limit < max_lower) or (max_upper is not None and limit > max_upper))
+            for limit in (self.lower_limit, self.upper_limit)
+        ):
+            msg = f"limits {self.lower_limit}..{self.upper_limit} leave the max limits {max_lower}..{max_upper}"
             raise ValueError(msg)
         if not self.label.strip():
             msg = "an alarm needs a label"
@@ -840,6 +912,13 @@ class AlertSpec:
     def slug(self) -> str:
         """Slug used to build handles."""
         return slugify(self.label)
+
+    def effective_max_limits(self) -> tuple[Decimal | None, Decimal | None]:
+        """How far the limits may move: the max limits, or the limits themselves."""
+        return (
+            self.max_lower_limit if self.max_lower_limit is not None else self.lower_limit,
+            self.max_upper_limit if self.max_upper_limit is not None else self.upper_limit,
+        )
 
     @property
     def has_limits(self) -> bool:

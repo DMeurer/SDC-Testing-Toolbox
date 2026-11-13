@@ -27,7 +27,14 @@ import run_toolbox  # noqa: E402
 from sdctoolbox import config  # noqa: E402
 from sdctoolbox.consumer_service import ConsumerService  # noqa: E402
 from sdctoolbox.mdib_io import parse_mdib  # noqa: E402
-from sdctoolbox.model import ActionSpec, AlertSpec, MetricKind, MetricSpec, PatientInfo  # noqa: E402
+from sdctoolbox.model import (  # noqa: E402
+    ActionSpec,
+    AlertPriority,
+    AlertSpec,
+    MetricKind,
+    MetricSpec,
+    PatientInfo,
+)
 
 FINISHED = msg_types.InvocationState.FINISHED
 
@@ -112,6 +119,39 @@ def check_edits(report: Report, service, remote) -> None:  # noqa: ANN001
                  "removing the metric removes it and its alarm remotely")
 
 
+def check_live_edits(report: Report, service, remote) -> None:  # noqa: ANN001
+    """Runtime states change on the running device and reach the consumer without a reconnect."""
+    rate = service.add_metric(MetricSpec("Live rate", MetricKind.NUMBER, minimum=Decimal("0"), maximum=Decimal("100"),
+                                         controllable=True, initial_value=Decimal("30")))
+    alarm = service.add_alert(AlertSpec("Live rate high", rate, upper_limit=Decimal("90")))
+    report.check(wait_until(lambda: alarm in remote.alerts() and rate in remote.metrics(), timeout=10),
+                 "the live-edit metric and alarm reach the consumer")
+
+    def allowed() -> tuple:
+        ranges = remote.metrics()[rate].allowed_ranges
+        return (ranges[0].lower, ranges[0].upper) if ranges else ()
+
+    service.set_allowed_range(rate, Decimal("20"), Decimal("40"))
+    report.check(wait_until(lambda: allowed() == (Decimal("20"), Decimal("40")), timeout=2),
+                 "a narrowed allowed range is reported within 2 s", str(allowed()))
+    state = remote.set_value(rate, Decimal("50"))
+    report.check(state != FINISHED and service.get_value(rate) == Decimal("30"),
+                 "the consumer cannot set 50 any more", f"{state} {remote.last_invocation_detail}")
+
+    service.set_alert_limits(alarm, Decimal("10"), Decimal("25"))
+    service.set_alert_priority(alarm, AlertPriority.HIGH)
+    report.check(wait_until(lambda: (remote.alerts()[alarm].lower_limit, remote.alerts()[alarm].upper_limit)
+                            == (Decimal("10"), Decimal("25")) and remote.alerts()[alarm].priority == "Hi", timeout=2),
+                 "moved limits and the actual priority are reported within 2 s")
+    report.check(wait_until(lambda: remote.alerts()[alarm].present, timeout=2), "30 is above 25, so the alarm is present")
+
+    service.set_metric_active(rate, active=False)
+    report.check(wait_until(lambda: remote.metrics()[rate].activation == "Off", timeout=2),
+                 "a switched-off metric is reported Off within 2 s")
+    report.check(wait_until(lambda: not remote.alerts()[alarm].present, timeout=2), "its alarm is no longer present")
+    service.remove_metric(rate)
+
+
 def check_reload_generates(report: Report, service, consumer, directory: Path):  # noqa: ANN001, ANN201
     """A behaviour export reloaded in place, as the window's import does, keeps its waveforms moving."""
     wave = service.add_metric(MetricSpec("Pleth", MetricKind.WAVEFORM, minimum=Decimal("0"), maximum=Decimal("10")))
@@ -154,6 +194,7 @@ def main() -> int:
             check_identity(report, remotes[0])
             check_operations(report, service, remotes[0])
             check_edits(report, service, remotes[0])
+            check_live_edits(report, service, remotes[0])
             remotes.append(check_reload_generates(report, service, consumer, directory))
         except AssertionError:
             pass

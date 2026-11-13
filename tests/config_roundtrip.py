@@ -103,6 +103,9 @@ def snapshot(service: ProviderService) -> dict:
                 "domain_minimum": spec.domain_minimum,
                 "domain_maximum": spec.domain_maximum,
                 "distribution_shape": spec.distribution_shape.value,
+                "allowed_range": spec.effective_allowed_range(),
+                "operation_values": spec.operation_values,
+                "active": spec.active,
             }
             for handle, spec in service.list_metrics().items()
         },
@@ -120,6 +123,8 @@ def snapshot(service: ProviderService) -> dict:
                 "lower_limit": spec.lower_limit,
                 "upper_limit": spec.upper_limit,
                 "delegable": spec.delegable,
+                "max_limits": service._max_limits(spec),  # noqa: SLF001 - what MaxLimits carries
+                "actual_priority": spec.actual_priority,
             }
             for handle, spec in service.list_alerts().items()
         },
@@ -389,6 +394,12 @@ def build_reference(service: ProviderService) -> None:
         ),
     )
     service.add_alert(AlertSpec(label="Service due", source_handle="m.zoom_level"))
+    # Runtime states, edited after creation, survive the file too.
+    service.set_allowed_range("m.zoom_level", Decimal("5"), Decimal("50"))
+    service.set_allowed_values("m.mode", ["IDLE", "RUN"])
+    service.set_metric_active("m.patient_note", active=False)
+    service.set_alert_limits("al.zoom_high", Decimal("3"), Decimal("80"))
+    service.set_alert_priority("al.service_due", AlertPriority.LOW)
     service.add_action(
         ActionSpec(
             label="Set inspection mode",

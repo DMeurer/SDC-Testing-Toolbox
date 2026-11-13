@@ -281,6 +281,7 @@ class DemoSampleGenerator:
                 (handle, spec)
                 for handle, spec in self._specs().items()
                 if spec.is_sample_array
+                and spec.active
                 and handle not in self.pinned
                 and handle not in self.quarantined
                 and (force or self.deadlines.get(handle, now) <= now)

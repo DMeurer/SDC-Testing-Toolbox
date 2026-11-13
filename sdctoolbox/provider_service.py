@@ -11,13 +11,14 @@ import threading
 import time
 import uuid
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from functools import partial
 from typing import TYPE_CHECKING
 
 from sdc11073.location import SdcLocation
 from sdc11073.mdib import ProviderMdib, mdibbase
+from sdc11073.mdib.statecontainers import AllowedValuesType
 from sdc11073.provider import SdcProvider
 from sdc11073.provider.operations import ActivateOperation
 from sdc11073.provider.porttypes.getserviceimpl import GetService
@@ -159,6 +160,31 @@ def _reduce_alert_transition(
     return _AlertTransition(condition_present, tuple(signal_presences))
 
 
+def _range(lower: Decimal | None, upper: Decimal | None, name: str) -> pm_types.Range:
+    return pm_types.Range(
+        lower=fixed_point_decimal(lower, f"lower {name}") if lower is not None else None,
+        upper=fixed_point_decimal(upper, f"upper {name}") if upper is not None else None,
+    )
+
+
+def _enclosing(bound: Decimal | None, limit: Decimal | None, *, below: bool) -> Decimal | None:
+    """The technical bound if it encloses the limit, else None (the limit then bounds itself)."""
+    if bound is None or (limit is not None and (bound > limit if below else bound < limit)):
+        return None
+    return bound
+
+
+def _write_limits(state, spec: AlertSpec) -> None:  # noqa: ANN001 - an sdc11073 alert condition state
+    state.Limits = _range(spec.lower_limit, spec.upper_limit, "limit")
+    # The attribute names the limits that are switched off, so an upper-only alarm is "LoOff".
+    if spec.lower_limit is not None and spec.upper_limit is not None:
+        state.MonitoredAlertLimits = pm_types.AlertConditionMonitoredLimits.ALL_ON
+    elif spec.upper_limit is not None:
+        state.MonitoredAlertLimits = pm_types.AlertConditionMonitoredLimits.LOW_OFF
+    else:
+        state.MonitoredAlertLimits = pm_types.AlertConditionMonitoredLimits.HIGH_OFF
+
+
 def _coded_value(coding: Coding, label: str = "") -> pm_types.CodedValue:
     """Turn one of our Codings into the BICEPS element.
 
@@ -265,6 +291,11 @@ class ProviderService:
             msg = "provider is not started"
             raise RuntimeError(msg)
         return self._mdib
+
+    @property
+    def running(self) -> bool:
+        """Whether the provider is started, so its MDIB can be read."""
+        return self._mdib is not None
 
     @property
     def from_mdib_file(self) -> bool:
@@ -955,6 +986,8 @@ class ProviderService:
                 self.set_value(handle, spec.initial_value)
             if spec.controllable:
                 self.enable_control(handle)
+            if not spec.active:
+                self.set_metric_active(handle, active=False)
             if spec.is_sample_array:
                 # A sample array with nothing driving it publishes a descriptor and never a
                 # sample, which looks like a broken device rather than an idle one. That is
@@ -1140,6 +1173,7 @@ class ProviderService:
 
             self._set_operating_mode(operation_handle, pm_types.OperatingMode.ENABLED)
             self._set_allowed_range(operation_handle, spec)
+            self._set_allowed_values(operation_handle, spec)
             self._set_metric_category(handle, pm_types.MetricCategory.SETTING)
             return operation_handle
 
@@ -1155,6 +1189,81 @@ class ProviderService:
             if operation_handle is None:
                 return
             self._set_operating_mode(operation_handle, pm_types.OperatingMode.DISABLED)
+
+    def set_allowed_range(self, handle: str, lower: Decimal | None, upper: Decimal | None) -> None:
+        """Change what a remote caller may set; None on a side falls back to the technical range."""
+        with self._lock:
+            spec = replace(self._remotely_settable(handle), allowed_minimum=lower, allowed_maximum=upper)
+            operation_handle = self._operations.get(handle)
+            if operation_handle is not None:
+                self._set_allowed_range(operation_handle, spec)
+            self._specs[handle] = spec
+
+    def set_allowed_values(self, handle: str, values: Sequence[str]) -> None:
+        """Change which of a choice metric's values a remote caller may pick."""
+        if not values:
+            msg = "at least one value must stay allowed"
+            raise ValueError(msg)
+        with self._lock:
+            spec = replace(self._remotely_settable(handle), operation_values=tuple(values))
+            operation_handle = self._operations.get(handle)
+            if operation_handle is not None:
+                self._set_allowed_values(operation_handle, spec)
+            self._specs[handle] = spec
+
+    def set_metric_active(self, handle: str, *, active: bool) -> None:
+        """Switch a metric On or Off through its ActivationState."""
+        with self._lock:
+            spec = self._specs.get(handle)
+            if spec is None:
+                msg = f"no metric with handle {handle!r}"
+                raise KeyError(msg)
+            updated = replace(spec, active=active)
+            entity = self.mdib.entities.by_handle(handle)
+            entity.state.ActivationState = pm_types.ComponentActivation.ON if active else pm_types.ComponentActivation.OFF
+            transaction = (
+                self.mdib.rt_sample_state_transaction if spec.kind is MetricKind.WAVEFORM else self.mdib.metric_state_transaction
+            )
+            with transaction() as mgr:
+                mgr.write_entity(entity)
+            self._specs[handle] = updated
+        self._evaluate_alerts({handle})
+
+    def set_generator(
+        self,
+        handle: str,
+        *,
+        shape: WaveformShape | None = None,
+        cycle_samples: int | None = None,
+        distribution_shape: DistributionShape | None = None,
+    ) -> None:
+        """Change the curve a sample array is generated with; it applies from the next block."""
+        with self._lock:
+            spec = self._specs.get(handle)
+            if spec is None:
+                msg = f"no metric with handle {handle!r}"
+                raise KeyError(msg)
+            changes = {
+                name: value
+                for name, value in (("shape", shape), ("cycle_samples", cycle_samples),
+                                    ("distribution_shape", distribution_shape))
+                if value is not None
+            }
+            kind = MetricKind.DISTRIBUTION if "distribution_shape" in changes else MetricKind.WAVEFORM
+            if changes and spec.kind is not kind:
+                msg = f"{', '.join(changes)} is not meaningful for {spec.kind.value} metrics"
+                raise ValueError(msg)
+            self._specs[handle] = replace(spec, **changes)
+
+    def _remotely_settable(self, handle: str) -> MetricSpec:
+        spec = self._specs.get(handle)
+        if spec is None:
+            msg = f"no metric with handle {handle!r}"
+            raise KeyError(msg)
+        if not spec.controllable and handle not in self._operations:
+            msg = f"{spec.label!r} is not remotely settable"
+            raise ValueError(msg)
+        return spec
 
     def operation_handle_for(self, handle: str) -> str | None:
         """Return the operation handle controlling a metric, if there is one."""
@@ -1197,41 +1306,14 @@ class ProviderService:
             descriptor.Kind = spec.kind
             descriptor.Priority = spec.priority
             if spec.has_limits:
-                descriptor.MaxLimits = pm_types.Range(
-                    lower=(
-                        fixed_point_decimal(spec.lower_limit, "lower_limit")
-                        if spec.lower_limit is not None
-                        else None
-                    ),
-                    upper=(
-                        fixed_point_decimal(spec.upper_limit, "upper_limit")
-                        if spec.upper_limit is not None
-                        else None
-                    ),
-                )
+                descriptor.MaxLimits = _range(*self._max_limits(spec), "max limit")
 
             entity.state.ActivationState = pm_types.AlertActivation.ON
             entity.state.Presence = False
+            if spec.actual_priority is not None:
+                entity.state.ActualPriority = spec.actual_priority
             if spec.has_limits:
-                entity.state.Limits = pm_types.Range(
-                    lower=(
-                        fixed_point_decimal(spec.lower_limit, "lower_limit")
-                        if spec.lower_limit is not None
-                        else None
-                    ),
-                    upper=(
-                        fixed_point_decimal(spec.upper_limit, "upper_limit")
-                        if spec.upper_limit is not None
-                        else None
-                    ),
-                )
-                # The attribute names the limits that are switched off, so an upper-only alarm is "LoOff".
-                if spec.lower_limit is not None and spec.upper_limit is not None:
-                    entity.state.MonitoredAlertLimits = pm_types.AlertConditionMonitoredLimits.ALL_ON
-                elif spec.upper_limit is not None:
-                    entity.state.MonitoredAlertLimits = pm_types.AlertConditionMonitoredLimits.LOW_OFF
-                else:
-                    entity.state.MonitoredAlertLimits = pm_types.AlertConditionMonitoredLimits.HIGH_OFF
+                _write_limits(entity.state, spec)
 
             signal_entities = []
             handles = set(self._parents()) | {handle}
@@ -1318,6 +1400,62 @@ class ProviderService:
                 msg = f"{handle!r} is a limit alarm; change its source metric instead"
                 raise ValueError(msg)
             self._write_alert_presence(handle, present=present)
+
+    def set_alert_limits(self, handle: str, lower: Decimal | None, upper: Decimal | None) -> None:
+        """Move a limit alarm's limits inside its MaxLimits and re-check it at once."""
+        with self._lock:
+            spec = self._alerts.get(handle)
+            if spec is None:
+                msg = f"no alarm with handle {handle!r}"
+                raise KeyError(msg)
+            if not spec.has_limits:
+                msg = f"{spec.label!r} has no limits to change"
+                raise ValueError(msg)
+            if lower is None and upper is None:
+                msg = "a limit alarm needs a lower or upper limit"
+                raise ValueError(msg)
+            max_lower, max_upper = self._max_limits(spec)
+            # Pin the max limits first: they fall back to the limits, which are about to move.
+            updated = replace(spec, lower_limit=lower, upper_limit=upper,
+                              max_lower_limit=max_lower, max_upper_limit=max_upper)
+            entity = self.mdib.entities.by_handle(handle)
+            _write_limits(entity.state, updated)
+            with self.mdib.alert_state_transaction() as mgr:
+                mgr.write_entity(entity)
+            self._alerts[handle] = updated
+        self._evaluate_alerts({updated.source_handle})
+
+    def _max_limits(self, spec: AlertSpec) -> tuple[Decimal | None, Decimal | None]:
+        """MaxLimits: the spec's, else the source's TechnicalRange where it encloses the limits.
+
+        MaxLimits is what is technically possible. Falling back to the limits alone would
+        mean an alarm made without max limits could only ever be narrowed.
+        """
+        if spec.max_lower_limit is not None or spec.max_upper_limit is not None:
+            return spec.effective_max_limits()
+        source = self._specs.get(spec.source_handle)
+        if source is None:
+            return spec.effective_max_limits()
+        lower = _enclosing(source.minimum, spec.lower_limit, below=True)
+        upper = _enclosing(source.maximum, spec.upper_limit, below=False)
+        return (
+            lower if lower is not None else spec.lower_limit,
+            upper if upper is not None else spec.upper_limit,
+        )
+
+    def set_alert_priority(self, handle: str, priority: AlertPriority) -> None:
+        """Change the priority the alarm currently has; the descriptor's stays."""
+        with self._lock:
+            spec = self._alerts.get(handle)
+            if spec is None:
+                msg = f"no alarm with handle {handle!r}"
+                raise KeyError(msg)
+            updated = replace(spec, actual_priority=priority)
+            entity = self.mdib.entities.by_handle(handle)
+            entity.state.ActualPriority = updated.actual_priority
+            with self.mdib.alert_state_transaction() as mgr:
+                mgr.write_entity(entity)
+            self._alerts[handle] = updated
 
     def alert_present(self, handle: str) -> bool:
         """Whether the condition is currently raised."""
@@ -1456,8 +1594,10 @@ class ProviderService:
         try:
             condition_truths = {}
             for handle, spec in alerts:
-                value = self.get_value(spec.source_handle)
-                condition_truths[handle] = spec.breached_by(value)
+                source = self._specs.get(spec.source_handle)
+                # A switched-off metric's value is not reliable, so nothing is breached.
+                active = source is None or source.active
+                condition_truths[handle] = active and spec.breached_by(self.get_value(spec.source_handle))
             version, _ = self._coordinate_alert_transition(condition_truths=condition_truths)
             return version, None
         except Exception as exc:  # noqa: BLE001 - preserve a post-commit report failure
@@ -2520,17 +2660,31 @@ class ProviderService:
         window can be narrowed at runtime without a description change - the same trick
         OperatingMode uses.
         """
-        if not spec.has_range:
+        lower, upper = spec.effective_allowed_range()
+        if lower is None and upper is None:
             return
         entity = self.mdib.entities.by_handle(operation_handle)
         if entity is None:
             return
         entity.state.AllowedRange = [
             pm_types.Range(
-                lower=(fixed_point_decimal(spec.minimum, "minimum") if spec.minimum is not None else None),
-                upper=(fixed_point_decimal(spec.maximum, "maximum") if spec.maximum is not None else None),
+                lower=(fixed_point_decimal(lower, "allowed minimum") if lower is not None else None),
+                upper=(fixed_point_decimal(upper, "allowed maximum") if upper is not None else None),
                 step_width=(fixed_point_decimal(spec.resolution, "resolution") if spec.resolution is not None else None),
             ),
         ]
+        with self.mdib.operational_state_transaction() as mgr:
+            mgr.write_entity(entity)
+
+    def _set_allowed_values(self, operation_handle: str, spec: MetricSpec) -> None:
+        """Publish the choices a remote caller may pick, on the operation state like AllowedRange."""
+        if spec.kind is not MetricKind.CHOICE:
+            return
+        entity = self.mdib.entities.by_handle(operation_handle)
+        if entity is None:
+            return
+        allowed = AllowedValuesType()
+        allowed.Value = list(spec.operation_values or spec.allowed_values)
+        entity.state.AllowedValues = allowed
         with self.mdib.operational_state_transaction() as mgr:
             mgr.write_entity(entity)

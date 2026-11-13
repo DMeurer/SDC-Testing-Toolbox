@@ -88,6 +88,10 @@ _METRIC_KEYS = {
     "domain_minimum",
     "domain_maximum",
     "distribution_shape",
+    "allowed_minimum",
+    "allowed_maximum",
+    "operation_values",
+    "active",
 }
 _ALERT_KEYS = {
     "handle",
@@ -98,6 +102,9 @@ _ALERT_KEYS = {
     "signals",
     "lower_limit",
     "upper_limit",
+    "max_lower_limit",
+    "max_upper_limit",
+    "actual_priority",
     "delegable",
 }
 _ACTION_KEYS = {"handle", "label", "target", "type", "note", "effects"}
@@ -360,6 +367,15 @@ def metric_to_dict(handle: str, spec: MetricSpec) -> dict[str, Any]:
         entry["domain_minimum"] = str(spec.domain_minimum)
         entry["domain_maximum"] = str(spec.domain_maximum)
         entry["distribution_shape"] = spec.distribution_shape.value
+    # Runtime states, only when they differ from what the descriptor alone would give.
+    if spec.allowed_minimum is not None:
+        entry["allowed_minimum"] = str(spec.allowed_minimum)
+    if spec.allowed_maximum is not None:
+        entry["allowed_maximum"] = str(spec.allowed_maximum)
+    if spec.operation_values:
+        entry["operation_values"] = list(spec.operation_values)
+    if not spec.active:
+        entry["active"] = False
     return entry
 
 
@@ -380,6 +396,12 @@ def alert_to_dict(handle: str, spec: AlertSpec) -> dict[str, Any]:
         entry["lower_limit"] = str(spec.lower_limit)
     if spec.upper_limit is not None:
         entry["upper_limit"] = str(spec.upper_limit)
+    if spec.max_lower_limit is not None:
+        entry["max_lower_limit"] = str(spec.max_lower_limit)
+    if spec.max_upper_limit is not None:
+        entry["max_upper_limit"] = str(spec.max_upper_limit)
+    if spec.actual_priority is not None and spec.actual_priority is not spec.priority:
+        entry["actual_priority"] = spec.actual_priority.value
     if spec.delegable:
         entry["delegable"] = True
     return entry
@@ -602,6 +624,8 @@ def metric_from_dict(entry: dict[str, Any]) -> MetricSpec:
             "shape": str,
             "cycle_samples": int,
             "distribution_shape": str,
+            "operation_values": list,
+            "active": bool,
         },
         field,
     )
@@ -622,6 +646,9 @@ def metric_from_dict(entry: dict[str, Any]) -> MetricSpec:
     allowed_values = entry.get("allowed_values", [])
     for index, value in enumerate(allowed_values):
         _expect_type(value, str, f"metrics[{label}].allowed_values[{index}]")
+    operation_values = entry.get("operation_values", [])
+    for index, value in enumerate(operation_values):
+        _expect_type(value, str, f"metrics[{label}].operation_values[{index}]")
 
     unit_coding, unit_label = _coding_from_json(entry.get("unit"), f"metrics[{label}].unit")
     type_coding, _ = _coding_from_json(entry.get("type"), f"metrics[{label}].type")
@@ -663,6 +690,10 @@ def metric_from_dict(entry: dict[str, Any]) -> MetricSpec:
             domain_unit_coding=domain_coding,
             domain_minimum=_decimal_or_none(entry.get("domain_minimum"), f"metrics[{label}].domain_minimum"),
             domain_maximum=_decimal_or_none(entry.get("domain_maximum"), f"metrics[{label}].domain_maximum"),
+            allowed_minimum=_decimal_or_none(entry.get("allowed_minimum"), f"metrics[{label}].allowed_minimum"),
+            allowed_maximum=_decimal_or_none(entry.get("allowed_maximum"), f"metrics[{label}].allowed_maximum"),
+            operation_values=tuple(operation_values),
+            active=entry.get("active", True),
         )
     except (ValueError, TypeError) as exc:
         msg = f"metrics[{label}]: {exc}"
@@ -706,6 +737,7 @@ def alert_from_dict(entry: dict[str, Any]) -> AlertSpec:
             "watches": str,
             "kind": str,
             "priority": str,
+            "actual_priority": str,
             "signals": list,
             "delegable": bool,
         },
@@ -739,6 +771,11 @@ def alert_from_dict(entry: dict[str, Any]) -> AlertSpec:
             ),
             lower_limit=_decimal_or_none(entry.get("lower_limit"), f"alerts[{label}].lower_limit"),
             upper_limit=_decimal_or_none(entry.get("upper_limit"), f"alerts[{label}].upper_limit"),
+            max_lower_limit=_decimal_or_none(entry.get("max_lower_limit"), f"alerts[{label}].max_lower_limit"),
+            max_upper_limit=_decimal_or_none(entry.get("max_upper_limit"), f"alerts[{label}].max_upper_limit"),
+            actual_priority=_enum_or_default(
+                AlertPriority, entry.get("actual_priority"), None, f"alerts[{label}].actual_priority",
+            ),
             handle=entry.get("handle") or None,
             delegable=entry.get("delegable", False),
             **({"signals": signals} if signals is not None else {}),

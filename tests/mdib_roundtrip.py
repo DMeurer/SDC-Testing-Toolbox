@@ -546,6 +546,41 @@ class EditableMdibTests(unittest.TestCase):
         imported.set_location(LocationInfo(facility="OTHER"))
         self.assertEqual(imported.get_location().facility, "OTHER")
 
+    def test_runtime_states_reload_from_an_mdib_file(self) -> None:
+        from sdctoolbox import config
+        from sdctoolbox.model import AlertPriority, AlertSpec
+
+        self.start(bare_mds())
+        rate = self.service.add_metric(MetricSpec("Rate", MetricKind.NUMBER, controllable=True,
+                                                  minimum=Decimal("0"), maximum=Decimal("100"), initial_value=Decimal("50")))
+        mode = self.service.add_metric(MetricSpec("Mode", MetricKind.CHOICE, controllable=True,
+                                                  allowed_values=("A", "B", "C"), initial_value="A"))
+        alarm = self.service.add_alert(AlertSpec("Rate high", rate, upper_limit=Decimal("80")))
+        self.service.set_allowed_range(rate, Decimal("20"), Decimal("40"))
+        self.service.set_allowed_values(mode, ["A", "B"])
+        self.service.set_metric_active(mode, active=False)
+        self.service.set_alert_limits(alarm, Decimal("10"), Decimal("90"))
+        self.service.set_alert_priority(alarm, AlertPriority.HIGH)
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "states.xml"
+            config.save(self.service, target)
+            reloaded = ProviderService(instance_name="states-reloaded")
+            reloaded.start(self.io.parse_mdib(target.read_bytes()))
+        self.addCleanup(reloaded.stop)
+
+        metrics, alert = reloaded.list_metrics(), reloaded.list_alerts()[alarm]
+        self.assertEqual(metrics[rate].effective_allowed_range(), (Decimal("20"), Decimal("40")))
+        self.assertEqual((metrics[rate].minimum, metrics[rate].maximum), (Decimal("0"), Decimal("100")))
+        self.assertEqual(metrics[mode].operation_values, ("A", "B"))
+        self.assertFalse(metrics[mode].active)
+        self.assertEqual((alert.lower_limit, alert.upper_limit), (Decimal("10"), Decimal("90")))
+        self.assertEqual(alert.effective_max_limits(), (Decimal("0"), Decimal("100")))
+        self.assertIs(alert.actual_priority, AlertPriority.HIGH)
+        self.assertIs(alert.priority, AlertPriority.MEDIUM)
+        # Still editable after the reload.
+        reloaded.set_allowed_range(rate, Decimal("10"), Decimal("60"))
+        reloaded.set_alert_limits(alarm, Decimal("0"), Decimal("100"))
+
     def test_an_edited_graph_reloads_unchanged(self) -> None:
         from sdctoolbox import config
         from sdctoolbox.model import ActionSpec, AlertSpec, LocationInfo, PatientInfo
