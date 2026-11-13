@@ -129,10 +129,12 @@ def run_consumer(args: argparse.Namespace, ip: str) -> None:
 
         with lock:
             counts.clear()
+        cpu = time.process_time()
         time.sleep(args.window)
+        cpu = time.process_time() - cpu
         with lock:
             per_device = [counts.get(r.epr, 0) for r in remotes]
-        emit(role="consumer", window_s=args.window, reports=sum(per_device),
+        emit(role="consumer", window_s=args.window, cpu_percent=100 * cpu / args.window, reports=sum(per_device),
              per_device_min=min(per_device, default=0), per_device_max=max(per_device, default=0),
              silent_devices=sum(1 for n in per_device if n == 0), rss_mb=rss_mb())
     finally:

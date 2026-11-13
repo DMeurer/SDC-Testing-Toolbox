@@ -18,9 +18,11 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 from perf_stress import big_device
+from script_support import wait_until
 from sdc11073.consumer.consumerimpl import SdcConsumer
 from sdc11073.definitions_sdc import SdcV1Definitions
 from sdc11073.mdib import ConsumerMdib
+from sdc11073.httpserver.compression import GzipCompressionHandler
 from sdc11073.mdib.mdibbase import EntityGetter
 from sdc11073.provider.subscriptionmgr_async import AsyncioEventLoopThread
 
@@ -99,6 +101,33 @@ class ScalingTests(unittest.TestCase):
                     self.assertEqual(entity_copies(read), 0, name)
             finally:
                 consumer.stop_all()
+
+    def test_empty_replies_to_notifications_are_not_compressed(self) -> None:
+        # A consumer answers every report with an empty body; gzipping it only adds a header,
+        # and with 50 subscriptions the compressor setup was a seventh of the consumer's CPU.
+        compressed = []
+        original = GzipCompressionHandler.compress_payload
+
+        def recording(payload):  # noqa: ANN001, ANN202
+            compressed.append(len(payload))
+            return original(payload)
+
+        with ProviderService(ip="127.0.0.1", instance_name="scaling-gzip") as service:
+            handle = service.add_metric(MetricSpec("Gzip", MetricKind.NUMBER, initial_value=Decimal("1")))
+            consumer = SdcConsumer(service._provider.get_xaddrs()[0], SdcV1Definitions, None)  # noqa: SLF001
+            consumer.start_all()
+            try:
+                mdib = ConsumerMdib(consumer)
+                mdib.init_mdib()
+                remote = RemoteDevice(consumer, mdib, service.epr.urn)
+                with patch.object(GzipCompressionHandler, "compress_payload", staticmethod(recording)):
+                    for value in range(5):
+                        service.set_value(handle, Decimal(value))
+                    self.assertTrue(wait_until(lambda: remote.metrics((handle,))[handle].value == Decimal("4"),
+                                               timeout=10), "the reports still arrive")
+            finally:
+                consumer.stop_all()
+        self.assertNotIn(0, compressed)
 
 
 if __name__ == "__main__":

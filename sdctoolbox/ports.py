@@ -22,6 +22,7 @@ from sdc11073.provider import providerimpl
 from sdc11073.wsdiscovery import WSDiscovery, networkingthread
 
 from . import constants
+from .http_server import PlainEmptyReplyHandler
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -92,6 +93,11 @@ class _RangeThreadingHTTPServer(_ThreadingHTTPServer):
     # Lets a restarted listener reuse a port with connections in TIME_WAIT. On Windows the same
     # option would let two listeners share a port, so it stays off there.
     allow_reuse_address = os.name != "nt"
+
+    def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+        super().__init__(*args, **kwargs)
+        # The library passes its handler class to TCPServer; it is only read per request.
+        self.RequestHandlerClass = PlainEmptyReplyHandler
 
     def server_bind(self) -> None:
         if self.allow_reuse_address:
