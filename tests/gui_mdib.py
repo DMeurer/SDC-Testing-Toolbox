@@ -201,6 +201,62 @@ class GuiMdibTests(unittest.TestCase):
         self.assertTrue(pane.remove_button.isEnabled())
         self.assertTrue(pane.board.card("demo.wave") is not None)
 
+    def test_alarm_buttons_card_bin_and_waveform_editor_work_on_a_loaded_mdib(self) -> None:
+        from mdib_test_support import adoption_mdib
+        from sdc11073.xml_types import pm_types
+
+        self.window.apply_config(NativeMdibConfig(adoption_mdib()), "adoption.xml")
+        pane = self.window.provider_pane
+        pane.select_alert_handle("demo.alarm")
+        self.app.processEvents()
+        self.assertTrue(pane.toggle_alert_button.isEnabled())
+        self.assertEqual(pane.toggle_alert_button.text(), "Clear")
+        self.assertTrue(pane.acknowledge_button.isEnabled())
+        pane._on_acknowledge()
+        self.assertEqual(self.service.signal_states("demo.alarm")[0].presence, str(pm_types.AlertSignalPresence.ACK))
+        pane.toggle_alert_button.click()
+        self.assertFalse(self.service.alert_present("demo.alarm"))
+        pane.toggle_alert_button.click()
+        self.assertTrue(self.service.alert_present("demo.alarm"))
+
+        pane.select_alert_handle("demo.paused")
+        self.app.processEvents()
+        self.assertTrue(pane.remove_alert_button.isEnabled())
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
+            pane.remove_alert_button.click()
+            pane.board.delete_requested.emit("demo.mode")
+        self.assertNotIn("demo.paused", self.service.list_alerts())
+        self.assertIsNone(self.service.mdib.entities.by_handle("demo.mode"))
+
+        for row in range(pane.table.rowCount()):
+            if any(pane.table.item(row, column) is not None and pane.table.item(row, column).text() == "demo.wave"
+                   for column in range(pane.table.columnCount())):
+                pane.table.selectRow(row)
+        self.app.processEvents()
+        self.assertEqual(pane.selected_handle(), "demo.wave")
+        self.assertTrue(pane.editor_stack.isEnabled(), "a loaded waveform can be edited like any other")
+
+    def test_importing_a_behaviour_export_in_the_window_keeps_waveforms_moving(self) -> None:
+        import time
+
+        self.window.apply_config(NativeMdibConfig(original_mdib()), "original.xml")
+        self.service.start_generator()
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "behaviour.xml"
+            config.save(self.service, target, behaviour=True)
+            self.service.stop_generator()
+            self.assertTrue(self.window.apply_config(config.load_file(target), target))
+        self.assertTrue(self.service.generator_running)
+        plot = self.window.provider_pane.board.card("demo.wave").control.plot
+        plot.flush()
+        before = plot.samples
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and plot.samples == before:
+            self.app.processEvents()
+            plot.flush()
+            time.sleep(0.05)
+        self.assertNotEqual(plot.samples, before, "the waveform card never received a generated block")
+
     def test_export_offers_plain_and_behaviour_mdib(self) -> None:
         from PySide6.QtWidgets import QFileDialog
         from sdctoolbox.model import ActionSpec
