@@ -41,6 +41,8 @@ class MetricCard(QFrame):
 
     # The bin was clicked. Carries the handle.
     delete_requested = Signal(str)
+    # The pen was clicked. Carries the handle.
+    edit_requested = Signal(str)
 
     def __init__(
         self,
@@ -65,7 +67,16 @@ class MetricCard(QFrame):
         title_row.addWidget(self.heading, 1)
 
         self.delete_button: QToolButton | None = None
+        self.edit_button: QToolButton | None = None
         if deletable:
+            # A card you may remove is one of your own, so you may edit it as well.
+            self.edit_button = QToolButton()
+            self.edit_button.setText("✎")
+            self.edit_button.setAutoRaise(True)
+            self.edit_button.setToolTip(f"Edit {spec.handle} while it runs")
+            self.edit_button.setAccessibleName(f"Edit {spec.handle}")
+            self.edit_button.clicked.connect(lambda: self.edit_requested.emit(spec.handle))
+            title_row.addWidget(self.edit_button, 0, Qt.AlignTop)
             self.delete_button = QToolButton()
             self.delete_button.setIcon(
                 self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarCloseButton),
@@ -89,6 +100,8 @@ class MetricCard(QFrame):
             footer_parts.append(f"{spec.sample_period}s/sample")
         if spec.note:
             footer_parts.append(spec.note)
+        if not spec.active:
+            footer_parts.append(f"switched {spec.activation}" if spec.activation == "Off" else spec.activation)
         self.footer = QLabel("  \u00b7  ".join(footer_parts))
         constrain_dynamic_label(self.footer, max_lines=3)
         mute(self.footer)
@@ -99,6 +112,8 @@ class MetricCard(QFrame):
         layout.addLayout(title_row)
         layout.addWidget(self.control)
         layout.addWidget(self.footer)
+        # A metric that is not On has no value to rely on, so it is the one that looks greyed.
+        self.control.setEnabled(spec.active)
 
 
 class WidgetBoard(QScrollArea):
@@ -108,6 +123,7 @@ class WidgetBoard(QScrollArea):
     value_requested = Signal(str, object)
     # handle. A card's bin was clicked.
     delete_requested = Signal(str)
+    edit_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None, *, deletable: bool = False) -> None:
         super().__init__(parent)
@@ -165,6 +181,7 @@ class WidgetBoard(QScrollArea):
                 card = MetricCard(spec, self._canvas, deletable=self.deletable)
                 card.control.value_requested.connect(self.value_requested)
                 card.delete_requested.connect(self.delete_requested)
+                card.edit_requested.connect(self.edit_requested)
                 self._cards[spec.handle] = card
 
         self._order = [spec.handle for spec in specs]

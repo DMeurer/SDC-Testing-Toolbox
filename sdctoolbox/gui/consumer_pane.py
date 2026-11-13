@@ -724,6 +724,13 @@ class ConsumerPane(QWidget):
         if wanted is not None and not wanted:
             return
         metrics = self.remote.metrics(wanted)
+        # ActivationState travels in metric reports, not description changes, and decides
+        # whether a card is greyed, so a change of it rebuilds the cards.
+        if any(
+            (card := self.board.card(handle)) is not None and card.spec.activation != metric.activation
+            for handle, metric in metrics.items()
+        ):
+            self._refresh_board()
         self.board.show_values({handle: _displayable(metric) for handle, metric in metrics.items()})
         for row in range(self.table.rowCount()):
             handle_item = self.table.item(row, COL_HANDLE)

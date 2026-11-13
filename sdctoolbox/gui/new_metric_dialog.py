@@ -78,6 +78,32 @@ OFFERED_DISTRIBUTIONS: list[tuple[str, DistributionShape]] = [
 DEFAULT_CYCLE_SAMPLES = 40
 
 
+def shape_combo() -> NoWheelComboBox:
+    """The waveform curves, with a separator before the physiological ones."""
+    box = NoWheelComboBox()
+    for index, (caption, shape) in enumerate(OFFERED_SHAPES):
+        if index == FIRST_PHYSIOLOGICAL:
+            box.insertSeparator(box.count())
+        box.addItem(caption, shape)
+    return box
+
+
+def selected_shape(box: NoWheelComboBox) -> WaveformShape:
+    """The curve a shape_combo() shows. The separator takes an index of its own."""
+    index = box.currentIndex()
+    if index > FIRST_PHYSIOLOGICAL:
+        index -= 1
+    return OFFERED_SHAPES[max(0, min(index, len(OFFERED_SHAPES) - 1))][1]
+
+
+def distribution_combo() -> NoWheelComboBox:
+    """The distribution curves."""
+    box = NoWheelComboBox()
+    for caption, shape in OFFERED_DISTRIBUTIONS:
+        box.addItem(caption, shape)
+    return box
+
+
 class NewMetricDialog(QDialog):
     """Ask the user for a data source definition."""
 
@@ -120,11 +146,7 @@ class NewMetricDialog(QDialog):
         # -- waveform
         self.sample_period_edit = QLineEdit()
         self.sample_period_edit.setPlaceholderText(str(DEFAULT_SAMPLE_PERIOD))
-        self.shape_box = NoWheelComboBox()
-        for index, (caption, shape) in enumerate(OFFERED_SHAPES):
-            if index == FIRST_PHYSIOLOGICAL:
-                self.shape_box.insertSeparator(self.shape_box.count())
-            self.shape_box.addItem(caption, shape)
+        self.shape_box = shape_combo()
         self.cycle_edit = QLineEdit()
         self.cycle_edit.setPlaceholderText(str(DEFAULT_CYCLE_SAMPLES))
         self.rate_hint = QLabel("")
@@ -137,9 +159,7 @@ class NewMetricDialog(QDialog):
         self.cycle_widget.setLayout(cycle_row)
 
         # -- distribution
-        self.distribution_box = NoWheelComboBox()
-        for caption, shape in OFFERED_DISTRIBUTIONS:
-            self.distribution_box.addItem(caption, shape)
+        self.distribution_box = distribution_combo()
         self.domain_unit_edit = QLineEdit()
         self.domain_unit_edit.setPlaceholderText("Hz")
         self.domain_min_edit = QLineEdit()
@@ -226,10 +246,7 @@ class NewMetricDialog(QDialog):
         own, so the combo's index is not the list's: everything past the separator is one
         further along.
         """
-        index = self.shape_box.currentIndex()
-        if index > FIRST_PHYSIOLOGICAL:
-            index -= 1
-        return OFFERED_SHAPES[max(0, min(index, len(OFFERED_SHAPES) - 1))][1]
+        return selected_shape(self.shape_box)
 
     @property
     def _distribution_shape(self) -> DistributionShape:

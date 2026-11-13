@@ -1369,6 +1369,22 @@ def controllable_peer(epr: str, value: Decimal = Decimal(7)) -> FakeRemote:
     return remote
 
 
+def switched_off_metric_greys_its_card(app: QApplication, provider: ProviderService) -> None:
+    window, pane, _service = new_window(provider)
+    remote = controllable_peer("switching")
+    attach(pane, remote)
+    pane.set_use_widgets(True)
+    check(pane.board.card("metric").control.isEnabled(), "a switched-on peer metric starts readable")
+    remote.metric_values["metric"].activation = "Off"
+    pane.bridge.metrics_changed.emit({"metric": object()})
+    check(wait_for(app, lambda: not pane.board.card("metric").control.isEnabled()),
+          "a metric report that switches the metric off greys its card")
+    remote.metric_values["metric"].activation = "On"
+    pane.bridge.metrics_changed.emit({"metric": object()})
+    check(wait_for(app, lambda: pane.board.card("metric").control.isEnabled()), "switched on again, it is readable")
+    window.close()
+
+
 def connection_loss_clears_the_peer(app: QApplication, provider: ProviderService) -> None:
     window, pane, _service = new_window(provider)
     remote = controllable_peer("vanishing")
@@ -1565,6 +1581,7 @@ def main() -> int:
         metric_reports_update_selected_editor(app, provider)
         technical_only_range_is_visible(app, provider)
         passive_discovery_and_connect_next(app, provider)
+        switched_off_metric_greys_its_card(app, provider)
         connection_loss_clears_the_peer(app, provider)
         refused_subscriptions_are_announced(app, provider)
         departure_of_connected_peer(app, provider)

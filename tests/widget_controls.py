@@ -38,6 +38,7 @@ from sdctoolbox.gui.widgets import (  # noqa: E402
     WidgetSpec,
     build_widget,
     from_remote_metric,
+    from_spec,
 )
 from sdctoolbox.gui.widgets.controls import (  # noqa: E402
     MAX_SLIDER_STEPS,
@@ -276,6 +277,48 @@ def check_shapes_are_reachable(report: Report) -> None:
     dialog.deleteLater()
 
 
+def check_read_only_stays_readable(report: Report) -> None:
+    """Without remote control only the input goes; the value keeps its normal colours."""
+    from sdctoolbox.gui.widgets.board import MetricCard
+
+    choice = build_widget(WidgetSpec("m.c", "Mode", MetricKind.CHOICE, allowed_values=("A", "B")))
+    choice.show_value("B")
+    report.check(choice.box.isHidden() and not choice.value_label.isHidden() and choice.value_label.isEnabled()
+                 and choice.value_label.text() == "B", "a read-only choice shows its value as plain text")
+    choice.set_editable(True)
+    report.check(not choice.box.isHidden() and choice.box.isEnabled() and choice.value_label.isHidden(),
+                 "an editable choice gets its drop-down back")
+
+    slider = build_widget(number(minimum=Decimal("1"), maximum=Decimal("10")))
+    report.check(slider.slider.isEnabled() and slider.readout.isEnabled()
+                 and slider.slider.focusPolicy() == Qt.NoFocus, "a read-only slider is not greyed and takes no focus")
+    slider.set_editable(True)
+    report.check(not slider.slider.testAttribute(Qt.WA_TransparentForMouseEvents)
+                 and slider.slider.focusPolicy() != Qt.NoFocus, "an editable slider takes input again")
+
+    stepper = build_widget(number())
+    report.check(all(button.isHidden() for button in stepper.buttons) and stepper.edit.isEnabled()
+                 and stepper.edit.isReadOnly(), "a read-only stepper hides its buttons and keeps its value")
+    stepper.set_editable(True)
+    report.check(not any(button.isHidden() for button in stepper.buttons) and not stepper.edit.isReadOnly(),
+                 "an editable stepper shows them again")
+
+    text = build_widget(WidgetSpec("m.t", "Note", MetricKind.TEXT))
+    report.check(text.apply.isHidden() and text.edit.isEnabled() and text.edit.isReadOnly(),
+                 "a read-only text hides Set and keeps its value")
+
+    off = MetricCard(WidgetSpec("m.o", "Off", MetricKind.NUMBER, activation="Off"))
+    report.check(not off.control.isEnabled() and "Off" in off.footer.text(),
+                 "a switched-off metric's card is greyed and says so", off.footer.text())
+    on = MetricCard(WidgetSpec("m.n", "On", MetricKind.NUMBER, activation="On"))
+    report.check(on.control.isEnabled() and "Off" not in on.footer.text(), "a switched-on read-only card is not greyed")
+    remote = from_remote_metric(RemoteMetric(handle="m.r", node_type_name="NumericMetricDescriptor",
+                                             kind=MetricKind.NUMBER, activation="StndBy"))
+    report.check(remote.activation == "StndBy" and not remote.active, "a peer's ActivationState reaches the card spec")
+    local = from_spec("m.l", MetricSpec("Local", MetricKind.NUMBER, active=False), editable=True)
+    report.check(not local.active, "a switched-off metric of our own is inactive too")
+
+
 def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
     basic_logging_setup(level=logging.WARNING)
     report = Report()
@@ -297,6 +340,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
     QMessageBox.warning = staticmethod(lambda *_a, **_k: QMessageBox.StandardButton.Ok)
 
     check_shapes_are_reachable(report)
+    check_read_only_stays_readable(report)
     check_exact_numeric_controls(app, report)
 
     print("\n1. Which control represents which metric")
@@ -633,7 +677,10 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
     report.check(sent == [("m.c", "IDLE")], "picking one requests it", str(sent))
 
     read_only = build_widget(number(minimum=Decimal("1"), maximum=Decimal("10")))
-    report.check(not read_only.slider.isEnabled(), "a metric we may not write is disabled")
+    report.check(
+        read_only.slider.isEnabled() and read_only.slider.testAttribute(Qt.WA_TransparentForMouseEvents),
+        "a metric we may not write keeps a readable slider that ignores input",
+    )
 
     print("\n3. In the window")
     service = ProviderService(instance_name="widget-test")

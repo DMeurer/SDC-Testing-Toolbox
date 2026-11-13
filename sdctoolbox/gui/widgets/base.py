@@ -52,6 +52,13 @@ class WidgetSpec:
     technical_ranges: tuple[RemoteRange, ...] = ()
     # A replacement operation invalidates unfinished input even if its domain is identical.
     selected_operation_handle: str | None = None
+    # The metric's ActivationState. Anything but On (or unknown) greys the whole card.
+    activation: str | None = None
+
+    @property
+    def active(self) -> bool:
+        """Whether the metric is switched on, so its value can be relied on."""
+        return self.activation in (None, "On")
 
     @property
     def caption(self) -> str:
@@ -88,6 +95,7 @@ def from_spec(handle: str, spec: MetricSpec, *, editable: bool, note: str = "") 
         note=note,
         sample_period=spec.sample_period,
         domain=spec.domain_text(),
+        activation=None if spec.active else "Off",
     )
 
 
@@ -124,6 +132,7 @@ def from_remote_metric(metric: RemoteMetric) -> WidgetSpec:
         note=note,
         sample_period=metric.sample_period,
         domain=metric.domain_text(),
+        activation=metric.activation,
     )
 
 

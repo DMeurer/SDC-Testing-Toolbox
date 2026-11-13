@@ -39,6 +39,7 @@ from ..model import MetricKind
 from ..mdib_io import live_entities, mdib_bytes
 from .context_dialog import ContextDialog
 from .decimal_input import DecimalInputError, parse_decimal_input
+from .edit_dialogs import EditAlertDialog, EditSourceDialog
 from .helpers import (
     sample_count_text,
     select_table_row,
@@ -148,6 +149,7 @@ class ProviderPane(QWidget):
         self.board = WidgetBoard(deletable=True)
         self.board.value_requested.connect(self._on_widget_value_requested)
         self.board.delete_requested.connect(self._on_card_delete_requested)
+        self.board.edit_requested.connect(self._edit_source)
         self.metric_stack = QStackedWidget()
         self.metric_stack.addWidget(self.board)
         self.metric_stack.addWidget(self.table)
@@ -157,6 +159,10 @@ class ProviderPane(QWidget):
         self.remove_button = QPushButton("Remove")
         self.remove_button.clicked.connect(self._on_remove)
         self.remove_button.setEnabled(False)
+        self.edit_button = QPushButton("Edit…")
+        self.edit_button.setToolTip("Change what may change while the device runs")
+        self.edit_button.clicked.connect(lambda: self._edit_source(self.selected_handle()))
+        self.edit_button.setEnabled(False)
         self.context_button = QPushButton("Patient and location\u2026")
         self.context_button.clicked.connect(self._on_edit_contexts)
         self.context_label = QLabel("")
@@ -169,6 +175,7 @@ class ProviderPane(QWidget):
 
         buttons = QHBoxLayout()
         buttons.addWidget(self.new_button)
+        buttons.addWidget(self.edit_button)
         buttons.addWidget(self.remove_button)
         buttons.addWidget(self.context_button)
         buttons.addStretch(1)
@@ -199,6 +206,8 @@ class ProviderPane(QWidget):
         self.new_alert_button.clicked.connect(self._on_new_alert)
         self.remove_alert_button = QPushButton("Remove alarm")
         self.remove_alert_button.clicked.connect(self._on_remove_alert)
+        self.edit_alert_button = QPushButton("Edit alarm…")
+        self.edit_alert_button.clicked.connect(self._on_edit_alert)
         self.toggle_alert_button = QPushButton("Raise")
         self.toggle_alert_button.clicked.connect(self._on_toggle_alert)
         self.acknowledge_button = QPushButton("Acknowledge")
@@ -216,6 +225,7 @@ class ProviderPane(QWidget):
         alert_buttons.addWidget(self.stop_latched_button)
         alert_buttons.addWidget(self.delegate_button)
         alert_buttons.addWidget(self.new_alert_button)
+        alert_buttons.addWidget(self.edit_alert_button)
         alert_buttons.addWidget(self.remove_alert_button)
 
         alert_box = QWidget()
@@ -297,6 +307,7 @@ class ProviderPane(QWidget):
         # In widget mode each card carries its own control and its own bin, so an editor
         # and a Remove button down here would only ever be disabled and confusing.
         self.remove_button.setVisible(not enabled)
+        self.edit_button.setVisible(not enabled)
         self.editor_widget.setVisible(not enabled)
         if enabled:
             self._refresh_board()
@@ -359,6 +370,9 @@ class ProviderPane(QWidget):
                     item = QTableWidgetItem(text)
                     if column == COL_VALUE:
                         item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    if not spec.active:
+                        item.setForeground(muted_colour(self))
+                        item.setToolTip("Switched off: no generation, no remote sets, no alarms")
                     self.table.setItem(row, column, item)
 
                 control = QTableWidgetItem()
@@ -550,6 +564,8 @@ class ProviderPane(QWidget):
 
     def _run_scheduled(self) -> None:
         pending, self._pending_rebuilds = self._pending_rebuilds, []
+        if not self.service.running:
+            return  # queued by a signal from just before the provider stopped
         for rebuild in pending:
             rebuild()
 
@@ -585,7 +601,7 @@ class ProviderPane(QWidget):
                 ACOL_SOURCE: spec.source_handle,
                 ACOL_WHEN: spec.limit_text() or "by hand",
                 ACOL_KIND: spec.kind.value,
-                ACOL_PRIORITY: spec.priority.value,
+                ACOL_PRIORITY: (spec.actual_priority or spec.priority).value,
                 ACOL_STATE: "PRESENT" if present else "clear",
                 ACOL_SIGNALS: "  ".join(signal.summary() for signal in signals),
             }
@@ -623,6 +639,7 @@ class ProviderPane(QWidget):
         handle = self.selected_alert_handle()
         spec = self.service.list_alerts().get(handle) if handle else None
         self.remove_alert_button.setEnabled(spec is not None)
+        self.edit_alert_button.setEnabled(spec is not None)
         # An alarm with limits is computed from its source, so raising it by hand would only
         # be undone by the next value change. Offer the button only where it means something.
         can_toggle = spec is not None and not spec.has_limits
@@ -707,6 +724,20 @@ class ProviderPane(QWidget):
             return
         self.refresh_alerts()
         self.select_alert_handle(handle)
+
+    def _edit_source(self, handle: str | None) -> None:
+        if handle is None or handle not in self.service.list_metrics():
+            return
+        if EditSourceDialog(self.service, handle, self).exec():
+            self.refresh()
+            self.refresh_alerts()
+
+    def _on_edit_alert(self) -> None:
+        handle = self.selected_alert_handle()
+        if handle is None:
+            return
+        if EditAlertDialog(self.service, handle, self).exec():
+            self.refresh_alerts()
 
     def _on_remove_alert(self) -> None:
         handle = self.selected_alert_handle()
@@ -844,6 +875,7 @@ class ProviderPane(QWidget):
             return
         handle = self.selected_handle()
         self.remove_button.setEnabled(handle is not None)
+        self.edit_button.setEnabled(handle is not None)
         if handle is None:
             self._editor_definition = None
             self.editor_label.setText("Select a data source to change its value")
