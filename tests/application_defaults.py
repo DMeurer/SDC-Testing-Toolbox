@@ -307,7 +307,8 @@ def check_gui_startup_reuses_profile(*, interactive: bool) -> None:
     )
     check(
         provider_arguments
-        == [{"ip": "127.0.0.1", "instance_name": authority, "device": device, "tls_config": None}],
+        == [{"ip": "127.0.0.1", "instance_name": authority, "friendly_name": None, "device": device,
+             "tls_config": None, "serial_number": None}],
         f"{mode} GUI startup uses snapshot metadata without overriding its instance name",
     )
     check(
@@ -337,6 +338,7 @@ def check_startup_dialog_retains_profile() -> None:
         dialog = SimpleNamespace(
             error_label=SimpleNamespace(hide=lambda: None),
             name_edit=SimpleNamespace(text=lambda: "dialog-authority"),
+            friendly_name_edit=SimpleNamespace(text=lambda: ""),
             chosen_ip=lambda: "127.0.0.1",
             chosen_config=lambda: str(source),
             verbose_box=SimpleNamespace(isChecked=lambda: True),

@@ -1,11 +1,13 @@
-"""Read-only UI projections and explicit operation capabilities for native MDIBs.
+"""Adopting an MDIB from a file into the provider's bookkeeping, and its operation capabilities.
 
-These projections never rebuild the imported graph or define simulation behaviour.
+Adoption only reads the graph. It never rebuilds or corrects it: whatever the file says is
+what the provider publishes until the user changes something.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from decimal import Decimal
 from urllib.parse import quote, urlencode
 
@@ -18,7 +20,7 @@ from sdc11073.xml_types.wsd_types import ScopesType
 
 from .handlers import RefusedExecution, reporting_refusals
 from .model import (
-    AlertSpec, MetricKind, MetricSpec, RemoteRange, coerce_metric_value, numeric_value_in_ranges,
+    ActionSpec, AlertSpec, DeviceInfo, MetricKind, MetricSpec, RemoteRange, coerce_metric_value, numeric_value_in_ranges,
 )
 
 logger = logging.getLogger("sdctoolbox.native_mdib")
@@ -29,6 +31,91 @@ def label(descriptor) -> str:
     """Use a supplied concept description, otherwise the descriptor handle."""
     texts = getattr(getattr(descriptor, "Type", None), "ConceptDescription", ())
     return next((text.text for text in texts if text.text), descriptor.Handle)
+
+
+def device_identity(mdib) -> tuple[DeviceInfo, str | None]:
+    """ThisModel fields and serial number from the first MDS MetaData; toolbox defaults otherwise."""
+    mds = next(iter(mdib.entities.by_node_type(pm.MdsDescriptor)), None)
+    meta = getattr(getattr(mds, "descriptor", None), "MetaData", None)
+    if meta is None:
+        return DeviceInfo(), None
+
+    def first(values) -> str | None:
+        return next((getattr(value, "text", value) for value in values or () if getattr(value, "text", value)), None)
+
+    defaults = DeviceInfo()
+    return DeviceInfo(
+        manufacturer=first(meta.Manufacturer) or defaults.manufacturer,
+        model_name=first(meta.ModelName) or defaults.model_name,
+        model_number=meta.ModelNumber or defaults.model_number,
+    ), first(meta.SerialNumber)
+
+
+@dataclass
+class Adopted:
+    """The bookkeeping ProviderService keeps for a graph it built itself, derived from a file."""
+
+    specs: dict[str, MetricSpec] = field(default_factory=dict)
+    alerts: dict[str, AlertSpec] = field(default_factory=dict)
+    alert_truths: dict[str, bool] = field(default_factory=dict)
+    alert_signals: dict[str, list[str]] = field(default_factory=dict)
+    operations: dict[str, str] = field(default_factory=dict)
+    sections: dict[str, str] = field(default_factory=dict)
+
+
+def adopt(mdib) -> Adopted:
+    """Derive specs, alarms, signals, set operations and sections from an imported graph."""
+    result = Adopted(specs=metric_specs(mdib), alerts=alert_specs(mdib))
+    for channel in mdib.entities.by_node_type(pm.ChannelDescriptor):
+        result.sections.setdefault(label(channel.descriptor), channel.handle)
+    for handle, spec in result.alerts.items():
+        source = result.specs.get(spec.source_handle)
+        if spec.has_limits and (source is None or source.kind is not MetricKind.NUMBER):
+            # Nothing numeric to compare against, so only a manual change can move it.
+            spec.lower_limit = spec.upper_limit = None
+        # The truth is what the file says; it is re-derived only when its own source changes.
+        result.alert_truths[handle] = bool(mdib.entities.by_handle(handle).state.Presence)
+        result.alert_signals[handle] = []
+    for entity in mdib.entities.by_node_type(pm.AlertSignalDescriptor):
+        signals = result.alert_signals.get(entity.descriptor.ConditionSignaled)
+        if signals is not None:
+            signals.append(entity.handle)
+    for handle, entity in mdib.entities.items():
+        if entity.node_type in (pm.SetValueOperationDescriptor, pm.SetStringOperationDescriptor):
+            target = entity.descriptor.OperationTarget
+            if target not in result.operations or entity.state.OperatingMode == pm_types.OperatingMode.ENABLED:
+                result.operations[target] = handle
+    return result
+
+
+def _coerced_or_raw(coerce, target: str, value: str):
+    # A live device accepts an action whose effect it would refuse and refuses it on activation;
+    # a reloaded export must behave the same instead of failing to load.
+    try:
+        return coerce(target, value)
+    except (KeyError, TypeError, ValueError):
+        return value
+
+
+def apply_behaviour(mdib, behaviour: dict[str, dict], specs: dict[str, MetricSpec], coerce) -> dict[str, ActionSpec]:
+    """Put stored toolbox behaviour back onto adopted specs, and return the actions it defines."""
+    actions = {}
+    for handle, values in behaviour.items():
+        entity = mdib.entities.by_handle(handle)
+        if "effects" in values:
+            if entity is None or entity.node_type != pm.ActivateOperationDescriptor:
+                raise ValueError(f"toolbox action behaviour on {handle!r}, which is not an ActivateOperation")
+            effects = {target: _coerced_or_raw(coerce, target, value) for target, value in values["effects"].items()}
+            actions[handle] = ActionSpec(label=label(entity.descriptor), target_handle=entity.descriptor.OperationTarget,
+                                         effects=effects, handle=handle, note=values["note"])
+            continue
+        spec = specs.get(handle)
+        if spec is None or not spec.is_sample_array:
+            raise ValueError(f"toolbox generator behaviour on {handle!r}, which is not a sample array metric")
+        for name in ("shape", "cycle_samples", "distribution_shape"):
+            if name in values:
+                setattr(spec, name, values[name])
+    return actions
 
 
 def metric_specs(mdib) -> dict[str, MetricSpec]:
@@ -48,6 +135,9 @@ def metric_specs(mdib) -> dict[str, MetricSpec]:
             "resolution": getattr(descriptor, "Resolution", None),
             "minimum": getattr(bounds, "Lower", None), "maximum": getattr(bounds, "Upper", None),
         }
+        parent = mdib.entities.by_handle(entity.parent_handle)
+        if parent is not None and parent.node_type == pm.ChannelDescriptor:
+            fields["section"] = label(parent.descriptor)
         if kind is MetricKind.CHOICE:
             fields["allowed_values"] = tuple(value.Value for value in descriptor.AllowedValue)
         elif kind is MetricKind.WAVEFORM:
@@ -70,8 +160,15 @@ def alert_specs(mdib) -> dict[str, AlertSpec]:
         if not descriptor.is_alert_condition_descriptor:
             continue
         limits = getattr(entity.state, "Limits", None)
+        monitored = getattr(entity.state, "MonitoredAlertLimits", None)
+        off = pm_types.AlertConditionMonitoredLimits
+        if monitored in (off.LOW_OFF, off.NONE):
+            limits = pm_types.Range(upper=limits.Upper) if monitored is off.LOW_OFF else None
+        elif monitored is off.HIGH_OFF:
+            limits = pm_types.Range(lower=limits.Lower)
+        source = descriptor.Source[0] if len(descriptor.Source) == 1 else ", ".join(descriptor.Source)
         result[handle] = AlertSpec(
-            handle=handle, label=label(descriptor), source_handle=", ".join(descriptor.Source),
+            handle=handle, label=label(descriptor), source_handle=source,
             kind=descriptor.Kind, priority=getattr(entity.state, "ActualPriority", None) or descriptor.Priority,
             lower_limit=getattr(limits, "Lower", None), upper_limit=getattr(limits, "Upper", None),
         )
@@ -95,10 +192,12 @@ def coerce_value(mdib, handle: str, value: object, spec: MetricSpec | None) -> D
 class SnapshotProduct(BaseProduct):
     """Register existing operations without creating descriptors or resetting state."""
 
-    def __init__(self, mdib, sco, log_prefix, set_handler, activate_handler=None):
+    def __init__(self, mdib, sco, log_prefix, set_handler, activate_handler=None, runs_action=lambda _handle: False):
         super().__init__(mdib, sco, log_prefix)
         self._set_handler = set_handler
         self._activate_handler = activate_handler
+        # Only actions whose effects the toolbox knows are run; any other Activate is refused.
+        self._runs_action = runs_action
 
     def make_operation_instance(self, descriptor, operation_cls_getter):
         target = self._mdib.entities.by_handle(descriptor.OperationTarget)
@@ -109,7 +208,8 @@ class SnapshotProduct(BaseProduct):
             and target.node_type in (pm.StringMetricDescriptor, pm.EnumStringMetricDescriptor)
         ):
             handler = self._set_handler
-        elif descriptor.NODETYPE == pm.ActivateOperationDescriptor and self._activate_handler is not None:
+        elif (descriptor.NODETYPE == pm.ActivateOperationDescriptor and self._activate_handler is not None
+              and self._runs_action(descriptor.Handle)):
             handler = self._activate_handler
         operation_class = operation_cls_getter(descriptor.NODETYPE)
         if operation_class is None:

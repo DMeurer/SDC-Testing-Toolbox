@@ -53,6 +53,8 @@ class StartupSettings:
     verbose: bool
     device_config: config.DeviceConfig | NativeMdibConfig | None = None
     tls_config: TlsConfig | None = None
+    # None keeps the default: the preset's own name, or the device name for an MDIB.
+    friendly_name: str | None = None
 
 
 def available_ipv4() -> list[tuple[str, str]]:
@@ -94,6 +96,13 @@ class StartupDialog(QDialog):
         self.name_edit.setToolTip(
             "Decides the EPR, so restarting under the same name keeps this device's\n"
             "identity on the network. Two instances must not share a name.",
+        )
+
+        self.friendly_name_edit = QLineEdit()
+        self.friendly_name_edit.setPlaceholderText("optional")
+        self.friendly_name_edit.setToolTip(
+            "The name other devices show for this one. Overrides the config file.\n"
+            "Left empty, a JSON preset uses its own name and an MDIB uses the device name.",
         )
 
         self.ip_box = NoWheelComboBox()
@@ -198,6 +207,7 @@ class StartupDialog(QDialog):
 
         form = QFormLayout()
         form.addRow("Device name", self.name_edit)
+        form.addRow("Friendly name", self.friendly_name_edit)
         form.addRow("Bind to", self.ip_box)
         form.addRow("Config file", config_widget)
         form.addRow("", self.verbose_box)
@@ -316,6 +326,14 @@ class StartupDialog(QDialog):
             self._fail(str(exc))
             return
 
+        friendly_name = self.friendly_name_edit.text().strip() or None
+        if friendly_name is not None:
+            try:
+                validate_xml_text(friendly_name, "friendly name")
+            except ValueError as exc:
+                self._fail(str(exc))
+                return
+
         try:
             ip = normalize_ipv4(self.chosen_ip())
         except ValueError:
@@ -362,5 +380,6 @@ class StartupDialog(QDialog):
             verbose=self.verbose_box.isChecked(),
             device_config=device_config,
             tls_config=tls_config,
+            friendly_name=friendly_name,
         )
         self.accept()

@@ -145,7 +145,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: ["passive-discovery", "operation-subscription", "connection-loss"]
+        suite: ["passive-discovery", "operation-subscription", "connection-loss", "mdib-network"]
     runs-on: ubuntu-22.04
     timeout-minutes: 8
     env:
@@ -160,7 +160,7 @@ jobs:
           cache: pip
 
       - name: Install Qt runtime library
-        if: matrix.suite == 'connection-loss'
+        if: matrix.suite == 'connection-loss' || matrix.suite == 'mdib-network'
         run: sudo apt-get update && sudo apt-get install -y libegl1
 
       - name: Install dependencies

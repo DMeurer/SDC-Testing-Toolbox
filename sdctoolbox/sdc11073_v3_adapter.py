@@ -117,17 +117,51 @@ class Sdc11073V3Adapter:
             msg = f"descriptor handle {handle!r} was previously {previous}, not {node_type}"
             raise ValueError(msg)
 
+    def add_sco(self, parent_handle: str, handle: str):  # noqa: ANN201 - pinned third-party type
+        """Publish a new Sco and give it a registry, as SdcProvider does for those it starts with.
+
+        sdc11073 only creates registries while the provider is constructed, so a graph loaded
+        without a Sco would otherwise never be able to offer an operation.
+        """
+        self._require_bound()
+        provider = self._provider
+        entity = self._mdib.entities.new_entity(self._mdib.data_model.pm_names.ScoDescriptor, handle, parent_handle)
+        with self._mdib.descriptor_transaction() as manager:
+            manager.write_entity(entity)
+        components = provider._components  # noqa: SLF001 - no public registry factory
+        registry = components.sco_operations_registry_class(
+            provider.hosted_services.set_service,
+            components.operation_cls_getter,
+            self._mdib,
+            self._mdib.descriptions.handle.get_one(handle),
+            log_prefix=provider._log_prefix,  # noqa: SLF001
+        )
+        provider._sco_operations_registries[handle] = registry  # noqa: SLF001
+        registry.start_worker()
+        self._sco = registry
+        return registry
+
+    def unregister_operation(self, handle: str) -> None:
+        """Drop an operation from whichever Sco registered it; a loaded graph may have several."""
+        self._require_bound()
+        for registry in self._provider._sco_operations_registries.values():  # noqa: SLF001
+            # The library raises KeyError for a handle the registry does not hold.
+            if registry.get_operation_by_handle(handle) is not None:
+                registry.unregister_operation_by_handle(handle)
+
     def snapshot(self) -> Sdc11073V3Snapshot:
         self._require_bound()
         return Sdc11073V3Snapshot(
             descriptors=deepcopy(list(self._mdib.descriptions.objects)),
             states=deepcopy(list(self._mdib.states.objects)),
-            registered_operations=dict(self._sco._registered_operations),  # noqa: SLF001
+            registered_operations=dict(self._sco._registered_operations) if self._sco is not None else {},  # noqa: SLF001
             provider_location=deepcopy(self._provider._location),  # noqa: SLF001
         )
 
     def restore_registered_operations(self, operations: dict) -> None:
         self._require_bound()
+        if self._sco is None:
+            return
         self._sco._registered_operations = dict(operations)  # noqa: SLF001
         for operation in operations.values():
             operation._operation_entity = self._mdib.entities.by_handle(operation.handle)  # noqa: SLF001
@@ -175,5 +209,5 @@ class Sdc11073V3Adapter:
             manager.add_state(restored)
 
     def _require_bound(self) -> None:
-        if self._provider is None or self._sco is None:
+        if self._provider is None:
             raise RuntimeError("sdc11073 adapter is not bound to a running provider")

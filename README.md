@@ -212,6 +212,10 @@ uses the platform default. `--fullscreen` opens the main window fullscreen. For 
 .venv\Scripts\python.exe run_toolbox.py --name monitor --ip 192.168.1.20 --theme dark --fullscreen
 ```
 
+`--friendly-name TEXT` sets the name the device announces, overriding whatever the config
+file says; the startup dialog has the same optional field. Without it a JSON preset uses its
+own `device.friendly_name` (or `Toolbox <name>`), and an MDIB preset uses `--name` unchanged.
+
 When launching over SSH, the application still needs access to a graphical desktop:
 use the correct display/session environment and authorization (for example, `DISPLAY`
 and X11 authorization), or graphical forwarding. Startup options do not create a display
@@ -342,16 +346,21 @@ provider> presets
 
 ## Presets
 
-### Native MDIB snapshots (XML)
+### MDIB presets (XML)
 
-Presets can also be native BICEPS MDIB XML files. Choose a `[MDIB]` preset, import an
+Presets can also be BICEPS MDIB XML files. Choose a `[MDIB]` preset, import an
 `.xml` file, or start with `--config presets/mdib-demo-monitor.xml`. The two original
 synthetic XML presets are **MDIB demo monitor** and **MDIB demo infusion pump**;
 existing JSON presets remain available.
 
 An XML export is **one file containing both `MdDescription` and `MdState`**, including
-current sample blocks and all context states/history. Select **Native MDIB (*.xml)**
-in *File → Export config*, or use `export snapshot.xml` in the console. Combined
+current sample blocks and all context states/history. *File → Export config* offers two
+choices: **MDIB (*.xml)** writes plain BICEPS, a minimal file for other tools; **MDIB with
+toolbox behaviour (*.xml)** also stores what BICEPS has no place for (which waveforms and
+distributions the generator drives and their shapes, action effects and notes) as
+`ext:Extension` elements in the `urn:sdc-testing-toolbox:behaviour` namespace with
+`MustUnderstand="false"`, so the device loads back complete: the generator starts for the
+marked sample arrays, and unmarked ones keep the samples from the file. The console's `export snapshot.xml` writes the plain form and `export --behaviour snapshot.xml` the one with behaviour. Combined
 `GetMdibResponse`, message `Mdib`, and participant `MdibContainer` inputs are accepted.
 Separate description/state files are not supported. Invalid XML, unsafe DTD/entity
 declarations, broken references and content the pinned library cannot preserve are
@@ -359,19 +368,27 @@ rejected before provider replacement; failed writes preserve an existing export 
 Duration fields must use the pinned library's SDPi-compatible hour/minute/second syntax
 (for example `PT5S`); calendar/day duration forms are currently rejected rather than changed.
 
-Native import replaces the whole MDIB and **restarts the provider**. Connected consumers
-must reconnect. The instance name/EPR, network binding and TLS settings remain local;
-imported patient/location states are not overwritten by toolbox defaults. A failed
-activation attempts to restore the previous provider and reports any recovery failure.
+Loading an MDIB replaces the whole device and **restarts the provider**. Connected
+consumers must reconnect. The instance name/EPR, network binding and TLS settings remain
+local. **Loading changes nothing in the file's data**: no name prefix, no default patient or
+location, no recomputed alarms and no generator unless the file's toolbox behaviour marks
+sample arrays as generated; only the SequenceId and version counters
+are runtime values. The announced manufacturer, model and serial number come from the MDS
+`MetaData` when present. Toolbox behaviour extensions are read on load and kept out of the
+published MDIB, so consumers never see them; extensions in other namespaces stay as they are.
+A failed activation attempts to restore the previous provider and reports any recovery failure.
 
-The provider containment tree exposes the imported entities, with XML on hover. Supported
-scalar values can be edited locally, and compatible numeric/string set operations retain
-their own enabled state and allowed ranges/values. Other operations fail explicitly:
-an MDIB does not supply executable machinery/action logic. Alarms and sample blocks are
-snapshots; generators, automatic alarm rules, and action effects are **not inferred**.
-Graph-changing and context/alarm simulation controls are disabled in native mode. Load
-a JSON preset to return to the managed simulation workflow. Native snapshots cannot be
-exported through the reduced JSON profile format; use XML to avoid losing content.
+An MDIB device is then edited like any other: add and remove metrics, alarms, actions and
+sections, switch remote control, set the patient and location, run the generator, and
+append a JSON preset. Edits use the file's own MDS, SCO, alert system, channels and
+contexts, and create one only when an edit needs it (for example a SCO for the first
+controllable metric of a file without one). A channel from the file is a section named by
+its label. Imported limit alarms follow their source metric once that metric changes;
+imported alarms otherwise keep their supplied state until something happens to them.
+Imported set operations keep their own enabled state and allowed ranges/values; imported
+Activate operations without stored toolbox behaviour fail explicitly. The containment tree
+shows every entity with XML on hover. JSON export of an MDIB device is refused because JSON
+cannot carry the whole graph; export XML instead.
 
 **Privacy:** full MDIB exports may include patient-identifying data and context history.
 Review them before sharing. Shipped XML demos contain no patient data. Development-only
