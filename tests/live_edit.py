@@ -107,6 +107,14 @@ def check_allowed_range(report: Report, service: ProviderService) -> None:
     report.check(raises(service.set_allowed_range, open_metric, Decimal(-5), None),
                  "the closed technical side may not be widened")
 
+    unbounded = service.add_metric(MetricSpec("Live unbounded", MetricKind.NUMBER, controllable=True))
+    service.enable_control(unbounded)
+    service.set_allowed_range(unbounded, Decimal(20), Decimal(40))
+    service.set_allowed_range(unbounded, None, None)
+    report.check(not operation_state(service, unbounded).AllowedRange and remote_set(service, unbounded, Decimal(50)),
+                 "clearing the allowed range of an unbounded metric removes it from the state")
+    service.remove_metric(unbounded)
+
     measured = service.add_metric(MetricSpec("Live measured", MetricKind.NUMBER, minimum=Decimal(0), maximum=Decimal(9)))
     report.check(raises(service.set_allowed_range, measured, Decimal(1), Decimal(2)),
                  "a metric without remote control has no allowed range to edit")
@@ -203,9 +211,24 @@ def check_metric_activation(report: Report, service: ProviderService) -> None:
     service.set_value(rate, Decimal(250))
     report.check(service.get_value(rate) == 250 and not service.alert_present(alarm),
                  "the local operator may still set it, without raising the alarm")
+    report.check(service.mdib.entities.by_handle(rate).state.ActivationState == "Off"
+                 and not remote_set(service, rate, Decimal(10)),
+                 "a local set leaves it Off, so remote sets stay refused")
 
     service.set_metric_active(rate, active=True)
     report.check(service.mdib.entities.by_handle(rate).state.ActivationState == "On", "On again")
+    from sdctoolbox import native_mdib  # noqa: PLC0415
+    from sdc11073.xml_types import pm_types  # noqa: PLC0415
+    entity = service.mdib.entities.by_handle(rate)
+    entity.state.ActivationState = pm_types.ComponentActivation.STANDBY
+    with service.mdib.metric_state_transaction() as manager:
+        manager.write_entity(entity)
+    report.check(remote_set(service, rate, Decimal(250)), "a StndBy metric (as files may have) still takes remote sets")
+    report.check(native_mdib.metric_specs(service.mdib)[rate].active, "and loads as switched on, as before")
+    entity = service.mdib.entities.by_handle(rate)
+    entity.state.ActivationState = pm_types.ComponentActivation.ON
+    with service.mdib.metric_state_transaction() as manager:
+        manager.write_entity(entity)
     report.check(service.alert_present(alarm), "switched on, the alarm follows the value again")
     report.check(remote_set(service, rate, Decimal(10)), "and remote sets work again")
     service.remove_metric(rate)
@@ -218,6 +241,9 @@ def check_metric_activation(report: Report, service: ProviderService) -> None:
     before = (service.get_samples(wave), service.get_samples(other))
     service._sample_generator.publish_once()  # noqa: SLF001 - one block, deterministically
     report.check(service.get_samples(wave) == before[0], "a switched-off waveform gets no new samples")
+    service.set_samples(wave, [Decimal("0.5")] * 5)
+    report.check(service.mdib.entities.by_handle(wave).state.ActivationState == "Off",
+                 "samples set by hand leave a switched-off waveform Off")
     report.check(service.get_samples(other) != before[1], "the other waveform still does")
     service.set_metric_active(wave, active=True)
     service._sample_generator.publish_once()  # noqa: SLF001

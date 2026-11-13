@@ -184,7 +184,7 @@ def _metric_specs(entities: list, by_handle: dict) -> dict[str, MetricSpec]:
             domain = descriptor.DistributionRange
             fields.update(domain_minimum=domain.Lower, domain_maximum=domain.Upper)
         activation = getattr(entity.state, "ActivationState", None)
-        fields["active"] = activation in (None, pm_types.ComponentActivation.ON)
+        fields["active"] = activation != pm_types.ComponentActivation.OFF
         try:
             result[handle] = MetricSpec(**fields)
         except (ValueError, TypeError) as exc:

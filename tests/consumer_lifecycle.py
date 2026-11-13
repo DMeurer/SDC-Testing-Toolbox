@@ -1382,6 +1382,18 @@ def switched_off_metric_greys_its_card(app: QApplication, provider: ProviderServ
     remote.metric_values["metric"].activation = "On"
     pane.bridge.metrics_changed.emit({"metric": object()})
     check(wait_for(app, lambda: pane.board.card("metric").control.isEnabled()), "switched on again, it is readable")
+
+    pane.set_use_widgets(False)
+    muted = consumer_module.muted_colour(pane)
+
+    def label_colour():  # noqa: ANN202
+        row = next(row for row in range(pane.table.rowCount()) if pane.table.item(row, 0).text() == "metric")
+        return pane.table.item(row, consumer_module.COL_LABEL).foreground().color()
+
+    check(label_colour() != muted, "a switched-on peer metric's row is not greyed")
+    remote.metric_values["metric"].activation = "Off"
+    pane.bridge.metrics_changed.emit({"metric": object()})
+    check(wait_for(app, lambda: label_colour() == muted), "a switched-off peer metric's row is greyed")
     window.close()
 
 

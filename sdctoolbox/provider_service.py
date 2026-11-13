@@ -2661,10 +2661,15 @@ class ProviderService:
         OperatingMode uses.
         """
         lower, upper = spec.effective_allowed_range()
-        if lower is None and upper is None:
-            return
         entity = self.mdib.entities.by_handle(operation_handle)
         if entity is None:
+            return
+        if lower is None and upper is None:
+            # Unbounded: only an earlier, narrower range has to go.
+            if getattr(entity.state, "AllowedRange", None):
+                entity.state.AllowedRange = []
+                with self.mdib.operational_state_transaction() as mgr:
+                    mgr.write_entity(entity)
             return
         entity.state.AllowedRange = [
             pm_types.Range(

@@ -181,6 +181,7 @@ class ConsumerPane(QWidget):
         self._shutdown = False
         self._health_lock = threading.RLock()
         self._editor_definition = None
+        self._activations: dict[str, str | None] = {}
         self._choice_dirty = False
 
         self._build_ui()
@@ -665,6 +666,7 @@ class ConsumerPane(QWidget):
 
     def _rebuild_table(self, metrics: dict[str, RemoteMetric]) -> None:
         selected = self.selected_handle()
+        self._activations = {handle: metric.activation for handle, metric in metrics.items()}
 
         with QSignalBlocker(self.table):
             self.table.clearSelection()
@@ -684,8 +686,12 @@ class ConsumerPane(QWidget):
                     COL_UNIT: metric.unit_label or "",
                     COL_WRITABLE: writable,
                 }
+                active = metric.activation in (None, "On")
                 for column, text in cells.items():
                     item = QTableWidgetItem(text)
+                    if not active:
+                        item.setForeground(muted_colour(self))
+                        item.setToolTip(f"ActivationState {metric.activation}: the value is not reliable")
                     if column == COL_VALUE:
                         item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                     if column == COL_WRITABLE and writable != "yes":
@@ -725,12 +731,11 @@ class ConsumerPane(QWidget):
             return
         metrics = self.remote.metrics(wanted)
         # ActivationState travels in metric reports, not description changes, and decides
-        # whether a card is greyed, so a change of it rebuilds the cards.
-        if any(
-            (card := self.board.card(handle)) is not None and card.spec.activation != metric.activation
-            for handle, metric in metrics.items()
-        ):
-            self._refresh_board()
+        # whether a card or row is greyed, so a change of it rebuilds both views.
+        if any(self._activations.get(handle, metric.activation) != metric.activation for handle, metric in metrics.items()):
+            everything = self.remote.metrics()
+            self._rebuild_table(everything)
+            self._refresh_board(everything)
         self.board.show_values({handle: _displayable(metric) for handle, metric in metrics.items()})
         for row in range(self.table.rowCount()):
             handle_item = self.table.item(row, COL_HANDLE)
