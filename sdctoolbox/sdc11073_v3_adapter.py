@@ -106,8 +106,8 @@ class Sdc11073V3Adapter:
         while parent is not None and parent not in seen:
             seen.add(parent)
             depth += 1
-            entity = self._mdib.entities.by_handle(parent)
-            parent = entity.parent_handle if entity is not None else None
+            descriptor = self._mdib.descriptions.handle.get_one(parent, allow_none=True)
+            parent = descriptor.parent_handle if descriptor is not None else None
         return depth
 
     def validate_descriptor_type(self, handle: str, node_type) -> None:  # noqa: ANN001

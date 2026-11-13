@@ -205,6 +205,35 @@ def _ranges(value: Any) -> tuple[RemoteRange, ...]:
     )
 
 
+@dataclass(frozen=True)
+class _LiveEntity:
+    handle: str
+    node_type: Any
+    descriptor: Any
+    state: Any
+    parent_handle: str | None
+
+
+def _live_entities(mdib: Any, handles: Iterable[str] | None = None) -> list[_LiveEntity]:
+    """Single-state descriptors with their states, read in place.
+
+    sdc11073's entity getters deep-copy every entity they return, which made each GUI refresh
+    copy the whole remote MDIB. Callers hold ``mdib.mdib_lock`` while reading these and copy
+    only immutable values out, which keeps the snapshots they build defensive.
+    """
+    if handles is None:
+        descriptors = list(mdib.descriptions.objects)
+    else:
+        lookup = mdib.descriptions.handle
+        descriptors = [d for handle in handles if (d := lookup.get_one(handle, allow_none=True)) is not None]
+    states = mdib.states.descriptor_handle
+    return [
+        _LiveEntity(d.Handle, d.NODETYPE, d, states.get_one(d.Handle, allow_none=True), d.parent_handle)
+        for d in descriptors
+        if not d.is_context_descriptor
+    ]
+
+
 def _first_bounds(ranges: tuple[RemoteRange, ...]) -> tuple[Any, Any]:
     """Return the first range's bounds for the legacy single-range display fields."""
     if not ranges:
@@ -763,13 +792,12 @@ class RemoteDevice:
         wanted = None if handles is None else frozenset(handles)
         if wanted == frozenset():
             return {}
-        with self._lock:
+        with self._lock, self._mdib.mdib_lock:
             operations_by_target = self._operation_index(wanted)
             result: dict[str, RemoteMetric] = {}
 
-            for handle, entity in self._mdib.entities.items():
-                if wanted is not None and handle not in wanted:
-                    continue
+            for entity in _live_entities(self._mdib, wanted):
+                handle = entity.handle
                 node_type = getattr(entity, "node_type", None)
                 kind = METRIC_NODE_TYPES.get(node_type)
                 if kind is None:
@@ -874,7 +902,8 @@ class RemoteDevice:
         """
         by_target: dict[str, list[_SetOperation]] = {}
 
-        for handle, entity in self._mdib.entities.items():
+        for entity in _live_entities(self._mdib):
+            handle = entity.handle
             node_type = getattr(entity, "node_type", None)
             if node_type not in SET_OPERATION_NODE_TYPES:
                 continue
@@ -903,9 +932,11 @@ class RemoteDevice:
         condition announced three different ways still appears once, with its three signals
         listed against it.
         """
-        with self._lock:
+        with self._lock, self._mdib.mdib_lock:
+            entities = _live_entities(self._mdib)
             signals_by_condition: dict[str, dict[str, str]] = {}
-            for handle, entity in self._mdib.entities.items():
+            for entity in entities:
+                handle = entity.handle
                 if getattr(entity, "node_type", None) != pm.AlertSignalDescriptor:
                     continue
                 descriptor = getattr(entity, "descriptor", None)
@@ -918,7 +949,8 @@ class RemoteDevice:
                 )
 
             result: dict[str, RemoteAlert] = {}
-            for handle, entity in self._mdib.entities.items():
+            for entity in entities:
+                handle = entity.handle
                 node_type = getattr(entity, "node_type", None)
                 if node_type not in ALERT_CONDITION_NODE_TYPES:
                     continue
@@ -1079,9 +1111,10 @@ class RemoteDevice:
         no metric for "home the axes" may still be able to do it, and this is where that
         shows up.
         """
-        with self._lock:
+        with self._lock, self._mdib.mdib_lock:
             found: dict[str, RemoteAction] = {}
-            for handle, entity in self._mdib.entities.items():
+            for entity in _live_entities(self._mdib):
+                handle = entity.handle
                 if getattr(entity, "node_type", None) != pm.ActivateOperationDescriptor:
                     continue
                 descriptor = getattr(entity, "descriptor", None)

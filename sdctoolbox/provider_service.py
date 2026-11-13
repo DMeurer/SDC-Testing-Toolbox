@@ -577,17 +577,17 @@ class ProviderService:
                 if descriptor.parent_handle in managed_handles and descriptor.Handle not in managed_handles
             }:
                 managed_handles.update(descendants)
-            current = {handle: entity for handle, entity in mdib.entities.items()}
+            current = self._parents()
             removal_candidates = (set(current) - set(saved_descriptors)) | managed_handles
             removal_handles = {
                 handle
                 for handle in removal_candidates
-                if handle in current and current[handle].parent_handle not in removal_candidates
+                if handle in current and current[handle] not in removal_candidates
             }
 
             with mdib.descriptor_transaction() as mgr:
                 for handle in removal_handles:
-                    mgr.remove_entity(current[handle])
+                    mgr.remove_entity(mdib.entities.by_handle(handle))
 
             restore_descriptors = []
             for handle in managed_handles:
@@ -610,12 +610,9 @@ class ProviderService:
             if self._adapter is None:
                 raise RuntimeError("provider adapter is not available")
             saved_descriptors = {descriptor.Handle: descriptor for descriptor in snapshot.library.descriptors}
-            added_handles = {handle for handle, _ in mdib.entities.items()} - set(saved_descriptors)
-            added_roots = {
-                handle
-                for handle in added_handles
-                if mdib.entities.by_handle(handle).parent_handle not in added_handles
-            }
+            parents = self._parents()
+            added_handles = set(parents) - set(saved_descriptors)
+            added_roots = {handle for handle in added_handles if parents[handle] not in added_handles}
 
             self._operations = snapshot.operations
             self._specs = snapshot.specs
@@ -754,7 +751,7 @@ class ProviderService:
         """Validate the prospective graph and historical descriptor datatypes."""
         if self._adapter is None:
             raise RuntimeError("provider adapter is not available")
-        descriptors = {handle for handle, _ in self.mdib.entities.items()}
+        descriptors = set(self._parents())
         metric_specs = self.list_metrics()
         metrics = set(metric_specs)
         removed: set[str] = set()
@@ -774,24 +771,24 @@ class ProviderService:
         section_handles = set()
         for section in {spec.section for spec in device.metrics if spec.section}:
             existing = self._sections.get(section)
-            if existing is not None and existing not in removed and self.mdib.entities.by_handle(existing) is not None:
+            if existing is not None and existing not in removed and self._descriptor(existing) is not None:
                 continue
             slug = slugify(section)
             vmd_handle = constants.VMD_HANDLE_PREFIX + slug
             channel_handle = constants.CHANNEL_HANDLE_PREFIX + slug
             section_handles.update((vmd_handle, channel_handle))
-            vmd = self.mdib.entities.by_handle(vmd_handle)
-            channel = self.mdib.entities.by_handle(channel_handle)
+            vmd = self._descriptor(vmd_handle)
+            channel = self._descriptor(channel_handle)
             if vmd_handle in removed:
                 vmd = None
             if channel_handle in removed:
                 channel = None
-            if vmd is not None and (vmd.node_type != pm.VmdDescriptor or vmd.parent_handle != self._anchor_mds()):
+            if vmd is not None and (vmd.NODETYPE != pm.VmdDescriptor or vmd.parent_handle != self._anchor_mds()):
                 raise ValueError(
                     f"sections[{section}]: {vmd_handle!r} must be a VmdDescriptor under {self._anchor_mds()!r}",
                 )
             if channel is not None and (
-                channel.node_type != pm.ChannelDescriptor or channel.parent_handle != vmd_handle
+                channel.NODETYPE != pm.ChannelDescriptor or channel.parent_handle != vmd_handle
             ):
                 raise ValueError(
                     f"sections[{section}]: {channel_handle!r} must be a ChannelDescriptor under {vmd_handle!r}",
@@ -933,7 +930,7 @@ class ProviderService:
                 raise ValueError(msg)
 
             handle = spec.handle or self._unique_handle(constants.METRIC_HANDLE_PREFIX + spec.slug)
-            if self.mdib.entities.by_handle(handle) is not None:
+            if self._descriptor(handle) is not None:
                 msg = f"handle {handle!r} already exists"
                 raise ValueError(msg)
 
@@ -991,13 +988,14 @@ class ProviderService:
             dependent_handles.update(signal_handles)
 
             # A loaded graph may have several operations on one metric, not only the one we track.
-            operation_handles = sorted(
-                entity.handle
-                for _, entity in self.mdib.entities.items()
-                if entity.descriptor.is_operational_descriptor
-                and entity.descriptor.OperationTarget == handle
-                and entity.handle not in self._actions
-            )
+            with self.mdib.mdib_lock:
+                operation_handles = sorted(
+                    descriptor.Handle
+                    for descriptor in self.mdib.descriptions.objects
+                    if descriptor.is_operational_descriptor
+                    and descriptor.OperationTarget == handle
+                    and descriptor.Handle not in self._actions
+                )
             dependent_handles.update(operation_handles)
 
             action_handles = self._dependent_action_handles(
@@ -1049,7 +1047,7 @@ class ProviderService:
         """Delete section containment left without any owned metrics."""
         with self._lock:
             for channel_handle in self._section_channels():
-                if self.mdib.entities.by_handle(channel_handle) is None:
+                if self._descriptor(channel_handle) is None:
                     self._forget_section(channel_handle)
                     continue
                 entities, handles = self._empty_section_entities(channel_handle)
@@ -1234,7 +1232,7 @@ class ProviderService:
                     entity.state.MonitoredAlertLimits = pm_types.AlertConditionMonitoredLimits.HIGH_OFF
 
             signal_entities = []
-            handles = {live_handle for live_handle, _ in self.mdib.entities.items()} | {handle}
+            handles = set(self._parents()) | {handle}
             for signal_spec in spec.signals:
                 manifestation = signal_spec.manifestation
                 signal_handle = _unique_in(
@@ -1656,23 +1654,19 @@ class ProviderService:
             pm_types.AlertConditionPriority.HIGH,
         }
         for handle in sorted(self._alerts):
-            condition = self.mdib.entities.by_handle(handle)
-            if condition is None or condition.parent_handle != alert_system.handle:
+            descriptor, state = self._descriptor(handle), self._state(handle)
+            if descriptor is None or state is None or descriptor.parent_handle != alert_system.handle:
                 continue
-            if not presence_overrides.get(handle, bool(condition.state.Presence)):
+            if not presence_overrides.get(handle, bool(state.Presence)):
                 continue
-            if condition.state.ActivationState is not pm_types.AlertActivation.ON:
+            if state.ActivationState is not pm_types.AlertActivation.ON:
                 continue
-            priority = (
-                condition.state.ActualPriority
-                if condition.state.ActualPriority is not None
-                else condition.descriptor.Priority
-            )
+            priority = state.ActualPriority if state.ActualPriority is not None else descriptor.Priority
             if priority not in applicable_priorities:
                 continue
-            if condition.descriptor.Kind is pm_types.AlertConditionKind.PHYSIOLOGICAL:
+            if descriptor.Kind is pm_types.AlertConditionKind.PHYSIOLOGICAL:
                 physiological.append(handle)
-            elif condition.descriptor.Kind is pm_types.AlertConditionKind.TECHNICAL:
+            elif descriptor.Kind is pm_types.AlertConditionKind.TECHNICAL:
                 technical.append(handle)
         return physiological, technical
 
@@ -1694,16 +1688,16 @@ class ProviderService:
             if condition_handle in excluding_conditions:
                 continue
             for signal_handle in signal_handles:
-                signal = self.mdib.entities.by_handle(signal_handle)
-                if signal is None or signal.parent_handle != alert_system.handle:
+                descriptor, state = self._descriptor(signal_handle), self._state(signal_handle)
+                if descriptor is None or state is None or descriptor.parent_handle != alert_system.handle:
                     continue
-                location = location_overrides.get(signal_handle, signal.state.Location)
+                location = location_overrides.get(signal_handle, state.Location)
                 if location is pm_types.AlertSignalPrimaryLocation.REMOTE:
                     continue
-                activation = signal.state.ActivationState
+                activation = state.ActivationState
                 if alert_system.state.ActivationState is not pm_types.AlertActivation.ON:
                     activation = pm_types.AlertActivation.OFF
-                manifestation = signal.descriptor.Manifestation
+                manifestation = descriptor.Manifestation
                 current = activations.get(manifestation)
                 if current is None or rank[activation] > rank[current]:
                     activations[manifestation] = activation
@@ -1917,7 +1911,7 @@ class ProviderService:
         """
         with self._lock:
             spec.validate_text()
-            if self.mdib.entities.by_handle(spec.target_handle) is None:
+            if self._descriptor(spec.target_handle) is None:
                 msg = f"no descriptor with handle {spec.target_handle!r} for action {spec.label!r} to act on"
                 raise KeyError(msg)
             operation_target = self._action_target_for(spec)
@@ -2225,25 +2219,25 @@ class ProviderService:
         against each metric.
         """
         if not section:
-            if self.mdib.entities.by_handle(constants.CHANNEL_HANDLE) is not None:
+            if self._descriptor(constants.CHANNEL_HANDLE) is not None:
                 return constants.CHANNEL_HANDLE
             # A loaded graph has no bootstrap channel. Its first one keeps it unchanged.
             channel = self._child_of_type(None, pm.ChannelDescriptor)
             return channel if channel is not None else self._channel_for(constants.DEFAULT_SECTION)
         existing = self._sections.get(section)
-        if existing is not None and self.mdib.entities.by_handle(existing) is not None:
+        if existing is not None and self._descriptor(existing) is not None:
             return existing
 
         slug = slugify(section)
         vmd_handle = f"{constants.VMD_HANDLE_PREFIX}{slug}"
         channel_handle = f"{constants.CHANNEL_HANDLE_PREFIX}{slug}"
-        vmd = self.mdib.entities.by_handle(vmd_handle)
-        channel = self.mdib.entities.by_handle(channel_handle)
-        if vmd is not None and (vmd.node_type != pm.VmdDescriptor or vmd.parent_handle != self._anchor_mds()):
+        vmd = self._descriptor(vmd_handle)
+        channel = self._descriptor(channel_handle)
+        if vmd is not None and (vmd.NODETYPE != pm.VmdDescriptor or vmd.parent_handle != self._anchor_mds()):
             msg = f"section {section!r} requires {vmd_handle!r} to be a VmdDescriptor under {self._anchor_mds()!r}"
             raise ValueError(msg)
         if channel is not None and (
-            channel.node_type != pm.ChannelDescriptor or channel.parent_handle != vmd_handle
+            channel.NODETYPE != pm.ChannelDescriptor or channel.parent_handle != vmd_handle
         ):
             msg = f"section {section!r} requires {channel_handle!r} to be a ChannelDescriptor under {vmd_handle!r}"
             raise ValueError(msg)
@@ -2280,9 +2274,9 @@ class ProviderService:
         for metric_handle, spec in self._specs.items():
             if not spec.section:
                 continue
-            entity = self.mdib.entities.by_handle(metric_handle)
-            if entity is not None:
-                channels.add(entity.parent_handle)
+            descriptor = self._descriptor(metric_handle)
+            if descriptor is not None:
+                channels.add(descriptor.parent_handle)
         return channels
 
     def _section_descriptor_handles(self) -> set[str]:
@@ -2292,21 +2286,15 @@ class ProviderService:
         removable_channels = {
             channel_handle
             for channel_handle in channels
-            if all(
-                entity.handle in metrics or entity.parent_handle != channel_handle
-                for _, entity in self.mdib.entities.items()
-            )
+            if set(self._child_handles(channel_handle)) <= metrics
         }
         handles = set(removable_channels)
         for channel_handle in removable_channels:
-            channel = self.mdib.entities.by_handle(channel_handle)
+            channel = self._descriptor(channel_handle)
             if channel is None:
                 continue
             vmd_handle = channel.parent_handle
-            if all(
-                entity.handle in removable_channels or entity.parent_handle != vmd_handle
-                for _, entity in self.mdib.entities.items()
-            ):
+            if set(self._child_handles(vmd_handle)) <= removable_channels:
                 handles.add(vmd_handle)
         return handles
 
@@ -2327,37 +2315,52 @@ class ProviderService:
         channel = self.mdib.entities.by_handle(channel_handle)
         if channel is None or channel.node_type != pm.ChannelDescriptor:
             return [], set()
-        if any(
-            entity.handle != excluding_metric and entity.parent_handle == channel_handle
-            for _, entity in self.mdib.entities.items()
-        ):
+        if set(self._child_handles(channel_handle)) - {excluding_metric}:
             return [], set()
         entities = [channel]
         handles = {channel_handle}
         vmd_handle = channel.parent_handle
         vmd = self.mdib.entities.by_handle(vmd_handle)
         if vmd is not None and vmd.node_type == pm.VmdDescriptor:
-            other_children = any(
-                entity.handle != channel_handle and entity.parent_handle == vmd_handle
-                for _, entity in self.mdib.entities.items()
-            )
+            other_children = set(self._child_handles(vmd_handle)) - {channel_handle}
             if not other_children:
                 entities.append(vmd)
                 handles.add(vmd_handle)
         return entities, handles
 
+    # sdc11073's entity getters deep-copy what they return, so a whole-MDIB scan through them
+    # per edit made large imports quadratic. These read the live descriptors and must not
+    # change them; anything written still goes through an entity in a transaction.
+    def _descriptor(self, handle: str | None):  # noqa: ANN202 - an sdc11073 descriptor, read-only
+        if handle is None:
+            return None
+        return self.mdib.descriptions.handle.get_one(handle, allow_none=True)
+
+    def _state(self, handle: str):  # noqa: ANN202 - an sdc11073 single state, read-only
+        return self.mdib.states.descriptor_handle.get_one(handle, allow_none=True)
+
+    def _parents(self) -> dict[str, str | None]:
+        """Every descriptor handle with its parent's."""
+        with self.mdib.mdib_lock:
+            return {descriptor.Handle: descriptor.parent_handle for descriptor in self.mdib.descriptions.objects}
+
+    def _child_handles(self, parent: str | None) -> list[str]:
+        with self.mdib.mdib_lock:
+            return [descriptor.Handle for descriptor in self.mdib.descriptions.parent_handle.get(parent, [])]
+
     def _anchor_mds(self) -> str:
         """The MDS edits go into: the bootstrap's, or the first one of a loaded graph."""
-        entity = self.mdib.entities.by_handle(constants.MDS_HANDLE)
-        if entity is not None and entity.node_type == pm.MdsDescriptor:
-            return entity.handle
-        return self.mdib.entities.by_node_type(pm.MdsDescriptor)[0].handle
+        descriptor = self._descriptor(constants.MDS_HANDLE)
+        if descriptor is not None and descriptor.NODETYPE == pm.MdsDescriptor:
+            return descriptor.Handle
+        return self._child_of_type(None, pm.MdsDescriptor)
 
     def _child_of_type(self, parent: str | None, node_type) -> str | None:  # noqa: ANN001
         """The first descriptor of a type under parent, or anywhere in the graph for None."""
-        for entity in self.mdib.entities.by_node_type(node_type):
-            if parent is None or entity.parent_handle == parent:
-                return entity.handle
+        with self.mdib.mdib_lock:
+            for descriptor in self.mdib.descriptions.NODETYPE.get(node_type, []):
+                if parent is None or descriptor.parent_handle == parent:
+                    return descriptor.Handle
         return None
 
     def _ensure_child(self, parent: str, node_type, handle: str, prepare=None) -> str:  # noqa: ANN001
@@ -2392,8 +2395,8 @@ class ProviderService:
             pm.PatientContextDescriptor: constants.PATIENT_CONTEXT_HANDLE,
             pm.LocationContextDescriptor: constants.LOCATION_CONTEXT_HANDLE,
         }[node_type]
-        entity = self.mdib.entities.by_handle(preferred)
-        if entity is not None and entity.node_type == node_type:
+        descriptor = self._descriptor(preferred)
+        if descriptor is not None and descriptor.NODETYPE == node_type:
             return preferred
         existing = self._child_of_type(None, node_type)
         if existing is not None or not create:
@@ -2402,10 +2405,10 @@ class ProviderService:
         return self._ensure_child(system, node_type, preferred)
 
     def _unique_handle(self, candidate: str) -> str:
-        if self.mdib.entities.by_handle(candidate) is None:
+        if self._descriptor(candidate) is None:
             return candidate
         counter = 2
-        while self.mdib.entities.by_handle(f"{candidate}.{counter}") is not None:
+        while self._descriptor(f"{candidate}.{counter}") is not None:
             counter += 1
         return f"{candidate}.{counter}"
 
