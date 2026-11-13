@@ -213,10 +213,10 @@ def manifest_checks(report: Report) -> None:
         sorted(deterministic_platforms) == ["linux", "windows"],
         "CI selects manifest-driven deterministic/policy suites on both platforms",
     )
-    expected_network = {"network-acceptance", "tls-acceptance", "passive-discovery", "operation-subscription", "connection-loss"}
+    expected_network = {"network-acceptance", "tls-acceptance", "passive-discovery", "operation-subscription", "connection-loss", "mdib-network"}
     report.check(
         {suite_id for selected in network_jobs.values() for suite_id in selected} == expected_network,
-        "CI selects all five intended network suites in isolated jobs", repr(network_jobs),
+        "CI selects all six intended network suites in isolated jobs", repr(network_jobs),
     )
 
 
