@@ -29,6 +29,7 @@ import shiboken6
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, QTimer, Qt
 from PySide6.QtWidgets import QApplication
 from consumer_lifecycle import BlockingCall, EqualResource, FakeBridge, FakeConsumerService, FakeRemote
+from mdib_test_support import fake_consumer_mdib
 from gui_test_support import WindowFixture, wait_for
 from sdc11073.definitions_sdc import SdcV1Definitions
 from sdc11073.mdib import ConsumerMdib
@@ -62,11 +63,6 @@ class GatedCloser:
         self.entered.set()
         self.expired = not self.release.wait(2.0)
         self.completed.set()
-
-
-class EmptyEntities(dict):
-    def by_node_type(self, _node_type):
-        return []
 
 
 BRIDGE_SIGNALS = (
@@ -577,7 +573,7 @@ class GuiAuditRegressions(unittest.TestCase):
         for kind, node_type in ((K.WAVEFORM, pm.RealTimeSampleArrayMetricDescriptor), (K.DISTRIBUTION, pm.DistributionSampleArrayMetricDescriptor)):
             with self.subTest(kind.value):
                 entity = NS(node_type=node_type, descriptor=NS(TechnicalRange=[NS(Lower=D(0), Upper=D(100))], SamplePeriod=0.01), state=NS(MetricValue=NS(Samples=[D(50), D("50.01")])))
-                remote = RemoteDevice(NS(), NS(entities={"wave": entity}), "peer")
+                remote = RemoteDevice(NS(), fake_consumer_mdib({"wave": entity}), "peer")
                 metric = remote.metrics()["wave"]
                 control = build_widget(from_remote_metric(metric))
                 local = build_widget(from_spec("wave", MetricSpec("Wave", kind, minimum=D(0), maximum=D(100)), editable=False))
@@ -826,7 +822,7 @@ class GuiAuditRegressions(unittest.TestCase):
         with self.consumer() as pane:
             closer = GatedCloser()
             remote = RemoteDevice(
-                NS(stop_all=lambda **_: closer()), NS(entities=EmptyEntities()), "late-health",
+                NS(stop_all=lambda **_: closer()), fake_consumer_mdib(), "late-health",
             )
             pane._on_connected(remote, pane._generation)
             worker = pane._worker
@@ -857,7 +853,7 @@ class GuiAuditRegressions(unittest.TestCase):
             closer = GatedCloser()
             closer.release.set()
             remote = RemoteDevice(
-                NS(stop_all=lambda **_: closer()), NS(entities=EmptyEntities()), "already-lost",
+                NS(stop_all=lambda **_: closer()), fake_consumer_mdib(), "already-lost",
             )
             with self.assertLogs("sdctoolbox.consumer", level="WARNING"):
                 remote.mark_connection_lost("advertised metric feeds were rejected")
@@ -878,7 +874,7 @@ class GuiAuditRegressions(unittest.TestCase):
         with self.consumer() as pane:
             closer = GatedCloser()
             remote = RemoteDevice(
-                NS(stop_all=lambda **_: closer()), NS(entities=EmptyEntities()), "inflight-health",
+                NS(stop_all=lambda **_: closer()), fake_consumer_mdib(), "inflight-health",
             )
             pane._on_connected(remote, pane._generation)
             native_signal = pane.connection_lost

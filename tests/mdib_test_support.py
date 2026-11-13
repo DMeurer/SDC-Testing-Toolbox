@@ -84,3 +84,57 @@ def adoption_mdib() -> bytes:
         b'<pm:AlertSignal Handle="demo.limit.signal" ConditionSignaled="demo.limit" Manifestation="Aud" Latching="false"/>'
         b'<pm:AlertSignal Handle="demo.signal"',
     )
+
+
+class _Lookup(dict):
+    def get_one(self, key, allow_none=False):  # noqa: ANN001, ANN201, ARG002, FBT002 - sdc11073 lookup shape
+        return self.get(key)
+
+
+class _NoContexts(dict):
+    def by_node_type(self, _node_type):  # noqa: ANN001, ANN201
+        return []
+
+
+class _Descriptor:
+    """Reads through to the entity, so a test may swap its descriptor or node type later."""
+
+    is_context_descriptor = False
+
+    def __init__(self, handle: str, entity) -> None:  # noqa: ANN001
+        self.Handle = handle
+        self._entity = entity
+
+    @property
+    def NODETYPE(self):  # noqa: ANN201, N802 - sdc11073 attribute name
+        return self._entity.node_type
+
+    @property
+    def parent_handle(self):  # noqa: ANN201
+        return getattr(self._entity, "parent_handle", None)
+
+    def __getattr__(self, name: str):  # noqa: ANN204
+        return getattr(self._entity.descriptor, name)
+
+
+class _States:
+    def __init__(self, entities: dict) -> None:
+        self._entities = entities
+
+    def get_one(self, handle, allow_none=False):  # noqa: ANN001, ANN201, ARG002, FBT002
+        return getattr(self._entities.get(handle), "state", None)
+
+
+def fake_consumer_mdib(entities: dict | None = None):  # noqa: ANN201
+    """A stand-in ConsumerMdib holding single-state entities, read where RemoteDevice reads them."""
+    import threading
+    from types import SimpleNamespace
+
+    entities = entities if entities is not None else {}
+    descriptors = _Lookup({handle: _Descriptor(handle, entity) for handle, entity in entities.items()})
+    return SimpleNamespace(
+        entities=_NoContexts(entities),
+        mdib_lock=threading.RLock(),
+        descriptions=SimpleNamespace(objects=list(descriptors.values()), handle=descriptors),
+        states=SimpleNamespace(descriptor_handle=_States(entities)),
+    )

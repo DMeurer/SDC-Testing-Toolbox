@@ -33,6 +33,41 @@ BEHAVIOUR_NS = "urn:sdc-testing-toolbox:behaviour"
 _MUST_UNDERSTAND = ns.EXT.tag("MustUnderstand")
 
 
+@dataclass(frozen=True)
+class LiveEntity:
+    handle: str
+    node_type: object
+    descriptor: object
+    state: object
+    parent_handle: str | None
+    # A context descriptor's states; empty for single-state descriptors.
+    states: tuple = ()
+
+
+def live_entities(mdib, handles=None, *, include_contexts: bool = False) -> list[LiveEntity]:  # noqa: ANN001
+    """Descriptors with their states, read in place.
+
+    sdc11073's entity getters deep-copy every entity they return, which made whole-MDIB walks
+    the slowest part of loading files and drawing views. Callers hold ``mdib.mdib_lock`` while
+    reading these, copy only immutable values out, and never change them.
+    """
+    if handles is None:
+        descriptors = list(mdib.descriptions.objects)
+    else:
+        lookup = mdib.descriptions.handle
+        descriptors = [d for handle in handles if (d := lookup.get_one(handle, allow_none=True)) is not None]
+    states = mdib.states.descriptor_handle
+    result = []
+    for d in descriptors:
+        if d.is_context_descriptor:
+            if include_contexts:
+                context_states = tuple(mdib.context_states.descriptor_handle.get(d.Handle, ()))
+                result.append(LiveEntity(d.Handle, d.NODETYPE, d, None, d.parent_handle, context_states))
+            continue
+        result.append(LiveEntity(d.Handle, d.NODETYPE, d, states.get_one(d.Handle, allow_none=True), d.parent_handle))
+    return result
+
+
 def _tb(name: str) -> str:
     return f"{{{BEHAVIOUR_NS}}}{name}"
 

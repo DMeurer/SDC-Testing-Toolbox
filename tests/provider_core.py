@@ -38,7 +38,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from script_support import Report  # noqa: E402
-from mdib_test_support import PM, original_mdib  # noqa: E402
+from mdib_test_support import PM, fake_consumer_mdib, original_mdib  # noqa: E402
 from sdc11073 import observableproperties  # noqa: E402
 from sdc11073.consumer.consumerimpl import SdcConsumer  # noqa: E402
 from sdc11073.definitions_sdc import SdcV1Definitions  # noqa: E402
@@ -3421,6 +3421,22 @@ def check_foreign_consumer_operations(report: Report) -> None:
         mdib.entities = entities
         for handle in client.states:
             mdib.states.add_object(entities[handle].state)
+        fake = fake_consumer_mdib(entities)
+        mdib.descriptions = fake.descriptions
+
+        class States:
+            """The real table, which set_value reconciles, plus the fakes' operation states."""
+
+            def __init__(self, real) -> None:
+                self.real = real
+                self.descriptor_handle = SimpleNamespace(get_one=lambda handle, allow_none=False: (  # noqa: ARG005
+                    real.descriptor_handle.get_one(handle, allow_none=True)
+                    or fake.states.descriptor_handle.get_one(handle)))
+
+            def __getattr__(self, name):  # noqa: ANN001, ANN204
+                return getattr(self.real, name)
+
+        mdib.states = States(mdib.states)
         client.mdib = mdib
         remote = RemoteDevice(consumer, mdib, "urn:provider-core:foreign-operations")
         return remote, client
@@ -3752,7 +3768,7 @@ def check_remote_metadata(report: Report) -> None:
             MetricValue=SimpleNamespace(Value=value, MetricQuality=SimpleNamespace(Validity=pm_types.MeasurementValidity.INVALID)),
         ),
     )
-    remote = RemoteDevice(SimpleNamespace(), SimpleNamespace(entities={"pressure": entity}), "urn:metadata")
+    remote = RemoteDevice(SimpleNamespace(), fake_consumer_mdib({"pressure": entity}), "urn:metadata")
     metric = remote.metrics()["pressure"]
     report.check(
         getattr(metric, "unit_code", missing) == "266048"

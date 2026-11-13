@@ -135,7 +135,7 @@ def assert_provider_reset(service: ProviderService, discovery: Tracker, provider
 
 def provider_dependencies(discovery: Tracker, provider: Tracker | None = None):
     patches = [
-        patch.object(provider_module, "RangeWSDiscovery", lambda _ip: discovery),
+        patch.object(provider_module, "RangeWSDiscovery", lambda _ip, **_kwargs: discovery),
         patch.object(provider_module, "make_set_handler", lambda *_args, **_kwargs: object()),
         patch.object(provider_module, "make_activate_handler", lambda *_args, **_kwargs: object()),
     ]
