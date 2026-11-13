@@ -207,6 +207,8 @@ def set_dark_mode(enabled: bool) -> None:
         if isinstance(widget, QAbstractItemView):
             widget.setPalette(palette)
             widget.viewport().setPalette(palette)
+            if widget.property("_toolboxRowSelection"):
+                apply_row_selection_style(widget)
         text_style = widget.property("_toolboxTextStyle")
         if text_style in ("muted", "error"):
             widget.setPalette(palette)
@@ -235,26 +237,27 @@ def constrain_dynamic_label(
         label.setMaximumWidth(max_width)
 
 
-# Draws the selection as one flat band across the row.
+# Draws the selection as one flat band across the row, in the design's tint.
 #
 # Without this, the Windows 11 style decorates each cell individually - rounded corners and
 # an accent marker on the current cell - which reads as coloured fragments down the left of
-# every column rather than as a single selected row. Colours come from palette() so this
-# stays theme-correct.
+# every column rather than as a single selected row. set_dark_mode re-applies it, so the
+# tint follows the mode.
 FLAT_SELECTION_QSS = """
-QTableView {
+QTableView, QTreeView {{
     outline: 0;
-}
-QTableView::item {
+}}
+QTableView::item {{
     border: 0px;
     margin: 0px;
-}
+}}
 QTableView::item:selected,
 QTableView::item:selected:active,
-QTableView::item:selected:!active {
-    background: palette(highlight);
-    color: palette(highlighted-text);
-}
+QTableView::item:selected:!active,
+QTreeView::item:selected {{
+    background: {tint};
+    color: {text};
+}}
 """
 
 
@@ -263,4 +266,5 @@ def apply_row_selection_style(view: QAbstractItemView) -> None:
 
     Keyboard focus still works; only the painted focus ring goes away, via `outline: 0`.
     """
-    view.setStyleSheet(FLAT_SELECTION_QSS)
+    view.setProperty("_toolboxRowSelection", True)
+    view.setStyleSheet(FLAT_SELECTION_QSS.format(tint=token("accent/tint").name(), text=token("text/primary").name()))

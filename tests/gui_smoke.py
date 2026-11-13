@@ -1295,7 +1295,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         def signals_cell(handle: str = acked) -> str:
             for row in range(pane.alert_table.rowCount()):
                 if pane.alert_table.item(row, ACOL_HANDLE).text() == handle:
-                    return pane.alert_table.item(row, ACOL_SIGNALS).text()
+                    return pane.alert_table.item(row, ACOL_SIGNALS).data(Qt.UserRole)
             return ""
 
         # zoom sits at 100 from the range section above, so the alarm is already raised.

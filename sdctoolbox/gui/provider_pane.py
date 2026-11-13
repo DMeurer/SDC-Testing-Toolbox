@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
-    QSplitter,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -37,6 +36,7 @@ from lxml import etree
 
 from ..model import MetricKind
 from ..mdib_io import live_entities, mdib_bytes
+from .collapsible import CollapsibleSection
 from .context_dialog import ContextDialog
 from .decimal_input import DecimalInputError, parse_decimal_input
 from .edit_dialogs import EditAlertDialog, EditSourceDialog
@@ -50,11 +50,14 @@ from .new_alert_dialog import NewAlertDialog
 from .new_metric_dialog import NewMetricDialog
 from .no_wheel import NoWheelComboBox
 from .qt_bridge import MdibBridge
+from .signal_icons import SIGNALS_ROLE, SignalIconsDelegate, tooltip
 from .styling import (
     apply_row_selection_style,
     constrain_dynamic_label,
     mute,
     muted_colour,
+    set_button_kind,
+    token,
 )
 from .table_columns import TableColumns
 from .widgets import WidgetBoard, from_spec
@@ -155,6 +158,7 @@ class ProviderPane(QWidget):
         self.metric_stack.addWidget(self.table)
 
         self.new_button = QPushButton("New data source\u2026")
+        set_button_kind(self.new_button, "highlight")
         self.new_button.clicked.connect(self._on_new)
         self.remove_button = QPushButton("Remove")
         self.remove_button.clicked.connect(self._on_remove)
@@ -165,6 +169,9 @@ class ProviderPane(QWidget):
         self.edit_button.setEnabled(False)
         self.context_button = QPushButton("Patient and location\u2026")
         self.context_button.clicked.connect(self._on_edit_contexts)
+        set_button_kind(self.context_button, "highlight-outline")
+        for button in (self.edit_button, self.remove_button):
+            set_button_kind(button, "design-outline")
         self.context_label = QLabel("")
         constrain_dynamic_label(self.context_label, max_lines=3)
         self.context_label.setTextInteractionFlags(Qt.NoTextInteraction)
@@ -201,6 +208,7 @@ class ProviderPane(QWidget):
         self._alert_columns = TableColumns(self.alert_table, flexible=ACOL_LABEL)
         self.alert_table.itemSelectionChanged.connect(self._on_alert_selection_changed)
         apply_row_selection_style(self.alert_table)
+        self.alert_table.setItemDelegateForColumn(ACOL_SIGNALS, SignalIconsDelegate(self.alert_table))
 
         self.new_alert_button = QPushButton("New alarm\u2026")
         self.new_alert_button.clicked.connect(self._on_new_alert)
@@ -217,16 +225,20 @@ class ProviderPane(QWidget):
         self.delegate_button = QPushButton("Remote*")
         self.delegate_button.clicked.connect(self._on_delegate)
 
-        alert_buttons = QHBoxLayout()
-        alert_buttons.addWidget(QLabel("Alarms"))
+        # Creating and changing alarms first, then what you do to a running one.
+        alert_buttons = self.alert_toolbar = QHBoxLayout()
+        for button, kind in ((self.new_alert_button, "highlight"),
+                             (self.edit_alert_button, "highlight-outline"),
+                             (self.remove_alert_button, "highlight-outline"),
+                             (self.toggle_alert_button, "design-outline"),
+                             (self.acknowledge_button, "design-outline"),
+                             (self.stop_latched_button, "design-outline"),
+                             (self.delegate_button, "design-outline")):
+            set_button_kind(button, kind)
+            alert_buttons.addWidget(button)
+            if button is self.remove_alert_button:
+                alert_buttons.addSpacing(16)
         alert_buttons.addStretch(1)
-        alert_buttons.addWidget(self.toggle_alert_button)
-        alert_buttons.addWidget(self.acknowledge_button)
-        alert_buttons.addWidget(self.stop_latched_button)
-        alert_buttons.addWidget(self.delegate_button)
-        alert_buttons.addWidget(self.new_alert_button)
-        alert_buttons.addWidget(self.edit_alert_button)
-        alert_buttons.addWidget(self.remove_alert_button)
 
         alert_box = QWidget()
         alert_layout = QVBoxLayout(alert_box)
@@ -256,11 +268,9 @@ class ProviderPane(QWidget):
         self.editor_widget.setLayout(editor)
         self._set_editor_enabled(enabled=False)
 
-        self._views = QSplitter(Qt.Vertical)
-        self._views.addWidget(self.metric_stack)
-        self._views.addWidget(alert_box)
-        self._views.setStretchFactor(0, 3)
-        self._views.setStretchFactor(1, 2)
+        self.metrics_section = CollapsibleSection("Metrics", self.metric_stack)
+        self.alarms_section = CollapsibleSection("Alarms", alert_box, expanded=False)
+        self.structure_section = None
         self.native_tree = None
         self._native_items = {}
         self._native_state_items = {}
@@ -269,7 +279,8 @@ class ProviderPane(QWidget):
             self.native_tree.setHeaderLabels(["Handle", "Descriptor", "Current state"])
             self.native_tree.setUniformRowHeights(True)
             self.native_tree.setAccessibleName("MDIB containment")
-            self._views.insertWidget(0, self.native_tree)
+            self.structure_section = CollapsibleSection("MDIB structure", self.native_tree, expanded=False)
+            self.structure_section.set_hint("Descriptor tree with handles")
 
         layout = QVBoxLayout(self)
         # TitledPanel already pads both panels. Without this the style's own 9px lands on
@@ -284,14 +295,11 @@ class ProviderPane(QWidget):
                           "state until their source changes. Hover containment entries for XML.")
             hint.setWordWrap(True)
             layout.addWidget(hint)
-        layout.addWidget(self.views, 1)
+        for section in (self.structure_section, self.metrics_section, self.alarms_section):
+            if section is not None:
+                layout.addWidget(section, 1)
         layout.addWidget(self.actions_widget)
         layout.addWidget(self.editor_widget)
-
-    @property
-    def views(self) -> QSplitter:
-        """Metrics above, alarms below, with a divider between them."""
-        return self._views
 
     # -- widgets or table ----------------------------------------------------------
 
@@ -398,6 +406,7 @@ class ProviderPane(QWidget):
             blocker.unblock()
 
         self._on_selection_changed()
+        self.metrics_section.set_chips([str(len(specs))])
         self._columns.refit()
         self._refresh_board()
         if self.native_tree is not None:
@@ -592,9 +601,12 @@ class ProviderPane(QWidget):
         selected = self.selected_alert_handle()
 
         self.alert_table.setRowCount(len(alerts))
+        active = 0
         for row, (handle, spec) in enumerate(sorted(alerts.items())):
             present = self.service.alert_present(handle)
+            active += present
             signals = self.service.signal_states(handle)
+            presences = {str(signal.manifestation): str(signal.presence) for signal in signals}
             cells = {
                 ACOL_HANDLE: handle,
                 ACOL_LABEL: spec.label,
@@ -602,17 +614,25 @@ class ProviderPane(QWidget):
                 ACOL_WHEN: spec.limit_text() or "by hand",
                 ACOL_KIND: spec.kind.value,
                 ACOL_PRIORITY: (spec.actual_priority or spec.priority).value,
-                ACOL_STATE: "PRESENT" if present else "clear",
-                ACOL_SIGNALS: "  ".join(signal.summary() for signal in signals),
+                ACOL_STATE: "active" if present else "clear",
+                ACOL_SIGNALS: "",
             }
             for column, text in cells.items():
                 item = QTableWidgetItem(text)
                 if column == ACOL_STATE and not present:
                     item.setForeground(muted_colour(self))
+                if column == ACOL_STATE and present:
+                    item.setForeground(token("text/error"))
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
                 if column == ACOL_WHEN and not spec.has_limits:
                     item.setToolTip("No limits, so this alarm only moves when you raise or clear it")
                 if column == ACOL_SIGNALS:
+                    item.setData(SIGNALS_ROLE, presences)
+                    item.setData(Qt.UserRole, "  ".join(signal.summary() for signal in signals))
                     item.setToolTip(
+                        tooltip(presences) + "\n\n"
                         "How each signal is announcing the condition. Ack means it has been\n"
                         "acknowledged; the condition itself is still present. ->Rem is a\n"
                         "simulated remote location, not a delegation handoff. Latch means a signal\n"
@@ -623,6 +643,7 @@ class ProviderPane(QWidget):
                 self.alert_table.setItem(row, column, item)
 
         self._alert_columns.refit()
+        self.alarms_section.set_chips([str(len(alerts)), f"{active} active" if active else "none active"])
         if selected is not None:
             self.select_alert_handle(selected)
         self._on_alert_selection_changed()
@@ -815,6 +836,7 @@ class ProviderPane(QWidget):
             button = self.action_buttons.get(handle)
             if button is None:
                 button = QPushButton(spec.label)
+                set_button_kind(button, "design-outline")
                 button.clicked.connect(lambda _=False, h=handle: self._on_run_action(h))
                 # Before the stretch, so buttons stay left and the row does not jump about
                 # as actions come and go.
