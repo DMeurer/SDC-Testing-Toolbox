@@ -546,6 +546,52 @@ class EditableMdibTests(unittest.TestCase):
         imported.set_location(LocationInfo(facility="OTHER"))
         self.assertEqual(imported.get_location().facility, "OTHER")
 
+    def test_an_edited_graph_reloads_unchanged(self) -> None:
+        from sdctoolbox import config
+        from sdctoolbox.model import ActionSpec, AlertSpec, LocationInfo, PatientInfo
+
+        self.start(bare_mds())
+        pulse = self.service.add_metric(MetricSpec("Pulse", MetricKind.NUMBER, section="Vitals", controllable=True,
+                                                   minimum=Decimal("0"), maximum=Decimal("250"), initial_value=Decimal("70")))
+        alarm = self.service.add_alert(AlertSpec("Pulse high", pulse, upper_limit=Decimal("120")))
+        action = self.service.add_action(ActionSpec("Reset", "demo.root", effects={pulse: Decimal("60")}, note="back to rest"))
+        self.service.set_patient(PatientInfo(given_name="Synthetic"))
+        self.service.set_location(LocationInfo(facility="F", bed="2"))
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "edited.xml"
+            config.save(self.service, target, behaviour=True)
+            reloaded = ProviderService(instance_name="edit-reloaded")
+            reloaded.start(self.io.parse_mdib(target.read_bytes()))
+        self.addCleanup(reloaded.stop)
+
+        self.assertEqual(canonical(self.io.mdib_bytes(reloaded.mdib)), canonical(self.io.mdib_bytes(self.service.mdib)))
+        self.assertEqual(set(reloaded.list_metrics()), set(self.service.list_metrics()))
+        self.assertEqual(reloaded.list_alerts()[alarm].upper_limit, Decimal("120"))
+        self.assertEqual((reloaded.list_actions()[action].effects, reloaded.list_actions()[action].note),
+                         ({pulse: Decimal("60")}, "back to rest"))
+        self.assertEqual(reloaded.get_patient().given_name, "Synthetic")
+        self.assertEqual(reloaded.get_location().bed, "2")
+        operation = reloaded.operation_handle_for(pulse)
+        self.assertIsNotNone(operation)
+        reloaded_invoke = lambda handle, value: reloaded._provider.get_operation_by_handle(handle).execute_operation(
+            None, SimpleNamespace(argument=value)).invocation_state
+        self.assertEqual(reloaded_invoke(operation, Decimal("130")), msg_types.InvocationState.FINISHED)
+        self.assertTrue(reloaded.alert_present(alarm), "the reloaded alarm follows its source")
+        self.assertEqual(reloaded_invoke(action, None), msg_types.InvocationState.FINISHED)
+        self.assertEqual(reloaded.get_value(pulse), Decimal("60"))
+
+    def test_removing_a_metric_unregisters_its_operation_from_a_second_sco(self) -> None:
+        root = etree.fromstring(original_mdib())
+        description, states = root[0]
+        description.append(etree.fromstring(etree.tostring(description[0]).replace(b"demo.", b"other.")))
+        for state in list(states):
+            states.append(etree.fromstring(etree.tostring(state).replace(b"demo.", b"other.")))
+        self.start(etree.tostring(root))
+        self.assertIsNotNone(self.service._provider.get_operation_by_handle("other.set"))
+        self.service.remove_metric("other.rate")
+        self.assertIsNone(self.service._provider.get_operation_by_handle("other.set"))
+        self.assertIsNotNone(self.service._provider.get_operation_by_handle("demo.set"), "the first Sco keeps its own")
+
     def test_removing_an_imported_metric_takes_its_dependents(self) -> None:
         self.start(original_mdib())
         self.service.remove_metric("demo.rate")

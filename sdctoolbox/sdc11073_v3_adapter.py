@@ -145,7 +145,9 @@ class Sdc11073V3Adapter:
         """Drop an operation from whichever Sco registered it; a loaded graph may have several."""
         self._require_bound()
         for registry in self._provider._sco_operations_registries.values():  # noqa: SLF001
-            registry.unregister_operation_by_handle(handle)
+            # The library raises KeyError for a handle the registry does not hold.
+            if registry.get_operation_by_handle(handle) is not None:
+                registry.unregister_operation_by_handle(handle)
 
     def snapshot(self) -> Sdc11073V3Snapshot:
         self._require_bound()
