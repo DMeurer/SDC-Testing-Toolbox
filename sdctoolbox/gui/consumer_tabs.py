@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QFontMetrics
 from PySide6.QtWidgets import QMessageBox, QTabBar, QTabWidget, QToolButton, QWidget
 
+from ..consumer_service import SharedDiscovery
 from .consumer_pane import ConsumerPane
 from .no_wheel import NoWheelTabBar
 
@@ -23,6 +24,8 @@ class ConsumerTabs(QTabWidget):
         self._ip = ip
         self._own_epr = own_epr
         self._tls_config = tls_config
+        # Every tab lists the same providers, so they share one discovery.
+        self._discovery = SharedDiscovery(ip)
         self._use_widgets = True
         self._shutdown = False
         self._next_number = 1
@@ -61,7 +64,7 @@ class ConsumerTabs(QTabWidget):
         """Start a new session before changing any existing tab or selection."""
         if self._shutdown:
             raise RuntimeError("Connection tabs are shut down")
-        pane = ConsumerPane(self._ip, own_epr=self._own_epr, tls_config=self._tls_config)
+        pane = ConsumerPane(self._ip, own_epr=self._own_epr, tls_config=self._tls_config, discovery=self._discovery)
         try:
             pane.set_use_widgets(self._use_widgets)
             pane.setProperty("connectionNumber", self._next_number)

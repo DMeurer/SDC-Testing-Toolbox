@@ -161,9 +161,10 @@ class ConsumerPane(QWidget):
         *,
         own_epr: str | None = None,
         tls_config=None,  # noqa: ANN001 - optional dependency-free UI boundary
+        discovery=None,  # noqa: ANN001 - a SharedDiscovery the connection tabs hand out
     ) -> None:
         super().__init__(parent)
-        self.service = ConsumerService(ip=ip, own_epr=own_epr, tls_config=tls_config)
+        self.service = ConsumerService(ip=ip, own_epr=own_epr, tls_config=tls_config, discovery=discovery)
         self.service.start()
 
         self.devices: list[DiscoveredDevice] = []

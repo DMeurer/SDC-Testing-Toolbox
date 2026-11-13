@@ -1176,6 +1176,86 @@ class RemoteDevice:
             logger.exception("error while closing consumer for %s", self.epr)
 
 
+class SharedDiscovery:
+    """One WS-Discovery for every ConsumerService on an interface.
+
+    Each connection tab used to run its own: every tab parsed all discovery traffic, and a new
+    tab listed nothing until every provider had answered its own probe. The first consumer to
+    start starts it, and the last one to stop stops it.
+    """
+
+    def __init__(self, ip: str = constants.DEFAULT_IP) -> None:
+        self.ip = ip
+        # Guards the consumers and both maps. The maps are written from sdc11073's networking
+        # thread and read from whichever thread asks for known_devices().
+        self.lock = threading.Lock()
+        self._consumers: list[ConsumerService] = []
+        self._discovery: RangeWSDiscovery | None = None
+        # When each provider was last heard from, by EPR.
+        self.last_seen: dict[str, float] = {}
+        # The newest announcement of each provider, by EPR. WSDiscovery keeps its first entry
+        # for an EPR that repeats its metadata version, so a provider that restarted on another
+        # port without a Bye would stay listed at the address it left.
+        self.announced: dict[str, Any] = {}
+
+    def attach(self, consumer: ConsumerService) -> RangeWSDiscovery:
+        with self.lock:
+            if self._discovery is None:
+                discovery = RangeWSDiscovery(self.ip)
+                try:
+                    discovery.start()
+                except Exception:
+                    try:
+                        discovery.stop()
+                    except Exception:
+                        logger.exception("error while rolling back consumer discovery startup")
+                    raise
+                # Passive discovery: providers announce themselves with Hello on start and Bye on
+                # a clean shutdown. Probe and resolve answers count as "heard from" as well.
+                types = SdcV1Definitions.MedicalDeviceTypesFilter
+                discovery.set_remote_service_hello_callback(lambda _addr, service: self._heard(service), types=types)
+                discovery.set_on_probe_matches_callback(lambda services: self._heard(*services))
+                discovery.set_remote_service_resolve_match_callback(lambda service: self._heard(service))
+                discovery.set_remote_service_bye_callback(lambda _addr, epr: self._gone(epr))
+                self._discovery = discovery
+                logger.info("discovery up on %s", self.ip)
+            self._consumers.append(consumer)
+            return self._discovery
+
+    def detach(self, consumer: ConsumerService) -> None:
+        with self.lock:
+            if consumer in self._consumers:
+                self._consumers.remove(consumer)
+            if self._consumers or self._discovery is None:
+                return
+            discovery, self._discovery = self._discovery, None
+            self.last_seen.clear()
+            self.announced.clear()
+        # Outside the lock: stopping joins the networking thread, which may be waiting for it.
+        discovery.stop()
+
+    def _heard(self, *services: Any) -> None:
+        now = time.monotonic()
+        with self.lock:
+            for service in services:
+                if service.epr:
+                    self.last_seen[service.epr] = now
+                    if service.x_addrs:
+                        self.announced[service.epr] = service
+            consumers = list(self._consumers)
+        for consumer in consumers:
+            consumer._notify_listener()  # noqa: SLF001
+
+    def _gone(self, epr: str) -> None:
+        with self.lock:
+            self.last_seen.pop(epr, None)
+            self.announced.pop(epr, None)
+            consumers = list(self._consumers)
+        for consumer in consumers:
+            consumer._notify_departure(epr)  # noqa: SLF001
+            consumer._notify_listener()  # noqa: SLF001
+
+
 class ConsumerService:
     """Discovery plus connection management for the consumer side."""
 
@@ -1185,59 +1265,38 @@ class ConsumerService:
         *,
         own_epr: str | None = None,
         tls_config: TlsConfig | None = None,
+        discovery: SharedDiscovery | None = None,
     ) -> None:
         self.ip = ip
         self._own_epr = own_epr
         self.tls_config = tls_config
         self._tls_contexts = None
+        self._shared = discovery if discovery is not None else SharedDiscovery(ip)
         self._discovery: RangeWSDiscovery | None = None
-        # When each provider was last heard from, by EPR. Written from sdc11073's
-        # networking thread, read from whichever thread asks for known_devices().
-        self._last_seen: dict[str, float] = {}
-        self._last_seen_lock = threading.Lock()
-        # The newest announcement of each provider, by EPR (guarded by the same lock). WSDiscovery
-        # keeps its first entry for an EPR that repeats its metadata version, so a provider that
-        # restarted on another port without a Bye would stay listed at the address it left.
-        self._announced: dict[str, Any] = {}
         self._discovery_listener: Callable[[], None] | None = None
         self._departure_listener: Callable[[str], None] | None = None
 
     def start(self) -> None:
-        """Start WS-Discovery on the configured interface."""
+        """Start WS-Discovery on the configured interface, or join the one already running."""
         if self._discovery is not None:
             msg = "consumer service is already started"
             raise RuntimeError(msg)
         # The consumer hosts the HTTPS endpoint for provider event callbacks, so validate
         # its full mTLS identity before discovery starts as well.
         self._tls_contexts = self.tls_config.create_contexts() if self.tls_config is not None else None
-        self._discovery = RangeWSDiscovery(self.ip)
         try:
-            self._discovery.start()
+            self._discovery = self._shared.attach(self)
         except Exception:
-            try:
-                self.stop()
-            except Exception:
-                logger.exception("error while rolling back consumer discovery startup")
+            self._tls_contexts = None
             raise
-        # Passive discovery: providers announce themselves with Hello on start and Bye on
-        # a clean shutdown. Probe and resolve answers count as "heard from" as well.
-        types = SdcV1Definitions.MedicalDeviceTypesFilter
-        self._discovery.set_remote_service_hello_callback(lambda _addr, service: self._heard(service), types=types)
-        self._discovery.set_on_probe_matches_callback(lambda services: self._heard(*services))
-        self._discovery.set_remote_service_resolve_match_callback(lambda service: self._heard(service))
-        self._discovery.set_remote_service_bye_callback(lambda _addr, epr: self._gone(epr))
-        logger.info("discovery up on %s", self.ip)
 
     def stop(self) -> None:
-        """Stop WS-Discovery."""
+        """Leave WS-Discovery; the last consumer on the interface stops it."""
         discovery = self._discovery
         self._discovery = None
         self._tls_contexts = None
-        with self._last_seen_lock:
-            self._last_seen.clear()
-            self._announced.clear()
         if discovery is not None:
-            discovery.stop()
+            self._shared.detach(self)
 
     def set_discovery_listener(self, listener: Callable[[], None] | None) -> None:
         """Call `listener` whenever the set of known providers may have changed.
@@ -1247,16 +1306,6 @@ class ConsumerService:
         """
         self._discovery_listener = listener
 
-    def _heard(self, *services: Any) -> None:
-        now = time.monotonic()
-        with self._last_seen_lock:
-            for service in services:
-                if service.epr:
-                    self._last_seen[service.epr] = now
-                    if service.x_addrs:
-                        self._announced[service.epr] = service
-        self._notify_listener()
-
     def set_departure_listener(self, listener: Callable[[str], None] | None) -> None:
         """Call `listener(epr)` when a provider announces it is leaving (WS-Discovery Bye).
 
@@ -1264,17 +1313,13 @@ class ConsumerService:
         """
         self._departure_listener = listener
 
-    def _gone(self, epr: str) -> None:
-        with self._last_seen_lock:
-            self._last_seen.pop(epr, None)
-            self._announced.pop(epr, None)
+    def _notify_departure(self, epr: str) -> None:
         departure = self._departure_listener
         if departure is not None:
             try:
                 departure(epr)
             except Exception:  # noqa: BLE001 - a listener bug must not kill the networking thread
                 logger.exception("departure listener failed")
-        self._notify_listener()
 
     def _notify_listener(self) -> None:
         listener = self._discovery_listener
@@ -1305,13 +1350,16 @@ class ConsumerService:
         )
         if max_age is None:
             return devices
-        cutoff = time.monotonic() - max_age
-        with self._last_seen_lock:
-            return [device for device in devices if self._last_seen.get(device.epr, cutoff - 1) >= cutoff]
+        return self._heard_since(devices, time.monotonic() - max_age)
+
+    def _heard_since(self, devices: list[DiscoveredDevice], cutoff: float) -> list[DiscoveredDevice]:
+        with self._shared.lock:
+            last_seen = self._shared.last_seen
+            return [device for device in devices if last_seen.get(device.epr, cutoff - 1) >= cutoff]
 
     def _devices_from(self, services: Iterable[Any]) -> list[DiscoveredDevice]:
-        with self._last_seen_lock:
-            announced = dict(self._announced)
+        with self._shared.lock:
+            announced = dict(self._shared.announced)
         devices = []
         for cached in services:
             if self._own_epr is not None and cached.epr == self._own_epr:
@@ -1350,9 +1398,9 @@ class ConsumerService:
         # search_services() blocks for its whole timeout before returning anything. Instead,
         # send probes with a near-zero timeout and read the cache that ProbeMatches fill,
         # so a scan ends as soon as enough answers are in and a cancel takes effect at once.
-        # Forget earlier results first, so providers that left without a Bye drop off.
+        # Only providers heard during this scan count, so those that left without a Bye drop
+        # off; clearing the cache instead would empty every other tab sharing it.
         types = SdcV1Definitions.MedicalDeviceTypesFilter
-        self._discovery.clear_remote_services()
         start = time.monotonic()
         deadline = start + timeout
         next_probe = start
@@ -1362,7 +1410,7 @@ class ConsumerService:
             if now >= next_probe:
                 self._discovery.search_services(types=types, timeout=PROBE_SEND_SECONDS)
                 next_probe = now + PROBE_REPEAT_SECONDS
-            found = self._devices_from(self._discovery.search_services(types=types, timeout=0))
+            found = self._heard_since(self._devices_from(self._discovery.search_services(types=types, timeout=0)), start)
             if len(found) >= expected or now >= deadline:
                 break
             if cancel_event is None:

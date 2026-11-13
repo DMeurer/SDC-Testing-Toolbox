@@ -10,6 +10,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from decimal import Decimal
 from pathlib import Path
@@ -228,6 +229,64 @@ class ScalingTests(unittest.TestCase):
             before = {h: service.get_samples(h) for h in waves}
             self.assertEqual(entity_copies(service._sample_generator.publish_once), 0)  # noqa: SLF001
             self.assertTrue(all(service.get_samples(h) != before[h] for h in waves), "new blocks were published")
+
+    def test_consumers_on_one_interface_share_a_single_discovery(self) -> None:
+        # One discovery per connection tab: each tab parsed all traffic, and a new tab
+        # listed nothing until hundreds of providers had answered its own probe.
+        from service_lifecycle import AnnouncingDiscovery
+        from sdc11073.wsdiscovery.service import Service
+
+        from sdctoolbox import consumer_service as consumer_module
+
+        built = []
+        shared = consumer_module.SharedDiscovery("127.0.0.1")
+        first = consumer_module.ConsumerService(discovery=shared)
+        second = consumer_module.ConsumerService(discovery=shared)
+        with patch.object(consumer_module, "RangeWSDiscovery", lambda _ip: built.append(AnnouncingDiscovery()) or built[-1]):
+            first.start()
+            built[0].receive("hello", Service(None, None, ["http://127.0.0.1:21080/a"], "urn:a", 1))
+            heard = []
+            second.set_discovery_listener(lambda: heard.append(1))
+            second.start()
+        self.assertEqual(len(built), 1, "one discovery for both consumers")
+        self.assertEqual([d.epr for d in second.known_devices()], ["urn:a"], "a new consumer lists known devices at once")
+        built[0].receive("hello", Service(None, None, ["http://127.0.0.1:21081/b"], "urn:b", 1))
+        self.assertTrue(heard, "every consumer hears new traffic")
+        time.sleep(0.05)  # past the ~16 ms tick of the monotonic clock on Windows
+        self.assertEqual(len(first.scan(timeout=0, expected=99)), 0, "a scan reports only providers that answered it")
+        self.assertEqual(len(second.known_devices()), 2, "a scan in one tab does not empty the others")
+        first.stop()
+        self.assertEqual(built[0].stop_count, 0, "the remaining consumer keeps discovery running")
+        self.assertEqual(len(second.known_devices()), 2)
+        second.stop()
+        self.assertEqual(built[0].stop_count, 1, "the last consumer stops it")
+
+    def test_connection_tabs_share_their_discovery(self) -> None:
+        from sdctoolbox.gui import consumer_pane as cp
+        from consumer_lifecycle import FakeConsumerService
+
+        received = []
+
+        class Observed(FakeConsumerService):
+            def __init__(self, **kwargs) -> None:  # noqa: ANN003
+                super().__init__(**kwargs)
+                received.append(kwargs.get("discovery"))
+
+        app = QApplication.instance() or QApplication([])
+        with ProviderService(ip="127.0.0.1", instance_name="scaling-tabs") as provider, \
+             patch.object(cp, "ConsumerService", Observed):
+            window = MainWindow(provider)
+            try:
+                window.network_tabs.add_connection()
+                window.network_tabs.add_connection()
+                self.assertEqual(len(received), 3)
+                self.assertIsNotNone(received[0])
+                self.assertTrue(all(d is received[0] for d in received), "every tab uses the same discovery")
+            finally:
+                window.close()
+                window.provider_pane.bridge.close()
+                window.deleteLater()
+                app.processEvents()
 
 
 if __name__ == "__main__":
