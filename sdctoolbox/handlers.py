@@ -84,6 +84,32 @@ def reporting_refusals(
     return wrapped
 
 
+# What a SubscriptionEnd ends with when the subscriber is gone: its host does not answer, or drops the connection.
+_SUBSCRIBER_GONE = ("TimeoutError", "ServerDisconnectedError", "ClientOSError", "ConnectionResetError")
+
+
+class UnansweredSubscriptionEndFilter(logging.Filter):
+    """Note an undeliverable SubscriptionEnd in one info line instead of an error with a traceback.
+
+    A stopping provider says goodbye to every subscriber, best effort. sdc11073 3.0.0 already
+    logs a refused connection as info, but a timed-out or dropped one falls into its catch-all
+    and is logged as an error, although the subscription is closed either way.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.ERROR:
+            text = record.getMessage().strip()
+            last = text.splitlines()[-1] if text else ""
+            if "async_send_notification_end_message" in text and last.split(":")[0].endswith(_SUBSCRIBER_GONE):
+                record.levelno, record.levelname = logging.INFO, "INFO"
+                record.msg, record.args = f"could not send subscription end, the subscriber did not answer ({last})", ()
+        return True
+
+
+# shortcut: matched on sdc11073 3.0.0's traceback text; tests/provider_core.py says when an upgrade changes it.
+logging.getLogger("sdc.device.subscrMgr").addFilter(UnansweredSubscriptionEndFilter())
+
+
 class QuietSubscriptionsManager(SubscriptionsManagerPathAsync):
     """Skip reports nobody subscribed to.
 

@@ -31,6 +31,7 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.parse import urlparse
 
 from lxml import etree
 
@@ -4084,6 +4085,53 @@ def check_missing_single_states(report: Report) -> None:
     )
 
 
+def check_unreachable_subscriber_at_shutdown(report: Report) -> None:
+    """Stopping while a subscriber's host is gone is expected, not an error.
+
+    The provider says goodbye with a SubscriptionEnd. When nothing answers the subscriber's
+    address the connect times out, which sdc11073 logged as an error with a traceback.
+    """
+    print("\n13. A subscriber that is gone when the provider stops")
+
+    class Collector(logging.Handler):
+        def __init__(self) -> None:
+            super().__init__(logging.DEBUG)
+            self.records: list[logging.LogRecord] = []
+
+        def emit(self, record: logging.LogRecord) -> None:
+            self.records.append(record)
+
+    collector = Collector()
+    subscription_log = logging.getLogger("sdc.device.subscrMgr")
+    previous_level = subscription_log.level
+    subscription_log.setLevel(logging.INFO)
+    subscription_log.addHandler(collector)
+    service = ProviderService(instance_name="provider-core-gone-subscriber")
+    service.start()
+    consumer = SdcConsumer(provider_address=service._provider.get_xaddrs()[0],  # noqa: SLF001 - loopback fixture
+                           sdc_definitions=SdcV1Definitions, ssl_context_container=None)
+    try:
+        consumer.start_all()
+        # The subscriber's host went away: nothing answers this non-routable address, so the connect hangs.
+        gone = urlparse("http://10.255.255.1:9/gone")
+        for manager in service._provider._subscriptions_managers.values():  # noqa: SLF001
+            for subscription in manager._subscriptions.objects:  # noqa: SLF001
+                subscription.notify_to_url = subscription._end_to_url = gone  # noqa: SLF001
+        service.stop()
+    finally:
+        consumer.stop_all(unsubscribe=False)
+        service.stop()
+        subscription_log.removeHandler(collector)
+        subscription_log.setLevel(previous_level)
+
+    errors = [record.getMessage().strip().splitlines()[-1] for record in collector.records if record.levelno >= logging.ERROR]
+    report.check(not errors, "a SubscriptionEnd nobody receives is not logged as an error", str(errors)[:70])
+    report.check(
+        any("did not answer" in record.getMessage() for record in collector.records if record.levelno == logging.INFO),
+        "it is noted in one info line instead",
+    )
+
+
 def main() -> int:
     basic_logging_setup(level=logging.ERROR)
     report = Report()
@@ -4125,6 +4173,7 @@ def main() -> int:
         check_missing_single_states(report)
     finally:
         service.stop()
+    check_unreachable_subscriber_at_shutdown(report)
 
     print()
     return report.summary()
