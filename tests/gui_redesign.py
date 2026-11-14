@@ -107,6 +107,22 @@ class TokenTests(unittest.TestCase):
         self.assertEqual(grab_pixel(button, 6, 15).name(), token("accent").name())
         button.close()
 
+    def test_cards_sit_on_the_inset_board_as_surfaces(self) -> None:
+        from sdctoolbox.gui.widgets import WidgetBoard
+        from sdctoolbox.gui.widgets.base import WidgetSpec
+        for dark in (False, True):
+            set_dark_mode(dark)
+            board = WidgetBoard()
+            board.resize(400, 300)
+            board.set_metrics([WidgetSpec("m", "M", MetricKind.TEXT)])
+            board.show()
+            self.app.processEvents()
+            card = board.card("m")
+            self.assertEqual(grab_pixel(card, card.width() // 2, card.height() - 4).name(), token("bg/surface").name())
+            self.assertEqual(grab_pixel(board.viewport(), board.viewport().width() - 3, board.viewport().height() - 3).name(),
+                             token("bg/inset").name())
+            board.close()
+
     def test_status_bar_is_design_coloured(self) -> None:
         apply_theme_style()
         bar = QStatusBar()
@@ -287,6 +303,24 @@ class NetworkTests(unittest.TestCase):
         pane.set_device_tabs({"urn:uuid:b": 2})
         self.assertIsNone(pane.device_list.item(0).data(DEVICE_TAB_ROLE))
         self.assertEqual(pane.device_list.item(1).data(DEVICE_TAB_ROLE), 2)
+
+    def test_active_network_alarms_read_bold_red(self) -> None:
+        from types import SimpleNamespace
+
+        from sdctoolbox.gui.consumer_pane import ACOL_STATE as STATE
+        pane = self.tabs.current_pane
+        alert = SimpleNamespace(label="High", source_handles=("m",), limit_text=lambda: "", kind="Phy",
+                                priority="Hi", signals={}, present=True)
+        pane.remote = SimpleNamespace(alerts=lambda: {"al.high": alert})
+        try:
+            pane._rebuild_alerts()
+            item = pane.alert_table.item(0, STATE)
+            self.assertEqual(item.text(), "active")
+            self.assertEqual(item.foreground().color().name(), token("text/error").name())
+            self.assertTrue(item.font().bold())
+            self.assertEqual(pane.alarms_section.chip_texts(), ["1", "1 active"])
+        finally:
+            pane.remote = None
 
     def test_connect_from_a_connected_tab_opens_a_new_tab(self) -> None:
         from unittest.mock import patch

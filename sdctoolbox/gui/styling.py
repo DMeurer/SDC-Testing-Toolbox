@@ -84,6 +84,9 @@ def theme_style_sheet(dark: bool) -> str:  # noqa: FBT001
         f'*[kind="design-outline"]:checked {{ background: {t["accent"]}; color: {t["text/on-accent"]}; }}',
         f'*[kind]:disabled {{ background: transparent; border: 1px solid {t["border/default"]};'
         f' color: {t["text/disabled"]}; }}',
+        f'QFrame[role="card"] {{ background: {t["bg/surface"]}; border: 1px solid {t["border/strong"]};'
+        " border-radius: 6px; }",
+        f'QWidget#cardBoard {{ background: {t["bg/inset"]}; }}',
         f'QStatusBar {{ background: {t["accent"]}; color: {t["text/on-accent"]}; }}',
         f'QStatusBar QLabel {{ color: {t["text/on-accent"]}; }}',
         "QTabBar::tab { padding: 6px 18px; border: none; border-top: 2px solid transparent;"

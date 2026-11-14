@@ -71,7 +71,7 @@ class MetricCard(QFrame):
         super().__init__(parent)
         self.spec = spec
         self.settings = settings or CardSettings()
-        self.setFrameShape(QFrame.StyledPanel)
+        self.setProperty("role", "card")
 
         self.heading = QLabel(spec.caption)
         constrain_dynamic_label(self.heading, max_lines=2)
@@ -159,6 +159,7 @@ class WidgetBoard(QScrollArea):
         self.setFrameShape(QFrame.NoFrame)
 
         self._canvas = QWidget()
+        self._canvas.setObjectName("cardBoard")
         self._grid = QGridLayout(self._canvas)
         self._grid.setContentsMargins(4, 4, 4, 4)
         self._grid.setSpacing(8)

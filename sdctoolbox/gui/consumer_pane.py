@@ -884,6 +884,7 @@ class ConsumerPane(QWidget):
         if metrics is None:
             metrics = self.remote.metrics()
         self.board.set_metrics([from_remote_metric(metric) for _, metric in sorted(metrics.items())])
+        self.metrics_section.set_chips([str(len(metrics))])
         self.board.show_values({handle: _displayable(metric) for handle, metric in metrics.items()})
 
     def _on_widget_value_requested(self, handle: str, value: object) -> None:
@@ -974,6 +975,8 @@ class ConsumerPane(QWidget):
         """Show the peer's alarms, including how each one is announced."""
         alerts = {} if self.remote is None else self.remote.alerts()
         self.alert_table.setRowCount(len(alerts))
+        active = sum(bool(alert.present) for alert in alerts.values())
+        self.alarms_section.set_chips([str(len(alerts)), f"{active} active" if active else "none active"])
         for row, (handle, alert) in enumerate(sorted(alerts.items())):
             cells = {
                 ACOL_HANDLE: handle,
@@ -984,12 +987,17 @@ class ConsumerPane(QWidget):
                 ACOL_PRIORITY: alert.priority or "",
                 # One condition, several signals: the reason BICEPS keeps them apart.
                 ACOL_SIGNALS: ", ".join(sorted(alert.signals.values())),
-                ACOL_STATE: "PRESENT" if alert.present else "clear",
+                ACOL_STATE: "active" if alert.present else "clear",
             }
             for column, text in cells.items():
                 item = QTableWidgetItem(text)
                 if column == ACOL_STATE and not alert.present:
                     item.setForeground(muted_colour(self))
+                if column == ACOL_STATE and alert.present:
+                    item.setForeground(token("text/error"))
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
                 if column == ACOL_SIGNALS and alert.signals:
                     item.setToolTip("\n".join(f"{h}: {m}" for h, m in sorted(alert.signals.items())))
                 self.alert_table.setItem(row, column, item)
