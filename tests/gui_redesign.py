@@ -16,10 +16,11 @@ from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QStatusBar, QVBoxLayout, QWidget
 
 from gui_test_support import WindowFixture, pump, wait_for
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 
 from sdctoolbox.gui.collapsible import CollapsibleSection
+from sdctoolbox.gui.consumer_pane import ConsumerPane
 from sdctoolbox.gui.icons import app_icon
 from sdctoolbox.gui.provider_pane import ACOL_SIGNALS, ACOL_STATE
 from sdctoolbox.model import AlertSpec, MetricKind, MetricSpec
@@ -247,6 +248,36 @@ class MyDeviceTests(unittest.TestCase):
             pump(fixture.app)
             cell = pane.alert_table.visualRect(pane.alert_table.model().index(0, ACOL_SIGNALS))
             self.assertTrue(has_colour(pane.alert_table.viewport().grab(cell).toImage(), red))
+
+
+class NetworkWindowTests(unittest.TestCase):
+    def test_network_actions_row_has_no_box_of_its_own(self) -> None:
+        class Remote:
+            def actions(self):  # noqa: ANN202 - test double
+                return {"a": type("A", (), {"caption": "Go", "enabled": True})()}
+
+            def close(self) -> None:
+                pass
+
+        with WindowFixture("redesign-actions") as fixture:
+            window = fixture.window
+            set_dark_mode(True)
+            try:
+                window.tabs.setCurrentIndex(1)
+                pane = window.findChild(ConsumerPane)
+                pane.remote = Remote()
+                pane.refresh_actions()
+                pane.connection_widget.setVisible(True)
+                pump(fixture.app, 0.2)
+                shot = window.grab().toImage()
+                status = pane.status_label
+                page = shot.pixelColor(status.mapTo(window, QPoint(status.width() - 4, 2))).name()
+                for part in (pane.actions_widget, pane.actions_content):  # area and the row in it
+                    inside = part.mapTo(window, QPoint(part.width() - 2, 2))
+                    self.assertEqual(shot.pixelColor(inside).name(), page, part)
+            finally:
+                set_dark_mode(False)
+                apply_theme_style()
 
 
 class NetworkTests(unittest.TestCase):

@@ -22,6 +22,7 @@ from PySide6.QtGui import QFontMetrics, QPainter
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -277,6 +278,10 @@ class ConsumerPane(QWidget):
         self.actions_widget = QScrollArea()
         self.actions_widget.setWidget(self.actions_content)
         self.actions_widget.setWidgetResizable(False)
+        # Part of the page, not a box on it: no frame, no fill of its own.
+        self.actions_widget.setFrameShape(QFrame.NoFrame)
+        self.actions_widget.viewport().setAutoFillBackground(False)
+        self.actions_content.setAutoFillBackground(False)  # setWidget() switched it on
         self.actions_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.actions_widget.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.actions_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
