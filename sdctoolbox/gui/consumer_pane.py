@@ -378,6 +378,8 @@ class ConsumerPane(QWidget):
         for widget in (self.tree, self.board, self.device_list, self.editor_stack):
             widget.setMinimumWidth(MIN_CHILD_WIDTH)
         self.setMinimumWidth(MIN_PANEL_WIDTH)
+        # Shown above the tabs, outside this pane, so it needs the same floor of its own.
+        self.discovery_section.setMinimumWidth(MIN_PANEL_WIDTH)
 
         # Everything about one connection, hidden while there is none.
         self.connection_widget = QWidget()

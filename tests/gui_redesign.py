@@ -281,6 +281,10 @@ class NetworkTests(unittest.TestCase):
         self.assertFalse(pane.alarms_section.expanded or pane.structure_section.expanded)
         self.assertEqual(pane.structure_section.hint.text(), "Descriptor tree with handles")
 
+    def test_discovery_does_not_force_the_network_panel_wide(self) -> None:
+        from sdctoolbox.gui.consumer_pane import MIN_PANEL_WIDTH
+        self.assertLessEqual(self.view.minimumSizeHint().width(), MIN_PANEL_WIDTH + 20)  # plus frames
+
     def test_discovery_row_order_and_kinds(self) -> None:
         pane = self.tabs.current_pane
         row = pane.discovery_row
