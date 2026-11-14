@@ -37,6 +37,8 @@ def kind_section(title: str, kind: str, note: str = "") -> tuple[QFrame, QFormLa
     layout.addLayout(heading)
     form = QFormLayout()
     layout.addLayout(form)
+    # Spare height (rows hidden after the dialog was sized) goes below the form, not into the heading.
+    layout.addStretch(1)
     return frame, form
 
 

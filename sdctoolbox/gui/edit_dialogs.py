@@ -82,6 +82,8 @@ class _EditDialog(QDialog):
         self.buttons.rejected.connect(self.reject)
         self._layout = QVBoxLayout(self)
         self._layout.setSpacing(12)
+        # Spare height collects here, so no section's bar runs past its last option.
+        self._layout.addStretch(1)
         self._layout.addWidget(self.error_label)
         self._layout.addWidget(self.buttons)
 

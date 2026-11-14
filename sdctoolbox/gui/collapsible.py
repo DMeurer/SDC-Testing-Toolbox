@@ -20,6 +20,8 @@ def chip(text: str, role: str = "chip") -> QLabel:
     """A small pill label; the role picks its colours from the theme style sheet."""
     label = QLabel(text)
     label.setProperty("role", role)
+    # A pill is one line high whatever room its row has.
+    label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
     return label
 
 

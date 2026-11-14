@@ -441,13 +441,17 @@ class CardSettingsEditor(QWidget):
 
     def _show_page(self) -> None:
         chosen = self._options[self.type_box.currentIndex()]
+        rows = []
         for control, widgets in self._pages.items():
             for widget in widgets:
                 visible = control is chosen
                 if widget in (self.split_box, self.split_note):
                     # Splitting only means something when the value can be set from here.
                     visible = visible and self.spec.editable
-                self.form.setRowVisible(widget, visible)
+                rows.append((widget, visible))
+        # Hide before showing, or the window grows for a moment to hold both pages.
+        for widget, visible in sorted(rows, key=lambda row: row[1]):
+            self.form.setRowVisible(widget, visible)
         others = [card_caption(control, self.spec) for control in self._options if control is not chosen]
         self.others.setText(f"Also available: {', '.join(others)}" if others else "No other card type fits")
 

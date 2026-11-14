@@ -454,6 +454,34 @@ class DialogTests(unittest.TestCase):
         for dialog_ in (dialog, new):
             dialog_.deleteLater()
 
+    def test_kind_chips_keep_their_size_when_the_card_type_changes(self) -> None:
+        from types import SimpleNamespace
+
+        from sdctoolbox.gui.edit_dialogs import EditSourceDialog
+        from sdctoolbox.gui.widgets.base import CardSettings, from_spec
+        metric = MetricSpec(label="Rate", kind=MetricKind.NUMBER, minimum=Decimal(0), maximum=Decimal(100))
+        service = SimpleNamespace(list_metrics=lambda: {"m.rate": metric}, operation_handle_for=lambda _h: "op")
+        dialog = EditSourceDialog(service, "m.rate",
+                                  card=(from_spec("m.rate", metric, editable=True), CardSettings()))
+        dialog.show()
+        self.app.processEvents()
+
+        def chip_heights() -> list[int]:
+            return [label.height() for label in dialog.findChildren(QLabel)
+                    if str(label.property("role")).startswith("chip-")]
+        before = chip_heights()
+        self.assertEqual(len(before), 4)
+        for index in range(dialog.card_editor.type_box.count()):
+            dialog.card_editor.type_box.setCurrentIndex(index)
+            pump(self.app, 0.1)
+            self.assertEqual(chip_heights(), before, dialog.card_editor.type_box.currentText())
+            # Every bar ends at its section's last option: spare height goes below the sections.
+            for frame in dialog.findChildren(QWidget):
+                if str(frame.property("role")).startswith("sect-") and frame.isVisible():
+                    self.assertLessEqual(frame.height(), frame.sizeHint().height() + 2,
+                                         dialog.card_editor.type_box.currentText())
+        dialog.close()
+
     def test_patient_and_location_buttons(self) -> None:
         from sdctoolbox.gui.context_dialog import ContextDialog
         from sdctoolbox.model import LocationInfo, PatientInfo
