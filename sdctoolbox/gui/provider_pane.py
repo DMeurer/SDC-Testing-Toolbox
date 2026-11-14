@@ -14,7 +14,7 @@ from decimal import Decimal
 from html import escape
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QSignalBlocker, Qt, QTimer
+from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -36,6 +36,7 @@ from lxml import etree
 
 from ..model import MetricKind
 from ..mdib_io import live_entities, mdib_bytes
+from .activity_log import MdibActivity, activity_log
 from .collapsible import CollapsibleSection
 from .context_dialog import ContextDialog
 from .decimal_input import DecimalInputError, parse_decimal_input
@@ -46,6 +47,7 @@ from .helpers import (
     selected_table_value,
     value_text,
 )
+from .new_action_dialog import NewActionDialog
 from .new_alert_dialog import NewAlertDialog
 from .new_metric_dialog import NewMetricDialog
 from .no_wheel import NoWheelComboBox
@@ -66,6 +68,9 @@ from .widgets.controls import show_choice_value
 
 if TYPE_CHECKING:
     from ..provider_service import ProviderService
+
+# How the activity log names this instance's own device; matches the tab title.
+OWN_DEVICE = "My device"
 
 COLUMNS = ["Handle", "Label", "Kind", "Value", "Range", "Unit", "Remote control"]
 COL_HANDLE, COL_LABEL, COL_KIND, COL_VALUE, COL_RANGE, COL_UNIT, COL_CONTROL = range(len(COLUMNS))
@@ -104,6 +109,9 @@ ALERT_DESCRIPTOR_TYPES = frozenset(
 class ProviderPane(QWidget):
     """Everything the user does to the device they are publishing."""
 
+    # A remote consumer's write or action, reported on the SCO thread and queued to the GUI thread.
+    _remote_control = Signal(str)
+
     def __init__(self, service: ProviderService, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.service = service
@@ -128,6 +136,9 @@ class ProviderPane(QWidget):
         # Waveforms travel as a WaveformStream, not an EpisodicMetricReport, so they
         # never reach metrics_changed.
         self.bridge.waveforms_changed.connect(self._on_waveforms_changed)
+        self._activity = MdibActivity(self.bridge, service.mdib, OWN_DEVICE, structure=False)
+        self._remote_control.connect(self._log_remote_control)
+        service.on_remote_control = self._remote_control.emit
 
         self.refresh()
         self.refresh_alerts()
@@ -198,6 +209,10 @@ class ProviderPane(QWidget):
         self.actions_row = QHBoxLayout()
         self.actions_label = QLabel("Actions")
         self.actions_row.addWidget(self.actions_label)
+        self.new_action_button = QPushButton("New action…")
+        set_button_kind(self.new_action_button, "highlight")
+        self.new_action_button.clicked.connect(self._on_new_action)
+        self.actions_row.addWidget(self.new_action_button)
         self.actions_row.addStretch(1)
         self.action_buttons: dict[str, QPushButton] = {}
         self.actions_widget = QWidget()
@@ -861,8 +876,32 @@ class ProviderPane(QWidget):
             button.setEnabled(self._operation_enabled(handle))
             button.setToolTip(f"{spec.note}\n{handle}: {spec.summary()}".strip())
 
-        # A device with no actions should not show an empty toolbar saying "Actions".
-        self.actions_widget.setVisible(bool(specs))
+    def _on_new_action(self) -> None:
+        metrics = self.service.list_metrics()
+        if not metrics:
+            QMessageBox.information(self, "Nothing to act on", "Create a data source first. An action acts on one.")
+            return
+        dialog = NewActionDialog(metrics, self)
+        if dialog.exec() != NewActionDialog.Accepted or dialog.spec() is None:
+            return
+        try:
+            self.service.add_action(dialog.spec())
+        except (KeyError, ValueError, TypeError) as exc:
+            QMessageBox.warning(self, "Could not create action", str(exc))
+            return
+        self.refresh_actions()
+
+    def _log_remote_control(self, handle: str) -> None:
+        action = self.service.list_actions().get(handle)
+        if action is not None:
+            activity_log().add(OWN_DEVICE, f"Action run by a consumer: {action.label} ({handle})")
+            return
+        spec = self.service.list_metrics().get(handle)
+        if spec is None:
+            return
+        name = f"{spec.label} ({handle})" if spec.label else handle
+        value = value_text(self._displayable(handle, spec))
+        activity_log().add(OWN_DEVICE, f"Remote control by a consumer: {name} is now {value}")
 
     def _on_run_action(self, handle: str) -> None:
         try:

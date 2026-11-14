@@ -907,6 +907,7 @@ class RemoteDevice:
         with self._lock, self._mdib.mdib_lock:
             entities = live_entities(self._mdib)
             signals_by_condition: dict[str, dict[str, str]] = {}
+            presences_by_condition: dict[str, dict[str, str]] = {}
             for entity in entities:
                 handle = entity.handle
                 if getattr(entity, "node_type", None) != pm.AlertSignalDescriptor:
@@ -916,9 +917,13 @@ class RemoteDevice:
                 if not condition:
                     continue
                 manifestation = getattr(descriptor, "Manifestation", None)
-                signals_by_condition.setdefault(condition, {})[handle] = (
-                    getattr(manifestation, "value", None) or str(manifestation)
-                )
+                kind = getattr(manifestation, "value", None) or str(manifestation)
+                signals_by_condition.setdefault(condition, {})[handle] = kind
+                presence = getattr(getattr(entity, "state", None), "Presence", None)
+                presences = presences_by_condition.setdefault(condition, {})
+                # Several signals of one manifestation: show it raised if any of them is.
+                if presence is not None and presences.get(kind) not in ("On", "Latch"):
+                    presences[kind] = getattr(presence, "value", None) or str(presence)
 
             result: dict[str, RemoteAlert] = {}
             for entity in entities:
@@ -957,6 +962,7 @@ class RemoteDevice:
                     max_lower_limit=max_lower,
                     max_upper_limit=max_upper,
                     signals=signals_by_condition.get(handle, {}),
+                    signal_presences=presences_by_condition.get(handle, {}),
                 )
             return result
 

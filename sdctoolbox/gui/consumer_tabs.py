@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from html import escape
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QFontMetrics
 from PySide6.QtWidgets import QMessageBox, QTabBar, QTabWidget, QVBoxLayout, QWidget
 
@@ -23,6 +23,9 @@ logger = logging.getLogger("sdctoolbox.gui.consumer_tabs")
 
 class ConsumerTabs(QTabWidget):
     """One existing ConsumerPane owns each connection, its work and its retirement."""
+
+    # A write's progress or result in any tab, for the status bar.
+    message = Signal(str)
 
     def __init__(self, ip: str, parent: QWidget | None = None, *, own_epr=None, tls_config=None) -> None:
         super().__init__(parent)
@@ -69,6 +72,7 @@ class ConsumerTabs(QTabWidget):
             pane.set_use_widgets(self._use_widgets)
             pane.setProperty("connectionNumber", self._next_number)
             pane.status_changed.connect(self._on_status_changed)
+            pane.invocation_changed.connect(self.message)
             pane.connect_elsewhere.connect(self._connect_in_new_tab)
             index = self.addTab(pane, "")
             self._update_title(pane, pane.status_label.text())

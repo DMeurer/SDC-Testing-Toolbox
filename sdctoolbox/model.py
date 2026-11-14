@@ -1353,6 +1353,8 @@ class RemoteAlert:
     # the current limits above. Appended to preserve positional snapshot construction.
     max_lower_limit: Decimal | None = None
     max_upper_limit: Decimal | None = None
+    # Manifestation -> AlertSignalState/@Presence, for the Signals icons.
+    signal_presences: dict[str, str] = field(default_factory=dict)
 
     def limit_text(self) -> str:
         """The monitored limits, or an empty string when there are none."""

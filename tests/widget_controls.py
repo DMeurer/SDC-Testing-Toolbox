@@ -50,10 +50,11 @@ from sdctoolbox.gui.widgets.controls import (  # noqa: E402
     StepperWidget,
     TextWidget,
 )
-from sdctoolbox.gui.widgets.factory import CONTROLS, pick_control  # noqa: E402
+from sdctoolbox.gui.widgets.factory import CONTROLS, chosen_control, matching_controls, pick_control  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
     ActionSpec,
     AlertSpec,
+    CardSettings,
     DistributionShape,
     MetricKind,
     MetricSpec,
@@ -348,6 +349,15 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         got = pick_control(spec)
         report.check(got is expected, description, got.__name__)
 
+    waveform = WidgetSpec("m.w", "ECG", MetricKind.WAVEFORM)
+    report.check(
+        matching_controls(waveform) == [SampleArrayWidget],
+        "a waveform card offers only the plot, not Value only",
+    )
+    report.check(
+        chosen_control(waveform, CardSettings(control="ReadoutWidget")) is SampleArrayWidget,
+        "a saved Value only card for a waveform falls back to the plot",
+    )
     report.check(
         CONTROLS[-1] is ReadoutWidget,
         "the catch-all is asked last, so nothing is ever dropped",

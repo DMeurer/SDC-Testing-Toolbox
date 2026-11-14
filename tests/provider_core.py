@@ -3718,7 +3718,7 @@ def check_foreign_consumer_operations(report: Report) -> None:
         "signal.equal": SimpleNamespace(
             node_type=copied_qname(pm.AlertSignalDescriptor),
             descriptor=SimpleNamespace(ConditionSignaled=condition, Manifestation=pm_types.AlertSignalManifestation.VIS),
-            state=SimpleNamespace(),
+            state=SimpleNamespace(Presence=pm_types.AlertSignalPresence.LATCH),
         ),
         "signal.wrong": SimpleNamespace(
             node_type=copied_qname(pm.AlertSignalDescriptor, "urn:not-biceps"),
@@ -3732,6 +3732,7 @@ def check_foreign_consumer_operations(report: Report) -> None:
         set(alerts) == {condition, limit_condition}
         and alerts[condition].priority == pm_types.AlertConditionPriority.HIGH.value
         and alerts[condition].signals == {"signal.equal": pm_types.AlertSignalManifestation.VIS.value}
+        and alerts[condition].signal_presences == {"Vis": "Latch"}
         and alerts[limit_condition].source_handles == ("metric.source",)
         and (alerts[limit_condition].lower_limit, alerts[limit_condition].upper_limit)
         == (Decimal("10"), Decimal("20"))

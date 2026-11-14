@@ -67,7 +67,7 @@ from .sdc11073_v3_adapter import Sdc11073V3Adapter, Sdc11073V3Snapshot
 from .security import CertificateInfo, TlsConfig, VerifiedSoapClientAsync
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from sdc11073.provider.sco import AbstractScoOperationsRegistry
 
@@ -269,6 +269,9 @@ class ProviderService:
         self._alert_signals: dict[str, list[str]] = {}
         # action handle -> the spec it was created from
         self._actions: dict[str, ActionSpec] = {}
+        # Called on the SCO thread with the metric or action handle once a remote consumer's
+        # write or action has been committed.
+        self.on_remote_control: Callable[[str], None] | None = None
         # section name -> the Channel handle its metrics were put in
         self._sections: dict[str, str] = {}
         # Sources arriving during an alert evaluation are retained for its next pass. The
@@ -371,7 +374,7 @@ class ProviderService:
             )
             self._activate_handler = make_activate_handler(
                 self._mdib,
-                execute_effects=self._execute_action_effects,
+                execute_effects=self._execute_remote_action,
             )
 
             this_model = ThisModelType(
@@ -1552,8 +1555,17 @@ class ProviderService:
             logger.info("signal %s location simulation is now %s", signal_handle, location)
 
     def _on_metric_applied(self, metric_handle: str) -> None:
-        """A metric changed, by whatever route. Recompute the alarms watching it."""
+        """A remote consumer's write was committed. Recompute the alarms watching it."""
+        if self.on_remote_control is not None:
+            self.on_remote_control(metric_handle)
         self._evaluate_alerts({metric_handle})
+
+    def _execute_remote_action(self, operation_handle: str) -> tuple[mdibbase.MdibVersionGroup, Exception | None]:
+        """A remote consumer ran an action: the shared effects, then report it like a write."""
+        result = self._execute_action_effects(operation_handle)
+        if self.on_remote_control is not None:
+            self.on_remote_control(operation_handle)
+        return result
 
     def _evaluate_alerts(self, source_handles: set[str]) -> None:
         if not source_handles:

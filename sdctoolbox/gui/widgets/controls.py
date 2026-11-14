@@ -663,15 +663,16 @@ class ReadoutWidget(MetricWidget):
     """Just the value.
 
     The fallback, and the reason an unknown metric type still shows up rather than being
-    dropped: whatever it is, it has a value and that can be displayed.
+    dropped: whatever it is, it has a value and that can be displayed. Not offered for a
+    waveform, whose value is a moving block of samples that only a plot makes sense of.
     """
 
     priority = 1000
     caption = "Value only"
 
     @classmethod
-    def matches(cls, spec: WidgetSpec) -> bool:  # noqa: ARG003
-        return True
+    def matches(cls, spec: WidgetSpec) -> bool:
+        return spec.kind is not MetricKind.WAVEFORM
 
     def build(self) -> None:
         self.readout = QLabel(NO_VALUE)

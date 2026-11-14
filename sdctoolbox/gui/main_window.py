@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -27,12 +27,14 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from .. import config, ports
 from ..mdib_io import NativeMdibConfig
+from .activity_log import ActivityLogWindow
 from .consumer_pane import ConsumerPane
 from .consumer_tabs import ConsumerTabs
 from .menu_keys import BareAltTracker
@@ -144,7 +146,12 @@ class MainWindow(QMainWindow):
         self.set_split_view(enabled=False)
         self.set_use_widgets(enabled=True)
 
+        # A normal status-bar widget, not a message: a temporary message or a menu's status
+        # tip hides it only while it shows, where it would wipe a message for good.
+        self.status_hint = QLabel()
+        self.statusBar().addWidget(self.status_hint, 1)
         self._show_status_hint()
+        self.network_tabs.message.connect(lambda text: self.statusBar().showMessage(text, 8000))
 
         # Stays in the status bar: a firewall that blocks the toolbox is easy to miss otherwise.
         self.port_warning_label = QLabel()
@@ -152,6 +159,31 @@ class MainWindow(QMainWindow):
         self._port_warning.connect(self._show_port_warnings)
         self._show_port_warnings()
         self._unsubscribe_port_warnings = ports.subscribe_fallback_warnings(self._port_warning.emit)
+
+        # The activity log opens from the status bar: this button, or a double-click anywhere on it.
+        self.log_window: ActivityLogWindow | None = None
+        self.log_button = QToolButton()
+        self.log_button.setText("Activity log  ⤢")
+        self.log_button.setToolTip("Open the log of the last actions (or double-click the status bar)")
+        self.log_button.clicked.connect(self.show_activity_log)
+        self.statusBar().addPermanentWidget(self.log_button)
+        self.statusBar().installEventFilter(self)
+
+    def show_activity_log(self) -> ActivityLogWindow:
+        """Open the activity log beside this window, or bring it to the front."""
+        if self.log_window is None:
+            self.log_window = ActivityLogWindow(f"Activity log — {self.service.friendly_name}", self)
+        self.log_window.show()
+        self.log_window.raise_()
+        self.log_window.activateWindow()
+        return self.log_window
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802 - Qt naming
+        """A double-click on the status bar opens the activity log."""
+        if watched is self.statusBar() and event.type() == QEvent.MouseButtonDblClick:
+            self.show_activity_log()
+            return True
+        return super().eventFilter(watched, event)
 
     def _show_port_warnings(self, _message: str = "") -> None:
         warnings = ports.fallback_warnings()
@@ -492,7 +524,7 @@ class MainWindow(QMainWindow):
         message = f"Publishing on {self.service.ip}   \u00b7   {self.service.epr.urn}"
         if not self.always_show_menu:
             message += "   \u00b7   press Alt for the menu"
-        self.statusBar().showMessage(message)
+        self.status_hint.setText(message)
 
     def keyReleaseEvent(self, event) -> None:  # noqa: ANN001, N802 - Qt naming
         """Alt on its own reveals the menu bar; Escape puts it away."""
@@ -509,6 +541,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # noqa: ANN001, N802 - Qt naming
         """Drop the consumer's subscriptions and discovery socket on the way out."""
         self._unsubscribe_port_warnings()
+        self.service.on_remote_control = None
         self.provider_pane.bridge.close()
         self.network_tabs.shutdown()
         super().closeEvent(event)

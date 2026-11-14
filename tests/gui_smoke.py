@@ -280,9 +280,9 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         report.check(menu_bar.isVisible(), "the menu bar is on screen by default")
         report.check(window.always_show_menu, "because Always show menu bar starts on")
         report.check(
-            "Alt" not in window.statusBar().currentMessage(),
+            "Alt" not in window.status_hint.text(),
             "so the status bar does not mention Alt",
-            window.statusBar().currentMessage()[-40:],
+            window.status_hint.text()[-40:],
         )
         titles = [action.text() for action in menu_bar.actions()]
         report.check(titles == ["&File", "&View"], "File and View menus", str(titles))
@@ -322,7 +322,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         pump(app)
         report.check(not menu_bar.isVisible(), "unpinning hides it")
         report.check(
-            "Alt" in window.statusBar().currentMessage(),
+            "Alt" in window.status_hint.text(),
             "and the status bar says how to get it back",
         )
         window.toggle_menu_bar()

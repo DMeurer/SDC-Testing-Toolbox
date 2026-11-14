@@ -23,6 +23,7 @@ from sdctoolbox.gui.provider_pane import ACOL_HANDLE, COL_CONTROL, COL_HANDLE
 from decimal import Decimal
 
 from sdctoolbox.gui import provider_pane as provider_pane_module
+from sdctoolbox.gui.activity_log import activity_log
 from sdctoolbox.gui.edit_dialogs import EditAlertDialog, EditSourceDialog
 from sdctoolbox.model import ActionSpec, AlertPriority, AlertSpec, MetricKind, MetricSpec, WaveformShape
 
@@ -204,7 +205,11 @@ def main() -> int:
             and pane.metrics_section.expanded and not pane.alarms_section.expanded,
             "the provider pane contains metric and alarm sections, alarms folded",
         )
-        report.check(not pane.actions_widget.isVisible(), "an empty action toolbar stays hidden")
+        report.check(
+            pane.actions_widget.isVisible() and not pane.action_buttons
+            and pane.new_action_button.isVisible() and pane.new_action_button.property("kind") == "highlight",
+            "the action toolbar always offers a filled New action button",
+        )
         pane.alarms_section.set_expanded(True)
         report.check(
             pane.new_alert_button.isVisible()
@@ -261,19 +266,55 @@ def main() -> int:
             wait_for(app, lambda: pane.action_buttons[action].isEnabled()),
             "an activate-operation state change restores action availability",
         )
+        log_window = window.show_activity_log()
+        service._execute_remote_action(action)  # noqa: SLF001 - what the SCO handler runs for a consumer
+        report.check(
+            wait_for(app, lambda: activity_log().entries
+                     and activity_log().entries[-1].text == f"Action run by a consumer: Structural action ({action})"
+                     and log_window.tree.topLevelItemCount() == len(activity_log().entries)),
+            "an action a consumer runs shows in the provider's open activity log",
+        )
         service.remove_action(action)
         report.check(
             wait_for(
                 app,
-                lambda: action not in pane.action_buttons and not pane.actions_widget.isVisible(),
+                lambda: action not in pane.action_buttons and pane.new_action_button.isVisible(),
             ),
-            "removing the runtime action removes its button and hides the empty toolbar",
+            "removing the runtime action removes its button and keeps New action",
         )
 
         alert = service.add_alert(AlertSpec(label="Structural alarm", source_handle=metric))
         report.require(
             wait_for(app, lambda: row_for(pane.alert_table, alert, ACOL_HANDLE) is not None),
             "a runtime alarm appears in the alarm view",
+        )
+        hint = window.status_hint
+        window.statusBar().showMessage("Imported 1 data source(s)")
+        hidden_during_message = hint.isHidden()
+        window.statusBar().clearMessage()
+        report.check(
+            hidden_during_message and not hint.isHidden() and hint.text().startswith("Publishing on"),
+            "the Publishing on line comes back after a temporary status message",
+        )
+        window.network_tabs.current_pane.invocation_changed.emit("toolbox-b: m.rate set to 125, accepted (Fin)")
+        report.check(
+            window.statusBar().currentMessage() == "toolbox-b: m.rate set to 125, accepted (Fin)",
+            "a remote set's result shows in the status bar",
+        )
+        window.statusBar().clearMessage()
+
+        log_window = window.show_activity_log()
+        service.set_alert_presence(alert, True)
+        report.check(
+            wait_for(app, lambda: any(entry.text.startswith("Alarm raised") and alert in entry.text and entry.alarm
+                                      for entry in activity_log().entries)),
+            "raising an alarm adds a line to the activity log",
+        )
+        service.set_alert_presence(alert, False)
+        report.check(
+            wait_for(app, lambda: activity_log().entries[-1].text.startswith("Alarm cleared")
+                     and log_window.tree.topLevelItemCount() == len(activity_log().entries)),
+            "clearing it adds another, and the open log window shows every entry",
         )
         pane.select_alert_handle(alert)
         report.check(

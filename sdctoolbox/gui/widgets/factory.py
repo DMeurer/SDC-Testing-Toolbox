@@ -16,8 +16,9 @@ from .controls import (
     TextWidget,
 )
 
-# Asked in order of priority, first match wins. ReadoutWidget accepts anything and so must
-# stay last; it is what makes an unknown metric type show up rather than disappear.
+# Asked in order of priority, first match wins. ReadoutWidget accepts anything but a waveform
+# (which SampleArrayWidget always takes) and so must stay last; it is what makes an unknown
+# metric type show up rather than disappear.
 CONTROLS: list[type[MetricWidget]] = sorted(
     [
         ChoiceWidget,

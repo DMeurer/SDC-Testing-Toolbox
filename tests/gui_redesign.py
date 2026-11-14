@@ -339,13 +339,51 @@ class NetworkTests(unittest.TestCase):
         self.assertIsNone(pane.device_list.item(0).data(DEVICE_TAB_ROLE))
         self.assertEqual(pane.device_list.item(1).data(DEVICE_TAB_ROLE), 2)
 
+    def test_device_row_chips_follow_the_text(self) -> None:
+        from PySide6.QtGui import QImage, QPainter
+        from PySide6.QtWidgets import QStyleOptionViewItem
+
+        from sdctoolbox.consumer_service import DiscoveredDevice
+
+        class Recorder(QPainter):
+            def __init__(self, device) -> None:  # noqa: ANN001
+                super().__init__(device)
+                self.chips: list[float] = []
+
+            def drawRoundedRect(self, x, *args) -> None:  # noqa: ANN001, ANN002, N802 - Qt naming
+                self.chips.append(x)
+                super().drawRoundedRect(x, *args)
+
+        pane = self.tabs.current_pane
+        pane.service.known_devices = lambda: [DiscoveredDevice("urn:uuid:a", ("http://10.0.0.1/a",), ())]
+        pane._refresh_devices()
+        pane.device_list.resize(900, 120)
+        index = pane.device_list.model().index(0, 0)
+        option = QStyleOptionViewItem()
+        option.rect = pane.device_list.visualRect(index)
+        option.rect.setWidth(880)
+        option.widget = pane.device_list
+        option.fontMetrics = pane.device_list.fontMetrics()
+        image = QImage(900, 40, QImage.Format_ARGB32)
+        painter = Recorder(image)
+        try:
+            pane.device_list.itemDelegate().paint(painter, option, index)
+        finally:
+            painter.end()
+        text_end = option.rect.left() + pane.device_list.fontMetrics().horizontalAdvance("urn:uuid:a")
+        # Just behind "urn:uuid:a", not hundreds of pixels away at the right edge.
+        self.assertLess(painter.chips[0] - text_end, 40)
+
     def test_active_network_alarms_read_bold_red(self) -> None:
         from types import SimpleNamespace
 
+        from sdctoolbox.gui.consumer_pane import ACOL_SIGNALS as SIGNALS
         from sdctoolbox.gui.consumer_pane import ACOL_STATE as STATE
+        from sdctoolbox.gui.signal_icons import SIGNALS_ROLE, SignalIconsDelegate
         pane = self.tabs.current_pane
         alert = SimpleNamespace(label="High", source_handles=("m",), limit_text=lambda: "", kind="Phy",
-                                priority="Hi", signals={}, present=True)
+                                priority="Hi", signals={"al.high.aud": "Aud"}, signal_presences={"Aud": "On"},
+                                present=True)
         pane.remote = SimpleNamespace(alerts=lambda: {"al.high": alert})
         try:
             pane._rebuild_alerts()
@@ -353,6 +391,10 @@ class NetworkTests(unittest.TestCase):
             self.assertEqual(item.text(), "active")
             self.assertEqual(item.foreground().color().name(), token("text/error").name())
             self.assertTrue(item.font().bold())
+            # Signals are icons, as on My device, not "Aud" text.
+            signals = pane.alert_table.item(0, SIGNALS)
+            self.assertEqual((signals.text(), signals.data(SIGNALS_ROLE)), ("", {"Aud": "On"}))
+            self.assertIsInstance(pane.alert_table.itemDelegateForColumn(SIGNALS), SignalIconsDelegate)
             self.assertEqual(pane.alarms_section.chip_texts(), ["1", "1 active"])
         finally:
             pane.remote = None

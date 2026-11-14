@@ -32,7 +32,9 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QStackedWidget,
+    QStyle,
     QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
     QTreeWidget,
@@ -55,6 +57,7 @@ from .helpers import (
 )
 from .no_wheel import NoWheelComboBox
 from .qt_bridge import MdibBridge
+from .signal_icons import SIGNALS_ROLE, SignalIconsDelegate, tooltip
 from .styling import (
     apply_row_selection_style,
     constrain_dynamic_label,
@@ -64,6 +67,7 @@ from .styling import (
     token,
 )
 from .table_columns import TableColumns
+from .activity_log import MdibActivity, activity_log
 from .widgets import WidgetBoard, from_remote_metric
 from .widgets.controls import show_choice_value
 
@@ -167,9 +171,15 @@ class _DeviceRowDelegate(QStyledItemDelegate):
         widths = [metrics.horizontalAdvance(text) + 12 for text, _, _ in chips if text]
         option.rect.setRight(option.rect.right() - sum(widths) - 6 * len(widths))
         super().paint(painter, option, index)
+        # Right behind the text; at the reserved right edge only when the text fills the row.
+        text_option = QStyleOptionViewItem(option)
+        self.initStyleOption(text_option, index)
+        style = option.widget.style() if option.widget else None
+        text_left = (style.subElementRect(QStyle.SE_ItemViewItemText, text_option, option.widget).left()
+                     if style is not None else option.rect.left())
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing)
-        x = option.rect.right() + 6
+        x = min(text_left + metrics.horizontalAdvance(text_option.text) + 10, option.rect.right() + 6)
         height = metrics.height() + 2
         top = option.rect.center().y() - height / 2
         for (text, line, colour), width in zip([c for c in chips if c[0]], widths, strict=True):
@@ -191,6 +201,8 @@ class ConsumerPane(QWidget):
     # (remote, reason). Emitted from whichever thread noticed; queued like the above.
     connection_lost = Signal(object, str)
     status_changed = Signal(str)
+    # A write's progress or result, for the main window's status bar.
+    invocation_changed = Signal(str)
     # A device to open in another tab: Connect on a pane that already shows a connection.
     connect_elsewhere = Signal(object)
 
@@ -215,6 +227,7 @@ class ConsumerPane(QWidget):
         self._listed_snapshot: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
         # The metric the in-flight set targets, so its card can show the device's answer.
         self._invoked_handle: str | None = None
+        self._invoked_action = ""
         self.remote: RemoteDevice | None = None
         self.bridge: MdibBridge | None = None
         self._generation = 0
@@ -326,6 +339,7 @@ class ConsumerPane(QWidget):
         self.alert_table.verticalHeader().setVisible(False)
         self._alert_columns = TableColumns(self.alert_table, flexible=ACOL_LABEL)
         apply_row_selection_style(self.alert_table)
+        self.alert_table.setItemDelegateForColumn(ACOL_SIGNALS, SignalIconsDelegate(self.alert_table))
 
         alert_box = QWidget()
         alert_layout = QVBoxLayout(alert_box)
@@ -356,8 +370,9 @@ class ConsumerPane(QWidget):
         self.apply_button = QPushButton("Set on device")
         set_button_kind(self.apply_button, "design")
         self.apply_button.clicked.connect(self._on_apply)
-        self.invocation_label = QLabel("")
-        constrain_dynamic_label(self.invocation_label, max_lines=3, max_width=MIN_PANEL_WIDTH)
+        # The last result of a write, kept for callers; the status bar shows it, not this pane.
+        self.invocation_label = QLabel("", self)
+        self.invocation_label.hide()
 
         # The editor drives whatever is selected in the table, so it goes away in widget
         # mode where there is no selection. A widget rather than a bare layout, because a
@@ -370,12 +385,8 @@ class ConsumerPane(QWidget):
         self.editor_widget = QWidget()
         self.editor_widget.setLayout(editor_controls)
 
-        # The result of a write stays, though. In widget mode a card is what sends it, and
-        # whether the peer accepted or refused is the single most useful thing this panel
-        # reports - hiding it with the editor would take the answer away with the question.
         editor = QHBoxLayout()
         editor.addWidget(self.editor_widget, 1)
-        editor.addWidget(self.invocation_label)
 
         # Keep the panel from demanding more width than it needs. The two tables are
         # left alone: TableColumns sets their minimum from their own columns, and
@@ -589,6 +600,8 @@ class ConsumerPane(QWidget):
                 return
             self.remote = remote
         self.bridge = MdibBridge(remote.mdib, self)
+        MdibActivity(self.bridge, remote.mdib, self._device_name(remote), structure=True)
+
         def current() -> bool:
             return not self._shutdown and generation == self._generation and self.remote is remote
 
@@ -680,7 +693,7 @@ class ConsumerPane(QWidget):
         self.choice_box.clear()
         self.editor_stack.setCurrentIndex(EDITOR_TEXT)
         self.editor_label.setText("Connect to a device to control it")
-        self.invocation_label.clear()
+        self._set_invocation("")
         self._set_editor_enabled(enabled=False)
 
     def _on_connect_failed(self, message: str) -> None:
@@ -899,13 +912,13 @@ class ConsumerPane(QWidget):
         if self.remote is None:
             return
         self.select_handle(handle)
-        self.invocation_label.setText("waiting\u2026")
+        self._set_invocation("waiting\u2026")
         remote = self.remote
         key = self._work_key("invoke", remote)
         if self._worker.start_managed(key, remote, remote.set_value, handle, value):
             self._invoked_handle = handle
         else:
-            self.invocation_label.setText("busy, try again")
+            self._set_invocation("busy, try again")
             self._restore_device_value(handle)
         self._update_buttons()
 
@@ -969,13 +982,14 @@ class ConsumerPane(QWidget):
     def _on_run_action(self, handle: str) -> None:
         if self.remote is None:
             return
-        self.invocation_label.setText("waiting\u2026")
+        self._set_invocation("waiting\u2026")
         remote = self.remote
         key = self._work_key("invoke", remote)
         if self._worker.start_managed(key, remote, remote.run_action, handle):
             self._invoked_handle = None
+            self._invoked_action = handle
         else:
-            self.invocation_label.setText("busy, try again")
+            self._set_invocation("busy, try again")
         self._update_buttons()
 
     def _rebuild_alerts(self) -> None:
@@ -993,7 +1007,7 @@ class ConsumerPane(QWidget):
                 ACOL_KIND: alert.kind or "",
                 ACOL_PRIORITY: alert.priority or "",
                 # One condition, several signals: the reason BICEPS keeps them apart.
-                ACOL_SIGNALS: ", ".join(sorted(alert.signals.values())),
+                ACOL_SIGNALS: "",
                 ACOL_STATE: "active" if alert.present else "clear",
             }
             for column, text in cells.items():
@@ -1005,8 +1019,12 @@ class ConsumerPane(QWidget):
                     font = item.font()
                     font.setBold(True)
                     item.setFont(font)
-                if column == ACOL_SIGNALS and alert.signals:
-                    item.setToolTip("\n".join(f"{h}: {m}" for h, m in sorted(alert.signals.items())))
+                if column == ACOL_SIGNALS:
+                    # The same icons as My device: red while a signal announces the condition.
+                    item.setData(SIGNALS_ROLE, alert.signal_presences)
+                    if alert.signals:
+                        item.setToolTip(tooltip(alert.signal_presences) + "\n\n"
+                                        + "\n".join(f"{h}: {m}" for h, m in sorted(alert.signals.items())))
                 self.alert_table.setItem(row, column, item)
         self._alert_columns.refit()
 
@@ -1040,7 +1058,7 @@ class ConsumerPane(QWidget):
         self._choice_dirty = True
 
     def _on_selection_changed(self) -> None:
-        self.invocation_label.setText("")
+        self._set_invocation("")
         handle = self.selected_handle()
         metric = (
             None
@@ -1080,7 +1098,7 @@ class ConsumerPane(QWidget):
         self.editor_label.setText(f"{caption}:")
         self._set_editor_enabled(enabled=metric.controllable_now)
         if not metric.controllable_now:
-            self.invocation_label.setText(
+            self._set_invocation(
                 "read-only" if not metric.controllable else "control disabled by the device",
             )
 
@@ -1110,29 +1128,62 @@ class ConsumerPane(QWidget):
                     allowed_ranges=metric.allowed_ranges,
                 )
             except DecimalInputError as exc:
-                self.invocation_label.setText(str(exc))
+                self._set_invocation(str(exc))
                 return
         else:
             value = self.value_edit.text()
 
-        self.invocation_label.setText("waiting\u2026")
+        self._set_invocation("waiting\u2026")
         remote = self.remote
         key = self._work_key("invoke", remote)
         if self._worker.start_managed(key, remote, remote.set_value, handle, value):
             self._invoked_handle = handle
         self._update_buttons()
 
+    @staticmethod
+    def _device_name(remote: RemoteDevice) -> str:
+        return getattr(remote, "friendly_name", None) or remote.epr
+
     def _on_set_finished(self, state: Any) -> None:
         if state in FINISHED_STATES:
-            self.invocation_label.setText(f"accepted ({state})")
+            self._set_invocation(f"accepted ({state})", subject=self._invoked_subject())
+            self._log_remote_control()
         else:
             reason = self.remote.last_invocation_detail if self.remote is not None else ""
-            self.invocation_label.setText(f"refused ({state}) - {reason}" if reason else f"refused ({state})")
+            subject = f"{self._invoked_handle}: " if self._invoked_handle else ""
+            self._set_invocation(f"refused ({state}) - {reason}" if reason else f"refused ({state})", subject=subject)
         self.refresh_values()
         self._restore_device_value(self._invoked_handle)
 
+    def _set_invocation(self, text: str, *, subject: str = "") -> None:
+        """Record a write's progress or result and pass it to the status bar."""
+        self.invocation_label.setText(text)
+        if text and self.remote is not None:
+            self.invocation_changed.emit(f"{self._device_name(self.remote)}: {subject}{text}")
+
+    def _invoked_subject(self) -> str:
+        """'Infusion rate (m.rate) set to 125, ' for the status bar, or the action that ran."""
+        handle = self._invoked_handle
+        metric = None if handle is None or self.remote is None else self.remote.metrics((handle,)).get(handle)
+        if metric is None:
+            return f"action {self._invoked_action}, " if handle is None and self._invoked_action else ""
+        name = f"{metric.label} ({handle})" if metric.label else handle
+        return f"{name} set to {_value_text(metric)}, "
+
+    def _log_remote_control(self) -> None:
+        """An accepted write or action, for the activity log."""
+        if self.remote is None:
+            return
+        handle = self._invoked_handle
+        metric = None if handle is None else self.remote.metrics((handle,)).get(handle)
+        if metric is None:
+            text = f"Remote control accepted: action {self._invoked_action} run"
+        else:
+            text = f"Remote control accepted: {handle} is now {_value_text(metric)}"
+        activity_log().add(self._device_name(self.remote), text)
+
     def _on_set_failed(self, message: str) -> None:
-        self.invocation_label.setText(f"failed: {message}")
+        self._set_invocation(f"failed: {message}")
         self._restore_device_value(self._invoked_handle)
 
     def _on_work_finished(self, key: tuple, result: object) -> None:
