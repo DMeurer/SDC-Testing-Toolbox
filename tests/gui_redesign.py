@@ -208,5 +208,82 @@ class MyDeviceTests(unittest.TestCase):
             self.assertTrue(has_colour(pane.alert_table.viewport().grab(cell).toImage(), red))
 
 
+class NetworkTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self) -> None:
+        from sdctoolbox.gui.consumer_tabs import ConsumerTabs
+        from sdctoolbox.gui.main_window import network_view
+        self.tabs = ConsumerTabs("127.0.0.1")
+        self.view = network_view(self.tabs)
+        self.view.resize(900, 600)
+        self.view.show()
+        pump(self.app)
+
+    def tearDown(self) -> None:
+        self.tabs.shutdown()
+        self.view.close()
+        self.view.deleteLater()
+        pump(self.app, 0.05)
+
+    def test_nothing_connected_shows_discovery_and_hint_only(self) -> None:
+        pane = self.tabs.current_pane
+        self.assertIsNone(self.tabs.cornerWidget())
+        self.assertFalse(self.tabs.tabBar().isVisible())
+        self.assertTrue(pane.discovery_section.isVisible() and pane.discovery_section.expanded)
+        self.assertTrue(pane.empty_hint.isVisible())
+        for section in (pane.structure_section, pane.metrics_section, pane.alarms_section):
+            self.assertFalse(section.isVisible())
+        self.assertTrue(pane.metrics_section.expanded)
+        self.assertFalse(pane.alarms_section.expanded or pane.structure_section.expanded)
+        self.assertEqual(pane.structure_section.hint.text(), "Descriptor tree with handles")
+
+    def test_discovery_row_order_and_kinds(self) -> None:
+        pane = self.tabs.current_pane
+        row = pane.discovery_row
+        found = [row.itemAt(i).widget() for i in range(row.count()) if row.itemAt(i).widget()]
+        self.assertEqual(found, [pane.connect_button, pane.disconnect_button, pane.scan_button,
+                                 pane.connect_next_box])
+        self.assertEqual([b.property("kind") for b in found[:3]],
+                         ["highlight", "design-outline", "design-outline"])
+
+    def test_device_rows_carry_transport_and_tab_chips(self) -> None:
+        from sdctoolbox.consumer_service import DiscoveredDevice
+        from sdctoolbox.gui.consumer_pane import DEVICE_TAB_ROLE, DEVICE_TRANSPORT_ROLE
+        pane = self.tabs.current_pane
+        devices = [DiscoveredDevice("urn:uuid:a", ("http://10.0.0.1/a",), ()),
+                   DiscoveredDevice("urn:uuid:b", ("https://10.0.0.2/b",), ())]
+        pane.service.known_devices = lambda: devices
+        pane._refresh_devices()
+        self.assertEqual(pane.device_list.item(0).text(), "urn:uuid:a")
+        self.assertEqual(pane.device_list.item(1).data(DEVICE_TRANSPORT_ROLE), "HTTPS")
+        pane.set_device_tabs({"urn:uuid:b": 2})
+        self.assertIsNone(pane.device_list.item(0).data(DEVICE_TAB_ROLE))
+        self.assertEqual(pane.device_list.item(1).data(DEVICE_TAB_ROLE), 2)
+
+    def test_connect_from_a_connected_tab_opens_a_new_tab(self) -> None:
+        from unittest.mock import patch
+
+        from sdctoolbox.consumer_service import DiscoveredDevice
+        from sdctoolbox.gui.consumer_pane import ConsumerPane
+        first = self.tabs.current_pane
+        device = DiscoveredDevice("urn:uuid:c", ("http://10.0.0.3/c",), ())
+        first.devices = [device]
+        first.device_list.addItem("urn:uuid:c")
+        first.device_list.setCurrentRow(0)
+        first.remote = object()
+        started = []
+        with patch.object(ConsumerPane, "connect_to", lambda pane, dev: started.append((pane, dev))):
+            first._on_connect()
+        self.assertEqual(self.tabs.count(), 2)
+        self.assertIs(self.tabs.current_pane, started[0][0])
+        self.assertIsNot(started[0][0], first)
+        self.assertEqual(started[0][1].epr, "urn:uuid:c")
+        self.assertTrue(self.tabs.tabBar().isVisible())
+        first.remote = None
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+from types import SimpleNamespace
 from contextlib import contextmanager
 from dataclasses import replace
 from decimal import Decimal
@@ -365,13 +366,11 @@ class MultiProvider(unittest.TestCase):
         with self.window() as (window, tabs, owned):
             first = window.network_pane
             self.assertEqual(tabs.panes, [first])
-            self.assertIs(window.network_panel.content, tabs)
+            self.assertTrue(window.network_panel.content.isAncestorOf(tabs))
             self.assertIsInstance(tabs.tabBar(), NoWheelTabBar)
-            add = tabs.cornerWidget()
-            self.assertTrue(add.accessibleName())
-            add.setFocus()
-            QTest.keyClick(add, Qt.Key_Space)
-            second = window.network_pane
+            self.assertIsNone(tabs.cornerWidget(), "connecting is the only way to open a tab")
+            second = tabs.add_connection()
+            self.assertIs(window.network_pane, second)
             owned.append(second)
             self.assertIsNot(first, second)
             third = tabs.add_connection()
@@ -434,7 +433,7 @@ class MultiProvider(unittest.TestCase):
                     window.set_use_widgets(True)
                     self.assertTrue(all(p.use_widgets for p in tabs.panes))
                     window.set_split_view(True)
-                    self.assertIs(window.network_panel.content, tabs)
+                    self.assertTrue(window.network_panel.content.isAncestorOf(tabs))
                 self.assertEqual(first.value_edit.text(), "unsaved first")
                 self.assertEqual(tabs.count(), 3)
         finally:
@@ -626,7 +625,7 @@ class MultiProvider(unittest.TestCase):
             # Service startup owns its rollback; the notebook must preserve its existing pages.
             with patch.object(FakeConsumerService, "start", side_effect=OSError("injected start failure")), \
                  patch("sdctoolbox.gui.consumer_tabs.QMessageBox.warning", side_effect=lambda *a: warnings.append(a)):
-                QTest.mouseClick(tabs.cornerWidget(), Qt.LeftButton)
+                tabs._connect_in_new_tab(SimpleNamespace(epr="urn:uuid:not-open-yet"))
                 self.assertEqual(tabs.panes, [first])
                 self.assertIs(first.remote, healthy)
                 self.assertTrue(warnings)

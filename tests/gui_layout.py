@@ -259,6 +259,7 @@ def remote_action_checks(report: Report, fixture: WindowFixture) -> None:
         ),
     }
     pane.remote = ActionRemote(baseline_actions)
+    pane._update_buttons()  # noqa: SLF001 - what a real connect does: show the connection
     pane.refresh_actions()
     pump(fixture.app)
 
