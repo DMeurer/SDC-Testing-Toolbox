@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+from decimal import Decimal
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -12,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QApplication, QPushButton, QStatusBar, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QStatusBar, QVBoxLayout, QWidget
 
 from gui_test_support import WindowFixture, pump, wait_for
 from PySide6.QtCore import Qt
@@ -283,6 +284,95 @@ class NetworkTests(unittest.TestCase):
         self.assertEqual(started[0][1].epr, "urn:uuid:c")
         self.assertTrue(self.tabs.tabBar().isVisible())
         first.remote = None
+
+
+def owner(widget: QWidget) -> str | None:
+    """Which kind of section (mdib or toolbox) a dialog field sits in, if any."""
+    parent = widget.parentWidget()
+    while parent is not None:
+        role = parent.property("role")
+        if isinstance(role, str) and role.startswith("sect-"):
+            return role.removeprefix("sect-")
+        parent = parent.parentWidget()
+    return None
+
+
+def ok_cancel_kinds(buttons) -> tuple[str, str]:
+    from PySide6.QtWidgets import QDialogButtonBox
+    return (buttons.button(QDialogButtonBox.Ok).property("kind"),
+            buttons.button(QDialogButtonBox.Cancel).property("kind"))
+
+
+class DialogTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_start_dialog_browse_waits_for_tls(self) -> None:
+        from sdctoolbox.gui.startup_dialog import StartupDialog
+        dialog = StartupDialog(name="redesign")
+        self.assertEqual(len(dialog.tls_browse_buttons), 4)
+        self.assertFalse(any(b.isEnabled() for b in dialog.tls_browse_buttons))
+        self.assertTrue(dialog.config_browse_button.isEnabled())
+        dialog.tls_box.setChecked(True)
+        self.assertTrue(all(b.isEnabled() for b in dialog.tls_browse_buttons))
+        self.assertEqual({b.property("kind") for b in [*dialog.tls_browse_buttons, dialog.config_browse_button]},
+                         {"design-outline"})
+        self.assertEqual(ok_cancel_kinds(dialog.buttons), ("highlight", "highlight-outline"))
+        dialog.deleteLater()
+
+    def test_new_data_source_sections(self) -> None:
+        from sdctoolbox.gui.new_metric_dialog import NewMetricDialog
+        dialog = NewMetricDialog()
+        for widget in (dialog.kind_box, dialog.label_edit, dialog.unit_edit, dialog.resolution_edit,
+                       dialog.limits_widget, dialog.controllable_box, dialog.handle_preview,
+                       dialog.sample_period_edit, dialog.domain_widget):
+            self.assertEqual(owner(widget), "mdib", widget)
+        for widget in (dialog.shape_box, dialog.cycle_widget):
+            self.assertEqual(owner(widget), "toolbox", widget)
+        self.assertEqual(ok_cancel_kinds(dialog.buttons), ("highlight", "highlight-outline"))
+        dialog.deleteLater()
+
+    def test_new_alarm_is_one_mdib_section_with_the_hint_outside(self) -> None:
+        from sdctoolbox.gui.new_alert_dialog import NewAlertDialog
+        dialog = NewAlertDialog({"m.rate": MetricSpec(label="Rate", kind=MetricKind.NUMBER)})
+        for widget in (dialog.source_box, dialog.label_edit, dialog.priority_box, dialog.handle_preview):
+            self.assertEqual(owner(widget), "mdib")
+        self.assertIsNone(owner(dialog.hint))
+        self.assertEqual(ok_cancel_kinds(dialog.buttons), ("highlight", "highlight-outline"))
+        dialog.deleteLater()
+
+    def test_edit_dialogs_split_description_state_and_simulation(self) -> None:
+        from types import SimpleNamespace
+
+        from sdctoolbox.gui.edit_dialogs import EditAlertDialog, EditSourceDialog
+        metric = MetricSpec(label="Rate", kind=MetricKind.NUMBER)
+        alert = AlertSpec(label="High", source_handle="m.rate", upper_limit=Decimal(9))
+        service = SimpleNamespace(list_metrics=lambda: {"m.rate": metric}, list_alerts=lambda: {"al.high": alert},
+                                  operation_handle_for=lambda _h: "op", _max_limits=lambda _s: (None, None))
+        source = EditSourceDialog(service, "m.rate")
+        self.assertEqual(owner(source.technical_label), "mdib")
+        self.assertEqual(owner(source.allowed_minimum_edit), "mdib")
+        self.assertEqual(owner(source.active_box), "toolbox")
+        self.assertEqual(owner(source.shape_box), "toolbox")
+        self.assertGreaterEqual(source.minimumWidth(), 340)
+        self.assertEqual(ok_cancel_kinds(source.buttons), ("highlight", "highlight-outline"))
+        alarm = EditAlertDialog(service, "al.high")
+        self.assertEqual(owner(alarm.lower_edit), "mdib")
+        self.assertEqual(owner(alarm.priority_box), "mdib")
+        self.assertIsNot(alarm.lower_edit.parentWidget(), None)
+        notes = [label.text() for label in alarm.findChildren(QLabel)]
+        self.assertIn("read only", notes)
+        self.assertIn("sent to consumers", notes)
+        for dialog in (source, alarm):
+            dialog.deleteLater()
+
+    def test_patient_and_location_buttons(self) -> None:
+        from sdctoolbox.gui.context_dialog import ContextDialog
+        from sdctoolbox.model import LocationInfo, PatientInfo
+        dialog = ContextDialog(LocationInfo(), PatientInfo())
+        self.assertEqual(ok_cancel_kinds(dialog.buttons), ("highlight", "highlight-outline"))
+        dialog.deleteLater()
 
 
 if __name__ == "__main__":

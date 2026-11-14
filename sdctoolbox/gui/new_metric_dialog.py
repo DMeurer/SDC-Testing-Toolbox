@@ -33,6 +33,7 @@ from ..model import (
 )
 from .decimal_input import DecimalInputError, parse_decimal_input
 from .helpers import set_form_row_visible
+from .kind_sections import kind_section, style_dialog_buttons
 from .no_wheel import NoWheelComboBox
 from .styling import constrain_dynamic_label, mark_as_error, mute
 
@@ -184,7 +185,8 @@ class NewMetricDialog(QDialog):
         mark_as_error(self.error_label)
         self.error_label.hide()
 
-        form = QFormLayout()
+        # What consumers see over SDC, then how the toolbox generates values for it.
+        self.description_section, form = kind_section("Device description", "mdib")
         form.addRow("Kind", self.kind_box)
         form.addRow("Label", self.label_edit)
         form.addRow("Unit", self.unit_edit)
@@ -192,21 +194,25 @@ class NewMetricDialog(QDialog):
         form.addRow("Resolution", self.resolution_edit)
         form.addRow("Range", self.limits_widget)
         form.addRow("Sample period", self.sample_period_edit)
-        form.addRow("Shape", self.shape_box)
-        form.addRow("Cycle length (s)", self.cycle_widget)
-        form.addRow("Distribution", self.distribution_box)
         form.addRow("Domain unit", self.domain_unit_edit)
         form.addRow("Domain", self.domain_widget)
         form.addRow("", self.controllable_box)
         form.addRow("Handle", self.handle_preview)
         self.form = form
+        self.simulation_section, self.simulation_form = kind_section("Simulation", "toolbox")
+        self.simulation_form.addRow("Shape", self.shape_box)
+        self.simulation_form.addRow("Cycle length (s)", self.cycle_widget)
+        self.simulation_form.addRow("Distribution", self.distribution_box)
 
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        style_dialog_buttons(self.buttons)
         self.buttons.accepted.connect(self._on_accept)
         self.buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
-        layout.addLayout(form)
+        layout.setSpacing(12)
+        layout.addWidget(self.description_section)
+        layout.addWidget(self.simulation_section)
         layout.addWidget(self.error_label)
         layout.addWidget(self.buttons)
 
@@ -279,7 +285,8 @@ class NewMetricDialog(QDialog):
         something to read and dismiss, and the dialog is short enough that the rows moving
         is less distracting than the clutter.
         """
-        set_form_row_visible(self.form, widget, visible=visible)
+        form = self.form if self.form.indexOf(widget) >= 0 else self.simulation_form
+        set_form_row_visible(form, widget, visible=visible)
 
     def _on_kind_changed(self) -> None:
         kind = self._kind
@@ -300,6 +307,7 @@ class NewMetricDialog(QDialog):
         self._set_row_visible(self.distribution_box, visible=is_distribution)
         self._set_row_visible(self.domain_unit_edit, visible=is_distribution)
         self._set_row_visible(self.domain_widget, visible=is_distribution)
+        self.simulation_section.setVisible(is_waveform or is_distribution)
         # Neither sample-array kind can be written by anybody: BICEPS defines no operation
         # whose argument is a sample array.
         self.controllable_box.setVisible(kind.controllable)

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
 
 from ..model import AlertPriority, MetricKind
 from .decimal_input import DecimalInputError, parse_decimal_input
+from .kind_sections import kind_section, style_dialog_buttons
 from .new_alert_dialog import PRIORITY_CAPTIONS
 from .new_metric_dialog import OFFERED_DISTRIBUTIONS, distribution_combo, selected_shape, shape_combo
 from .no_wheel import NoWheelComboBox
@@ -57,23 +59,39 @@ def _pair(first: QWidget, second: QWidget) -> QWidget:
 
 
 class _EditDialog(QDialog):
-    """Shared frame: a form, an error line, OK and Cancel. OK applies, and stays open on a refusal."""
+    """Shared frame: MDIB and Toolbox sections, an error line, OK and Cancel.
+
+    OK applies, and stays open on a refusal. Rows go into the section opened last.
+    """
 
     def __init__(self, title: str, parent: QWidget | None) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.form = QFormLayout()
+        self.setMinimumWidth(340)
+        self.form: QFormLayout | None = None
+        self._sections: list[tuple[QFrame, QFormLayout]] = []
         self.error_label = QLabel("")
         constrain_dynamic_label(self.error_label, max_lines=3)
         mark_as_error(self.error_label)
         self.error_label.hide()
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        style_dialog_buttons(self.buttons)
         self.buttons.accepted.connect(self._on_accept)
         self.buttons.rejected.connect(self.reject)
-        layout = QVBoxLayout(self)
-        layout.addLayout(self.form)
-        layout.addWidget(self.error_label)
-        layout.addWidget(self.buttons)
+        self._layout = QVBoxLayout(self)
+        self._layout.setSpacing(12)
+        self._layout.addWidget(self.error_label)
+        self._layout.addWidget(self.buttons)
+
+    def _section(self, title: str, kind: str, note: str = "") -> QFrame:
+        """Start a new MDIB or Toolbox section; the following rows land in it."""
+        frame, self.form = kind_section(title, kind, note)
+        self._sections.append((frame, self.form))
+        self._layout.insertWidget(len(self._sections) - 1, frame)
+        return frame
+
+    def _form_of(self, widget: QWidget) -> QFormLayout:
+        return next(form for _, form in self._sections if form.indexOf(widget) >= 0)
 
     def _fixed(self, caption: str, text: str) -> QLabel:
         label = QLabel(text)
@@ -108,6 +126,7 @@ class EditSourceDialog(_EditDialog):
         super().__init__(f"Edit {spec.label}", parent)
         settable = spec.controllable or service.operation_handle_for(handle) is not None
 
+        self._section("Device description", "mdib", "read only")
         self._fixed("Label", spec.label)
         self._fixed("Kind", spec.kind.value)
         self._fixed("Unit", spec.unit_label or "-")
@@ -123,8 +142,8 @@ class EditSourceDialog(_EditDialog):
         self.active_box = QCheckBox("Switched on")
         self.active_box.setChecked(spec.active)
         self.active_box.setToolTip("Off keeps the last value, stops generation, refuses remote sets and raises no alarms")
-        self.form.addRow("", self.active_box)
 
+        remote_section = self._section("Remote control", "mdib", "sent to consumers")
         lower, upper = spec.effective_allowed_range()
         self.allowed_minimum_edit = QLineEdit(_text(lower))
         self.allowed_maximum_edit = QLineEdit(_text(upper))
@@ -142,7 +161,11 @@ class EditSourceDialog(_EditDialog):
             self.values_list.addItem(item)
         self.form.addRow("Remote may pick", self.values_list)
         self._show(self.values_list, spec.kind is MetricKind.CHOICE and settable)
+        remote_section.setVisible(settable and spec.kind in (MetricKind.NUMBER, MetricKind.CHOICE))
 
+        # "Switched on" stops the toolbox generating values; it is not a device setting.
+        self._section("Simulation", "toolbox")
+        self.form.addRow("", self.active_box)
         self.shape_box = shape_combo()
         self.shape_box.setCurrentIndex(self.shape_box.findData(spec.shape))
         self.cycle_edit = QLineEdit(str(spec.cycle_seconds))
@@ -159,7 +182,7 @@ class EditSourceDialog(_EditDialog):
         self._show(self.distribution_box, spec.kind is MetricKind.DISTRIBUTION)
 
     def _show(self, row: QWidget, visible: bool, *parts: QWidget) -> None:  # noqa: FBT001
-        self.form.setRowVisible(row, visible)
+        self._form_of(row).setRowVisible(row, visible)
         for widget in (row, *parts):
             widget.setVisible(visible)
 
@@ -210,6 +233,7 @@ class EditAlertDialog(_EditDialog):
         self.service, self.handle = service, handle
         spec = self.spec = service.list_alerts()[handle]
         super().__init__(f"Edit {spec.label}", parent)
+        self._section("Alarm description", "mdib", "read only")
         self._fixed("Label", spec.label)
         self._fixed("Watches", spec.source_handle)
         self._fixed("Kind", spec.kind.value)
@@ -220,6 +244,9 @@ class EditAlertDialog(_EditDialog):
         if spec.has_limits:
             max_lower, max_upper = service._max_limits(spec)  # noqa: SLF001 - what MaxLimits carries
             self._fixed("Max limits", f"{_text(max_lower) or 'open'} to {_text(max_upper) or 'open'}")
+
+        self._section("Alarm state", "mdib", "sent to consumers")
+        if spec.has_limits:
             self.form.addRow("Limits", _pair(self.lower_edit, self.upper_edit))
 
         self.priority_box = NoWheelComboBox()

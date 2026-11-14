@@ -34,8 +34,9 @@ from ..mdib_io import NativeMdibConfig
 from ..model import validate_xml_text
 from ..network import normalize_ipv4
 from ..security import TlsConfig, TlsConfigError
+from .kind_sections import style_dialog_buttons
 from .no_wheel import NoWheelComboBox
-from .styling import constrain_dynamic_label, mark_as_error, mute
+from .styling import constrain_dynamic_label, mark_as_error, mute, set_button_kind
 
 CONFIG_FILE_FILTER = config.FILE_FILTER
 
@@ -131,7 +132,8 @@ class StartupDialog(QDialog):
             "A preset that ships with the tool, or any exported config file.\n"
             "Loading one replaces whatever the device would otherwise start with.",
         )
-        browse = QPushButton("Browse\u2026")
+        browse = self.config_browse_button = QPushButton("Browse\u2026")
+        set_button_kind(browse, "design-outline")
         browse.clicked.connect(self._on_browse)
         config_row = QHBoxLayout()
         config_row.setContentsMargins(0, 0, 0, 0)
@@ -148,6 +150,8 @@ class StartupDialog(QDialog):
             "Use HTTPS with mutual TLS for SDC services and event callbacks. "
             "Discovery remains unsecured UDP multicast.",
         )
+        # Like the fields beside them, these only matter once TLS is required.
+        self.tls_browse_buttons: list[QPushButton] = []
         self.tls_cert_edit = QLineEdit()
         self.tls_key_edit = QLineEdit()
         self.tls_ca_edit = QLineEdit()
@@ -214,6 +218,7 @@ class StartupDialog(QDialog):
 
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.buttons.button(QDialogButtonBox.Ok).setText("Start")
+        style_dialog_buttons(self.buttons)
         self.buttons.accepted.connect(self._on_accept)
         self.buttons.rejected.connect(self.reject)
 
@@ -265,6 +270,8 @@ class StartupDialog(QDialog):
 
     def _path_picker(self, field: QLineEdit, title: str) -> QWidget:
         browse = QPushButton("Browse\u2026")
+        set_button_kind(browse, "design-outline")
+        self.tls_browse_buttons.append(browse)
         browse.clicked.connect(lambda: self._browse_path(field, title))
         layout = QHBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -281,6 +288,8 @@ class StartupDialog(QDialog):
 
     def _folder_picker(self, field: QLineEdit, title: str) -> QWidget:
         browse = QPushButton("Browse…")
+        set_button_kind(browse, "design-outline")
+        self.tls_browse_buttons.append(browse)
         browse.clicked.connect(lambda: self._browse_folder(field, title))
         layout = QHBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -306,6 +315,7 @@ class StartupDialog(QDialog):
             self.tls_server_name_edit,
             self.tls_self_signed_box,
             self.tls_lenient_box,
+            *self.tls_browse_buttons,
         ):
             field.setEnabled(enabled)
 
