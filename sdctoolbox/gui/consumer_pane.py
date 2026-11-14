@@ -329,6 +329,7 @@ class ConsumerPane(QWidget):
 
         self.board = WidgetBoard()
         self.board.value_requested.connect(self._on_widget_value_requested)
+        self.board.card_rebuilt.connect(lambda _handle: self._refresh_board())
         self.metric_stack = QStackedWidget()
         self.metric_stack.addWidget(self.board)
         self.metric_stack.addWidget(self.table)

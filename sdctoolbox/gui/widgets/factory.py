@@ -6,7 +6,7 @@ the panes never mention any control by name.
 
 from __future__ import annotations
 
-from .base import MetricWidget, WidgetSpec
+from .base import CardSettings, MetricWidget, WidgetSpec
 from .controls import (
     ChoiceWidget,
     ReadoutWidget,
@@ -31,6 +31,11 @@ CONTROLS: list[type[MetricWidget]] = sorted(
 )
 
 
+def matching_controls(spec: WidgetSpec) -> list[type[MetricWidget]]:
+    """Every control that can represent this metric, the default first."""
+    return [control for control in CONTROLS if control.matches(spec)]
+
+
 def pick_control(spec: WidgetSpec) -> type[MetricWidget]:
     """Return the most specific control that can represent this metric."""
     for control in CONTROLS:
@@ -39,6 +44,15 @@ def pick_control(spec: WidgetSpec) -> type[MetricWidget]:
     raise RuntimeError("the control registry must end with a universal catch-all")
 
 
-def build_widget(spec: WidgetSpec, parent=None) -> MetricWidget:  # noqa: ANN001
+def chosen_control(spec: WidgetSpec, settings: CardSettings | None) -> type[MetricWidget]:
+    """The card type the settings ask for, if it can show this metric, else the default."""
+    if settings is not None and settings.control:
+        for control in matching_controls(spec):
+            if control.__name__ == settings.control:
+                return control
+    return pick_control(spec)
+
+
+def build_widget(spec: WidgetSpec, parent=None, *, settings: CardSettings | None = None) -> MetricWidget:  # noqa: ANN001
     """Create the control for a metric."""
-    return pick_control(spec)(spec, parent)
+    return chosen_control(spec, settings)(spec, parent, settings=settings)

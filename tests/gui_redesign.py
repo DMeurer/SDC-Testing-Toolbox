@@ -95,6 +95,18 @@ class TokenTests(unittest.TestCase):
                              token("accent/tint").name())
         table.close()
 
+    def test_checked_outlined_button_fills_like_a_selected_segment(self) -> None:
+        apply_theme_style()
+        button = QPushButton("Release")
+        set_button_kind(button, "design-outline")
+        button.setCheckable(True)
+        button.setChecked(True)
+        button.resize(100, 30)
+        button.show()
+        self.app.processEvents()
+        self.assertEqual(grab_pixel(button, 6, 15).name(), token("accent").name())
+        button.close()
+
     def test_status_bar_is_design_coloured(self) -> None:
         apply_theme_style()
         bar = QStatusBar()
@@ -197,6 +209,18 @@ class MyDeviceTests(unittest.TestCase):
             self.assertFalse(has_colour(pane.alert_table.viewport().grab(cell).toImage(), red))
             self.assertEqual(pane.alert_table.item(0, ACOL_SIGNALS).text(), "")
             self.assertIn("Visible: Off", pane.alert_table.item(0, ACOL_SIGNALS).toolTip())
+
+            from unittest.mock import patch
+
+            from sdctoolbox.gui.edit_dialogs import EditSourceDialog
+
+            def choose_value_only(dialog) -> int:
+                index = dialog.card_editor.type_box.findText("Value only")
+                dialog.card_editor.type_box.setCurrentIndex(index)
+                return 1
+            with patch.object(EditSourceDialog, "exec", choose_value_only):
+                pane.board.card(metric).edit_button.click()
+            self.assertEqual(type(pane.board.card(metric).control).__name__, "ReadoutWidget")
 
             service.set_alert_presence(alarm, True)
             self.assertTrue(wait_for(fixture.app, lambda: pane.alert_table.item(0, ACOL_STATE).text() == "active"))
@@ -366,6 +390,31 @@ class DialogTests(unittest.TestCase):
         self.assertIn("sent to consumers", notes)
         for dialog in (source, alarm):
             dialog.deleteLater()
+
+    def test_card_sections_in_data_source_dialogs(self) -> None:
+        from types import SimpleNamespace
+
+        from sdctoolbox.gui.edit_dialogs import EditSourceDialog
+        from sdctoolbox.gui.new_metric_dialog import NewMetricDialog
+        from sdctoolbox.gui.widgets.base import CardSettings, from_spec
+        metric = MetricSpec(label="Rate", kind=MetricKind.NUMBER, minimum=Decimal(0), maximum=Decimal(100))
+        service = SimpleNamespace(list_metrics=lambda: {"m.rate": metric}, operation_handle_for=lambda _h: None)
+        dialog = EditSourceDialog(service, "m.rate",
+                                  card=(from_spec("m.rate", metric, editable=True), CardSettings()))
+        self.assertEqual(owner(dialog.card_editor.type_box), "toolbox")
+        dialog.card_editor.type_box.setCurrentIndex(1)
+        self.assertEqual(dialog.card_settings().control, "StepperWidget")
+
+        new = NewMetricDialog()
+        self.assertEqual(owner(new.card_type_box), "toolbox")
+        new.minimum_edit.setText("0")
+        new.maximum_edit.setText("100")
+        texts = [new.card_type_box.itemText(i) for i in range(new.card_type_box.count())]
+        self.assertEqual(texts, ["Slider", "Number input", "Value only"])
+        new.card_type_box.setCurrentIndex(1)
+        self.assertEqual(new.card_control(), "StepperWidget")
+        for dialog_ in (dialog, new):
+            dialog_.deleteLater()
 
     def test_patient_and_location_buttons(self) -> None:
         from sdctoolbox.gui.context_dialog import ContextDialog

@@ -81,6 +81,7 @@ def theme_style_sheet(dark: bool) -> str:  # noqa: FBT001
     ]
     rules += [
         f'*[kind="highlight-outline"]:pressed, *[kind="design-outline"]:pressed {{ background: {t["accent/tint"]}; }}',
+        f'*[kind="design-outline"]:checked {{ background: {t["accent"]}; color: {t["text/on-accent"]}; }}',
         f'*[kind]:disabled {{ background: transparent; border: 1px solid {t["border/default"]};'
         f' color: {t["text/disabled"]}; }}',
         f'QStatusBar {{ background: {t["accent"]}; color: {t["text/on-accent"]}; }}',

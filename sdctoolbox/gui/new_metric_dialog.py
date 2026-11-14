@@ -36,6 +36,9 @@ from .helpers import set_form_row_visible
 from .kind_sections import kind_section, style_dialog_buttons
 from .no_wheel import NoWheelComboBox
 from .styling import constrain_dynamic_label, mark_as_error, mute
+from .widgets.base import WidgetSpec
+from .widgets.board import card_caption
+from .widgets.factory import matching_controls
 
 # Label shown in the combo box -> kind. Order decides the order in the dropdown.
 OFFERED_KINDS: list[tuple[str, MetricKind]] = [
@@ -203,6 +206,11 @@ class NewMetricDialog(QDialog):
         self.simulation_form.addRow("Shape", self.shape_box)
         self.simulation_form.addRow("Cycle length (s)", self.cycle_widget)
         self.simulation_form.addRow("Distribution", self.distribution_box)
+        self.card_section, card_form = kind_section("Card", "toolbox")
+        self.card_type_box = NoWheelComboBox()
+        self.card_type_box.setToolTip("How the card shows this data source. Only changes the card.")
+        card_form.addRow("Card type", self.card_type_box)
+        self._card_options: list[type] = []
 
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         style_dialog_buttons(self.buttons)
@@ -213,10 +221,13 @@ class NewMetricDialog(QDialog):
         layout.setSpacing(12)
         layout.addWidget(self.description_section)
         layout.addWidget(self.simulation_section)
+        layout.addWidget(self.card_section)
         layout.addWidget(self.error_label)
         layout.addWidget(self.buttons)
 
         self.kind_box.currentIndexChanged.connect(self._on_kind_changed)
+        for edit in (self.minimum_edit, self.maximum_edit, self.values_edit, self.resolution_edit):
+            edit.textChanged.connect(self._update_card_types)
         self.label_edit.textChanged.connect(self._update_preview)
         self.cycle_edit.textChanged.connect(self._update_rate_hint)
         self.sample_period_edit.textChanged.connect(self._update_rate_hint)
@@ -226,6 +237,37 @@ class NewMetricDialog(QDialog):
         self._update_preview()
 
     # -- result --------------------------------------------------------------------
+
+    def card_control(self) -> str | None:
+        """The card type picked, by control name; None keeps whatever fits best."""
+        index = self.card_type_box.currentIndex()
+        if index <= 0 or index >= len(self._card_options):
+            return None
+        return self._card_options[index].__name__
+
+    def _card_spec(self) -> WidgetSpec:
+        """A stand-in for the metric the dialog describes, to see which cards fit it."""
+        def number(edit: QLineEdit) -> Decimal | None:
+            try:
+                return parse_decimal_input(edit.text(), "value") if edit.text().strip() else None
+            except DecimalInputError:
+                return None
+        values = tuple(part.strip() for part in self.values_edit.text().split(",") if part.strip())
+        return WidgetSpec(handle="new", label="", kind=self._kind, allowed_values=values,
+                          minimum=number(self.minimum_edit), maximum=number(self.maximum_edit),
+                          resolution=number(self.resolution_edit), editable=True)
+
+    def _update_card_types(self) -> None:
+        """Offer the card types that fit what is entered, keeping the choice where it still fits."""
+        chosen = self.card_control()
+        self._card_options = matching_controls(self._card_spec())
+        self.card_type_box.blockSignals(True)
+        self.card_type_box.clear()
+        for control in self._card_options:
+            self.card_type_box.addItem(card_caption(control, self._card_spec()))
+        names = [control.__name__ for control in self._card_options]
+        self.card_type_box.setCurrentIndex(names.index(chosen) if chosen in names else 0)
+        self.card_type_box.blockSignals(False)
 
     def spec(self) -> MetricSpec | None:
         """The definition the user entered, or None if the dialog was cancelled."""
@@ -308,6 +350,7 @@ class NewMetricDialog(QDialog):
         self._set_row_visible(self.domain_unit_edit, visible=is_distribution)
         self._set_row_visible(self.domain_widget, visible=is_distribution)
         self.simulation_section.setVisible(is_waveform or is_distribution)
+        self._update_card_types()
         # Neither sample-array kind can be written by anybody: BICEPS defines no operation
         # whose argument is a sample array.
         self.controllable_box.setVisible(kind.controllable)

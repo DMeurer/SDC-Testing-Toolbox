@@ -34,9 +34,11 @@ from .new_alert_dialog import PRIORITY_CAPTIONS
 from .new_metric_dialog import OFFERED_DISTRIBUTIONS, distribution_combo, selected_shape, shape_combo
 from .no_wheel import NoWheelComboBox
 from .styling import constrain_dynamic_label, mark_as_error
+from .widgets.board import CardSettingsEditor
 
 if TYPE_CHECKING:
     from ..provider_service import ProviderService
+    from .widgets.base import CardSettings, WidgetSpec
 
 
 def _text(value: Decimal | None) -> str:
@@ -120,7 +122,8 @@ class _EditDialog(QDialog):
 class EditSourceDialog(_EditDialog):
     """The runtime-editable parts of one data source."""
 
-    def __init__(self, service: ProviderService, handle: str, parent: QWidget | None = None) -> None:
+    def __init__(self, service: ProviderService, handle: str, parent: QWidget | None = None, *,
+                 card: tuple[WidgetSpec, CardSettings] | None = None) -> None:
         self.service, self.handle = service, handle
         spec = self.spec = service.list_metrics()[handle]
         super().__init__(f"Edit {spec.label}", parent)
@@ -180,6 +183,17 @@ class EditSourceDialog(_EditDialog):
         )
         self.form.addRow("Distribution", self.distribution_box)
         self._show(self.distribution_box, spec.kind is MetricKind.DISTRIBUTION)
+
+        # How the card looks: toolbox only, applied by whoever owns the board.
+        self.card_editor: CardSettingsEditor | None = None
+        if card is not None:
+            self._section("Card", "toolbox")
+            self.card_editor = CardSettingsEditor(*card)
+            self.form.addRow(self.card_editor)
+
+    def card_settings(self) -> CardSettings | None:
+        """The card settings as entered, or None when the dialog has no Card section."""
+        return None if self.card_editor is None else self.card_editor.settings()
 
     def _show(self, row: QWidget, visible: bool, *parts: QWidget) -> None:  # noqa: FBT001
         self._form_of(row).setRowVisible(row, visible)

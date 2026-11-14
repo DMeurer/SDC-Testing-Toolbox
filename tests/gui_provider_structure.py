@@ -140,7 +140,7 @@ def check_live_edits(report: Report) -> None:
         opened = []
 
         class FakeDialog:
-            def __init__(self, _service, handle, _parent=None) -> None:
+            def __init__(self, _service, handle, _parent=None, **_options) -> None:
                 opened.append(handle)
 
             def exec(self) -> int:

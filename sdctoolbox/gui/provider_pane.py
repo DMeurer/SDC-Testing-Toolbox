@@ -61,6 +61,7 @@ from .styling import (
 )
 from .table_columns import TableColumns
 from .widgets import WidgetBoard, from_spec
+from .widgets.base import CardSettings
 from .widgets.controls import show_choice_value
 
 if TYPE_CHECKING:
@@ -153,6 +154,7 @@ class ProviderPane(QWidget):
         self.board.value_requested.connect(self._on_widget_value_requested)
         self.board.delete_requested.connect(self._on_card_delete_requested)
         self.board.edit_requested.connect(self._edit_source)
+        self.board.card_rebuilt.connect(lambda _handle: self._refresh_board())
         self.metric_stack = QStackedWidget()
         self.metric_stack.addWidget(self.board)
         self.metric_stack.addWidget(self.table)
@@ -749,7 +751,12 @@ class ProviderPane(QWidget):
     def _edit_source(self, handle: str | None) -> None:
         if handle is None or handle not in self.service.list_metrics():
             return
-        if EditSourceDialog(self.service, handle, self).exec():
+        card = self.board.card(handle)
+        dialog = EditSourceDialog(self.service, handle, self,
+                                  card=None if card is None else (card.spec, self.board.card_settings(handle)))
+        if dialog.exec():
+            if dialog.card_settings() is not None:
+                self.board.set_card_settings(handle, dialog.card_settings())
             self.refresh()
             self.refresh_alerts()
 
@@ -948,6 +955,8 @@ class ProviderPane(QWidget):
         except (ValueError, TypeError, KeyError) as exc:
             QMessageBox.warning(self, "Could not create data source", str(exc))
             return
+        if dialog.card_control():
+            self.board.set_card_settings(handle, CardSettings(control=dialog.card_control()))
         self.refresh()
         self.select_handle(handle)
 
