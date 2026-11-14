@@ -5,7 +5,7 @@ so scripts and shortcuts keep working unattended:
 
     .venv/Scripts/python.exe run_toolbox.py
     .venv/Scripts/python.exe run_toolbox.py --name alpha
-    .venv/Scripts/python.exe run_toolbox.py --name beta --config presets/insufflator.json
+    .venv/Scripts/python.exe run_toolbox.py --name beta --config presets/insufflator.xml
 
 Use --theme {light,dark} and --fullscreen; F11 toggles fullscreen later.
 SSH launches need access to a desktop display/session or graphical forwarding.
@@ -153,14 +153,15 @@ def make_service(
 ) -> ProviderService:
     """Build the provider with the identity the settings and the config file give it.
 
-    An MDIB preset is announced exactly as named on the command line: no prefix is added,
-    and who made it comes from its own MDS MetaData.
+    Who made an MDIB preset comes from its own MDS MetaData, and its friendly name, firmware
+    and URL from its stored toolbox behaviour. Without a stored friendly name it is announced
+    exactly as named on the command line: no prefix is added.
     """
     serial_number = None
     friendly_name = settings.friendly_name
     if isinstance(device_config, NativeMdibConfig):
         device, serial_number = native_mdib.device_identity(parse_mdib(device_config.xml))
-        friendly_name = friendly_name or settings.name
+        friendly_name = friendly_name or device.friendly_name or settings.name
     else:
         device = device_config.device if device_config is not None else None
     return ProviderService(

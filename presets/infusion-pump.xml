@@ -1,0 +1,346 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<msg:GetMdibResponse xmlns:msg="http://standards.ieee.org/downloads/11073/11073-10207-2017/message" xmlns:dom="http://standards.ieee.org/downloads/11073/11073-10207-2017/participant" xmlns:ext="http://standards.ieee.org/downloads/11073/11073-10207-2017/extension" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:tb="urn:sdc-testing-toolbox:behaviour" SequenceId="urn:uuid:5b93f7c2-e4f0-5f2f-b8db-f1efe740964c" MdibVersion="0">
+  <msg:Mdib SequenceId="urn:uuid:5b93f7c2-e4f0-5f2f-b8db-f1efe740964c" MdibVersion="0">
+    <dom:MdDescription>
+      <dom:Mds Handle="mds0">
+        <ext:Extension>
+          <tb:Device FriendlyName="Infusion Pump" FirmwareVersion="2.3.0" ext:MustUnderstand="false"/>
+          <tb:Preset Name="Infusion pump" Description="Volumetric pump: rate, volume to be infused, line pressure and the alarms that make a pump a pump. Small on purpose, and the easiest of these to read end to end." ext:MustUnderstand="false"/>
+        </ext:Extension>
+        <dom:Type Code="toolbox-mds" CodingSystem="urn:sdc-testing-toolbox:private">
+          <dom:ConceptDescription Lang="en-US">SDC-testing-toolbox virtual device</dom:ConceptDescription>
+        </dom:Type>
+        <dom:AlertSystem Handle="alerts.mds0" SelfCheckPeriod="PT30S">
+          <dom:AlertCondition Handle="al.occlusion" xsi:type="dom:AlertConditionDescriptor" Kind="Tec" Priority="Hi">
+            <dom:Type Code="downstream_occlusion" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Downstream occlusion</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Source>m.line_pressure</dom:Source>
+          </dom:AlertCondition>
+          <dom:AlertCondition Handle="al.infusion_complete" xsi:type="dom:AlertConditionDescriptor" Kind="Tec" Priority="Lo">
+            <dom:Type Code="infusion_complete" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Infusion complete</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Source>m.volume_infused</dom:Source>
+          </dom:AlertCondition>
+          <dom:AlertCondition Handle="al.battery_low" xsi:type="dom:LimitAlertConditionDescriptor" Kind="Tec" Priority="Me">
+            <dom:Type Code="battery_low" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Battery low</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Source>m.battery</dom:Source>
+            <dom:MaxLimits Lower="0" Upper="100"/>
+          </dom:AlertCondition>
+          <dom:AlertSignal Handle="sig.infusion_complete.aud" ConditionSignaled="al.infusion_complete" Manifestation="Aud" Latching="false" SignalDelegationSupported="false"/>
+          <dom:AlertSignal Handle="sig.downstream_occlusion.vis" ConditionSignaled="al.occlusion" Manifestation="Vis" Latching="false" SignalDelegationSupported="true"/>
+          <dom:AlertSignal Handle="sig.infusion_complete.vis" ConditionSignaled="al.infusion_complete" Manifestation="Vis" Latching="false" SignalDelegationSupported="false"/>
+          <dom:AlertSignal Handle="sig.battery_low.aud" ConditionSignaled="al.battery_low" Manifestation="Aud" Latching="false" SignalDelegationSupported="false"/>
+          <dom:AlertSignal Handle="sig.battery_low.vis" ConditionSignaled="al.battery_low" Manifestation="Vis" Latching="false" SignalDelegationSupported="false"/>
+          <dom:AlertSignal Handle="sig.downstream_occlusion.aud" ConditionSignaled="al.occlusion" Manifestation="Aud" Latching="false" SignalDelegationSupported="true"/>
+        </dom:AlertSystem>
+        <dom:Sco Handle="sco.mds0">
+          <dom:Operation Handle="op.pump_state" xsi:type="dom:SetStringOperationDescriptor" OperationTarget="m.pump_state">
+            <dom:Type Code="set_pump_state" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="op.occlusion_pressure" xsi:type="dom:SetValueOperationDescriptor" OperationTarget="m.occlusion_pressure">
+            <dom:Type Code="set_pump_occlusion_limit" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="act.start_infusion" xsi:type="dom:ActivateOperationDescriptor" OperationTarget="vmd.infusion">
+            <ext:Extension>
+              <tb:Action ext:MustUnderstand="false">
+                <tb:Effect Target="m.pump_state" Value="RUNNING"/>
+              </tb:Action>
+            </ext:Extension>
+            <dom:Type Code="start" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Start</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Operation>
+          <dom:Operation Handle="op.drug" xsi:type="dom:SetStringOperationDescriptor" OperationTarget="m.drug">
+            <dom:Type Code="set_pump_drug_name" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="op.vtbi" xsi:type="dom:SetValueOperationDescriptor" OperationTarget="m.vtbi">
+            <dom:Type Code="set_157884" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="op.rate" xsi:type="dom:SetValueOperationDescriptor" OperationTarget="m.rate">
+            <dom:Type Code="set_157784" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="act.clear_volume" xsi:type="dom:ActivateOperationDescriptor" OperationTarget="vmd.infusion">
+            <ext:Extension>
+              <tb:Action ext:MustUnderstand="false">
+                <tb:Effect Target="m.volume_infused" Value="0"/>
+              </tb:Action>
+            </ext:Extension>
+            <dom:Type Code="clear_infused_volume" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Clear infused volume</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Operation>
+          <dom:Operation Handle="act.bolus" xsi:type="dom:ActivateOperationDescriptor" OperationTarget="vmd.infusion">
+            <ext:Extension>
+              <tb:Action Note="A fixed extra volume at a higher rate. One press, no value to type, which is what makes it an action" ext:MustUnderstand="false">
+                <tb:Effect Target="m.pump_state" Value="RUNNING"/>
+                <tb:Effect Target="m.rate" Value="600"/>
+              </tb:Action>
+            </ext:Extension>
+            <dom:Type Code="give_bolus" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Give bolus</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Operation>
+          <dom:Operation Handle="act.stop_infusion" xsi:type="dom:ActivateOperationDescriptor" OperationTarget="vmd.infusion">
+            <ext:Extension>
+              <tb:Action ext:MustUnderstand="false">
+                <tb:Effect Target="m.pump_state" Value="STOPPED"/>
+                <tb:Effect Target="m.rate" Value="0"/>
+              </tb:Action>
+            </ext:Extension>
+            <dom:Type Code="stop" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Stop</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Operation>
+        </dom:Sco>
+        <dom:MetaData>
+          <dom:Manufacturer>Toolbox</dom:Manufacturer>
+          <dom:ModelName>Fluvia 1</dom:ModelName>
+          <dom:ModelNumber>1</dom:ModelNumber>
+        </dom:MetaData>
+        <dom:SystemContext Handle="SC.mds0">
+          <dom:PatientContext Handle="PC.mds0"/>
+          <dom:LocationContext Handle="LC.mds0"/>
+        </dom:SystemContext>
+        <dom:Vmd Handle="vmd0">
+          <dom:Type Code="toolbox-vmd" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">User defined data sources</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch0.vmd0">
+            <dom:Type Code="toolbox-channel" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Default channel</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Channel>
+        </dom:Vmd>
+        <dom:Vmd Handle="vmd.line">
+          <dom:Type Code="line" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">Line</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch.line">
+            <dom:Type Code="line" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Line</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Metric Handle="m.line_pressure" xsi:type="dom:RealTimeSampleArrayMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Cont" DeterminationPeriod="PT0.1S" Resolution="1" SamplePeriod="PT0.1S">
+              <ext:Extension>
+                <tb:Generator Shape="pulse" CycleSeconds="3" ext:MustUnderstand="false"/>
+              </ext:Extension>
+              <dom:Type Code="158120" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">Line pressure</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="266016" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">mmHg</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="600" StepWidth="1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.occlusion_pressure" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="10">
+              <dom:Type Code="pump_occlusion_limit" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Occlusion limit</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="266016" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">mmHg</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="100" Upper="900" StepWidth="10"/>
+            </dom:Metric>
+          </dom:Channel>
+        </dom:Vmd>
+        <dom:Vmd Handle="vmd.status">
+          <dom:Type Code="status" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">Status</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch.status">
+            <dom:Type Code="status" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Status</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Metric Handle="m.battery" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="68024" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">Battery</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262688" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">%</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="100" StepWidth="1"/>
+            </dom:Metric>
+          </dom:Channel>
+        </dom:Vmd>
+        <dom:Vmd Handle="vmd.infusion">
+          <dom:Type Code="infusion" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">Infusion</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch.infusion">
+            <dom:Type Code="infusion" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Infusion</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Metric Handle="m.volume_infused" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="157993" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">Volume infused</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="263762" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">mL</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="2000" StepWidth="1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.drug" xsi:type="dom:StringMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr">
+              <dom:Type Code="pump_drug_name" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Drug</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.vtbi" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="157884" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">Volume to be infused</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="263762" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">mL</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="2000" StepWidth="1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.pump_state" xsi:type="dom:EnumStringMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr">
+              <dom:Type Code="pump_state" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Pump state</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+              <dom:AllowedValue>
+                <dom:Value>STOPPED</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>RUNNING</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>PAUSED</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>KVO</dom:Value>
+              </dom:AllowedValue>
+            </dom:Metric>
+            <dom:Metric Handle="m.rate" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="0.1">
+              <dom:Type Code="157784" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">Infusion rate</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="265266" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">mL/h</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="1200" StepWidth="0.1"/>
+            </dom:Metric>
+          </dom:Channel>
+        </dom:Vmd>
+      </dom:Mds>
+    </dom:MdDescription>
+    <dom:MdState>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd0" ActivationState="On"/>
+      <dom:State xsi:type="dom:AlertConditionState" DescriptorHandle="al.occlusion" ActivationState="On" Presence="false"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.vtbi" ActivationState="On">
+        <dom:MetricValue Value="500">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.infusion"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.occlusion_pressure" ActivationState="On">
+        <dom:MetricValue Value="500">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:SystemContextState" DescriptorHandle="SC.mds0" ActivationState="On"/>
+      <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.start_infusion" OperatingMode="En"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.battery" ActivationState="On">
+        <dom:MetricValue Value="84">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.status"/>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.downstream_occlusion.aud" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.downstream_occlusion.vis" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:SetValueOperationState" DescriptorHandle="op.occlusion_pressure" OperatingMode="En">
+        <dom:AllowedRange Lower="100" Upper="900" StepWidth="10"/>
+      </dom:State>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch0.vmd0" ActivationState="On"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.rate" ActivationState="On">
+        <dom:MetricValue Value="125">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.stop_infusion" OperatingMode="En"/>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.battery_low.vis" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.battery_low.aud" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.clear_volume" OperatingMode="En"/>
+      <dom:State xsi:type="dom:LimitAlertConditionState" DescriptorHandle="al.battery_low" ActivationState="On" Presence="false" MonitoredAlertLimits="HiOff">
+        <dom:Limits Lower="20"/>
+      </dom:State>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.line"/>
+      <dom:State xsi:type="dom:AlertConditionState" DescriptorHandle="al.infusion_complete" ActivationState="On" Presence="false"/>
+      <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.bolus" OperatingMode="En"/>
+      <dom:State xsi:type="dom:MdsState" DescriptorHandle="mds0" ActivationState="On" OperatingMode="Dmo"/>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.infusion_complete.vis" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.status"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.volume_infused" ActivationState="On">
+        <dom:MetricValue Value="0">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:SetStringOperationState" DescriptorHandle="op.drug" OperatingMode="En"/>
+      <dom:State xsi:type="dom:StringMetricState" DescriptorHandle="m.drug" ActivationState="On">
+        <dom:MetricValue Value="Ringer's lactate">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:AlertSystemState" DescriptorHandle="alerts.mds0" ActivationState="On">
+        <dom:SystemSignalActivation Manifestation="Aud" State="On"/>
+        <dom:SystemSignalActivation Manifestation="Vis" State="On"/>
+      </dom:State>
+      <dom:State xsi:type="dom:EnumStringMetricState" DescriptorHandle="m.pump_state" ActivationState="On">
+        <dom:MetricValue Value="RUNNING">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:RealTimeSampleArrayMetricState" DescriptorHandle="m.line_pressure" ActivationState="On">
+        <dom:MetricValue>
+          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:ScoState" DescriptorHandle="sco.mds0" ActivationState="On"/>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.infusion"/>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.line"/>
+      <dom:State xsi:type="dom:SetValueOperationState" DescriptorHandle="op.vtbi" OperatingMode="En">
+        <dom:AllowedRange Lower="0" Upper="2000" StepWidth="1"/>
+      </dom:State>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.infusion_complete.aud" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:SetStringOperationState" DescriptorHandle="op.pump_state" OperatingMode="En">
+        <dom:AllowedValues>
+          <dom:Value>STOPPED</dom:Value>
+          <dom:Value>RUNNING</dom:Value>
+          <dom:Value>PAUSED</dom:Value>
+          <dom:Value>KVO</dom:Value>
+        </dom:AllowedValues>
+      </dom:State>
+      <dom:State xsi:type="dom:SetValueOperationState" DescriptorHandle="op.rate" OperatingMode="En">
+        <dom:AllowedRange Lower="0" Upper="1200" StepWidth="0.1"/>
+      </dom:State>
+      <dom:State xsi:type="dom:PatientContextState" DescriptorHandle="PC.mds0" Handle="PC.mds0.state" ContextAssociation="Assoc">
+        <dom:CoreData>
+          <dom:Givenname>Alex</dom:Givenname>
+          <dom:Familyname>Example</dom:Familyname>
+          <dom:Sex>Unspec</dom:Sex>
+          <dom:PatientType>Ad</dom:PatientType>
+          <dom:DateOfBirth>1990-01-01</dom:DateOfBirth>
+          <dom:Height MeasuredValue="170">
+            <dom:MeasurementUnit Code="264184" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:ConceptDescription Lang="en-US">cm</dom:ConceptDescription>
+            </dom:MeasurementUnit>
+          </dom:Height>
+          <dom:Weight MeasuredValue="70">
+            <dom:MeasurementUnit Code="266016" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:ConceptDescription Lang="en-US">kg</dom:ConceptDescription>
+            </dom:MeasurementUnit>
+          </dom:Weight>
+        </dom:CoreData>
+      </dom:State>
+      <dom:State xsi:type="dom:LocationContextState" DescriptorHandle="LC.mds0" Handle="LC.mds0.state" ContextAssociation="Assoc">
+        <dom:Validator Root="rootWithNoMeaning" Extension="System"/>
+        <dom:Identification Root="sdc.ctxt.loc.detail" Extension="HOSP///CU1//Toolbox"/>
+        <dom:LocationDetail PoC="CU1" Bed="Toolbox" Facility="HOSP"/>
+      </dom:State>
+    </dom:MdState>
+  </msg:Mdib>
+</msg:GetMdibResponse>

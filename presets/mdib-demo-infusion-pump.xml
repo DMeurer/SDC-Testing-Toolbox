@@ -22,12 +22,20 @@
           <pm:Operation Handle="pump.set-rate" xsi:type="pm:SetValueOperationDescriptor" OperationTarget="pump.rate"/>
           <pm:Operation Handle="pump.set-mode" xsi:type="pm:SetStringOperationDescriptor" OperationTarget="pump.mode" MaxLength="6"/>
         </pm:Sco>
+        <pm:MetaData>
+          <pm:Manufacturer>Toolbox</pm:Manufacturer>
+          <pm:ModelName>Dosis 50</pm:ModelName>
+          <pm:ModelNumber>50</pm:ModelNumber>
+        </pm:MetaData>
+        <pm:SystemContext Handle="pump.context">
+          <pm:LocationContext Handle="pump.location"/>
+        </pm:SystemContext>
         <pm:Vmd Handle="pump.delivery">
           <pm:Type Code="demo-delivery" CodingSystem="urn:sdc-testing-toolbox:private"><pm:ConceptDescription Lang="en">Synthetic delivery controls</pm:ConceptDescription></pm:Type>
           <pm:Channel Handle="pump.controls">
             <pm:Metric Handle="pump.rate" xsi:type="pm:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Cont" Resolution="0.1">
-              <pm:Type Code="demo-infusion-rate" CodingSystem="urn:sdc-testing-toolbox:private"><pm:ConceptDescription Lang="en">Demo delivery rate</pm:ConceptDescription></pm:Type>
-              <pm:Unit Code="demo-ml-per-hour" CodingSystem="urn:sdc-testing-toolbox:private"><pm:ConceptDescription Lang="en">mL/h</pm:ConceptDescription></pm:Unit>
+              <pm:Type Code="157784"><pm:ConceptDescription Lang="en">Demo delivery rate</pm:ConceptDescription></pm:Type>
+              <pm:Unit Code="265266"><pm:ConceptDescription Lang="en">mL/h</pm:ConceptDescription></pm:Unit>
               <pm:TechnicalRange Lower="0" Upper="50" StepWidth="0.1"/>
             </pm:Metric>
             <pm:Metric Handle="pump.mode" xsi:type="pm:EnumStringMetricDescriptor" MetricCategory="Set" MetricAvailability="Cont">
@@ -43,6 +51,11 @@
     </pm:MdDescription>
     <pm:MdState>
       <pm:State DescriptorHandle="pump" xsi:type="pm:MdsState" ActivationState="On"/>
+      <pm:State DescriptorHandle="pump.context" xsi:type="pm:SystemContextState" ActivationState="On"/>
+      <pm:State DescriptorHandle="pump.location" Handle="pump.location.state" xsi:type="pm:LocationContextState" ContextAssociation="Assoc">
+        <pm:Identification Root="sdc.ctxt.loc.detail" Extension="HOSP///CU1//Toolbox"/>
+        <pm:LocationDetail PoC="CU1" Bed="Toolbox" Facility="HOSP"/>
+      </pm:State>
       <pm:State DescriptorHandle="pump.alerts" xsi:type="pm:AlertSystemState" ActivationState="On"/>
       <pm:State DescriptorHandle="pump.demo-occlusion" xsi:type="pm:AlertConditionState" ActivationState="On" Presence="false"/>
       <pm:State DescriptorHandle="pump.demo-occlusion.visual" xsi:type="pm:AlertSignalState" ActivationState="On" Presence="Off"/>

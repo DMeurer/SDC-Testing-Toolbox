@@ -1,0 +1,125 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<msg:GetMdibResponse xmlns:msg="http://standards.ieee.org/downloads/11073/11073-10207-2017/message" xmlns:dom="http://standards.ieee.org/downloads/11073/11073-10207-2017/participant" xmlns:ext="http://standards.ieee.org/downloads/11073/11073-10207-2017/extension" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:tb="urn:sdc-testing-toolbox:behaviour" SequenceId="urn:uuid:bbd71bee-1d96-522d-9d12-fe3a57c97553" MdibVersion="0">
+  <msg:Mdib SequenceId="urn:uuid:bbd71bee-1d96-522d-9d12-fe3a57c97553" MdibVersion="0">
+    <dom:MdDescription>
+      <dom:Mds Handle="mds0">
+        <ext:Extension>
+          <tb:Device FriendlyName="Operating Table" ext:MustUnderstand="false"/>
+          <tb:Preset Name="Operating Table" Description="Read-only table height and signed positioning angles for the device monitor." ext:MustUnderstand="false"/>
+        </ext:Extension>
+        <dom:Type Code="toolbox-mds" CodingSystem="urn:sdc-testing-toolbox:private">
+          <dom:ConceptDescription Lang="en-US">SDC-testing-toolbox virtual device</dom:ConceptDescription>
+        </dom:Type>
+        <dom:AlertSystem Handle="alerts.mds0" SelfCheckPeriod="PT30S"/>
+        <dom:Sco Handle="sco.mds0"/>
+        <dom:MetaData>
+          <dom:Manufacturer>Toolbox</dom:Manufacturer>
+          <dom:ModelName>Ergon 1100</dom:ModelName>
+          <dom:ModelNumber>1100</dom:ModelNumber>
+        </dom:MetaData>
+        <dom:SystemContext Handle="SC.mds0">
+          <dom:PatientContext Handle="PC.mds0"/>
+          <dom:LocationContext Handle="LC.mds0"/>
+        </dom:SystemContext>
+        <dom:Vmd Handle="vmd.position">
+          <dom:Type Code="position" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">Position</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch.position">
+            <dom:Type Code="position" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Position</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Metric Handle="m.lateral_angle" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="0.1">
+              <dom:Type Code="table_lateral_angle" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Lateral Angle</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262880" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">°</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="-30" Upper="30" StepWidth="0.1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.height" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="table_height" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Height</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="263442" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">mm</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="500" Upper="1100" StepWidth="1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.trendelenburg" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="0.1">
+              <dom:Type Code="table_trendelenburg" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Trendelenburg</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262880" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">°</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="-30" Upper="30" StepWidth="0.1"/>
+            </dom:Metric>
+          </dom:Channel>
+        </dom:Vmd>
+        <dom:Vmd Handle="vmd0">
+          <dom:Type Code="toolbox-vmd" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">User defined data sources</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch0.vmd0">
+            <dom:Type Code="toolbox-channel" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Default channel</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Channel>
+        </dom:Vmd>
+      </dom:Mds>
+    </dom:MdDescription>
+    <dom:MdState>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd0" ActivationState="On"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.lateral_angle" ActivationState="On">
+        <dom:MetricValue Value="7.6">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:SystemContextState" DescriptorHandle="SC.mds0" ActivationState="On"/>
+      <dom:State xsi:type="dom:AlertSystemState" DescriptorHandle="alerts.mds0" ActivationState="On">
+        <dom:SystemSignalActivation Manifestation="Aud" State="On"/>
+      </dom:State>
+      <dom:State xsi:type="dom:MdsState" DescriptorHandle="mds0" ActivationState="On"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.height" ActivationState="On">
+        <dom:MetricValue Value="780">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:ScoState" DescriptorHandle="sco.mds0" ActivationState="On"/>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch0.vmd0" ActivationState="On"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.trendelenburg" ActivationState="On">
+        <dom:MetricValue Value="-8">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.position"/>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.position"/>
+      <dom:State xsi:type="dom:PatientContextState" DescriptorHandle="PC.mds0" Handle="PC.mds0.state" ContextAssociation="Assoc">
+        <dom:CoreData>
+          <dom:Givenname>Alex</dom:Givenname>
+          <dom:Familyname>Example</dom:Familyname>
+          <dom:Sex>Unspec</dom:Sex>
+          <dom:PatientType>Ad</dom:PatientType>
+          <dom:DateOfBirth>1990-01-01</dom:DateOfBirth>
+          <dom:Height MeasuredValue="170">
+            <dom:MeasurementUnit Code="264184" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:ConceptDescription Lang="en-US">cm</dom:ConceptDescription>
+            </dom:MeasurementUnit>
+          </dom:Height>
+          <dom:Weight MeasuredValue="70">
+            <dom:MeasurementUnit Code="266016" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:ConceptDescription Lang="en-US">kg</dom:ConceptDescription>
+            </dom:MeasurementUnit>
+          </dom:Weight>
+        </dom:CoreData>
+      </dom:State>
+      <dom:State xsi:type="dom:LocationContextState" DescriptorHandle="LC.mds0" Handle="LC.mds0.state" ContextAssociation="Assoc">
+        <dom:Validator Root="rootWithNoMeaning" Extension="System"/>
+        <dom:Identification Root="sdc.ctxt.loc.detail" Extension="HOSP///CU1//Toolbox"/>
+        <dom:LocationDetail PoC="CU1" Bed="Toolbox" Facility="HOSP"/>
+      </dom:State>
+    </dom:MdState>
+  </msg:Mdib>
+</msg:GetMdibResponse>

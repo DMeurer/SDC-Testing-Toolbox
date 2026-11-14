@@ -21,7 +21,7 @@ from sdc11073.xml_types.wsd_types import ScopesType
 from .handlers import RefusedExecution, reporting_refusals
 from .mdib_io import live_entities
 from .model import (
-    ActionSpec, AlertSpec, DeviceInfo, MetricKind, MetricSpec, RemoteRange, coerce_metric_value, numeric_value_in_ranges,
+    ActionSpec, AlertSpec, CardSettings, DeviceInfo, MetricKind, MetricSpec, RemoteRange, coerce_metric_value, numeric_value_in_ranges,
 )
 
 logger = logging.getLogger("sdctoolbox.native_mdib")
@@ -35,21 +35,36 @@ def label(descriptor) -> str:
 
 
 def device_identity(mdib) -> tuple[DeviceInfo, str | None]:
-    """ThisModel fields and serial number from the first MDS MetaData; toolbox defaults otherwise."""
+    """ThisModel and ThisDevice from the first MDS: its MetaData, then stored toolbox behaviour.
+
+    Toolbox defaults fill whatever neither gives.
+    """
     mds = next(iter(mdib.entities.by_node_type(pm.MdsDescriptor)), None)
     meta = getattr(getattr(mds, "descriptor", None), "MetaData", None)
-    if meta is None:
-        return DeviceInfo(), None
+    extra = getattr(mdib, "toolbox_behaviour", {}).get(getattr(mds, "handle", None), {}).get("device", {})
 
     def first(values) -> str | None:
         return next((getattr(value, "text", value) for value in values or () if getattr(value, "text", value)), None)
 
     defaults = DeviceInfo()
     return DeviceInfo(
-        manufacturer=first(meta.Manufacturer) or defaults.manufacturer,
-        model_name=first(meta.ModelName) or defaults.model_name,
-        model_number=meta.ModelNumber or defaults.model_number,
-    ), first(meta.SerialNumber)
+        friendly_name=extra.get("friendly_name", ""),
+        manufacturer=first(getattr(meta, "Manufacturer", None)) or defaults.manufacturer,
+        manufacturer_url=extra.get("manufacturer_url", defaults.manufacturer_url),
+        model_name=first(getattr(meta, "ModelName", None)) or defaults.model_name,
+        model_number=getattr(meta, "ModelNumber", None) or defaults.model_number,
+        firmware_version=extra.get("firmware_version", defaults.firmware_version),
+    ), first(getattr(meta, "SerialNumber", None))
+
+
+def card_settings(behaviour: dict[str, dict]) -> dict[str, CardSettings]:
+    """How stored toolbox behaviour says each metric's card looks."""
+    return {handle: values["card"] for handle, values in behaviour.items() if "card" in values}
+
+
+def preset_info(behaviour: dict[str, dict]) -> dict[str, str] | None:
+    """The name and description stored toolbox behaviour gives a preset file, if any."""
+    return next((values["preset"] for values in behaviour.values() if "preset" in values), None)
 
 
 @dataclass
@@ -133,6 +148,20 @@ def apply_behaviour(mdib, behaviour: dict[str, dict], specs: dict[str, MetricSpe
     actions = {}
     for handle, values in behaviour.items():
         entity = mdib.entities.by_handle(handle)
+        if values.keys() & {"device", "preset"}:
+            if entity is None or entity.node_type != pm.MdsDescriptor:
+                raise ValueError(f"toolbox device behaviour on {handle!r}, which is not an Mds")
+            # Read before the provider exists, by device_identity() and preset_info().
+            values = {key: value for key, value in values.items() if key not in ("device", "preset")}
+            if not values:
+                continue
+        if "card" in values:
+            if entity is None or not entity.descriptor.is_metric_descriptor:
+                raise ValueError(f"toolbox card behaviour on {handle!r}, which is not a metric")
+            # Read by card_settings(); the GUI applies it.
+            values = {key: value for key, value in values.items() if key != "card"}
+            if not values:
+                continue
         if "effects" in values:
             if entity is None or entity.node_type != pm.ActivateOperationDescriptor:
                 raise ValueError(f"toolbox action behaviour on {handle!r}, which is not an ActivateOperation")

@@ -18,17 +18,17 @@ BOOTSTRAP_MDIB_PATH = pathlib.Path(__file__).with_name("mdib_bootstrap.xml")
 # Ready-made configs shipped with the tool. The File menu builds its preset list from here.
 PRESET_DIR = pathlib.Path(__file__).resolve().parent.parent / "presets"
 SHIPPED_PRESET_FILES = {
-    "endoscopic-camera.json",
-    "hf-generator.json",
-    "infusion-pump.json",
+    "endoscopic-camera.xml",
+    "hf-generator.xml",
+    "infusion-pump.xml",
     "mdib-demo-monitor.xml",
     "mdib-demo-infusion-pump.xml",
-    "insufflator.json",
-    "operating-table.json",
-    "patient-monitor.json",
-    "surgical-microscope.json",
-    "ventilation-pressure.json",
-    "ventilator.json",
+    "insufflator.xml",
+    "operating-table.xml",
+    "patient-monitor.xml",
+    "surgical-microscope.xml",
+    "ventilation-pressure.xml",
+    "ventilator.xml",
 }
 
 # Handles that exist in the bootstrap MDIB and are referenced by the services.

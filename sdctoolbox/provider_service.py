@@ -47,6 +47,7 @@ from .model import (
     DEFAULT_PATIENT,
     ActionSpec,
     AlertSpec,
+    CardSettings,
     Coding,
     DeviceInfo,
     LocationInfo,
@@ -243,6 +244,10 @@ class ProviderService:
         self._adopted_metrics: set[str] = set()
         # Sample arrays a loaded behaviour export marks as generated.
         self._file_generated: set[str] = set()
+        # The menu name and description a behaviour export records, as {"name", "description"}.
+        self.preset: dict[str, str] | None = None
+        # How each metric's card looks, by handle. The GUI keeps it current; a behaviour export stores it.
+        self.card_settings: dict[str, CardSettings] = {}
         self._restarting = False
         self._lifecycle_lock = threading.RLock()
 
@@ -324,6 +329,15 @@ class ProviderService:
             self._mdib = mdib if mdib is not None else ProviderMdib.from_mdib_file(str(constants.BOOTSTRAP_MDIB_PATH))
             mdib = self._mdib
             mdib.sequence_id = uuid.uuid4().urn
+            self.preset = native.preset_info(getattr(mdib, "toolbox_behaviour", {})) if from_mdib_file else None
+            self.card_settings = native.card_settings(getattr(mdib, "toolbox_behaviour", {})) if from_mdib_file else {}
+            if not from_mdib_file:
+                # BICEPS's own place for who made the device, so consumers reading only the MDIB see it too.
+                meta = pm_types.MetaData()
+                meta.Manufacturer = [pm_types.LocalizedText(self.device.manufacturer)]
+                meta.ModelName = [pm_types.LocalizedText(self.device.model_name)]
+                meta.ModelNumber = self.device.model_number
+                mdib.descriptions.handle.get_one(constants.MDS_HANDLE).MetaData = meta
             if from_mdib_file:
                 adopted = native.adopt(mdib)
                 self._specs = adopted.specs
@@ -448,7 +462,7 @@ class ProviderService:
             self.stop_generator()
             names = ("_operations", "_specs", "_alerts", "_alert_truths", "_alert_signals", "_actions",
                      "_sections", "_pending_alert_sources", "_mds_mode_before_demo", "_adopted_metrics",
-                     "_file_generated")
+                     "_file_generated", "preset", "card_settings")
             try:
                 with self._lock:
                     self._restarting = True
@@ -2101,7 +2115,22 @@ class ProviderService:
                 if spec.is_sample_array and handle not in self._sample_generator.pinned
                 and (handle in driven or self.generator_running)
             }
-            return mdib_io.behaviour_elements(self._specs, self._actions, generated)
+            result = mdib_io.behaviour_elements(self._specs, self._actions, generated, self.card_settings)
+            defaults = DeviceInfo()
+            device = {
+                # shortcut: a friendly name equal to one the toolbox derives from the instance name
+                # counts as unnamed; track the explicit name if a user ever needs to save exactly that.
+                "friendly_name": self.friendly_name
+                if self.friendly_name not in (self.instance_name, f"Toolbox {self.instance_name}") else "",
+                "firmware_version": self.device.firmware_version
+                if self.device.firmware_version != defaults.firmware_version else "",
+                "manufacturer_url": self.device.manufacturer_url
+                if self.device.manufacturer_url != defaults.manufacturer_url else "",
+            }
+            mds = mdib_io.mds_elements(device, self.preset)
+            if mds:
+                result.setdefault(self._anchor_mds(), []).extend(mds)
+            return result
 
     def list_actions(self) -> dict[str, ActionSpec]:
         """The specs of every action we published, keyed by handle."""

@@ -20,12 +20,20 @@
           </pm:AlertCondition>
           <pm:AlertSignal Handle="monitor.demo-event.visual" ConditionSignaled="monitor.demo-event" Manifestation="Vis" Latching="false"/>
         </pm:AlertSystem>
+        <pm:MetaData>
+          <pm:Manufacturer>Toolbox</pm:Manufacturer>
+          <pm:ModelName>Pulsar 1</pm:ModelName>
+          <pm:ModelNumber>1</pm:ModelNumber>
+        </pm:MetaData>
+        <pm:SystemContext Handle="monitor.context">
+          <pm:LocationContext Handle="monitor.location"/>
+        </pm:SystemContext>
         <pm:Vmd Handle="monitor.vitals">
           <pm:Type Code="demo-vitals" CodingSystem="urn:sdc-testing-toolbox:private"><pm:ConceptDescription Lang="en">Synthetic vitals</pm:ConceptDescription></pm:Type>
           <pm:Channel Handle="monitor.vitals.channel">
             <pm:Metric Handle="monitor.pulse" xsi:type="pm:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
-              <pm:Type Code="demo-pulse" CodingSystem="urn:sdc-testing-toolbox:private"><pm:ConceptDescription Lang="en">Demo pulse rate</pm:ConceptDescription></pm:Type>
-              <pm:Unit Code="demo-beats-per-minute" CodingSystem="urn:sdc-testing-toolbox:private"><pm:ConceptDescription Lang="en">beats/min</pm:ConceptDescription></pm:Unit>
+              <pm:Type Code="149530"><pm:ConceptDescription Lang="en">Demo pulse rate</pm:ConceptDescription></pm:Type>
+              <pm:Unit Code="264864"><pm:ConceptDescription Lang="en">beats/min</pm:ConceptDescription></pm:Unit>
               <pm:TechnicalRange Lower="30" Upper="200"/>
             </pm:Metric>
             <pm:Metric Handle="monitor.trace" xsi:type="pm:RealTimeSampleArrayMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="0.1" SamplePeriod="PT0.02S">
@@ -38,6 +46,11 @@
     </pm:MdDescription>
     <pm:MdState>
       <pm:State DescriptorHandle="monitor" xsi:type="pm:MdsState" ActivationState="On"/>
+      <pm:State DescriptorHandle="monitor.context" xsi:type="pm:SystemContextState" ActivationState="On"/>
+      <pm:State DescriptorHandle="monitor.location" Handle="monitor.location.state" xsi:type="pm:LocationContextState" ContextAssociation="Assoc">
+        <pm:Identification Root="sdc.ctxt.loc.detail" Extension="HOSP///CU1//Toolbox"/>
+        <pm:LocationDetail PoC="CU1" Bed="Toolbox" Facility="HOSP"/>
+      </pm:State>
       <pm:State DescriptorHandle="monitor.alerts" xsi:type="pm:AlertSystemState" ActivationState="On"/>
       <pm:State DescriptorHandle="monitor.demo-event" xsi:type="pm:AlertConditionState" ActivationState="On" Presence="false"/>
       <pm:State DescriptorHandle="monitor.demo-event.visual" xsi:type="pm:AlertSignalState" ActivationState="On" Presence="Off"/>

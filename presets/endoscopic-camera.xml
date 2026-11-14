@@ -1,0 +1,414 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<msg:GetMdibResponse xmlns:msg="http://standards.ieee.org/downloads/11073/11073-10207-2017/message" xmlns:dom="http://standards.ieee.org/downloads/11073/11073-10207-2017/participant" xmlns:ext="http://standards.ieee.org/downloads/11073/11073-10207-2017/extension" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:tb="urn:sdc-testing-toolbox:behaviour" SequenceId="urn:uuid:390accd8-6c3a-5fc3-9100-1e707cab2e12" MdibVersion="0">
+  <msg:Mdib SequenceId="urn:uuid:390accd8-6c3a-5fc3-9100-1e707cab2e12" MdibVersion="0">
+    <dom:MdDescription>
+      <dom:Mds Handle="mds0">
+        <ext:Extension>
+          <tb:Device FriendlyName="Endoscopic Camera" FirmwareVersion="5.2.0" ext:MustUnderstand="false"/>
+          <tb:Preset Name="Endoscopic camera" Description="Camera control unit and its light source: image processing settings, white balance, and the colour temperature of the illumination." ext:MustUnderstand="false"/>
+        </ext:Extension>
+        <dom:Type Code="toolbox-mds" CodingSystem="urn:sdc-testing-toolbox:private">
+          <dom:ConceptDescription Lang="en-US">SDC-testing-toolbox virtual device</dom:ConceptDescription>
+        </dom:Type>
+        <dom:AlertSystem Handle="alerts.mds0" SelfCheckPeriod="PT30S">
+          <dom:AlertCondition Handle="al.lamp_service" xsi:type="dom:LimitAlertConditionDescriptor" Kind="Tec" Priority="Lo">
+            <dom:Type Code="lamp_service_due" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Lamp service due</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Source>m.lamp_hours</dom:Source>
+            <dom:MaxLimits Lower="0" Upper="20000"/>
+          </dom:AlertCondition>
+          <dom:AlertCondition Handle="al.image_too_dark" xsi:type="dom:LimitAlertConditionDescriptor" Kind="Tec" Priority="Me">
+            <dom:Type Code="image_too_dark" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Image too dark</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Source>m.light_intensity</dom:Source>
+            <dom:MaxLimits Lower="0" Upper="100"/>
+          </dom:AlertCondition>
+          <dom:AlertSignal Handle="sig.image_too_dark.vis" ConditionSignaled="al.image_too_dark" Manifestation="Vis" Latching="false" SignalDelegationSupported="false"/>
+          <dom:AlertSignal Handle="sig.image_too_dark.aud" ConditionSignaled="al.image_too_dark" Manifestation="Aud" Latching="false" SignalDelegationSupported="false"/>
+          <dom:AlertSignal Handle="sig.lamp_service_due.aud" ConditionSignaled="al.lamp_service" Manifestation="Aud" Latching="false" SignalDelegationSupported="false"/>
+          <dom:AlertSignal Handle="sig.lamp_service_due.vis" ConditionSignaled="al.lamp_service" Manifestation="Vis" Latching="false" SignalDelegationSupported="false"/>
+        </dom:AlertSystem>
+        <dom:Sco Handle="sco.mds0">
+          <dom:Operation Handle="act.lamp_standby" xsi:type="dom:ActivateOperationDescriptor" OperationTarget="vmd.light_source">
+            <ext:Extension>
+              <tb:Action Note="Drop the lamp out of the light path without switching it off" ext:MustUnderstand="false">
+                <tb:Effect Target="m.light_intensity" Value="0"/>
+                <tb:Effect Target="m.light_state" Value="STANDBY"/>
+              </tb:Action>
+            </ext:Extension>
+            <dom:Type Code="lamp_to_standby" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Lamp to standby</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Operation>
+          <dom:Operation Handle="op.gain" xsi:type="dom:SetValueOperationDescriptor" OperationTarget="m.gain">
+            <dom:Type Code="set_cam_gain" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="op.image_profile" xsi:type="dom:SetStringOperationDescriptor" OperationTarget="m.image_profile">
+            <dom:Type Code="set_cam_image_profile" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="op.white_balance" xsi:type="dom:SetValueOperationDescriptor" OperationTarget="m.white_balance">
+            <dom:Type Code="set_cam_white_balance" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="op.light_intensity" xsi:type="dom:SetValueOperationDescriptor" OperationTarget="m.light_intensity">
+            <dom:Type Code="set_light_intensity" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="op.light_state" xsi:type="dom:SetStringOperationDescriptor" OperationTarget="m.light_state">
+            <dom:Type Code="set_light_state" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="act.capture_still" xsi:type="dom:ActivateOperationDescriptor" OperationTarget="vmd.camera">
+            <ext:Extension>
+              <tb:Action Note="SDC carries no image data, so this only records that a capture happened" ext:MustUnderstand="false"/>
+            </ext:Extension>
+            <dom:Type Code="capture_still" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Capture still</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Operation>
+          <dom:Operation Handle="op.exposure" xsi:type="dom:SetValueOperationDescriptor" OperationTarget="m.exposure">
+            <dom:Type Code="set_cam_exposure_time" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="act.white_balance" xsi:type="dom:ActivateOperationDescriptor" OperationTarget="vmd.camera">
+            <ext:Extension>
+              <tb:Action Note="Point at a white swab and press. Nothing to write: the device works out the value" ext:MustUnderstand="false">
+                <tb:Effect Target="m.gain" Value="6"/>
+                <tb:Effect Target="m.white_balance" Value="5600"/>
+              </tb:Action>
+            </ext:Extension>
+            <dom:Type Code="white_balance_now" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">White balance now</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Operation>
+          <dom:Operation Handle="op.enhancement" xsi:type="dom:SetStringOperationDescriptor" OperationTarget="m.enhancement">
+            <dom:Type Code="set_cam_enhancement_mode" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+        </dom:Sco>
+        <dom:MetaData>
+          <dom:Manufacturer>Toolbox</dom:Manufacturer>
+          <dom:ModelName>Endovision 4K</dom:ModelName>
+          <dom:ModelNumber>4K-2</dom:ModelNumber>
+        </dom:MetaData>
+        <dom:SystemContext Handle="SC.mds0">
+          <dom:PatientContext Handle="PC.mds0"/>
+          <dom:LocationContext Handle="LC.mds0"/>
+        </dom:SystemContext>
+        <dom:Vmd Handle="vmd0">
+          <dom:Type Code="toolbox-vmd" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">User defined data sources</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch0.vmd0">
+            <dom:Type Code="toolbox-channel" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Default channel</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Channel>
+        </dom:Vmd>
+        <dom:Vmd Handle="vmd.light_source">
+          <dom:Type Code="light_source" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">Light source</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch.light_source">
+            <dom:Type Code="light_source" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Light source</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Metric Handle="m.light_intensity" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="light_intensity" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Light intensity</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262688" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">%</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="100" StepWidth="1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.light_state" xsi:type="dom:EnumStringMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr">
+              <dom:Type Code="light_state" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Lamp</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+              <dom:AllowedValue>
+                <dom:Value>OFF</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>STANDBY</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>ON</dom:Value>
+              </dom:AllowedValue>
+            </dom:Metric>
+            <dom:Metric Handle="m.light_spectrum" xsi:type="dom:DistributionSampleArrayMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" DeterminationPeriod="PT0.25S" Resolution="0.1">
+              <ext:Extension>
+                <tb:Generator DistributionShape="bimodal" ext:MustUnderstand="false"/>
+              </ext:Extension>
+              <dom:Type Code="light_spectrum" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Light spectrum</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="light_relative_intensity" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">rel.</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="100" StepWidth="0.1"/>
+              <dom:DomainUnit Code="wavelength_nm" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">nm</dom:ConceptDescription>
+              </dom:DomainUnit>
+              <dom:DistributionRange Lower="380" Upper="780" StepWidth="12.9032"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.lamp_hours" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="light_lamp_hours" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Lamp hours</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="264384" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">h</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="20000" StepWidth="1"/>
+            </dom:Metric>
+          </dom:Channel>
+        </dom:Vmd>
+        <dom:Vmd Handle="vmd.camera">
+          <dom:Type Code="camera" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">Camera</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch.camera">
+            <dom:Type Code="camera" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Camera</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Metric Handle="m.colour_histogram" xsi:type="dom:DistributionSampleArrayMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" DeterminationPeriod="PT0.25S" Resolution="1">
+              <ext:Extension>
+                <tb:Generator ext:MustUnderstand="false"/>
+              </ext:Extension>
+              <dom:Type Code="cam_luminance_histogram" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Luminance histogram</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="cam_pixel_count" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">px</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="5000" StepWidth="1"/>
+              <dom:DomainUnit Code="cam_luminance_level" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">level</dom:ConceptDescription>
+              </dom:DomainUnit>
+              <dom:DistributionRange Lower="0" Upper="255" StepWidth="8.22581"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.brightness_trace" xsi:type="dom:RealTimeSampleArrayMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Cont" DeterminationPeriod="PT0.04S" Resolution="0.1" SamplePeriod="PT0.04S">
+              <ext:Extension>
+                <tb:Generator Shape="noise" CycleSeconds="1.20" ext:MustUnderstand="false"/>
+              </ext:Extension>
+              <dom:Type Code="cam_scene_brightness" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Scene brightness</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262688" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">%</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="100" StepWidth="0.1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.gain" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="0.5">
+              <dom:Type Code="cam_gain" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Gain</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="268576" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">dB</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="24" StepWidth="0.5"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.enhancement" xsi:type="dom:EnumStringMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr">
+              <dom:Type Code="cam_enhancement_mode" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Contrast enhancement</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+              <dom:AllowedValue>
+                <dom:Value>OFF</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>TISSUE</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>VESSEL</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>FLUORESCENCE</dom:Value>
+              </dom:AllowedValue>
+            </dom:Metric>
+            <dom:Metric Handle="m.white_balance" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="50">
+              <dom:Type Code="cam_white_balance" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">White balance</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="266528" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">K</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="2800" Upper="7500" StepWidth="50"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.image_profile" xsi:type="dom:EnumStringMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr">
+              <dom:Type Code="cam_image_profile" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Image profile</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+              <dom:AllowedValue>
+                <dom:Value>LAPAROSCOPY</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>ARTHROSCOPY</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>HYSTEROSCOPY</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>UROLOGY</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>ENT</dom:Value>
+              </dom:AllowedValue>
+            </dom:Metric>
+            <dom:Metric Handle="m.exposure" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="0.1">
+              <dom:Type Code="cam_exposure_time" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Exposure time</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="264338" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">ms</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0.5" Upper="40" StepWidth="0.1"/>
+            </dom:Metric>
+          </dom:Channel>
+        </dom:Vmd>
+      </dom:Mds>
+    </dom:MdDescription>
+    <dom:MdState>
+      <dom:State xsi:type="dom:EnumStringMetricState" DescriptorHandle="m.image_profile" ActivationState="On">
+        <dom:MetricValue Value="LAPAROSCOPY">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.gain" ActivationState="On">
+        <dom:MetricValue Value="6">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:SetStringOperationState" DescriptorHandle="op.light_state" OperatingMode="En">
+        <dom:AllowedValues>
+          <dom:Value>OFF</dom:Value>
+          <dom:Value>STANDBY</dom:Value>
+          <dom:Value>ON</dom:Value>
+        </dom:AllowedValues>
+      </dom:State>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.lamp_hours" ActivationState="On">
+        <dom:MetricValue Value="1840">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:SystemContextState" DescriptorHandle="SC.mds0" ActivationState="On"/>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch0.vmd0" ActivationState="On"/>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.light_source"/>
+      <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.capture_still" OperatingMode="En"/>
+      <dom:State xsi:type="dom:LimitAlertConditionState" DescriptorHandle="al.lamp_service" ActivationState="On" Presence="false" MonitoredAlertLimits="LoOff">
+        <dom:Limits Upper="5000"/>
+      </dom:State>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.image_too_dark.aud" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:ScoState" DescriptorHandle="sco.mds0" ActivationState="On"/>
+      <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.lamp_standby" OperatingMode="En"/>
+      <dom:State xsi:type="dom:AlertSystemState" DescriptorHandle="alerts.mds0" ActivationState="On">
+        <dom:SystemSignalActivation Manifestation="Aud" State="On"/>
+        <dom:SystemSignalActivation Manifestation="Vis" State="On"/>
+      </dom:State>
+      <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.white_balance" OperatingMode="En"/>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.lamp_service_due.aud" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:DistributionSampleArrayMetricState" DescriptorHandle="m.colour_histogram" ActivationState="On">
+        <dom:MetricValue>
+          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.image_too_dark.vis" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:SetValueOperationState" DescriptorHandle="op.white_balance" OperatingMode="En">
+        <dom:AllowedRange Lower="2800" Upper="7500" StepWidth="50"/>
+      </dom:State>
+      <dom:State xsi:type="dom:DistributionSampleArrayMetricState" DescriptorHandle="m.light_spectrum" ActivationState="On">
+        <dom:MetricValue>
+          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.light_intensity" ActivationState="On">
+        <dom:MetricValue Value="70">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd0" ActivationState="On"/>
+      <dom:State xsi:type="dom:LimitAlertConditionState" DescriptorHandle="al.image_too_dark" ActivationState="On" Presence="false" MonitoredAlertLimits="HiOff">
+        <dom:Limits Lower="15"/>
+      </dom:State>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.white_balance" ActivationState="On">
+        <dom:MetricValue Value="5600">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.lamp_service_due.vis" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:SetValueOperationState" DescriptorHandle="op.exposure" OperatingMode="En">
+        <dom:AllowedRange Lower="0.5" Upper="40" StepWidth="0.1"/>
+      </dom:State>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.camera"/>
+      <dom:State xsi:type="dom:MdsState" DescriptorHandle="mds0" ActivationState="On" OperatingMode="Dmo"/>
+      <dom:State xsi:type="dom:SetStringOperationState" DescriptorHandle="op.image_profile" OperatingMode="En">
+        <dom:AllowedValues>
+          <dom:Value>LAPAROSCOPY</dom:Value>
+          <dom:Value>ARTHROSCOPY</dom:Value>
+          <dom:Value>HYSTEROSCOPY</dom:Value>
+          <dom:Value>UROLOGY</dom:Value>
+          <dom:Value>ENT</dom:Value>
+        </dom:AllowedValues>
+      </dom:State>
+      <dom:State xsi:type="dom:SetValueOperationState" DescriptorHandle="op.gain" OperatingMode="En">
+        <dom:AllowedRange Lower="0" Upper="24" StepWidth="0.5"/>
+      </dom:State>
+      <dom:State xsi:type="dom:EnumStringMetricState" DescriptorHandle="m.light_state" ActivationState="On">
+        <dom:MetricValue Value="ON">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.exposure" ActivationState="On">
+        <dom:MetricValue Value="8">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:SetValueOperationState" DescriptorHandle="op.light_intensity" OperatingMode="En">
+        <dom:AllowedRange Lower="0" Upper="100" StepWidth="1"/>
+      </dom:State>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.light_source"/>
+      <dom:State xsi:type="dom:SetStringOperationState" DescriptorHandle="op.enhancement" OperatingMode="En">
+        <dom:AllowedValues>
+          <dom:Value>OFF</dom:Value>
+          <dom:Value>TISSUE</dom:Value>
+          <dom:Value>VESSEL</dom:Value>
+          <dom:Value>FLUORESCENCE</dom:Value>
+        </dom:AllowedValues>
+      </dom:State>
+      <dom:State xsi:type="dom:EnumStringMetricState" DescriptorHandle="m.enhancement" ActivationState="On">
+        <dom:MetricValue Value="OFF">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:RealTimeSampleArrayMetricState" DescriptorHandle="m.brightness_trace" ActivationState="On">
+        <dom:MetricValue>
+          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.camera"/>
+      <dom:State xsi:type="dom:PatientContextState" DescriptorHandle="PC.mds0" Handle="PC.mds0.state" ContextAssociation="Assoc">
+        <dom:CoreData>
+          <dom:Givenname>Alex</dom:Givenname>
+          <dom:Familyname>Example</dom:Familyname>
+          <dom:Sex>Unspec</dom:Sex>
+          <dom:PatientType>Ad</dom:PatientType>
+          <dom:DateOfBirth>1990-01-01</dom:DateOfBirth>
+          <dom:Height MeasuredValue="170">
+            <dom:MeasurementUnit Code="264184" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:ConceptDescription Lang="en-US">cm</dom:ConceptDescription>
+            </dom:MeasurementUnit>
+          </dom:Height>
+          <dom:Weight MeasuredValue="70">
+            <dom:MeasurementUnit Code="266016" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:ConceptDescription Lang="en-US">kg</dom:ConceptDescription>
+            </dom:MeasurementUnit>
+          </dom:Weight>
+        </dom:CoreData>
+      </dom:State>
+      <dom:State xsi:type="dom:LocationContextState" DescriptorHandle="LC.mds0" Handle="LC.mds0.state" ContextAssociation="Assoc">
+        <dom:Validator Root="rootWithNoMeaning" Extension="System"/>
+        <dom:Identification Root="sdc.ctxt.loc.detail" Extension="HOSP///CU1//Toolbox"/>
+        <dom:LocationDetail PoC="CU1" Bed="Toolbox" Facility="HOSP"/>
+      </dom:State>
+    </dom:MdState>
+  </msg:Mdib>
+</msg:GetMdibResponse>

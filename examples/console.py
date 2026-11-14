@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 from sdc11073.xml_types import msg_types  # noqa: E402
 
-from sdctoolbox import config, constants  # noqa: E402
+from sdctoolbox import config, constants, native_mdib  # noqa: E402
 from sdctoolbox.consumer_service import ConsumerService  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
     AlertSpec,
@@ -855,9 +855,16 @@ def run_provider(args: argparse.Namespace) -> int:
             print(f"error: {exc}")
             return 2
 
-    device = device_config.device if device_config is not None and not isinstance(device_config, NativeMdibConfig) else None
+    device = friendly_name = serial_number = None
+    if isinstance(device_config, NativeMdibConfig):
+        # As run_toolbox does: the file says who the device is, the name stays unprefixed.
+        device, serial_number = native_mdib.device_identity(parse_mdib(device_config.xml))
+        friendly_name = device.friendly_name or args.name
+    elif device_config is not None:
+        device = device_config.device
     try:
-        service = ProviderService(ip=args.ip, instance_name=args.name, device=device)
+        service = ProviderService(ip=args.ip, instance_name=args.name, device=device,
+                                  friendly_name=friendly_name, serial_number=serial_number)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

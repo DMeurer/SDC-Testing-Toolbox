@@ -769,6 +769,29 @@ class BehaviourExtensionTests(unittest.TestCase):
         self.assertEqual(reloaded.get_samples("demo.wave"), exported)
         self.assertTrue(reloaded.get_samples(wave))
 
+    def test_an_undriven_waveform_keeps_its_curve_without_being_generated(self) -> None:
+        from sdctoolbox.config import ConfigError
+        from sdctoolbox.model import WaveformShape
+
+        wave, _ = self.configure()  # generator stopped: the imported demo.wave is not driven
+        self.service.set_generator("demo.wave", shape=WaveformShape.SAWTOOTH, cycle_seconds=Decimal("1.5"))
+        exported = self.service.get_samples("demo.wave")
+        payload = self.export(behaviour=True)
+        generators = {node.getparent().getparent().get("Handle"): node.get("Generate")
+                      for node in etree.fromstring(payload).iter(f"{{{BEHAVIOUR}}}Generator")}
+        self.assertEqual(generators, {wave: None, "demo.wave": "false"})
+
+        reloaded = self.reload(payload)
+        spec = reloaded.list_metrics()["demo.wave"]
+        self.assertEqual((spec.shape, spec.cycle_seconds), (WaveformShape.SAWTOOTH, Decimal("1.5")))
+        reloaded.stop_generator()
+        reloaded._sample_generator.publish_once(force=True)
+        self.assertEqual(reloaded.get_samples("demo.wave"), exported, "it keeps the file's samples")
+        self.assertIn(b'Generate="false"', self.export_from(reloaded), "and survives a second round trip")
+
+        with self.assertRaisesRegex(ConfigError, "demo.wave"):
+            self.io.parse_mdib(payload.replace(b'Generate="false"', b'Generate="maybe"'))
+
     def test_action_with_a_refused_effect_reloads_and_is_still_refused(self) -> None:
         from sdctoolbox.model import ActionSpec
 
@@ -794,6 +817,49 @@ class BehaviourExtensionTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "demo.action"):
             self.io.parse_mdib(bad)
 
+    def with_card(self, handle: str, attributes: str) -> bytes:
+        """The fixture with a toolbox Card element on one descriptor."""
+        opening = {
+            "demo.rate": b'<pm:Metric Handle="demo.rate" xsi:type="pm:NumericMetricDescriptor" MetricCategory="Set"'
+                         b' MetricAvailability="Cont" Resolution="0.1">',
+            "demo.vmd": b'<pm:Vmd Handle="demo.vmd">',
+        }[handle]
+        card = (b'<ext:Extension><tb:Card xmlns:tb="urn:sdc-testing-toolbox:behaviour" ext:MustUnderstand="false" '
+                + attributes.encode() + b'/></ext:Extension>')
+        data = original_mdib()
+        self.assertIn(opening, data)
+        return data.replace(opening, opening + card)
+
+    def test_card_settings_round_trip_and_bad_values_name_the_metric(self) -> None:
+        from sdctoolbox.config import ConfigError
+        from sdctoolbox.model import CardSettings
+
+        settings = CardSettings(control="StepperWidget", small_steps=False, update_on="change",
+                                seconds_per_width=Decimal("2.5"), multiline=True)
+        self.assertEqual(CardSettings.from_attributes(settings.to_attributes()), settings)
+        self.assertEqual(CardSettings().to_attributes(), {}, "default cards write nothing")
+
+        mdib = self.io.parse_mdib(self.with_card("demo.rate", 'Control="StepperWidget" LargeSteps="false"'))
+        self.assertEqual(mdib.toolbox_behaviour["demo.rate"]["card"],
+                         CardSettings(control="StepperWidget", large_steps=False))
+        for bad in ('UpdateOn="sometimes"', 'Legend="yes"', 'SecondsPerWidth="0"', 'SecondsPerWidth="fast"'):
+            with self.subTest(bad), self.assertRaisesRegex(ConfigError, "demo.rate"):
+                self.io.parse_mdib(self.with_card("demo.rate", bad))
+
+        service = ProviderService(instance_name="card-on-vmd")
+        self.addCleanup(service.stop)
+        with self.assertRaisesRegex(ValueError, "not a metric"):
+            service.start(self.io.parse_mdib(self.with_card("demo.vmd", 'Legend="false"')))
+
+    def test_card_settings_are_exported_only_for_existing_metrics(self) -> None:
+        from sdctoolbox.model import CardSettings
+
+        self.service.card_settings["demo.rate"] = CardSettings(split=True)
+        self.service.card_settings["gone"] = CardSettings(split=True)
+        payload = self.export(behaviour=True)
+        self.assertEqual(payload.count(b'Split="true"'), 1)
+        self.assertEqual(self.reload(payload).card_settings, {"demo.rate": CardSettings(split=True)})
+
     def test_export_filters(self) -> None:
         from sdctoolbox import config
 
@@ -808,7 +874,7 @@ def pm_types_qname(name: str):
 
 class ConfigMdibTests(unittest.TestCase):
     def test_two_original_native_presets_are_shipped_and_include_state(self) -> None:
-        from sdctoolbox import config, constants
+        from sdctoolbox import config, constants, native_mdib
         from sdctoolbox.mdib_io import parse_mdib
 
         expected = {"mdib-demo-monitor.xml", "mdib-demo-infusion-pump.xml"}
@@ -818,7 +884,12 @@ class ConfigMdibTests(unittest.TestCase):
             self.assertIn(name, constants.SHIPPED_PRESET_FILES)
             snapshot = config.load_file(path)
             mdib = parse_mdib(snapshot.xml)
-            self.assertFalse(mdib.context_states.objects, "shipped demos must not include patient data")
+            self.assertFalse(mdib.entities.by_node_type(pm_types_qname("PatientContextDescriptor")),
+                             "shipped demos must not include patient data")
+            # A location makes them discoverable by location, and MetaData says who made them.
+            self.assertTrue(any("sdc.ctxt.loc:/" in scope for scope in native_mdib.scopes(mdib).text))
+            identity, serial = native_mdib.device_identity(mdib)
+            self.assertEqual((identity.manufacturer, serial), ("Toolbox", None))
             if name == "mdib-demo-monitor.xml":
                 self.assertEqual(mdib.entities.by_handle("monitor.pulse").state.MetricValue.Value, Decimal("72"))
                 self.assertEqual(len(mdib.entities.by_handle("monitor.trace").state.MetricValue.Samples), 8)

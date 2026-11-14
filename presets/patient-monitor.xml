@@ -1,0 +1,431 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<msg:GetMdibResponse xmlns:msg="http://standards.ieee.org/downloads/11073/11073-10207-2017/message" xmlns:dom="http://standards.ieee.org/downloads/11073/11073-10207-2017/participant" xmlns:ext="http://standards.ieee.org/downloads/11073/11073-10207-2017/extension" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:tb="urn:sdc-testing-toolbox:behaviour" SequenceId="urn:uuid:2ff2a08a-9d6b-558b-ab1a-da47c4cdc673" MdibVersion="0">
+  <msg:Mdib SequenceId="urn:uuid:2ff2a08a-9d6b-558b-ab1a-da47c4cdc673" MdibVersion="0">
+    <dom:MdDescription>
+      <dom:Mds Handle="mds0">
+        <ext:Extension>
+          <tb:Device FriendlyName="Bedside Monitor" FirmwareVersion="3.4.1" ext:MustUnderstand="false"/>
+          <tb:Preset Name="Patient monitor" Description="Bedside vitals: three waveforms, the usual numerics, and the limit alarms that go with them. The one device here whose parameters have real IEEE 11073-10101 terms." ext:MustUnderstand="false"/>
+        </ext:Extension>
+        <dom:Type Code="toolbox-mds" CodingSystem="urn:sdc-testing-toolbox:private">
+          <dom:ConceptDescription Lang="en-US">SDC-testing-toolbox virtual device</dom:ConceptDescription>
+        </dom:Type>
+        <dom:AlertSystem Handle="alerts.mds0" SelfCheckPeriod="PT30S">
+          <dom:AlertCondition Handle="al.sensor_check" xsi:type="dom:AlertConditionDescriptor" Kind="Tec" Priority="Lo">
+            <dom:Type Code="check_oximetry_sensor" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Check oximetry sensor</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Source>m.spo2</dom:Source>
+          </dom:AlertCondition>
+          <dom:AlertCondition Handle="al.temp_high" xsi:type="dom:LimitAlertConditionDescriptor" Kind="Phy" Priority="Me">
+            <dom:Type Code="temperature_high" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Temperature high</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Source>m.temp_body</dom:Source>
+            <dom:MaxLimits Lower="25" Upper="45"/>
+          </dom:AlertCondition>
+          <dom:AlertCondition Handle="al.hr_out_of_range" xsi:type="dom:LimitAlertConditionDescriptor" Kind="Phy" Priority="Hi">
+            <dom:Type Code="heart_rate_out_of_range" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Heart rate out of range</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Source>m.heart_rate</dom:Source>
+            <dom:MaxLimits Lower="0" Upper="300"/>
+          </dom:AlertCondition>
+          <dom:AlertCondition Handle="al.spo2_low" xsi:type="dom:LimitAlertConditionDescriptor" Kind="Phy" Priority="Hi">
+            <dom:Type Code="spo2_low" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">SpO2 low</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Source>m.spo2</dom:Source>
+            <dom:MaxLimits Lower="0" Upper="100"/>
+          </dom:AlertCondition>
+          <dom:AlertSignal Handle="sig.check_oximetry_sensor.aud" ConditionSignaled="al.sensor_check" Manifestation="Aud" Latching="false" SignalDelegationSupported="false"/>
+          <dom:AlertSignal Handle="sig.temperature_high.vis" ConditionSignaled="al.temp_high" Manifestation="Vis" Latching="false" SignalDelegationSupported="false"/>
+          <dom:AlertSignal Handle="sig.spo2_low.aud" ConditionSignaled="al.spo2_low" Manifestation="Aud" Latching="false" SignalDelegationSupported="true"/>
+          <dom:AlertSignal Handle="sig.heart_rate_out_of_range.aud" ConditionSignaled="al.hr_out_of_range" Manifestation="Aud" Latching="false" SignalDelegationSupported="true"/>
+          <dom:AlertSignal Handle="sig.temperature_high.aud" ConditionSignaled="al.temp_high" Manifestation="Aud" Latching="false" SignalDelegationSupported="false"/>
+          <dom:AlertSignal Handle="sig.check_oximetry_sensor.vis" ConditionSignaled="al.sensor_check" Manifestation="Vis" Latching="false" SignalDelegationSupported="false"/>
+          <dom:AlertSignal Handle="sig.heart_rate_out_of_range.vis" ConditionSignaled="al.hr_out_of_range" Manifestation="Vis" Latching="false" SignalDelegationSupported="true"/>
+          <dom:AlertSignal Handle="sig.spo2_low.vis" ConditionSignaled="al.spo2_low" Manifestation="Vis" Latching="false" SignalDelegationSupported="true"/>
+        </dom:AlertSystem>
+        <dom:Sco Handle="sco.mds0">
+          <dom:Operation Handle="act.silence_alarms" xsi:type="dom:ActivateOperationDescriptor" OperationTarget="mds0">
+            <ext:Extension>
+              <tb:Action Note="Audio pause. In BICEPS this is an alert signal's ActivationState, so what this does here is a stand-in" ext:MustUnderstand="false">
+                <tb:Effect Target="m.alarm_volume" Value="OFF"/>
+              </tb:Action>
+            </ext:Extension>
+            <dom:Type Code="silence_alarms" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Silence alarms</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Operation>
+          <dom:Operation Handle="act.start_nibp" xsi:type="dom:ActivateOperationDescriptor" OperationTarget="vmd.haemodynamics">
+            <ext:Extension>
+              <tb:Action Note="Inflate the cuff and take a reading now, rather than waiting for the interval" ext:MustUnderstand="false">
+                <tb:Effect Target="m.nibp_dia" Value="79"/>
+                <tb:Effect Target="m.nibp_mean" Value="94"/>
+                <tb:Effect Target="m.nibp_sys" Value="124"/>
+              </tb:Action>
+            </ext:Extension>
+            <dom:Type Code="start_nibp_measurement" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Start NIBP measurement</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Operation>
+          <dom:Operation Handle="op.alarm_volume" xsi:type="dom:SetStringOperationDescriptor" OperationTarget="m.alarm_volume">
+            <dom:Type Code="set_monitor_alarm_volume" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="op.display_note" xsi:type="dom:SetStringOperationDescriptor" OperationTarget="m.display_note">
+            <dom:Type Code="set_monitor_display_note" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+        </dom:Sco>
+        <dom:MetaData>
+          <dom:Manufacturer>Toolbox</dom:Manufacturer>
+          <dom:ModelName>Vitalis 500</dom:ModelName>
+          <dom:ModelNumber>500</dom:ModelNumber>
+        </dom:MetaData>
+        <dom:SystemContext Handle="SC.mds0">
+          <dom:PatientContext Handle="PC.mds0"/>
+          <dom:LocationContext Handle="LC.mds0"/>
+        </dom:SystemContext>
+        <dom:Vmd Handle="vmd.temperature">
+          <dom:Type Code="temperature" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">Temperature</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch.temperature">
+            <dom:Type Code="temperature" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Temperature</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Metric Handle="m.temp_body" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="0.1">
+              <dom:Type Code="150364" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">Body temperature</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="268192" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">°C</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="25" Upper="45" StepWidth="0.1"/>
+            </dom:Metric>
+          </dom:Channel>
+        </dom:Vmd>
+        <dom:Vmd Handle="vmd0">
+          <dom:Type Code="toolbox-vmd" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">User defined data sources</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch0.vmd0">
+            <dom:Type Code="toolbox-channel" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Default channel</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Channel>
+        </dom:Vmd>
+        <dom:Vmd Handle="vmd.haemodynamics">
+          <dom:Type Code="haemodynamics" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">Haemodynamics</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch.haemodynamics">
+            <dom:Type Code="haemodynamics" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Haemodynamics</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Metric Handle="m.abp" xsi:type="dom:RealTimeSampleArrayMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Cont" DeterminationPeriod="PT0.02S" Resolution="1" SamplePeriod="PT0.02S">
+              <ext:Extension>
+                <tb:Generator Shape="arterial" CycleSeconds="1" ext:MustUnderstand="false"/>
+              </ext:Extension>
+              <dom:Type Code="150032" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">Arterial pressure</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="266016" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">mmHg</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="40" Upper="160" StepWidth="1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.nibp_sys" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="150021" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">NIBP systolic</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="266016" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">mmHg</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="300" StepWidth="1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.nibp_mean" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="150023" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">NIBP mean</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="266016" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">mmHg</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="200" StepWidth="1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.nibp_dia" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="150022" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">NIBP diastolic</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="266016" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">mmHg</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="200" StepWidth="1"/>
+            </dom:Metric>
+          </dom:Channel>
+        </dom:Vmd>
+        <dom:Vmd Handle="vmd.respiration">
+          <dom:Type Code="respiration" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">Respiration</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch.respiration">
+            <dom:Type Code="respiration" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Respiration</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Metric Handle="m.resp_rate" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="151554" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">Respiration rate</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="264928" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">1/min</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="80" StepWidth="1"/>
+            </dom:Metric>
+          </dom:Channel>
+        </dom:Vmd>
+        <dom:Vmd Handle="vmd.oximetry">
+          <dom:Type Code="oximetry" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">Oximetry</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch.oximetry">
+            <dom:Type Code="oximetry" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Oximetry</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Metric Handle="m.spo2" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="150456" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">SpO2</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262688" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">%</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="100" StepWidth="1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.pleth" xsi:type="dom:RealTimeSampleArrayMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Cont" DeterminationPeriod="PT0.02S" Resolution="0.1" SamplePeriod="PT0.02S">
+              <ext:Extension>
+                <tb:Generator Shape="pulse" CycleSeconds="1" ext:MustUnderstand="false"/>
+              </ext:Extension>
+              <dom:Type Code="150452" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">Plethysmogram</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262688" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">%</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="100" StepWidth="0.1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.pulse_rate" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="149530" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">Pulse rate</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="264864" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">bpm</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="300" StepWidth="1"/>
+            </dom:Metric>
+          </dom:Channel>
+        </dom:Vmd>
+        <dom:Vmd Handle="vmd.settings">
+          <dom:Type Code="settings" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">Settings</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch.settings">
+            <dom:Type Code="settings" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Settings</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Metric Handle="m.display_note" xsi:type="dom:StringMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr">
+              <dom:Type Code="monitor_display_note" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Display note</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.alarm_volume" xsi:type="dom:EnumStringMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr">
+              <dom:Type Code="monitor_alarm_volume" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Alarm volume</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+              <dom:AllowedValue>
+                <dom:Value>OFF</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>LOW</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>MEDIUM</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>HIGH</dom:Value>
+              </dom:AllowedValue>
+            </dom:Metric>
+          </dom:Channel>
+        </dom:Vmd>
+        <dom:Vmd Handle="vmd.ecg">
+          <dom:Type Code="ecg" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">ECG</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch.ecg">
+            <dom:Type Code="ecg" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">ECG</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Metric Handle="m.ecg_ii" xsi:type="dom:RealTimeSampleArrayMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Cont" DeterminationPeriod="PT0.008S" Resolution="0.01" SamplePeriod="PT0.008S">
+              <ext:Extension>
+                <tb:Generator Shape="ecg" CycleSeconds="1" ext:MustUnderstand="false"/>
+              </ext:Extension>
+              <dom:Type Code="131330" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">ECG lead II</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="266418" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">mV</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="-1" Upper="2" StepWidth="0.01"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.heart_rate" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="147842" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">Heart rate</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="264864" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">bpm</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="300" StepWidth="1"/>
+            </dom:Metric>
+          </dom:Channel>
+        </dom:Vmd>
+      </dom:Mds>
+    </dom:MdDescription>
+    <dom:MdState>
+      <dom:State xsi:type="dom:AlertSystemState" DescriptorHandle="alerts.mds0" ActivationState="On">
+        <dom:SystemSignalActivation Manifestation="Aud" State="On"/>
+        <dom:SystemSignalActivation Manifestation="Vis" State="On"/>
+      </dom:State>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.haemodynamics"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.heart_rate" ActivationState="On">
+        <dom:MetricValue Value="72">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.heart_rate_out_of_range.vis" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.oximetry"/>
+      <dom:State xsi:type="dom:ScoState" DescriptorHandle="sco.mds0" ActivationState="On"/>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.ecg"/>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.temperature_high.vis" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.temperature"/>
+      <dom:State xsi:type="dom:RealTimeSampleArrayMetricState" DescriptorHandle="m.abp" ActivationState="On">
+        <dom:MetricValue>
+          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch0.vmd0" ActivationState="On"/>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.respiration"/>
+      <dom:State xsi:type="dom:MdsState" DescriptorHandle="mds0" ActivationState="On" OperatingMode="Dmo"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.resp_rate" ActivationState="On">
+        <dom:MetricValue Value="14">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.temperature_high.aud" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.nibp_sys" ActivationState="On">
+        <dom:MetricValue Value="118">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.ecg"/>
+      <dom:State xsi:type="dom:LimitAlertConditionState" DescriptorHandle="al.temp_high" ActivationState="On" Presence="false" MonitoredAlertLimits="LoOff">
+        <dom:Limits Upper="38.5"/>
+      </dom:State>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.nibp_dia" ActivationState="On">
+        <dom:MetricValue Value="74">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:LimitAlertConditionState" DescriptorHandle="al.spo2_low" ActivationState="On" Presence="false" MonitoredAlertLimits="HiOff">
+        <dom:Limits Lower="90"/>
+      </dom:State>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.respiration"/>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.settings"/>
+      <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.start_nibp" OperatingMode="En"/>
+      <dom:State xsi:type="dom:RealTimeSampleArrayMetricState" DescriptorHandle="m.pleth" ActivationState="On">
+        <dom:MetricValue>
+          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:AlertConditionState" DescriptorHandle="al.sensor_check" ActivationState="On" Presence="false"/>
+      <dom:State xsi:type="dom:SystemContextState" DescriptorHandle="SC.mds0" ActivationState="On"/>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.spo2_low.vis" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.spo2_low.aud" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.haemodynamics"/>
+      <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.silence_alarms" OperatingMode="En"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.nibp_mean" ActivationState="On">
+        <dom:MetricValue Value="89">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:LimitAlertConditionState" DescriptorHandle="al.hr_out_of_range" ActivationState="On" Presence="false" MonitoredAlertLimits="All">
+        <dom:Limits Lower="45" Upper="120"/>
+      </dom:State>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.check_oximetry_sensor.vis" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:EnumStringMetricState" DescriptorHandle="m.alarm_volume" ActivationState="On">
+        <dom:MetricValue Value="MEDIUM">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.heart_rate_out_of_range.aud" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.spo2" ActivationState="On">
+        <dom:MetricValue Value="98">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:StringMetricState" DescriptorHandle="m.display_note"/>
+      <dom:State xsi:type="dom:SetStringOperationState" DescriptorHandle="op.display_note" OperatingMode="En"/>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.settings"/>
+      <dom:State xsi:type="dom:RealTimeSampleArrayMetricState" DescriptorHandle="m.ecg_ii" ActivationState="On">
+        <dom:MetricValue>
+          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.temperature"/>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.check_oximetry_sensor.aud" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd0" ActivationState="On"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.temp_body" ActivationState="On">
+        <dom:MetricValue Value="36.8">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.pulse_rate" ActivationState="On">
+        <dom:MetricValue Value="74">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:SetStringOperationState" DescriptorHandle="op.alarm_volume" OperatingMode="En">
+        <dom:AllowedValues>
+          <dom:Value>OFF</dom:Value>
+          <dom:Value>LOW</dom:Value>
+          <dom:Value>MEDIUM</dom:Value>
+          <dom:Value>HIGH</dom:Value>
+        </dom:AllowedValues>
+      </dom:State>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.oximetry"/>
+      <dom:State xsi:type="dom:PatientContextState" DescriptorHandle="PC.mds0" Handle="PC.mds0.state" ContextAssociation="Assoc">
+        <dom:CoreData>
+          <dom:Givenname>Alex</dom:Givenname>
+          <dom:Familyname>Example</dom:Familyname>
+          <dom:Sex>Unspec</dom:Sex>
+          <dom:PatientType>Ad</dom:PatientType>
+          <dom:DateOfBirth>1990-01-01</dom:DateOfBirth>
+          <dom:Height MeasuredValue="170">
+            <dom:MeasurementUnit Code="264184" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:ConceptDescription Lang="en-US">cm</dom:ConceptDescription>
+            </dom:MeasurementUnit>
+          </dom:Height>
+          <dom:Weight MeasuredValue="70">
+            <dom:MeasurementUnit Code="266016" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:ConceptDescription Lang="en-US">kg</dom:ConceptDescription>
+            </dom:MeasurementUnit>
+          </dom:Weight>
+        </dom:CoreData>
+      </dom:State>
+      <dom:State xsi:type="dom:LocationContextState" DescriptorHandle="LC.mds0" Handle="LC.mds0.state" ContextAssociation="Assoc">
+        <dom:Validator Root="rootWithNoMeaning" Extension="System"/>
+        <dom:Identification Root="sdc.ctxt.loc.detail" Extension="HOSP/Surgery/2/OR1/1/Table"/>
+        <dom:LocationDetail PoC="OR1" Room="1" Bed="Table" Facility="HOSP" Building="Surgery" Floor="2"/>
+      </dom:State>
+      </dom:MdState>
+  </msg:Mdib>
+</msg:GetMdibResponse>

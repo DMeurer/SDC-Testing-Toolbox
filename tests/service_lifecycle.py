@@ -80,7 +80,10 @@ class Tracker:
 
 
 class FakeMdib:
-    pass
+    def __init__(self) -> None:
+        # Just the bootstrap MDS, so startup can write its MetaData before the provider fails.
+        mds = SimpleNamespace(MetaData=None)
+        self.descriptions = SimpleNamespace(handle=SimpleNamespace(get_one=lambda _handle: mds))
 
 
 def check(condition: bool, message: str) -> None:

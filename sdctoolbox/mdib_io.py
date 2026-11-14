@@ -23,7 +23,7 @@ from sdc11073.xml_types import pm_types
 from sdc11073.xml_types.dataconverters import TimestampConverter
 
 from .config import ConfigError, write_atomically
-from .model import ActionSpec, DistributionShape, MetricKind, MetricSpec, WaveformShape
+from .model import ActionSpec, CardSettings, DistributionShape, MetricKind, MetricSpec, WaveformShape
 
 if TYPE_CHECKING:
     from .provider_service import ProviderService
@@ -73,12 +73,31 @@ def _tb(name: str) -> str:
     return f"{{{BEHAVIOUR_NS}}}{name}"
 
 
+# DeviceInfo fields DPWS announces but BICEPS MetaData has no place for, by attribute name.
+DEVICE_ATTRIBUTES = {"friendly_name": "FriendlyName", "firmware_version": "FirmwareVersion",
+                     "manufacturer_url": "ManufacturerUrl"}
+
+
+def mds_elements(device: dict[str, str], preset: dict[str, str] | None) -> list:
+    """The toolbox elements for an MDS: identity MetaData cannot hold, and a preset's menu entry."""
+    result = []
+    attributes = {DEVICE_ATTRIBUTES[key]: value for key, value in device.items() if value}
+    if attributes:
+        result.append(etree.Element(_tb("Device"), attributes))
+    if preset:
+        result.append(etree.Element(_tb("Preset"), {"Name": preset["name"], "Description": preset.get("description", "")}))
+    return result
+
+
 def _read_behaviour(element, handle: str) -> dict:
     """One toolbox element as plain values; anything malformed names the descriptor."""
     name = etree.QName(element).localname
     try:
         if name == "Generator":
-            result = {"generate": True}
+            # Without the attribute, as older exports wrote it, the element means "generate".
+            if element.get("Generate", "true") not in ("true", "false"):
+                raise ValueError(f"Generate must be true or false, not {element.get('Generate')!r}")
+            result = {"generate": element.get("Generate", "true") == "true"}
             if element.get("Shape") is not None:
                 result["shape"] = WaveformShape(element.get("Shape"))
             if element.get("CycleSeconds") is not None:
@@ -103,6 +122,15 @@ def _read_behaviour(element, handle: str) -> dict:
                     raise ValueError("every effect needs a Target and a Value")
                 effects[target] = value
             return {"note": element.get("Note", ""), "effects": effects}
+        if name == "Device":
+            return {"device": {key: element.get(attribute) for key, attribute in DEVICE_ATTRIBUTES.items()
+                               if element.get(attribute)}}
+        if name == "Preset":
+            if not element.get("Name"):
+                raise ValueError("a preset needs a Name")
+            return {"preset": {"name": element.get("Name"), "description": element.get("Description", "")}}
+        if name == "Card":
+            return {"card": CardSettings.from_attributes(dict(element.attrib))}
     except (ValueError, InvalidOperation) as exc:
         raise ValueError(f"toolbox behaviour of {handle!r}: {exc}") from exc
     raise ValueError(f"toolbox behaviour of {handle!r}: unknown element {name!r}")
@@ -127,11 +155,15 @@ def _strip_behaviour(mdib_node) -> dict[str, dict]:
 
 
 def behaviour_elements(specs: dict[str, MetricSpec], actions: dict[str, ActionSpec],
-                       generated: set[str] = frozenset()) -> dict[str, list]:
+                       generated: set[str] = frozenset(),
+                       cards: dict[str, CardSettings] | None = None) -> dict[str, list]:
     """The toolbox elements to attach per descriptor handle; default settings are left out.
 
     Every sample array in ``generated`` gets a Generator element, even with default settings,
-    because its presence is what makes a reload start the generator for it.
+    because its presence is what makes a reload start the generator for it. Any other sample
+    array with a non-default curve gets one with Generate="false", so the curve is kept but
+    the reload leaves its samples alone. A metric whose card differs from the default gets a
+    Card element.
     """
     defaults = MetricSpec("defaults", MetricKind.NUMBER)
     result: dict[str, list] = {}
@@ -146,6 +178,11 @@ def behaviour_elements(specs: dict[str, MetricSpec], actions: dict[str, ActionSp
             attributes["DistributionShape"] = spec.distribution_shape.value
         if handle in generated:
             result[handle] = [etree.Element(_tb("Generator"), attributes)]
+        elif attributes:
+            result[handle] = [etree.Element(_tb("Generator"), {"Generate": "false", **attributes})]
+        card = (cards or {}).get(handle)
+        if card is not None and card.to_attributes():
+            result.setdefault(handle, []).append(etree.Element(_tb("Card"), card.to_attributes()))
     for handle, action in actions.items():
         # Written even without effects, so a reload knows the toolbox may run this action.
         element = etree.Element(_tb("Action"), {"Note": action.note} if action.note else {})

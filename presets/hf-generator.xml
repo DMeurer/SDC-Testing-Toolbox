@@ -1,0 +1,381 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<msg:GetMdibResponse xmlns:msg="http://standards.ieee.org/downloads/11073/11073-10207-2017/message" xmlns:dom="http://standards.ieee.org/downloads/11073/11073-10207-2017/participant" xmlns:ext="http://standards.ieee.org/downloads/11073/11073-10207-2017/extension" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:tb="urn:sdc-testing-toolbox:behaviour" SequenceId="urn:uuid:6867d13a-91cb-5750-8046-b32bdf95bd47" MdibVersion="0">
+  <msg:Mdib SequenceId="urn:uuid:6867d13a-91cb-5750-8046-b32bdf95bd47" MdibVersion="0">
+    <dom:MdDescription>
+      <dom:Mds Handle="mds0">
+        <ext:Extension>
+          <tb:Device FriendlyName="HF Generator" FirmwareVersion="2.0.7" ext:MustUnderstand="false"/>
+          <tb:Preset Name="HF generator" Description="Electrosurgical unit: cut and coagulation modes, power setpoints, live tissue impedance and its spectrum. Almost nothing here has a standard term, so almost nothing here is MDC." ext:MustUnderstand="false"/>
+        </ext:Extension>
+        <dom:Type Code="toolbox-mds" CodingSystem="urn:sdc-testing-toolbox:private">
+          <dom:ConceptDescription Lang="en-US">SDC-testing-toolbox virtual device</dom:ConceptDescription>
+        </dom:Type>
+        <dom:AlertSystem Handle="alerts.mds0" SelfCheckPeriod="PT30S">
+          <dom:AlertCondition Handle="al.impedance_high" xsi:type="dom:LimitAlertConditionDescriptor" Kind="Tec" Priority="Me">
+            <dom:Type Code="tissue_impedance_high" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Tissue impedance high</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Source>m.tissue_impedance</dom:Source>
+            <dom:MaxLimits Lower="0" Upper="2000"/>
+          </dom:AlertCondition>
+          <dom:AlertCondition Handle="al.neutral_electrode" xsi:type="dom:LimitAlertConditionDescriptor" Kind="Tec" Priority="Hi">
+            <dom:Type Code="neutral_electrode_contact_poor" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Neutral electrode contact poor</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Source>m.neutral_electrode</dom:Source>
+            <dom:MaxLimits Lower="0" Upper="100"/>
+          </dom:AlertCondition>
+          <dom:AlertCondition Handle="al.power_limit" xsi:type="dom:LimitAlertConditionDescriptor" Kind="Tec" Priority="Me">
+            <dom:Type Code="delivered_power_at_limit" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Delivered power at limit</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Source>m.delivered_power</dom:Source>
+            <dom:MaxLimits Lower="0" Upper="300"/>
+          </dom:AlertCondition>
+          <dom:AlertSignal Handle="sig.tissue_impedance_high.vis" ConditionSignaled="al.impedance_high" Manifestation="Vis" Latching="false" SignalDelegationSupported="false"/>
+          <dom:AlertSignal Handle="sig.neutral_electrode_contact_poor.aud" ConditionSignaled="al.neutral_electrode" Manifestation="Aud" Latching="false" SignalDelegationSupported="true"/>
+          <dom:AlertSignal Handle="sig.tissue_impedance_high.aud" ConditionSignaled="al.impedance_high" Manifestation="Aud" Latching="false" SignalDelegationSupported="false"/>
+          <dom:AlertSignal Handle="sig.delivered_power_at_limit.aud" ConditionSignaled="al.power_limit" Manifestation="Aud" Latching="false" SignalDelegationSupported="false"/>
+          <dom:AlertSignal Handle="sig.delivered_power_at_limit.vis" ConditionSignaled="al.power_limit" Manifestation="Vis" Latching="false" SignalDelegationSupported="false"/>
+          <dom:AlertSignal Handle="sig.neutral_electrode_contact_poor.vis" ConditionSignaled="al.neutral_electrode" Manifestation="Vis" Latching="false" SignalDelegationSupported="true"/>
+        </dom:AlertSystem>
+        <dom:Sco Handle="sco.mds0">
+          <dom:Operation Handle="act.stop_output" xsi:type="dom:ActivateOperationDescriptor" OperationTarget="vmd.generator">
+            <ext:Extension>
+              <tb:Action Note="Immediate stop. An action rather than a setting, because there is nothing to read back" ext:MustUnderstand="false">
+                <tb:Effect Target="m.activation" Value="IDLE"/>
+                <tb:Effect Target="m.active_mode" Value="STANDBY"/>
+                <tb:Effect Target="m.delivered_power" Value="0"/>
+              </tb:Action>
+            </ext:Extension>
+            <dom:Type Code="stop_output" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Stop output</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Operation>
+          <dom:Operation Handle="op.instrument" xsi:type="dom:SetStringOperationDescriptor" OperationTarget="m.instrument">
+            <dom:Type Code="set_hf_connected_instrument" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="op.coag_power_set" xsi:type="dom:SetValueOperationDescriptor" OperationTarget="m.coag_power_set">
+            <dom:Type Code="set_hf_coag_power_setpoint" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="act.self_test" xsi:type="dom:ActivateOperationDescriptor" OperationTarget="mds0">
+            <ext:Extension>
+              <tb:Action Note="Checks the neutral electrode circuit and reports the contact quality" ext:MustUnderstand="false">
+                <tb:Effect Target="m.neutral_electrode" Value="99"/>
+              </tb:Action>
+            </ext:Extension>
+            <dom:Type Code="run_self_test" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Run self test</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Operation>
+          <dom:Operation Handle="op.active_mode" xsi:type="dom:SetStringOperationDescriptor" OperationTarget="m.active_mode">
+            <dom:Type Code="set_hf_active_mode" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="op.cut_power_set" xsi:type="dom:SetValueOperationDescriptor" OperationTarget="m.cut_power_set">
+            <dom:Type Code="set_hf_cut_power_setpoint" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="act.recall_preset" xsi:type="dom:ActivateOperationDescriptor" OperationTarget="vmd.generator">
+            <ext:Extension>
+              <tb:Action Note="The surgeon's stored power settings for this procedure" ext:MustUnderstand="false">
+                <tb:Effect Target="m.coag_power_set" Value="60"/>
+                <tb:Effect Target="m.cut_power_set" Value="120"/>
+              </tb:Action>
+            </ext:Extension>
+            <dom:Type Code="recall_stored_preset" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Recall stored preset</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Operation>
+        </dom:Sco>
+        <dom:MetaData>
+          <dom:Manufacturer>Toolbox</dom:Manufacturer>
+          <dom:ModelName>Electron 300</dom:ModelName>
+          <dom:ModelNumber>300</dom:ModelNumber>
+        </dom:MetaData>
+        <dom:SystemContext Handle="SC.mds0">
+          <dom:PatientContext Handle="PC.mds0"/>
+          <dom:LocationContext Handle="LC.mds0"/>
+        </dom:SystemContext>
+        <dom:Vmd Handle="vmd0">
+          <dom:Type Code="toolbox-vmd" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">User defined data sources</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch0.vmd0">
+            <dom:Type Code="toolbox-channel" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Default channel</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Channel>
+        </dom:Vmd>
+        <dom:Vmd Handle="vmd.tissue">
+          <dom:Type Code="tissue" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">Tissue</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch.tissue">
+            <dom:Type Code="tissue" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Tissue</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Metric Handle="m.impedance_spectrum" xsi:type="dom:DistributionSampleArrayMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" DeterminationPeriod="PT0.25S" Resolution="0.1">
+              <ext:Extension>
+                <tb:Generator DistributionShape="bimodal" ext:MustUnderstand="false"/>
+              </ext:Extension>
+              <dom:Type Code="hf_impedance_spectrum" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Impedance spectrum</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="268576" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">dB</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="60" StepWidth="0.1"/>
+              <dom:DomainUnit Code="264643" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">kHz</dom:ConceptDescription>
+              </dom:DomainUnit>
+              <dom:DistributionRange Lower="300" Upper="1000" StepWidth="22.5806"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.impedance_trace" xsi:type="dom:RealTimeSampleArrayMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Cont" DeterminationPeriod="PT0.05S" Resolution="1" SamplePeriod="PT0.05S">
+              <ext:Extension>
+                <tb:Generator CycleSeconds="3" ext:MustUnderstand="false"/>
+              </ext:Extension>
+              <dom:Type Code="hf_impedance_trace" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Impedance trace</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="266432" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">Ω</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="50" Upper="600" StepWidth="1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.tissue_impedance" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="hf_tissue_impedance" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Tissue impedance</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="266432" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">Ω</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="2000" StepWidth="1"/>
+            </dom:Metric>
+          </dom:Channel>
+        </dom:Vmd>
+        <dom:Vmd Handle="vmd.generator">
+          <dom:Type Code="generator" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">Generator</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch.generator">
+            <dom:Type Code="generator" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Generator</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Metric Handle="m.activation" xsi:type="dom:EnumStringMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr">
+              <dom:Type Code="hf_activation_source" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Activation</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+              <dom:AllowedValue>
+                <dom:Value>IDLE</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>FOOTSWITCH</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>HANDSWITCH</dom:Value>
+              </dom:AllowedValue>
+            </dom:Metric>
+            <dom:Metric Handle="m.active_mode" xsi:type="dom:EnumStringMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr">
+              <dom:Type Code="hf_active_mode" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Active mode</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+              <dom:AllowedValue>
+                <dom:Value>STANDBY</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>CUT</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>COAG</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>BLEND</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>BIPOLAR</dom:Value>
+              </dom:AllowedValue>
+            </dom:Metric>
+            <dom:Metric Handle="m.cut_power_set" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="hf_cut_power_setpoint" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Cut power setpoint</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="266176" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">W</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="300" StepWidth="1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.delivered_power" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="hf_delivered_power" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Delivered power</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="266176" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">W</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="300" StepWidth="1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.coag_power_set" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="hf_coag_power_setpoint" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Coagulation power setpoint</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="266176" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">W</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="200" StepWidth="1"/>
+            </dom:Metric>
+          </dom:Channel>
+        </dom:Vmd>
+        <dom:Vmd Handle="vmd.safety">
+          <dom:Type Code="safety" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">Safety</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch.safety">
+            <dom:Type Code="safety" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Safety</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Metric Handle="m.neutral_electrode" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="hf_neutral_electrode_quality" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Neutral electrode contact</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262688" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">%</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="100" StepWidth="1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.instrument" xsi:type="dom:StringMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr">
+              <dom:Type Code="hf_connected_instrument" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Connected instrument</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+            </dom:Metric>
+          </dom:Channel>
+        </dom:Vmd>
+      </dom:Mds>
+    </dom:MdDescription>
+    <dom:MdState>
+      <dom:State xsi:type="dom:SystemContextState" DescriptorHandle="SC.mds0" ActivationState="On"/>
+      <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.self_test" OperatingMode="En"/>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.tissue"/>
+      <dom:State xsi:type="dom:LimitAlertConditionState" DescriptorHandle="al.neutral_electrode" ActivationState="On" Presence="false" MonitoredAlertLimits="HiOff">
+        <dom:Limits Lower="70"/>
+      </dom:State>
+      <dom:State xsi:type="dom:StringMetricState" DescriptorHandle="m.instrument" ActivationState="On">
+        <dom:MetricValue Value="Monopolar pencil">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.stop_output" OperatingMode="En"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.delivered_power" ActivationState="On">
+        <dom:MetricValue Value="0">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.coag_power_set" ActivationState="On">
+        <dom:MetricValue Value="50">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.safety"/>
+      <dom:State xsi:type="dom:LimitAlertConditionState" DescriptorHandle="al.impedance_high" ActivationState="On" Presence="false" MonitoredAlertLimits="LoOff">
+        <dom:Limits Upper="1200"/>
+      </dom:State>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.generator"/>
+      <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.recall_preset" OperatingMode="En"/>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.delivered_power_at_limit.vis" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.tissue_impedance_high.aud" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.delivered_power_at_limit.aud" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:MdsState" DescriptorHandle="mds0" ActivationState="On" OperatingMode="Dmo"/>
+      <dom:State xsi:type="dom:LimitAlertConditionState" DescriptorHandle="al.power_limit" ActivationState="On" Presence="false" MonitoredAlertLimits="LoOff">
+        <dom:Limits Upper="280"/>
+      </dom:State>
+      <dom:State xsi:type="dom:SetStringOperationState" DescriptorHandle="op.active_mode" OperatingMode="En">
+        <dom:AllowedValues>
+          <dom:Value>STANDBY</dom:Value>
+          <dom:Value>CUT</dom:Value>
+          <dom:Value>COAG</dom:Value>
+          <dom:Value>BLEND</dom:Value>
+          <dom:Value>BIPOLAR</dom:Value>
+        </dom:AllowedValues>
+      </dom:State>
+      <dom:State xsi:type="dom:RealTimeSampleArrayMetricState" DescriptorHandle="m.impedance_trace" ActivationState="On">
+        <dom:MetricValue>
+          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch0.vmd0" ActivationState="On"/>
+      <dom:State xsi:type="dom:SetStringOperationState" DescriptorHandle="op.instrument" OperatingMode="En"/>
+      <dom:State xsi:type="dom:DistributionSampleArrayMetricState" DescriptorHandle="m.impedance_spectrum" ActivationState="On">
+        <dom:MetricValue>
+          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:ScoState" DescriptorHandle="sco.mds0" ActivationState="On"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.neutral_electrode" ActivationState="On">
+        <dom:MetricValue Value="96">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.tissue"/>
+      <dom:State xsi:type="dom:EnumStringMetricState" DescriptorHandle="m.active_mode" ActivationState="On">
+        <dom:MetricValue Value="STANDBY">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.neutral_electrode_contact_poor.aud" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.tissue_impedance" ActivationState="On">
+        <dom:MetricValue Value="180">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.generator"/>
+      <dom:State xsi:type="dom:AlertSystemState" DescriptorHandle="alerts.mds0" ActivationState="On">
+        <dom:SystemSignalActivation Manifestation="Aud" State="On"/>
+        <dom:SystemSignalActivation Manifestation="Vis" State="On"/>
+      </dom:State>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.safety"/>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.neutral_electrode_contact_poor.vis" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.tissue_impedance_high.vis" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:SetValueOperationState" DescriptorHandle="op.coag_power_set" OperatingMode="En">
+        <dom:AllowedRange Lower="0" Upper="200" StepWidth="1"/>
+      </dom:State>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd0" ActivationState="On"/>
+      <dom:State xsi:type="dom:SetValueOperationState" DescriptorHandle="op.cut_power_set" OperatingMode="En">
+        <dom:AllowedRange Lower="0" Upper="300" StepWidth="1"/>
+      </dom:State>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.cut_power_set" ActivationState="On">
+        <dom:MetricValue Value="80">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:EnumStringMetricState" DescriptorHandle="m.activation" ActivationState="On">
+        <dom:MetricValue Value="IDLE">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:LocationContextState" DescriptorHandle="LC.mds0" Handle="LC.mds0.state" ContextAssociation="Assoc">
+        <dom:Validator Root="rootWithNoMeaning" Extension="System"/>
+        <dom:Identification Root="sdc.ctxt.loc.detail" Extension="HOSP///CU1//Toolbox"/>
+        <dom:LocationDetail PoC="CU1" Bed="Toolbox" Facility="HOSP"/>
+      </dom:State>
+      <dom:State xsi:type="dom:PatientContextState" DescriptorHandle="PC.mds0" Handle="PC.mds0.state" ContextAssociation="Assoc">
+        <dom:CoreData>
+          <dom:Givenname>Alex</dom:Givenname>
+          <dom:Familyname>Example</dom:Familyname>
+          <dom:Sex>Unspec</dom:Sex>
+          <dom:PatientType>Ad</dom:PatientType>
+          <dom:DateOfBirth>1990-01-01</dom:DateOfBirth>
+          <dom:Height MeasuredValue="170">
+            <dom:MeasurementUnit Code="264184" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:ConceptDescription Lang="en-US">cm</dom:ConceptDescription>
+            </dom:MeasurementUnit>
+          </dom:Height>
+          <dom:Weight MeasuredValue="70">
+            <dom:MeasurementUnit Code="266016" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:ConceptDescription Lang="en-US">kg</dom:ConceptDescription>
+            </dom:MeasurementUnit>
+          </dom:Weight>
+        </dom:CoreData>
+      </dom:State>
+    </dom:MdState>
+  </msg:Mdib>
+</msg:GetMdibResponse>

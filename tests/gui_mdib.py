@@ -257,6 +257,33 @@ class GuiMdibTests(unittest.TestCase):
             time.sleep(0.05)
         self.assertNotEqual(plot.samples, before, "the waveform card never received a generated block")
 
+    def test_card_settings_are_saved_with_toolbox_behaviour_and_restored(self) -> None:
+        from decimal import Decimal
+
+        from sdctoolbox.mdib_io import mdib_bytes
+        from sdctoolbox.model import CardSettings
+
+        self.window.apply_config(NativeMdibConfig(original_mdib()), "original.xml")
+        wave = CardSettings(legend=False, seconds_per_width=Decimal("2.5"))
+        rate = CardSettings(control="StepperWidget", large_steps=False)
+        self.window.provider_pane._set_card_settings("demo.wave", wave)
+        self.window.provider_pane._set_card_settings("demo.rate", rate)
+        with tempfile.TemporaryDirectory() as directory:
+            plain, behaviour = Path(directory) / "plain.xml", Path(directory) / "behaviour.xml"
+            config.save(self.service, plain)
+            config.save(self.service, behaviour, behaviour=True)
+            self.assertNotIn(b"SecondsPerWidth", plain.read_bytes(), "plain BICEPS carries no card settings")
+            self.assertIn(b'SecondsPerWidth="2.5"', behaviour.read_bytes())
+            self.window.apply_config(NativeMdibConfig(original_mdib()), "original.xml")
+            self.assertEqual(self.window.provider_pane.board.card_settings("demo.wave"), CardSettings(),
+                             "a file without card settings starts with default cards")
+            self.assertTrue(self.window.apply_config(config.load_file(behaviour), behaviour))
+        pane = self.window.provider_pane
+        self.assertEqual(self.service.card_settings, {"demo.wave": wave, "demo.rate": rate})
+        self.assertEqual((pane.board.card_settings("demo.wave"), pane.board.card_settings("demo.rate")), (wave, rate))
+        self.assertEqual(type(pane.board.card("demo.rate").control).__name__, "StepperWidget")
+        self.assertNotIn(b"SecondsPerWidth", mdib_bytes(self.service.mdib), "card settings never reach the network")
+
     def test_export_offers_plain_and_behaviour_mdib(self) -> None:
         from PySide6.QtWidgets import QFileDialog
         from sdctoolbox.model import ActionSpec

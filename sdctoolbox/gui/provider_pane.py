@@ -151,6 +151,9 @@ class ProviderPane(QWidget):
         # The same metrics, shown either as a control each or as one row each. Both are
         # always built; the View menu decides which is on top.
         self.board = WidgetBoard(deletable=True)
+        # Cards look as the device's file says; _set_card_settings() keeps the service current.
+        for handle, settings in self.service.card_settings.items():
+            self.board.set_card_settings(handle, settings)
         self.board.value_requested.connect(self._on_widget_value_requested)
         self.board.delete_requested.connect(self._on_card_delete_requested)
         self.board.edit_requested.connect(self._edit_source)
@@ -756,9 +759,14 @@ class ProviderPane(QWidget):
                                   card=None if card is None else (card.spec, self.board.card_settings(handle)))
         if dialog.exec():
             if dialog.card_settings() is not None:
-                self.board.set_card_settings(handle, dialog.card_settings())
+                self._set_card_settings(handle, dialog.card_settings())
             self.refresh()
             self.refresh_alerts()
+
+    def _set_card_settings(self, handle: str, settings: CardSettings) -> None:
+        """Change a card, and the service's copy an MDIB export with toolbox behaviour stores."""
+        self.service.card_settings[handle] = settings
+        self.board.set_card_settings(handle, settings)
 
     def _on_edit_alert(self) -> None:
         handle = self.selected_alert_handle()
@@ -956,7 +964,7 @@ class ProviderPane(QWidget):
             QMessageBox.warning(self, "Could not create data source", str(exc))
             return
         if dialog.card_control():
-            self.board.set_card_settings(handle, CardSettings(control=dialog.card_control()))
+            self._set_card_settings(handle, CardSettings(control=dialog.card_control()))
         self.refresh()
         self.select_handle(handle)
 

@@ -202,7 +202,7 @@ Give it any argument and it starts straight away instead, which is what you want
 
 ```powershell
 .venv\Scripts\python.exe run_toolbox.py --name alpha
-.venv\Scripts\python.exe run_toolbox.py --name beta --config presets\insufflator.json
+.venv\Scripts\python.exe run_toolbox.py --name beta --config presets\insufflator.xml
 ```
 
 Use `--theme light` or `--theme dark` to select the initial colours; otherwise normal mode
@@ -213,8 +213,9 @@ uses the platform default. `--fullscreen` opens the main window fullscreen. For 
 ```
 
 `--friendly-name TEXT` sets the name the device announces, overriding whatever the config
-file says; the startup dialog has the same optional field. Without it a JSON preset uses its
-own `device.friendly_name` (or `Toolbox <name>`), and an MDIB preset uses `--name` unchanged.
+file says; the startup dialog has the same optional field. Without it an MDIB preset uses the
+friendly name stored in its toolbox behaviour, or `--name` unchanged if it stores none; a JSON
+profile uses its own `device.friendly_name` (or `Toolbox <name>`).
 
 When launching over SSH, the application still needs access to a graphical desktop:
 use the correct display/session environment and authorization (for example, `DISPLAY`
@@ -340,7 +341,7 @@ provider> where HOSP/Surgery/2/OR1/1/Table
 provider> patient Ada Lovelace F Ad 1815-12-10
   Ada Lovelace (F, Ad, 1815-12-10)
 provider> presets
-  Insufflator        9 data source(s), 3 alarm(s)
+  Insufflator        MDIB; 9 data source(s), 3 alarm(s)
       Laparoscopic insufflator: nine metrics for gas flow, pressure control, and related alarms. One metric larger than the infusion pump, and the first preset this project had.
 ```
 
@@ -348,19 +349,32 @@ provider> presets
 
 ### MDIB presets (XML)
 
-Presets can also be BICEPS MDIB XML files. Choose a `[MDIB]` preset, import an
-`.xml` file, or start with `--config presets/mdib-demo-monitor.xml`. The two original
-synthetic XML presets are **MDIB demo monitor** and **MDIB demo infusion pump**;
-existing JSON presets remain available.
+Every shipped preset is a BICEPS MDIB XML file: the seven devices and two focused examples
+below, plus two small synthetic files, **MDIB demo monitor** and **MDIB demo infusion
+pump**. Choose a preset, import an `.xml` file, or start with
+`--config presets/patient-monitor.xml`. Your own JSON profiles still import (see
+*Managed profiles* below), and the preset list still shows any you put in `presets/`.
+
+The device presets are saved with toolbox behaviour, so they load as complete devices: their
+generators run, their actions work, and they announce themselves as the machine they describe.
+Each one stores the name and description it is listed under, and the made-up default
+location and patient (*Alex Example*). Manufacturer, model name and model number sit in the
+MDS `MetaData`; the friendly name, firmware version and manufacturer URL, which `MetaData`
+has no field for, are toolbox behaviour.
 
 An XML export is **one file containing both `MdDescription` and `MdState`**, including
 current sample blocks and all context states/history. *File → Export config* offers two
 choices: **MDIB (*.xml)** writes plain BICEPS, a minimal file for other tools; **MDIB with
 toolbox behaviour (*.xml)** also stores what BICEPS has no place for (which waveforms and
-distributions the generator drives and their shapes, action effects and notes) as
+distributions the generator drives and their shapes, action effects and notes, and how each
+of your own data sources' cards looks: control type, step buttons, slider updates, ranges,
+legend, playback speed and text layout) as
 `ext:Extension` elements in the `urn:sdc-testing-toolbox:behaviour` namespace with
 `MustUnderstand="false"`, so the device loads back complete: the generator starts for the
-marked sample arrays, and unmarked ones keep the samples from the file. The console's `export snapshot.xml` writes the plain form and `export --behaviour snapshot.xml` the one with behaviour. Combined
+marked sample arrays, and unmarked ones keep the samples from the file. It also stores the
+friendly name, firmware version and manufacturer URL, and the preset name of a device loaded
+from a preset. A device the toolbox builds publishes its manufacturer, model name and model
+number in the MDS `MetaData`, so both export forms carry those. The console's `export snapshot.xml` writes the plain form and `export --behaviour snapshot.xml` the one with behaviour. Combined
 `GetMdibResponse`, message `Mdib`, and participant `MdibContainer` inputs are accepted.
 Separate description/state files are not supported. Invalid XML, unsafe DTD/entity
 declarations, broken references and content the pinned library cannot preserve are
@@ -374,13 +388,15 @@ local. **Loading changes nothing in the file's data**: no name prefix, no defaul
 location, no recomputed alarms and no generator unless the file's toolbox behaviour marks
 sample arrays as generated; only the SequenceId and version counters
 are runtime values. The announced manufacturer, model and serial number come from the MDS
-`MetaData` when present. Toolbox behaviour extensions are read on load and kept out of the
+`MetaData` when present, and the friendly name, firmware version and manufacturer URL from
+stored toolbox behaviour. The shipped presets store no serial number, so each instance keeps
+the one its name gives it. Toolbox behaviour extensions are read on load and kept out of the
 published MDIB, so consumers never see them; extensions in other namespaces stay as they are.
 A failed activation attempts to restore the previous provider and reports any recovery failure.
 
 An MDIB device is then edited like any other: add and remove metrics, alarms, actions and
 sections, switch remote control, set the patient and location, run the generator, and
-append a JSON preset. Edits use the file's own MDS, SCO, alert system, channels and
+append a JSON profile. Edits use the file's own MDS, SCO, alert system, channels and
 contexts, and create one only when an edit needs it (for example a SCO for the first
 controllable metric of a file without one). A channel from the file is a section named by
 its label. Imported limit alarms follow their source metric once that metric changes;
@@ -391,7 +407,8 @@ shows every entity with XML on hover. JSON export of an MDIB device is refused b
 cannot carry the whole graph; export XML instead.
 
 **Privacy:** full MDIB exports may include patient-identifying data and context history.
-Review them before sharing. Shipped XML demos contain no patient data. Development-only
+Review them before sharing. The shipped device presets contain only the toolbox's made-up
+default patient, and the two MDIB demos no patient at all. Development-only
 reference files are not presets and are not part of the application bundle.
 
 ### Managed profiles (JSON)
@@ -405,18 +422,17 @@ Both `replace=True` replacement and `replace=False` append are transactional for
 *File → Load preset* lists the ready-made devices in `presets/`, so the ones that ship with the tool need no file dialog.
 The same list appears in the startup window. Loading a profile with malformed field types or other schema errors raises `ConfigError`; `list_presets` catches those strict validation failures, invalid JSON and unreadable files and skips those entries, so one malformed preset does not interrupt discovery.
 Explicit profile versions must be JSON integers from 1 through the current format version, 3; preset discovery skips files outside that range. Profiles without a version predate versioning and are intentionally read with legacy version 1 semantics.
-The seven realistic-device presets and two focused examples are canonical current-schema profiles, not legacy compatibility fixtures. They are kept at profile format version 3 with explicit alert signal definitions where alarms are present. Tests for older readable formats use synthetic profile data instead of holding a shipped preset back on an earlier schema.
 
-Any of them can also be loaded at startup:
+Any preset or profile can also be loaded at startup:
 
 ```powershell
-.venv\Scripts\python.exe run_toolbox.py --config presets\patient-monitor.json
-.venv\Scripts\python.exe examples\console.py provider --config presets\ventilator.json
+.venv\Scripts\python.exe run_toolbox.py --config presets\patient-monitor.xml
+.venv\Scripts\python.exe examples\console.py provider --config presets\ventilator.xml
 ```
 
 Load it at startup rather than importing it afterwards if you want the device to announce that model.
-DPWS `ThisModel` and `ThisDevice` metadata is fixed when the provider is constructed. Startup loading reads the profile's `device` block before construction and then applies its live graph after startup; importing into an already running provider applies the graph but cannot change that provider's manufacturer, model, firmware, friendly name or other construction-time device metadata.
-The startup name still decides the EPR and serial number; a saved `device.instance_name` does not override it.
+DPWS `ThisModel` and `ThisDevice` metadata is fixed when the provider is constructed. Startup loading reads the identity (an MDIB's `MetaData` and stored behaviour, or a profile's `device` block) before construction; importing into an already running provider applies the graph but cannot change that provider's manufacturer, model, firmware, friendly name or other construction-time device metadata.
+The startup name still decides the EPR, and the serial number unless an MDIB's `MetaData` names one; a saved `device.instance_name` does not override it.
 
 For a profile that imports successfully, recorded handles make its defined metrics, alerts and actions addressable under stable names. They do not reproduce an identical live MDIB or provider identity.
 
@@ -437,25 +453,25 @@ For a profile that imports successfully, recorded handles make its defined metri
 Two smaller profiles complement the seven realistic devices above. Both publish read-only
 numeric measurements with coded units and declared containment, without alarms or actions:
 
-- **Operating Table** (`operating-table.json`): Height **780 mm** (500–1100 mm, resolution 1 mm),
+- **Operating Table** (`operating-table.xml`): Height **780 mm** (500–1100 mm, resolution 1 mm),
   Trendelenburg **−8°** and Lateral Angle **7.6°** (both −30° to 30°, resolution 0.1°).
   The table metric types use the toolbox's private coding namespace; their units use MDC codes.
-- **Ventilation Pressure** (`ventilation-pressure.json`): **18 cmH₂O** (0–40 cmH₂O,
+- **Ventilation Pressure** (`ventilation-pressure.xml`): **18 cmH₂O** (0–40 cmH₂O,
   resolution 1 cmH₂O), with MDC pressure type and unit codes.
 
 Select either name in the startup config dropdown or *File → Load preset*, or load it directly:
 
 ```powershell
-.venv\Scripts\python.exe run_toolbox.py --config presets\operating-table.json
-.venv\Scripts\python.exe run_toolbox.py --config presets\ventilation-pressure.json
+.venv\Scripts\python.exe run_toolbox.py --config presets\operating-table.xml
+.venv\Scripts\python.exe run_toolbox.py --config presets\ventilation-pressure.xml
 ```
 
 ### What the presets are actually demonstrating
 
-Every metric carries a **coded value**, because a label is not semantics. `"unit": "mmHg"` alone publishes a dimensionless number with a human comment attached; another device can do nothing with it.
-The shipped metric profiles use two coding-system aliases:
+Every metric carries a **coded value**, because a label is not semantics. A unit written only as "mmHg" publishes a dimensionless number with a human comment attached; another device can do nothing with it.
+The shipped device presets use two coding systems:
 
-- **`mdc`** — IEEE 11073-10101, for parameters that genuinely have a standard term.
+- **`mdc`** — IEEE 11073-10101 (`urn:oid:1.2.840.10004.1.1.1.0.0.1`), for parameters that genuinely have a standard term.
 - **`private`** — `urn:sdc-testing-toolbox:private`, for everything that does not.
 
 Which is which is the interesting part, and `tests/presets.py` counts it:

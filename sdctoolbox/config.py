@@ -239,7 +239,7 @@ def list_presets(directory: str | Path | None = None) -> list[Preset]:
             ),
         )
     from .mdib_io import parse_mdib
-    from .native_mdib import label
+    from .native_mdib import label, preset_info
 
     for path in sorted(folder.glob("*.xml")):
         try:
@@ -248,8 +248,10 @@ def list_presets(directory: str | Path | None = None) -> list[Preset]:
             continue
         descriptors = list(mdib.descriptions.objects)
         root = next(descriptor for descriptor in descriptors if descriptor.parent_handle is None)
+        stored = preset_info(mdib.toolbox_behaviour) or {}
         found.append(Preset(
-            path=path, name=f"{label(root)} [MDIB]", description="Native combined MDIB snapshot; loading restarts the provider.",
+            path=path, name=stored.get("name") or f"{label(root)} [MDIB]",
+            description=stored.get("description") or "Native combined MDIB snapshot; loading restarts the provider.",
             metrics=sum(descriptor.is_metric_descriptor for descriptor in descriptors),
             alerts=sum(descriptor.is_alert_condition_descriptor for descriptor in descriptors),
         ))

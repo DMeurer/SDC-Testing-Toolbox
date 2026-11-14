@@ -30,8 +30,8 @@ from sdc11073.mdib.descriptorcontainers import NumericMetricDescriptorContainer 
 from sdc11073.mdib.statecontainers import NumericMetricStateContainer  # noqa: E402
 from sdc11073.xml_types import pm_qnames as pm, pm_types  # noqa: E402
 
-from sdctoolbox import config, constants  # noqa: E402
-from sdctoolbox.model import CODING_SYSTEMS, MetricKind  # noqa: E402
+from sdctoolbox import config, constants, native_mdib  # noqa: E402
+from sdctoolbox.model import CODING_SYSTEMS, DEFAULT_PATIENT, DeviceInfo, MetricKind  # noqa: E402
 from sdctoolbox.provider_service import ProviderService  # noqa: E402
 from sdctoolbox.mdib_io import mdib_bytes, parse_mdib  # noqa: E402
 from sdc11073.xml_types import pm_qnames as pm  # noqa: E402
@@ -48,7 +48,7 @@ def check_native_preset(report: Report, path: Path) -> None:
     try:
         report.check(service.from_mdib_file, "loads as a native graph rather than a JSON conversion")
         report.check(not service.generator_running, "keeps native sample blocks without inventing generators")
-        report.check(not service.mdib.context_states.objects, "contains no patient data")
+        report.check(not service.mdib.entities.by_node_type(pm.PatientContextDescriptor), "contains no patient data")
         restored = parse_mdib(mdib_bytes(service.mdib))
         report.check(
             {handle for handle, _ in restored.entities.items()} == {handle for handle, _ in service.mdib.entities.items()},
@@ -66,18 +66,19 @@ def check_native_preset(report: Report, path: Path) -> None:
 
 
 EXPECTED_PRESET_FILES = {
-    "endoscopic-camera.json",
-    "hf-generator.json",
-    "infusion-pump.json",
-    "insufflator.json",
+    "endoscopic-camera.xml",
+    "hf-generator.xml",
+    "infusion-pump.xml",
+    "insufflator.xml",
     "mdib-demo-infusion-pump.xml",
     "mdib-demo-monitor.xml",
-    "operating-table.json",
-    "patient-monitor.json",
-    "surgical-microscope.json",
-    "ventilation-pressure.json",
-    "ventilator.json",
+    "operating-table.xml",
+    "patient-monitor.xml",
+    "surgical-microscope.xml",
+    "ventilation-pressure.xml",
+    "ventilator.xml",
 }
+DEMOS = {"mdib-demo-infusion-pump.xml", "mdib-demo-monitor.xml"}
 
 
 def check_focused_profile(report: Report, path: Path, service: ProviderService) -> None:
@@ -106,7 +107,8 @@ def check_focused_profile(report: Report, path: Path, service: ProviderService) 
         and not service.mdib.entities.by_node_type(pm.SetValueOperationDescriptor),
         "focused profile has only its read-only numeric metrics, without alarms or actions",
     )
-    report.check(service.sections() == {section: channel}, "focused profile keeps its declared section")
+    report.check({spec.section for spec in specs.values()} == {section} and service.sections().get(section) == channel,
+                 "focused profile keeps its declared section")
     node = etree.fromstring(etree.tostring(service.mdib.reconstruct_mdib_with_context_states()[0]))
     for handle, label, value, lower, upper, resolution, unit_code, unit_label, type_code, type_system in expected:
         descriptors = node.xpath(".//*[@Handle=$handle]", handle=handle)
@@ -151,58 +153,59 @@ def check_focused_profile(report: Report, path: Path, service: ProviderService) 
 def check_preset(report: Report, path: Path) -> None:
     """Build one preset and look at what it produced."""
     print(f"\n{path.name}")
-    if path.suffix == ".xml":
+    if path.name in DEMOS:
         check_native_preset(report, path)
         return
 
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        device = config.load_file(path)
-    except (OSError, UnicodeError, ValueError, config.ConfigError) as exc:
+        snapshot = config.load_file(path)
+        mdib = parse_mdib(snapshot.xml)
+    except (OSError, config.ConfigError) as exc:
         report.check(False, f"{path.name} parses", str(exc)[:70])  # noqa: FBT003
         return
     report.check(True, "parses")  # noqa: FBT003
+    preset = native_mdib.preset_info(mdib.toolbox_behaviour) or {}
+    report.check(bool(preset.get("name")) and bool(preset.get("description")),
+                 "stores the name and description it is listed under", preset.get("name", "none"))
+    identity, serial = native_mdib.device_identity(mdib)
+    defaults = DeviceInfo()
     report.check(
-        data.get("version") == config.CONFIG_VERSION,
-        f"uses current profile version {config.CONFIG_VERSION}",
-        str(data.get("version")),
-    )
-    alerts_with_implicit_signals = [
-        alert.get("handle", alert.get("label", "?"))
-        for alert in data.get("alerts", [])
-        if not alert.get("signals")
-    ]
-    report.check(
-        not alerts_with_implicit_signals,
-        "records every alarm's version-3 signal definitions explicitly",
-        str(alerts_with_implicit_signals),
-    )
-
-    report.check(
-        device.device is not None and bool(device.device.friendly_name),
+        bool(identity.friendly_name) and identity.manufacturer == "Toolbox"
+        and identity.model_name != defaults.model_name and identity.model_number != defaults.model_number
+        and serial is None,
         "names the machine it describes, rather than inheriting the toolbox's identity",
-        device.device.friendly_name if device.device else "no device block",
+        f"{identity.friendly_name}: {identity.model_name} {identity.model_number}",
     )
+    signals = {entity.descriptor.ConditionSignaled for entity in mdib.entities.by_node_type(pm.AlertSignalDescriptor)}
+    unsignalled = [descriptor.Handle for descriptor in mdib.descriptions.objects
+                   if descriptor.is_alert_condition_descriptor and descriptor.Handle not in signals]
+    report.check(not unsignalled, "announces every alarm with at least one signal", str(unsignalled))
 
-    service = ProviderService(instance_name=f"preset-{path.stem}", device=device.device)
-    service.start()
+    service = ProviderService(instance_name=f"preset-{path.stem}", device=identity)
+    service.start(parse_mdib(snapshot.xml))
     try:
-        metrics, alerts = config.apply_to(service, device)
+        report.check(service.from_mdib_file, "loads as a native graph")
+        patient = service.get_patient()
         report.check(
-            metrics == len(device.metrics) and alerts == len(device.alerts),
-            "builds on a real provider",
-            f"{metrics} metrics, {alerts} alarms, {len(service.list_actions())} actions",
+            not service.mdib.context_states.objects
+            or (patient.given_name, patient.family_name) == (DEFAULT_PATIENT.given_name, DEFAULT_PATIENT.family_name),
+            "contains no patient data beyond the toolbox's made-up default patient",
+            f"{patient.given_name} {patient.family_name}",
         )
+        report.check(bool(service.list_metrics()), "builds on a real provider",
+                     f"{len(service.list_metrics())} metrics, {len(service.list_alerts())} alarms, "
+                     f"{len(service.list_actions())} actions")
 
         sections = service.sections()
-        declared_sections = {spec.section for spec in device.metrics}
+        metrics = list(service.list_metrics().values())
+        declared_sections = {spec.section for spec in metrics}
         report.check(
-            bool(declared_sections) and "" not in declared_sections and set(sections) == declared_sections,
-            "builds every nonempty declared section, without flattening containment",
-            ", ".join(sorted(sections)),
+            "" not in declared_sections and declared_sections <= set(sections),
+            "puts every metric in a named section, without flattening containment",
+            ", ".join(sorted(declared_sections)),
         )
         wrong_parents = []
-        for spec in device.metrics:
+        for spec in metrics:
             entity = service.mdib.entities.by_handle(spec.handle)
             channel = service.mdib.entities.by_handle(sections.get(spec.section, ""))
             vmd = service.mdib.entities.by_handle(channel.parent_handle) if channel is not None else None
@@ -226,9 +229,8 @@ def check_preset(report: Report, path: Path) -> None:
                 unserialisable.append(handle)
         report.check(not unserialisable, "every metric descriptor is complete", str(unserialisable))
 
-        # An action naming a target that does not exist would have raised in apply_to, so
-        # reaching here means every one resolved. Check they point somewhere real anyway,
-        # because a preset can name mds0 and a section handle alike.
+        # A broken reference would have refused to load. Check actions point somewhere real
+        # anyway, because a preset can name mds0 and a section handle alike.
         dangling = [
             spec.target_handle
             for spec in service.list_actions().values()
@@ -299,17 +301,19 @@ def check_nomenclature(report: Report, paths: list[Path]) -> None:
 
     totals: dict[str, dict[str, int]] = {}
     non_numeric_mdc: list[str] = []
+    aliases = {uri: alias for alias, uri in CODING_SYSTEMS.items()}
     for path in paths:
-        device = config.load_file(path)
+        mdib = parse_mdib(path.read_bytes())
         counts = {"mdc": 0, "private": 0}
-        for spec in device.metrics:
-            codings = [spec.effective_type(), spec.effective_unit()]
-            if spec.kind is MetricKind.DISTRIBUTION:
-                codings.append(spec.effective_domain_unit())
-            for coding in codings:
-                counts[coding.system] = counts.get(coding.system, 0) + 1
-                if coding.system == "mdc" and not coding.code.isdecimal():
-                    non_numeric_mdc.append(f"{path.stem}:{spec.handle}:{coding.code}")
+        for descriptor in mdib.descriptions.objects:
+            if not descriptor.is_metric_descriptor:
+                continue
+            codings = [descriptor.Type, descriptor.Unit, getattr(descriptor, "DomainUnit", None)]
+            for coding in filter(None, codings):
+                system = aliases.get(coding.CodingSystem, coding.CodingSystem)
+                counts[system] = counts.get(system, 0) + 1
+                if system == "mdc" and not coding.Code.isdecimal():
+                    non_numeric_mdc.append(f"{path.stem}:{descriptor.Handle}:{coding.Code}")
         totals[path.stem] = counts
 
     for name, counts in sorted(totals.items()):
@@ -370,7 +374,7 @@ def main() -> int:
     actual_files = {path.name for path in paths}
     report.check(
         constants.SHIPPED_PRESET_FILES == EXPECTED_PRESET_FILES,
-        "the manifest includes seven device profiles, two focused examples and two native-MDIB examples",
+        "the manifest includes seven devices, two focused examples and two MDIB demos, all as MDIB files",
     )
     report.check(
         actual_files == EXPECTED_PRESET_FILES,
@@ -382,7 +386,7 @@ def main() -> int:
     for name in sorted(EXPECTED_PRESET_FILES):
         check_preset(report, ROOT / "presets" / name)
 
-    check_nomenclature(report, [path for path in paths if path.suffix == ".json"])
+    check_nomenclature(report, [path for path in paths if path.name not in DEMOS])
 
     print("\nThe menu builds from these")
     listed = config.list_presets()
@@ -391,6 +395,8 @@ def main() -> int:
         "exactly the shipped files are offered, so none is silently unreadable",
         str(sorted(preset.path.name for preset in listed)),
     )
+    names = [preset.name for preset in listed]
+    report.check(len(set(names)) == len(names), "every preset has its own name in the menu", str(names))
     for preset in listed:
         report.check(bool(preset.description), f"{preset.name} says what it is", preset.description[:44])
     check_version_filter(report)

@@ -1190,6 +1190,75 @@ def patient_info_from_biceps(core_data: Any) -> PatientInfo:
     )
 
 
+@dataclass(frozen=True)
+class CardSettings:
+    """How one metric's card looks. Toolbox only: an MDIB export with toolbox behaviour
+    stores it, the published MDIB never carries it.
+
+    `control` names the control class; None means whatever the factory picks first.
+    """
+
+    control: str | None = None
+    # Number input
+    small_steps: bool = True
+    large_steps: bool = True
+    # Slider: "release" sends when the knob is let go, "change" while it is dragged.
+    update_on: str = "release"
+    show_ranges: bool = True
+    # Waveform and distribution
+    legend: bool = True
+    seconds_per_width: Decimal = Decimal(10)
+    # Text
+    split: bool = False
+    multiline: bool = False
+
+    def to_attributes(self) -> dict[str, str]:
+        """The settings that differ from the defaults, as XML attribute values."""
+        defaults = CardSettings()
+        result = {}
+        for name, attribute in CARD_ATTRIBUTES.items():
+            value = getattr(self, name)
+            if value != getattr(defaults, name):
+                result[attribute] = str(value).lower() if isinstance(value, bool) else str(value)
+        return result
+
+    @classmethod
+    def from_attributes(cls, attributes: dict[str, str]) -> CardSettings:
+        """Read what to_attributes() wrote; a value of the wrong form raises ValueError."""
+        defaults = cls()
+        values: dict[str, Any] = {}
+        for name, attribute in CARD_ATTRIBUTES.items():
+            raw = attributes.get(attribute)
+            if raw is None:
+                continue
+            default = getattr(defaults, name)
+            if isinstance(default, bool):
+                if raw not in ("true", "false"):
+                    raise ValueError(f"{attribute} must be true or false, not {raw!r}")
+                values[name] = raw == "true"
+            elif isinstance(default, Decimal):
+                try:
+                    number = Decimal(raw)
+                except InvalidOperation:
+                    number = Decimal("NaN")
+                if not number.is_finite() or number <= 0:
+                    raise ValueError(f"{attribute} must be a positive number, not {raw!r}")
+                values[name] = number
+            else:
+                values[name] = raw
+        if values.get("update_on", defaults.update_on) not in ("release", "change"):
+            raise ValueError(f"UpdateOn must be release or change, not {values['update_on']!r}")
+        return cls(**values)
+
+
+# CardSettings field -> attribute name in a toolbox behaviour export.
+CARD_ATTRIBUTES = {
+    "control": "Control", "small_steps": "SmallSteps", "large_steps": "LargeSteps", "update_on": "UpdateOn",
+    "show_ranges": "ShowRanges", "legend": "Legend", "seconds_per_width": "SecondsPerWidth",
+    "split": "Split", "multiline": "Multiline",
+}
+
+
 @dataclass
 class ActionSpec:
     """Something the device *does*, as opposed to a value it holds.

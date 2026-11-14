@@ -2731,57 +2731,6 @@ def run_checks(report: Report, workdir: Path) -> None:
 
         check_config_versions(report, workdir)
 
-        preset_round_trips = []
-        preset_paths = sorted((ROOT / "presets").glob("*.json"))
-        preset_files = {preset_path.name for preset_path in preset_paths}
-        json_preset_files = {name for name in constants.SHIPPED_PRESET_FILES if name.endswith(".json")}
-        for preset_path in preset_paths:
-            preset_data = json.loads(preset_path.read_text(encoding="utf-8"))
-            preset = config.parse(preset_data)
-            preset_service = ProviderService(instance_name=preset.instance_name, device=preset.device)
-            preset_service.start()
-            try:
-                config.apply_to(preset_service, preset)
-                serialized = config.to_dict(preset_service)
-                source_contexts = preset_data.get("contexts", {})
-                current_contexts = serialized.get("contexts", {})
-                retained_contexts = {
-                    name: current_contexts[name]
-                    for name in ("location", "patient")
-                    if name in source_contexts
-                }
-                if retained_contexts:
-                    serialized["contexts"] = retained_contexts
-                else:
-                    serialized.pop("contexts", None)
-                round_tripped = config.parse(serialized)
-                signals_preserved = all(
-                    serialized_alert["signals"]
-                    == [
-                        {"manifestation": signal.manifestation.value, "latching": signal.latching}
-                        for signal in alert.signals
-                    ]
-                    for alert, serialized_alert in zip(
-                        sorted(preset.alerts, key=lambda item: item.handle or ""),
-                        serialized["alerts"],
-                        strict=True,
-                    )
-                )
-                preset_round_trips.append(
-                    preset_data.get("version") == config.CONFIG_VERSION
-                    and serialized.get("version") == config.CONFIG_VERSION
-                    and signals_preserved
-                    and device_config_snapshot(round_tripped) == device_config_snapshot(preset)
-                )
-            finally:
-                preset_service.stop()
-        report.check(
-            preset_files == json_preset_files and all(preset_round_trips),
-            "canonical presets round-trip at the current version with version-3 signals intact",
-            f"{sum(preset_round_trips)} of {len(json_preset_files)}; "
-            f"files {sorted(preset_files)}",
-        )
-
         print("\n3. Import replaces rather than appends")
         metrics, _ = config.load_into(target, path)
         report.check(

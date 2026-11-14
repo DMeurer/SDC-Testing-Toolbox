@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QLineEdit, QWidget
 
-from ...model import MetricKind, RemoteRange
+from ...model import CardSettings, MetricKind, RemoteRange  # noqa: F401 - CardSettings is re-exported for the cards
 
 if TYPE_CHECKING:
     from ...model import MetricSpec, RemoteMetric
@@ -78,29 +78,6 @@ class WidgetSpec:
     def slider_ranges(self) -> tuple[RemoteRange, ...]:
         """Prefer operation limits; use technical bounds only for slider presentation."""
         return self.control_ranges or self.technical_ranges
-
-
-@dataclass(frozen=True)
-class CardSettings:
-    """How one card looks. Toolbox only: none of this reaches the MDIB.
-
-    Kept per handle by the board for the session. `control` names the control class; None
-    means whatever the factory picks first.
-    """
-
-    control: str | None = None
-    # Number input
-    small_steps: bool = True
-    large_steps: bool = True
-    # Slider: "release" sends when the knob is let go, "change" while it is dragged.
-    update_on: str = "release"
-    show_ranges: bool = True
-    # Waveform and distribution
-    legend: bool = True
-    seconds_per_width: Decimal = Decimal(10)
-    # Text
-    split: bool = False
-    multiline: bool = False
 
 
 def from_spec(handle: str, spec: MetricSpec, *, editable: bool, note: str = "") -> WidgetSpec:

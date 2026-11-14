@@ -1,0 +1,340 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<msg:GetMdibResponse xmlns:msg="http://standards.ieee.org/downloads/11073/11073-10207-2017/message" xmlns:dom="http://standards.ieee.org/downloads/11073/11073-10207-2017/participant" xmlns:ext="http://standards.ieee.org/downloads/11073/11073-10207-2017/extension" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:tb="urn:sdc-testing-toolbox:behaviour" SequenceId="urn:uuid:bc6e7d5d-5adb-5677-ab94-feff661a0dbb" MdibVersion="0">
+  <msg:Mdib SequenceId="urn:uuid:bc6e7d5d-5adb-5677-ab94-feff661a0dbb" MdibVersion="0">
+    <dom:MdDescription>
+      <dom:Mds Handle="mds0">
+        <ext:Extension>
+          <tb:Device FriendlyName="Insufflator" FirmwareVersion="1.4.0" ext:MustUnderstand="false"/>
+          <tb:Preset Name="Insufflator" Description="Laparoscopic insufflator: nine metrics for gas flow, pressure control, and related alarms. One metric larger than the infusion pump, and the first preset this project had." ext:MustUnderstand="false"/>
+        </ext:Extension>
+        <dom:Type Code="toolbox-mds" CodingSystem="urn:sdc-testing-toolbox:private">
+          <dom:ConceptDescription Lang="en-US">SDC-testing-toolbox virtual device</dom:ConceptDescription>
+        </dom:Type>
+        <dom:AlertSystem Handle="alerts.mds0" SelfCheckPeriod="PT30S">
+          <dom:AlertCondition Handle="al.service_due" xsi:type="dom:AlertConditionDescriptor" Kind="Oth" Priority="Lo">
+            <dom:Type Code="service_due" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Service due</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Source>m.flow_rate</dom:Source>
+          </dom:AlertCondition>
+          <dom:AlertCondition Handle="al.flow_out_of_range" xsi:type="dom:LimitAlertConditionDescriptor" Kind="Tec" Priority="Me">
+            <dom:Type Code="flow_out_of_range" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Flow out of range</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Source>m.flow_rate</dom:Source>
+            <dom:MaxLimits Lower="0" Upper="40"/>
+          </dom:AlertCondition>
+          <dom:AlertCondition Handle="al.overpressure" xsi:type="dom:LimitAlertConditionDescriptor" Kind="Phy" Priority="Hi">
+            <dom:Type Code="overpressure" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Overpressure</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Source>m.measured_pressure</dom:Source>
+            <dom:MaxLimits Lower="0" Upper="60"/>
+          </dom:AlertCondition>
+          <dom:AlertSignal Handle="sig.overpressure.aud" ConditionSignaled="al.overpressure" Manifestation="Aud" Latching="false" SignalDelegationSupported="true"/>
+          <dom:AlertSignal Handle="sig.service_due.vis" ConditionSignaled="al.service_due" Manifestation="Vis" Latching="false" SignalDelegationSupported="false"/>
+          <dom:AlertSignal Handle="sig.flow_out_of_range.vis" ConditionSignaled="al.flow_out_of_range" Manifestation="Vis" Latching="false" SignalDelegationSupported="false"/>
+          <dom:AlertSignal Handle="sig.flow_out_of_range.aud" ConditionSignaled="al.flow_out_of_range" Manifestation="Aud" Latching="false" SignalDelegationSupported="false"/>
+          <dom:AlertSignal Handle="sig.service_due.aud" ConditionSignaled="al.service_due" Manifestation="Aud" Latching="false" SignalDelegationSupported="false"/>
+          <dom:AlertSignal Handle="sig.overpressure.vis" ConditionSignaled="al.overpressure" Manifestation="Vis" Latching="false" SignalDelegationSupported="true"/>
+        </dom:AlertSystem>
+        <dom:Sco Handle="sco.mds0">
+          <dom:Operation Handle="act.reset_gas_used" xsi:type="dom:ActivateOperationDescriptor" OperationTarget="vmd.gas">
+            <ext:Extension>
+              <tb:Action ext:MustUnderstand="false">
+                <tb:Effect Target="m.gas_used" Value="0"/>
+              </tb:Action>
+            </ext:Extension>
+            <dom:Type Code="reset_gas_counter" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Reset gas counter</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Operation>
+          <dom:Operation Handle="op.operator_note" xsi:type="dom:SetStringOperationDescriptor" OperationTarget="m.operator_note">
+            <dom:Type Code="set_insuf_operator_note" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="op.target_pressure" xsi:type="dom:SetValueOperationDescriptor" OperationTarget="m.target_pressure">
+            <dom:Type Code="set_insuf_target_pressure" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="op.flow_rate" xsi:type="dom:SetValueOperationDescriptor" OperationTarget="m.flow_rate">
+            <dom:Type Code="set_insuf_flow_rate" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="op.mode" xsi:type="dom:SetStringOperationDescriptor" OperationTarget="m.mode">
+            <dom:Type Code="set_insuf_mode" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="act.vent" xsi:type="dom:ActivateOperationDescriptor" OperationTarget="mds0">
+            <ext:Extension>
+              <tb:Action Note="Release the pneumoperitoneum. One press, and nothing to type" ext:MustUnderstand="false">
+                <tb:Effect Target="m.flow_rate" Value="0"/>
+                <tb:Effect Target="m.measured_pressure" Value="0"/>
+                <tb:Effect Target="m.mode" Value="STANDBY"/>
+              </tb:Action>
+            </ext:Extension>
+            <dom:Type Code="vent_to_atmosphere" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Vent to atmosphere</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Operation>
+        </dom:Sco>
+        <dom:MetaData>
+          <dom:Manufacturer>Toolbox</dom:Manufacturer>
+          <dom:ModelName>Pneumo 40</dom:ModelName>
+          <dom:ModelNumber>40</dom:ModelNumber>
+        </dom:MetaData>
+        <dom:SystemContext Handle="SC.mds0">
+          <dom:PatientContext Handle="PC.mds0"/>
+          <dom:LocationContext Handle="LC.mds0"/>
+        </dom:SystemContext>
+        <dom:Vmd Handle="vmd.gas">
+          <dom:Type Code="gas" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">Gas</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch.gas">
+            <dom:Type Code="gas" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Gas</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Metric Handle="m.gas_used" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="0.1">
+              <dom:Type Code="insuf_gas_used" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Gas used</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="263744" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">L</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="500" StepWidth="0.1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.gas_supply" xsi:type="dom:EnumStringMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr">
+              <dom:Type Code="insuf_gas_supply" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Gas supply</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+              <dom:AllowedValue>
+                <dom:Value>OK</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>LOW</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>EMPTY</dom:Value>
+              </dom:AllowedValue>
+            </dom:Metric>
+            <dom:Metric Handle="m.flow_rate" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="0.1">
+              <dom:Type Code="insuf_flow_rate" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Flow rate</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="265216" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">L/min</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="40" StepWidth="0.1"/>
+            </dom:Metric>
+          </dom:Channel>
+        </dom:Vmd>
+        <dom:Vmd Handle="vmd0">
+          <dom:Type Code="toolbox-vmd" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">User defined data sources</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch0.vmd0">
+            <dom:Type Code="toolbox-channel" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Default channel</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Channel>
+        </dom:Vmd>
+        <dom:Vmd Handle="vmd.control">
+          <dom:Type Code="control" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">Control</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch.control">
+            <dom:Type Code="control" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Control</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Metric Handle="m.mode" xsi:type="dom:EnumStringMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr">
+              <dom:Type Code="insuf_mode" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Mode</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+              <dom:AllowedValue>
+                <dom:Value>STANDBY</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>INSUFFLATING</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>PAUSED</dom:Value>
+              </dom:AllowedValue>
+            </dom:Metric>
+            <dom:Metric Handle="m.operator_note" xsi:type="dom:StringMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr">
+              <dom:Type Code="insuf_operator_note" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Operator note</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+            </dom:Metric>
+          </dom:Channel>
+        </dom:Vmd>
+        <dom:Vmd Handle="vmd.pressure">
+          <dom:Type Code="pressure" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">Pressure</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch.pressure">
+            <dom:Type Code="pressure" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Pressure</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Metric Handle="m.measured_pressure" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="insuf_measured_pressure" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Measured pressure</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="266016" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">mmHg</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="60" StepWidth="1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.pressure_trace" xsi:type="dom:RealTimeSampleArrayMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Cont" DeterminationPeriod="PT0.1S" Resolution="0.1" SamplePeriod="PT0.1S">
+              <ext:Extension>
+                <tb:Generator Shape="respiration" CycleSeconds="6" ext:MustUnderstand="false"/>
+              </ext:Extension>
+              <dom:Type Code="insuf_pressure_trace" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Pressure trace</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="266016" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">mmHg</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="30" StepWidth="0.1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.target_pressure" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="insuf_target_pressure" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Target pressure</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="266016" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">mmHg</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="30" StepWidth="1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.flow_spectrum" xsi:type="dom:DistributionSampleArrayMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" DeterminationPeriod="PT0.25S" Resolution="0.1">
+              <ext:Extension>
+                <tb:Generator DistributionShape="spectrum" ext:MustUnderstand="false"/>
+              </ext:Extension>
+              <dom:Type Code="insuf_flow_spectrum" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Flow spectrum</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="268576" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">dB</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="40" StepWidth="0.1"/>
+              <dom:DomainUnit Code="264640" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">Hz</dom:ConceptDescription>
+              </dom:DomainUnit>
+              <dom:DistributionRange Lower="0" Upper="50" StepWidth="1.6129"/>
+            </dom:Metric>
+          </dom:Channel>
+        </dom:Vmd>
+      </dom:Mds>
+    </dom:MdDescription>
+    <dom:MdState>
+      <dom:State xsi:type="dom:SetValueOperationState" DescriptorHandle="op.flow_rate" OperatingMode="En">
+        <dom:AllowedRange Lower="0" Upper="40" StepWidth="0.1"/>
+      </dom:State>
+      <dom:State xsi:type="dom:LimitAlertConditionState" DescriptorHandle="al.overpressure" ActivationState="On" Presence="false" MonitoredAlertLimits="LoOff">
+        <dom:Limits Upper="20"/>
+      </dom:State>
+      <dom:State xsi:type="dom:SetStringOperationState" DescriptorHandle="op.mode" OperatingMode="En">
+        <dom:AllowedValues>
+          <dom:Value>STANDBY</dom:Value>
+          <dom:Value>INSUFFLATING</dom:Value>
+          <dom:Value>PAUSED</dom:Value>
+        </dom:AllowedValues>
+      </dom:State>
+      <dom:State xsi:type="dom:DistributionSampleArrayMetricState" DescriptorHandle="m.flow_spectrum" ActivationState="On">
+        <dom:MetricValue>
+          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.overpressure.vis" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.control"/>
+      <dom:State xsi:type="dom:EnumStringMetricState" DescriptorHandle="m.gas_supply" ActivationState="On">
+        <dom:MetricValue Value="OK">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch0.vmd0" ActivationState="On"/>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.pressure"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.gas_used" ActivationState="On">
+        <dom:MetricValue Value="3.4">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:LimitAlertConditionState" DescriptorHandle="al.flow_out_of_range" ActivationState="On" Presence="false" MonitoredAlertLimits="All">
+        <dom:Limits Lower="1" Upper="35"/>
+      </dom:State>
+      <dom:State xsi:type="dom:RealTimeSampleArrayMetricState" DescriptorHandle="m.pressure_trace" ActivationState="On">
+        <dom:MetricValue>
+          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:SetValueOperationState" DescriptorHandle="op.target_pressure" OperatingMode="En">
+        <dom:AllowedRange Lower="0" Upper="30" StepWidth="1"/>
+      </dom:State>
+      <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.vent" OperatingMode="En"/>
+      <dom:State xsi:type="dom:AlertConditionState" DescriptorHandle="al.service_due" ActivationState="On" Presence="false"/>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.gas"/>
+      <dom:State xsi:type="dom:StringMetricState" DescriptorHandle="m.operator_note"/>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.service_due.vis" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.target_pressure" ActivationState="On">
+        <dom:MetricValue Value="12">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.control"/>
+      <dom:State xsi:type="dom:SetStringOperationState" DescriptorHandle="op.operator_note" OperatingMode="En"/>
+      <dom:State xsi:type="dom:AlertSystemState" DescriptorHandle="alerts.mds0" ActivationState="On">
+        <dom:SystemSignalActivation Manifestation="Aud" State="On"/>
+        <dom:SystemSignalActivation Manifestation="Vis" State="On"/>
+      </dom:State>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.pressure"/>
+      <dom:State xsi:type="dom:EnumStringMetricState" DescriptorHandle="m.mode" ActivationState="On">
+        <dom:MetricValue Value="STANDBY">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.flow_out_of_range.aud" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd0" ActivationState="On"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.measured_pressure" ActivationState="On">
+        <dom:MetricValue Value="12">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.overpressure.aud" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.flow_out_of_range.vis" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.gas"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.flow_rate" ActivationState="On">
+        <dom:MetricValue Value="15">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:MdsState" DescriptorHandle="mds0" ActivationState="On" OperatingMode="Dmo"/>
+      <dom:State xsi:type="dom:ScoState" DescriptorHandle="sco.mds0" ActivationState="On"/>
+      <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.reset_gas_used" OperatingMode="En"/>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.service_due.aud" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:SystemContextState" DescriptorHandle="SC.mds0" ActivationState="On"/>
+      <dom:State xsi:type="dom:PatientContextState" DescriptorHandle="PC.mds0" Handle="PC.mds0.state" ContextAssociation="Assoc">
+        <dom:CoreData>
+          <dom:Givenname>Alex</dom:Givenname>
+          <dom:Familyname>Example</dom:Familyname>
+          <dom:Sex>Unspec</dom:Sex>
+          <dom:PatientType>Ad</dom:PatientType>
+          <dom:DateOfBirth>1990-01-01</dom:DateOfBirth>
+          <dom:Height MeasuredValue="170">
+            <dom:MeasurementUnit Code="264184" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:ConceptDescription Lang="en-US">cm</dom:ConceptDescription>
+            </dom:MeasurementUnit>
+          </dom:Height>
+          <dom:Weight MeasuredValue="70">
+            <dom:MeasurementUnit Code="266016" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:ConceptDescription Lang="en-US">kg</dom:ConceptDescription>
+            </dom:MeasurementUnit>
+          </dom:Weight>
+        </dom:CoreData>
+      </dom:State>
+      <dom:State xsi:type="dom:LocationContextState" DescriptorHandle="LC.mds0" Handle="LC.mds0.state" ContextAssociation="Assoc">
+        <dom:Validator Root="rootWithNoMeaning" Extension="System"/>
+        <dom:Identification Root="sdc.ctxt.loc.detail" Extension="HOSP/Surgery/2/OR1/1/Table"/>
+        <dom:LocationDetail PoC="OR1" Room="1" Bed="Table" Facility="HOSP" Building="Surgery" Floor="2"/>
+      </dom:State>
+    </dom:MdState>
+  </msg:Mdib>
+</msg:GetMdibResponse>

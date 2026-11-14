@@ -1,0 +1,443 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<msg:GetMdibResponse xmlns:msg="http://standards.ieee.org/downloads/11073/11073-10207-2017/message" xmlns:dom="http://standards.ieee.org/downloads/11073/11073-10207-2017/participant" xmlns:ext="http://standards.ieee.org/downloads/11073/11073-10207-2017/extension" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:tb="urn:sdc-testing-toolbox:behaviour" SequenceId="urn:uuid:728eb433-14a5-558b-a278-2dd15ddb37a7" MdibVersion="0">
+  <msg:Mdib SequenceId="urn:uuid:728eb433-14a5-558b-a278-2dd15ddb37a7" MdibVersion="0">
+    <dom:MdDescription>
+      <dom:Mds Handle="mds0">
+        <ext:Extension>
+          <tb:Device FriendlyName="Ventilator" FirmwareVersion="4.1.2" ext:MustUnderstand="false"/>
+          <tb:Preset Name="Ventilator" Description="Three synchronised waveforms and the settings behind them. The waveform-heaviest preset here, and the one that shows what a stream of sample arrays costs." ext:MustUnderstand="false"/>
+        </ext:Extension>
+        <dom:Type Code="toolbox-mds" CodingSystem="urn:sdc-testing-toolbox:private">
+          <dom:ConceptDescription Lang="en-US">SDC-testing-toolbox virtual device</dom:ConceptDescription>
+        </dom:Type>
+        <dom:AlertSystem Handle="alerts.mds0" SelfCheckPeriod="PT30S">
+          <dom:AlertCondition Handle="al.minute_volume_low" xsi:type="dom:LimitAlertConditionDescriptor" Kind="Phy" Priority="Hi">
+            <dom:Type Code="minute_volume_low" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Minute volume low</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Source>m.minute_volume</dom:Source>
+            <dom:MaxLimits Lower="0" Upper="30"/>
+          </dom:AlertCondition>
+          <dom:AlertCondition Handle="al.pressure_high" xsi:type="dom:LimitAlertConditionDescriptor" Kind="Phy" Priority="Hi">
+            <dom:Type Code="airway_pressure_high" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Airway pressure high</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Source>m.peak_pressure</dom:Source>
+            <dom:MaxLimits Lower="0" Upper="60"/>
+          </dom:AlertCondition>
+          <dom:AlertCondition Handle="al.tidal_volume_out_of_range" xsi:type="dom:LimitAlertConditionDescriptor" Kind="Phy" Priority="Me">
+            <dom:Type Code="tidal_volume_out_of_range" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Tidal volume out of range</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Source>m.tidal_volume</dom:Source>
+            <dom:MaxLimits Lower="0" Upper="1500"/>
+          </dom:AlertCondition>
+          <dom:AlertCondition Handle="al.disconnection" xsi:type="dom:LimitAlertConditionDescriptor" Kind="Tec" Priority="Hi">
+            <dom:Type Code="patient_disconnected" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Patient disconnected</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Source>m.peak_pressure</dom:Source>
+            <dom:MaxLimits Lower="0" Upper="60"/>
+          </dom:AlertCondition>
+          <dom:AlertSignal Handle="sig.patient_disconnected.vis" ConditionSignaled="al.disconnection" Manifestation="Vis" Latching="false" SignalDelegationSupported="false"/>
+          <dom:AlertSignal Handle="sig.patient_disconnected.aud" ConditionSignaled="al.disconnection" Manifestation="Aud" Latching="false" SignalDelegationSupported="false"/>
+          <dom:AlertSignal Handle="sig.minute_volume_low.aud" ConditionSignaled="al.minute_volume_low" Manifestation="Aud" Latching="false" SignalDelegationSupported="true"/>
+          <dom:AlertSignal Handle="sig.minute_volume_low.vis" ConditionSignaled="al.minute_volume_low" Manifestation="Vis" Latching="false" SignalDelegationSupported="true"/>
+          <dom:AlertSignal Handle="sig.airway_pressure_high.aud" ConditionSignaled="al.pressure_high" Manifestation="Aud" Latching="false" SignalDelegationSupported="true"/>
+          <dom:AlertSignal Handle="sig.tidal_volume_out_of_range.aud" ConditionSignaled="al.tidal_volume_out_of_range" Manifestation="Aud" Latching="false" SignalDelegationSupported="false"/>
+          <dom:AlertSignal Handle="sig.airway_pressure_high.vis" ConditionSignaled="al.pressure_high" Manifestation="Vis" Latching="false" SignalDelegationSupported="true"/>
+          <dom:AlertSignal Handle="sig.tidal_volume_out_of_range.vis" ConditionSignaled="al.tidal_volume_out_of_range" Manifestation="Vis" Latching="false" SignalDelegationSupported="false"/>
+        </dom:AlertSystem>
+        <dom:Sco Handle="sco.mds0">
+          <dom:Operation Handle="op.insp_pressure" xsi:type="dom:SetValueOperationDescriptor" OperationTarget="m.insp_pressure">
+            <dom:Type Code="set_16929188" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="act.insp_hold" xsi:type="dom:ActivateOperationDescriptor" OperationTarget="ch.measured">
+            <ext:Extension>
+              <tb:Action Note="Hold at end of inspiration to measure plateau pressure and static compliance" ext:MustUnderstand="false">
+                <tb:Effect Target="m.compliance" Value="44.5"/>
+                <tb:Effect Target="m.peak_pressure" Value="21"/>
+              </tb:Action>
+            </ext:Extension>
+            <dom:Type Code="inspiratory_hold" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Inspiratory hold</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Operation>
+          <dom:Operation Handle="op.resp_rate_set" xsi:type="dom:SetValueOperationDescriptor" OperationTarget="m.resp_rate_set">
+            <dom:Type Code="set_16928802" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="act.o2_flush" xsi:type="dom:ActivateOperationDescriptor" OperationTarget="vmd.settings">
+            <ext:Extension>
+              <tb:Action Note="Pre-oxygenation before suctioning" ext:MustUnderstand="false">
+                <tb:Effect Target="m.fio2" Value="100"/>
+              </tb:Action>
+            </ext:Extension>
+            <dom:Type Code="100_o2_for_2_minutes" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">100% O2 for 2 minutes</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Operation>
+          <dom:Operation Handle="act.standby" xsi:type="dom:ActivateOperationDescriptor" OperationTarget="mds0">
+            <ext:Extension>
+              <tb:Action Note="Stop ventilating without powering down" ext:MustUnderstand="false">
+                <tb:Effect Target="m.minute_volume" Value="0"/>
+                <tb:Effect Target="m.peak_pressure" Value="0"/>
+                <tb:Effect Target="m.vent_mode" Value="STANDBY"/>
+              </tb:Action>
+            </ext:Extension>
+            <dom:Type Code="standby" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Standby</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Operation>
+          <dom:Operation Handle="op.peep" xsi:type="dom:SetValueOperationDescriptor" OperationTarget="m.peep">
+            <dom:Type Code="set_151804" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="op.fio2" xsi:type="dom:SetValueOperationDescriptor" OperationTarget="m.fio2">
+            <dom:Type Code="set_152196" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="act.recruitment" xsi:type="dom:ActivateOperationDescriptor" OperationTarget="mds0">
+            <ext:Extension>
+              <tb:Action Note="A sustained inflation. There is no value to set: it is a procedure the device performs" ext:MustUnderstand="false">
+                <tb:Effect Target="m.peak_pressure" Value="38"/>
+                <tb:Effect Target="m.tidal_volume" Value="620"/>
+              </tb:Action>
+            </ext:Extension>
+            <dom:Type Code="recruitment_manoeuvre" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Recruitment manoeuvre</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Operation>
+          <dom:Operation Handle="op.vent_mode" xsi:type="dom:SetStringOperationDescriptor" OperationTarget="m.vent_mode">
+            <dom:Type Code="set_184352" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+        </dom:Sco>
+        <dom:MetaData>
+          <dom:Manufacturer>Toolbox</dom:Manufacturer>
+          <dom:ModelName>Aeris 700</dom:ModelName>
+          <dom:ModelNumber>700</dom:ModelNumber>
+        </dom:MetaData>
+        <dom:SystemContext Handle="SC.mds0">
+          <dom:PatientContext Handle="PC.mds0"/>
+          <dom:LocationContext Handle="LC.mds0"/>
+        </dom:SystemContext>
+        <dom:Vmd Handle="vmd0">
+          <dom:Type Code="toolbox-vmd" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">User defined data sources</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch0.vmd0">
+            <dom:Type Code="toolbox-channel" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Default channel</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Channel>
+        </dom:Vmd>
+        <dom:Vmd Handle="vmd.waveforms">
+          <dom:Type Code="waveforms" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">Waveforms</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch.waveforms">
+            <dom:Type Code="waveforms" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Waveforms</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Metric Handle="m.flow" xsi:type="dom:RealTimeSampleArrayMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Cont" DeterminationPeriod="PT0.02S" Resolution="0.1" SamplePeriod="PT0.02S">
+              <ext:Extension>
+                <tb:Generator Shape="flow" ext:MustUnderstand="false"/>
+              </ext:Extension>
+              <dom:Type Code="151764" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">Airway flow</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="265216" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">L/min</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="-60" Upper="60" StepWidth="0.1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.volume" xsi:type="dom:RealTimeSampleArrayMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Cont" DeterminationPeriod="PT0.02S" Resolution="1" SamplePeriod="PT0.02S">
+              <ext:Extension>
+                <tb:Generator Shape="respiration" ext:MustUnderstand="false"/>
+              </ext:Extension>
+              <dom:Type Code="152708" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">Airway volume</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="263762" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">mL</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="800" StepWidth="1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.paw" xsi:type="dom:RealTimeSampleArrayMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Cont" DeterminationPeriod="PT0.02S" Resolution="0.1" SamplePeriod="PT0.02S">
+              <ext:Extension>
+                <tb:Generator Shape="respiration" ext:MustUnderstand="false"/>
+              </ext:Extension>
+              <dom:Type Code="151792" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">Airway pressure</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="266048" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">cmH2O</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="40" StepWidth="0.1"/>
+            </dom:Metric>
+          </dom:Channel>
+        </dom:Vmd>
+        <dom:Vmd Handle="vmd.measured">
+          <dom:Type Code="measured" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">Measured</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch.measured">
+            <dom:Type Code="measured" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Measured</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Metric Handle="m.tidal_volume" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="151868" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">Tidal volume</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="263762" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">mL</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="1500" StepWidth="1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.peak_pressure" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="151817" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">Peak pressure</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="266048" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">cmH2O</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="60" StepWidth="1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.compliance" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="0.1">
+              <dom:Type Code="151696" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">Compliance</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="vent_compliance_unit" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">mL/cmH2O</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="150" StepWidth="0.1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.minute_volume" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="0.1">
+              <dom:Type Code="151880" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">Minute volume</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="265216" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">L/min</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="30" StepWidth="0.1"/>
+            </dom:Metric>
+          </dom:Channel>
+        </dom:Vmd>
+        <dom:Vmd Handle="vmd.settings">
+          <dom:Type Code="settings" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">Settings</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch.settings">
+            <dom:Type Code="settings" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Settings</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Metric Handle="m.fio2" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="152196" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">FiO2</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262688" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">%</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="21" Upper="100" StepWidth="1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.resp_rate_set" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="16928802" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">Set rate</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="264928" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">1/min</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="4" Upper="60" StepWidth="1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.vent_mode" xsi:type="dom:EnumStringMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr">
+              <dom:Type Code="184352" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">Ventilation mode</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+              <dom:AllowedValue>
+                <dom:Value>VC_CMV</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>PC_CMV</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>SIMV</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>CPAP</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>PSV</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>STANDBY</dom:Value>
+              </dom:AllowedValue>
+            </dom:Metric>
+            <dom:Metric Handle="m.insp_pressure" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="16929188" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">Inspiratory pressure</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="266048" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">cmH2O</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="5" Upper="50" StepWidth="1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.peep" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="151804" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">PEEP</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="266048" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">cmH2O</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="25" StepWidth="1"/>
+            </dom:Metric>
+          </dom:Channel>
+        </dom:Vmd>
+      </dom:Mds>
+    </dom:MdDescription>
+    <dom:MdState>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.patient_disconnected.aud" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.recruitment" OperatingMode="En"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.peep" ActivationState="On">
+        <dom:MetricValue Value="5">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:RealTimeSampleArrayMetricState" DescriptorHandle="m.paw" ActivationState="On">
+        <dom:MetricValue>
+          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:ScoState" DescriptorHandle="sco.mds0" ActivationState="On"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.insp_pressure" ActivationState="On">
+        <dom:MetricValue Value="18">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.insp_hold" OperatingMode="En"/>
+      <dom:State xsi:type="dom:SystemContextState" DescriptorHandle="SC.mds0" ActivationState="On"/>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd0" ActivationState="On"/>
+      <dom:State xsi:type="dom:SetValueOperationState" DescriptorHandle="op.fio2" OperatingMode="En">
+        <dom:AllowedRange Lower="21" Upper="100" StepWidth="1"/>
+      </dom:State>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.tidal_volume_out_of_range.aud" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.peak_pressure" ActivationState="On">
+        <dom:MetricValue Value="23">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.patient_disconnected.vis" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.standby" OperatingMode="En"/>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.minute_volume_low.aud" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.waveforms"/>
+      <dom:State xsi:type="dom:RealTimeSampleArrayMetricState" DescriptorHandle="m.volume" ActivationState="On">
+        <dom:MetricValue>
+          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.tidal_volume" ActivationState="On">
+        <dom:MetricValue Value="480">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.airway_pressure_high.vis" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.measured"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.fio2" ActivationState="On">
+        <dom:MetricValue Value="40">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.minute_volume" ActivationState="On">
+        <dom:MetricValue Value="6.7">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:AlertSystemState" DescriptorHandle="alerts.mds0" ActivationState="On">
+        <dom:SystemSignalActivation Manifestation="Aud" State="On"/>
+        <dom:SystemSignalActivation Manifestation="Vis" State="On"/>
+      </dom:State>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.settings"/>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.airway_pressure_high.aud" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:LimitAlertConditionState" DescriptorHandle="al.minute_volume_low" ActivationState="On" Presence="false" MonitoredAlertLimits="HiOff">
+        <dom:Limits Lower="3"/>
+      </dom:State>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.resp_rate_set" ActivationState="On">
+        <dom:MetricValue Value="14">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:SetValueOperationState" DescriptorHandle="op.insp_pressure" OperatingMode="En">
+        <dom:AllowedRange Lower="5" Upper="50" StepWidth="1"/>
+      </dom:State>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.settings"/>
+      <dom:State xsi:type="dom:LimitAlertConditionState" DescriptorHandle="al.tidal_volume_out_of_range" ActivationState="On" Presence="false" MonitoredAlertLimits="All">
+        <dom:Limits Lower="250" Upper="750"/>
+      </dom:State>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.compliance" ActivationState="On">
+        <dom:MetricValue Value="42">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:MdsState" DescriptorHandle="mds0" ActivationState="On" OperatingMode="Dmo"/>
+      <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.o2_flush" OperatingMode="En"/>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.measured"/>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.tidal_volume_out_of_range.vis" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:SetValueOperationState" DescriptorHandle="op.resp_rate_set" OperatingMode="En">
+        <dom:AllowedRange Lower="4" Upper="60" StepWidth="1"/>
+      </dom:State>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.waveforms"/>
+      <dom:State xsi:type="dom:SetValueOperationState" DescriptorHandle="op.peep" OperatingMode="En">
+        <dom:AllowedRange Lower="0" Upper="25" StepWidth="1"/>
+      </dom:State>
+      <dom:State xsi:type="dom:LimitAlertConditionState" DescriptorHandle="al.disconnection" ActivationState="On" Presence="false" MonitoredAlertLimits="HiOff">
+        <dom:Limits Lower="3"/>
+      </dom:State>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.minute_volume_low.vis" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:RealTimeSampleArrayMetricState" DescriptorHandle="m.flow" ActivationState="On">
+        <dom:MetricValue>
+          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:LimitAlertConditionState" DescriptorHandle="al.pressure_high" ActivationState="On" Presence="false" MonitoredAlertLimits="LoOff">
+        <dom:Limits Upper="35"/>
+      </dom:State>
+      <dom:State xsi:type="dom:EnumStringMetricState" DescriptorHandle="m.vent_mode" ActivationState="On">
+        <dom:MetricValue Value="PC_CMV">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:SetStringOperationState" DescriptorHandle="op.vent_mode" OperatingMode="En">
+        <dom:AllowedValues>
+          <dom:Value>VC_CMV</dom:Value>
+          <dom:Value>PC_CMV</dom:Value>
+          <dom:Value>SIMV</dom:Value>
+          <dom:Value>CPAP</dom:Value>
+          <dom:Value>PSV</dom:Value>
+          <dom:Value>STANDBY</dom:Value>
+        </dom:AllowedValues>
+      </dom:State>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch0.vmd0" ActivationState="On"/>
+      <dom:State xsi:type="dom:PatientContextState" DescriptorHandle="PC.mds0" Handle="PC.mds0.state" ContextAssociation="Assoc">
+        <dom:CoreData>
+          <dom:Givenname>Alex</dom:Givenname>
+          <dom:Familyname>Example</dom:Familyname>
+          <dom:Sex>Unspec</dom:Sex>
+          <dom:PatientType>Ad</dom:PatientType>
+          <dom:DateOfBirth>1990-01-01</dom:DateOfBirth>
+          <dom:Height MeasuredValue="170">
+            <dom:MeasurementUnit Code="264184" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:ConceptDescription Lang="en-US">cm</dom:ConceptDescription>
+            </dom:MeasurementUnit>
+          </dom:Height>
+          <dom:Weight MeasuredValue="70">
+            <dom:MeasurementUnit Code="266016" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:ConceptDescription Lang="en-US">kg</dom:ConceptDescription>
+            </dom:MeasurementUnit>
+          </dom:Weight>
+        </dom:CoreData>
+      </dom:State>
+      <dom:State xsi:type="dom:LocationContextState" DescriptorHandle="LC.mds0" Handle="LC.mds0.state" ContextAssociation="Assoc">
+        <dom:Validator Root="rootWithNoMeaning" Extension="System"/>
+        <dom:Identification Root="sdc.ctxt.loc.detail" Extension="HOSP///CU1//Toolbox"/>
+        <dom:LocationDetail PoC="CU1" Bed="Toolbox" Facility="HOSP"/>
+      </dom:State>
+    </dom:MdState>
+  </msg:Mdib>
+</msg:GetMdibResponse>

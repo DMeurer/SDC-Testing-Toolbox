@@ -1,0 +1,579 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<msg:GetMdibResponse xmlns:msg="http://standards.ieee.org/downloads/11073/11073-10207-2017/message" xmlns:dom="http://standards.ieee.org/downloads/11073/11073-10207-2017/participant" xmlns:ext="http://standards.ieee.org/downloads/11073/11073-10207-2017/extension" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:tb="urn:sdc-testing-toolbox:behaviour" SequenceId="urn:uuid:2fa0ad56-e60e-5ebf-a965-2aa8b3f5031d" MdibVersion="0">
+  <msg:Mdib SequenceId="urn:uuid:2fa0ad56-e60e-5ebf-a965-2aa8b3f5031d" MdibVersion="0">
+    <dom:MdDescription>
+      <dom:Mds Handle="mds0">
+        <ext:Extension>
+          <tb:Device FriendlyName="Robotic Surgical Microscope" FirmwareVersion="1.9.0" ext:MustUnderstand="false"/>
+          <tb:Preset Name="Surgical microscope" Description="Robotic surgical microscope after the pattern of an Aesculap Aeos: six axes, positioning modes, optics, and fluorescence imaging. No parameter here has a standard term, which is the point." ext:MustUnderstand="false"/>
+        </ext:Extension>
+        <dom:Type Code="toolbox-mds" CodingSystem="urn:sdc-testing-toolbox:private">
+          <dom:ConceptDescription Lang="en-US">SDC-testing-toolbox virtual device</dom:ConceptDescription>
+        </dom:Type>
+        <dom:AlertSystem Handle="alerts.mds0" SelfCheckPeriod="PT30S">
+          <dom:AlertCondition Handle="al.focus_at_limit" xsi:type="dom:LimitAlertConditionDescriptor" Kind="Tec" Priority="Lo">
+            <dom:Type Code="focus_at_travel_limit" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Focus at travel limit</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Source>m.focus</dom:Source>
+            <dom:MaxLimits Lower="200" Upper="500"/>
+          </dom:AlertCondition>
+          <dom:AlertCondition Handle="al.balance_out_of_range" xsi:type="dom:LimitAlertConditionDescriptor" Kind="Tec" Priority="Hi">
+            <dom:Type Code="arm_out_of_balance" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Arm out of balance</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Source>m.balance_load</dom:Source>
+            <dom:MaxLimits Lower="0" Upper="60"/>
+          </dom:AlertCondition>
+          <dom:AlertCondition Handle="al.collision_risk" xsi:type="dom:LimitAlertConditionDescriptor" Kind="Tec" Priority="Hi">
+            <dom:Type Code="collision_risk" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Collision risk</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Source>m.axis_z</dom:Source>
+            <dom:MaxLimits Lower="0" Upper="600"/>
+          </dom:AlertCondition>
+          <dom:AlertSignal Handle="sig.collision_risk.aud" ConditionSignaled="al.collision_risk" Manifestation="Aud" Latching="false" SignalDelegationSupported="false"/>
+          <dom:AlertSignal Handle="sig.arm_out_of_balance.vis" ConditionSignaled="al.balance_out_of_range" Manifestation="Vis" Latching="false" SignalDelegationSupported="true"/>
+          <dom:AlertSignal Handle="sig.focus_at_travel_limit.vis" ConditionSignaled="al.focus_at_limit" Manifestation="Vis" Latching="false" SignalDelegationSupported="false"/>
+          <dom:AlertSignal Handle="sig.focus_at_travel_limit.aud" ConditionSignaled="al.focus_at_limit" Manifestation="Aud" Latching="false" SignalDelegationSupported="false"/>
+          <dom:AlertSignal Handle="sig.arm_out_of_balance.aud" ConditionSignaled="al.balance_out_of_range" Manifestation="Aud" Latching="false" SignalDelegationSupported="true"/>
+          <dom:AlertSignal Handle="sig.collision_risk.vis" ConditionSignaled="al.collision_risk" Manifestation="Vis" Latching="false" SignalDelegationSupported="false"/>
+        </dom:AlertSystem>
+        <dom:Sco Handle="sco.mds0">
+          <dom:Operation Handle="op.focus" xsi:type="dom:SetValueOperationDescriptor" OperationTarget="m.focus">
+            <dom:Type Code="set_scope_focus_position" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="op.surgeon_note" xsi:type="dom:SetStringOperationDescriptor" OperationTarget="m.surgeon_note">
+            <dom:Type Code="set_scope_case_note" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="op.axis_roll" xsi:type="dom:SetValueOperationDescriptor" OperationTarget="m.axis_roll">
+            <dom:Type Code="set_scope_axis_roll" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="op.axis_pitch" xsi:type="dom:SetValueOperationDescriptor" OperationTarget="m.axis_pitch">
+            <dom:Type Code="set_scope_axis_pitch" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="op.illumination" xsi:type="dom:SetValueOperationDescriptor" OperationTarget="m.illumination">
+            <dom:Type Code="set_scope_illumination_intensity" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="act.autofocus" xsi:type="dom:ActivateOperationDescriptor" OperationTarget="vmd.optics">
+            <ext:Extension>
+              <tb:Action Note="Focus on the current working distance" ext:MustUnderstand="false">
+                <tb:Effect Target="m.focus" Value="350"/>
+                <tb:Effect Target="m.working_distance" Value="350"/>
+              </tb:Action>
+            </ext:Extension>
+            <dom:Type Code="autofocus" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Autofocus</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Operation>
+          <dom:Operation Handle="op.axis_yaw" xsi:type="dom:SetValueOperationDescriptor" OperationTarget="m.axis_yaw">
+            <dom:Type Code="set_scope_axis_yaw" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="act.home_axes" xsi:type="dom:ActivateOperationDescriptor" OperationTarget="vmd.motion">
+            <ext:Extension>
+              <tb:Action Note="Return all six axes to the reference position. Nothing about this is expressible as writing a value" ext:MustUnderstand="false">
+                <tb:Effect Target="m.axis_pitch" Value="0"/>
+                <tb:Effect Target="m.axis_roll" Value="0"/>
+                <tb:Effect Target="m.axis_x" Value="0"/>
+                <tb:Effect Target="m.axis_y" Value="0"/>
+                <tb:Effect Target="m.axis_yaw" Value="0"/>
+                <tb:Effect Target="m.axis_z" Value="300"/>
+                <tb:Effect Target="m.motion_mode" Value="LOCKED"/>
+              </tb:Action>
+            </ext:Extension>
+            <dom:Type Code="home_axes" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Home axes</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Operation>
+          <dom:Operation Handle="op.zoom" xsi:type="dom:SetValueOperationDescriptor" OperationTarget="m.zoom">
+            <dom:Type Code="set_scope_zoom_factor" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="op.brake_release" xsi:type="dom:SetStringOperationDescriptor" OperationTarget="m.brake_release">
+            <dom:Type Code="set_scope_brake_state" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="op.image_mode" xsi:type="dom:SetStringOperationDescriptor" OperationTarget="m.image_mode">
+            <dom:Type Code="set_scope_image_mode" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="act.set_fixpoint" xsi:type="dom:ActivateOperationDescriptor" OperationTarget="vmd.motion">
+            <ext:Extension>
+              <tb:Action Note="Take the current position as the pivot the arm rotates about" ext:MustUnderstand="false">
+                <tb:Effect Target="m.motion_mode" Value="FIXPOINT"/>
+              </tb:Action>
+            </ext:Extension>
+            <dom:Type Code="set_fixpoint_here" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Set fixpoint here</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Operation>
+          <dom:Operation Handle="act.park" xsi:type="dom:ActivateOperationDescriptor" OperationTarget="mds0">
+            <ext:Extension>
+              <tb:Action Note="Fold the arm into its transport position and engage the brakes" ext:MustUnderstand="false">
+                <tb:Effect Target="m.axis_pitch" Value="-90"/>
+                <tb:Effect Target="m.axis_z" Value="600"/>
+                <tb:Effect Target="m.brake_release" Value="ENGAGED"/>
+                <tb:Effect Target="m.illumination" Value="0"/>
+                <tb:Effect Target="m.motion_mode" Value="LOCKED"/>
+              </tb:Action>
+            </ext:Extension>
+            <dom:Type Code="park" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Park</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Operation>
+          <dom:Operation Handle="op.axis_x" xsi:type="dom:SetValueOperationDescriptor" OperationTarget="m.axis_x">
+            <dom:Type Code="set_scope_axis_x" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="op.motion_mode" xsi:type="dom:SetStringOperationDescriptor" OperationTarget="m.motion_mode">
+            <dom:Type Code="set_scope_motion_mode" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="op.recording" xsi:type="dom:SetStringOperationDescriptor" OperationTarget="m.recording">
+            <dom:Type Code="set_scope_recording_state" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="op.axis_z" xsi:type="dom:SetValueOperationDescriptor" OperationTarget="m.axis_z">
+            <dom:Type Code="set_scope_axis_z" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+          <dom:Operation Handle="op.axis_y" xsi:type="dom:SetValueOperationDescriptor" OperationTarget="m.axis_y">
+            <dom:Type Code="set_scope_axis_y" CodingSystem="urn:sdc-testing-toolbox:private"/>
+          </dom:Operation>
+        </dom:Sco>
+        <dom:MetaData>
+          <dom:Manufacturer>Toolbox</dom:Manufacturer>
+          <dom:ModelName>Scopus 6</dom:ModelName>
+          <dom:ModelNumber>6</dom:ModelNumber>
+        </dom:MetaData>
+        <dom:SystemContext Handle="SC.mds0">
+          <dom:PatientContext Handle="PC.mds0"/>
+          <dom:LocationContext Handle="LC.mds0"/>
+        </dom:SystemContext>
+        <dom:Vmd Handle="vmd0">
+          <dom:Type Code="toolbox-vmd" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">User defined data sources</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch0.vmd0">
+            <dom:Type Code="toolbox-channel" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Default channel</dom:ConceptDescription>
+            </dom:Type>
+          </dom:Channel>
+        </dom:Vmd>
+        <dom:Vmd Handle="vmd.optics">
+          <dom:Type Code="optics" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">Optics</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch.optics">
+            <dom:Type Code="optics" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Optics</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Metric Handle="m.zoom" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="0.1">
+              <dom:Type Code="scope_zoom_factor" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Zoom</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="scope_magnification" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">×</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="1" Upper="12" StepWidth="0.1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.focus" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="0.1">
+              <dom:Type Code="scope_focus_position" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Focus</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="263442" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">mm</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="200" Upper="500" StepWidth="0.1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.working_distance" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="scope_working_distance" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Working distance</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="263442" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">mm</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="200" Upper="500" StepWidth="1"/>
+            </dom:Metric>
+          </dom:Channel>
+        </dom:Vmd>
+        <dom:Vmd Handle="vmd.imaging">
+          <dom:Type Code="imaging" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">Imaging</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch.imaging">
+            <dom:Type Code="imaging" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Imaging</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Metric Handle="m.illumination_spectrum" xsi:type="dom:DistributionSampleArrayMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" DeterminationPeriod="PT0.25S" Resolution="0.1">
+              <ext:Extension>
+                <tb:Generator ext:MustUnderstand="false"/>
+              </ext:Extension>
+              <dom:Type Code="scope_illumination_spectrum" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Illumination spectrum</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="scope_relative_intensity" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">rel.</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="100" StepWidth="0.1"/>
+              <dom:DomainUnit Code="wavelength_nm" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">nm</dom:ConceptDescription>
+              </dom:DomainUnit>
+              <dom:DistributionRange Lower="400" Upper="800" StepWidth="12.9032"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.illumination" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="1">
+              <dom:Type Code="scope_illumination_intensity" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Illumination intensity</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262688" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">%</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="100" StepWidth="1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.surgeon_note" xsi:type="dom:StringMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr">
+              <dom:Type Code="scope_case_note" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Case note</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.image_mode" xsi:type="dom:EnumStringMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr">
+              <dom:Type Code="scope_image_mode" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Image mode</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+              <dom:AllowedValue>
+                <dom:Value>WHITE_LIGHT</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>ICG_FLUORESCENCE</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>FL560</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>BLUE_400</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>PSEUDO_COLOUR</dom:Value>
+              </dom:AllowedValue>
+            </dom:Metric>
+            <dom:Metric Handle="m.recording" xsi:type="dom:EnumStringMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr">
+              <dom:Type Code="scope_recording_state" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Recording</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+              <dom:AllowedValue>
+                <dom:Value>OFF</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>RECORDING</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>PAUSED</dom:Value>
+              </dom:AllowedValue>
+            </dom:Metric>
+          </dom:Channel>
+        </dom:Vmd>
+        <dom:Vmd Handle="vmd.motion">
+          <dom:Type Code="motion" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:ConceptDescription Lang="en-US">Motion</dom:ConceptDescription>
+          </dom:Type>
+          <dom:Channel Handle="ch.motion">
+            <dom:Type Code="motion" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:ConceptDescription Lang="en-US">Motion</dom:ConceptDescription>
+            </dom:Type>
+            <dom:Metric Handle="m.axis_y" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="0.1">
+              <dom:Type Code="scope_axis_y" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Axis Y</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="263442" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">mm</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="-300" Upper="300" StepWidth="0.1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.motion_mode" xsi:type="dom:EnumStringMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr">
+              <dom:Type Code="scope_motion_mode" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Motion mode</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+              <dom:AllowedValue>
+                <dom:Value>LOCKED</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>FREE</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>FIXPOINT</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>ALIGNED</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>POSITIONING</dom:Value>
+              </dom:AllowedValue>
+            </dom:Metric>
+            <dom:Metric Handle="m.balance_load" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="0.1">
+              <dom:Type Code="scope_balance_load" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Arm balance load</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="265920" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">N</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="60" StepWidth="0.1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.axis_pitch" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="0.1">
+              <dom:Type Code="scope_axis_pitch" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Pitch</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262880" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">°</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="-90" Upper="90" StepWidth="0.1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.axis_x" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="0.1">
+              <dom:Type Code="scope_axis_x" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Axis X</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="263442" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">mm</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="-300" Upper="300" StepWidth="0.1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.brake_release" xsi:type="dom:EnumStringMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr">
+              <dom:Type Code="scope_brake_state" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Brakes</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+              <dom:AllowedValue>
+                <dom:Value>ENGAGED</dom:Value>
+              </dom:AllowedValue>
+              <dom:AllowedValue>
+                <dom:Value>RELEASED</dom:Value>
+              </dom:AllowedValue>
+            </dom:Metric>
+            <dom:Metric Handle="m.axis_yaw" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="0.1">
+              <dom:Type Code="scope_axis_yaw" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Yaw</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262880" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">°</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="-180" Upper="180" StepWidth="0.1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.axis_roll" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="0.1">
+              <dom:Type Code="scope_axis_roll" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Roll</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="262880" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">°</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="-180" Upper="180" StepWidth="0.1"/>
+            </dom:Metric>
+            <dom:Metric Handle="m.axis_z" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="0.1">
+              <dom:Type Code="scope_axis_z" CodingSystem="urn:sdc-testing-toolbox:private">
+                <dom:ConceptDescription Lang="en-US">Axis Z</dom:ConceptDescription>
+              </dom:Type>
+              <dom:Unit Code="263442" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+                <dom:ConceptDescription Lang="en-US">mm</dom:ConceptDescription>
+              </dom:Unit>
+              <dom:TechnicalRange Lower="0" Upper="600" StepWidth="0.1"/>
+            </dom:Metric>
+          </dom:Channel>
+        </dom:Vmd>
+      </dom:Mds>
+    </dom:MdDescription>
+    <dom:MdState>
+      <dom:State xsi:type="dom:SetStringOperationState" DescriptorHandle="op.recording" OperatingMode="En">
+        <dom:AllowedValues>
+          <dom:Value>OFF</dom:Value>
+          <dom:Value>RECORDING</dom:Value>
+          <dom:Value>PAUSED</dom:Value>
+        </dom:AllowedValues>
+      </dom:State>
+      <dom:State xsi:type="dom:StringMetricState" DescriptorHandle="m.surgeon_note"/>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.arm_out_of_balance.vis" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.collision_risk.aud" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.focus" ActivationState="On">
+        <dom:MetricValue Value="350">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:SetStringOperationState" DescriptorHandle="op.surgeon_note" OperatingMode="En"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.axis_y" ActivationState="On">
+        <dom:MetricValue Value="0">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.zoom" ActivationState="On">
+        <dom:MetricValue Value="4">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.collision_risk.vis" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.motion"/>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.optics"/>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd0" ActivationState="On"/>
+      <dom:State xsi:type="dom:LimitAlertConditionState" DescriptorHandle="al.collision_risk" ActivationState="On" Presence="false" MonitoredAlertLimits="HiOff">
+        <dom:Limits Lower="40"/>
+      </dom:State>
+      <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.set_fixpoint" OperatingMode="En"/>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.motion"/>
+      <dom:State xsi:type="dom:SetValueOperationState" DescriptorHandle="op.axis_roll" OperatingMode="En">
+        <dom:AllowedRange Lower="-180" Upper="180" StepWidth="0.1"/>
+      </dom:State>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.axis_roll" ActivationState="On">
+        <dom:MetricValue Value="0">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.illumination" ActivationState="On">
+        <dom:MetricValue Value="60">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.arm_out_of_balance.aud" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.home_axes" OperatingMode="En"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.axis_yaw" ActivationState="On">
+        <dom:MetricValue Value="0">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:EnumStringMetricState" DescriptorHandle="m.motion_mode" ActivationState="On">
+        <dom:MetricValue Value="LOCKED">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.axis_x" ActivationState="On">
+        <dom:MetricValue Value="0">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch0.vmd0" ActivationState="On"/>
+      <dom:State xsi:type="dom:SetValueOperationState" DescriptorHandle="op.axis_z" OperatingMode="En">
+        <dom:AllowedRange Lower="0" Upper="600" StepWidth="0.1"/>
+      </dom:State>
+      <dom:State xsi:type="dom:LimitAlertConditionState" DescriptorHandle="al.balance_out_of_range" ActivationState="On" Presence="false" MonitoredAlertLimits="LoOff">
+        <dom:Limits Upper="45"/>
+      </dom:State>
+      <dom:State xsi:type="dom:EnumStringMetricState" DescriptorHandle="m.image_mode" ActivationState="On">
+        <dom:MetricValue Value="WHITE_LIGHT">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:SetValueOperationState" DescriptorHandle="op.illumination" OperatingMode="En">
+        <dom:AllowedRange Lower="0" Upper="100" StepWidth="1"/>
+      </dom:State>
+      <dom:State xsi:type="dom:LimitAlertConditionState" DescriptorHandle="al.focus_at_limit" ActivationState="On" Presence="false" MonitoredAlertLimits="All">
+        <dom:Limits Lower="210" Upper="490"/>
+      </dom:State>
+      <dom:State xsi:type="dom:SetValueOperationState" DescriptorHandle="op.axis_x" OperatingMode="En">
+        <dom:AllowedRange Lower="-300" Upper="300" StepWidth="0.1"/>
+      </dom:State>
+      <dom:State xsi:type="dom:SystemContextState" DescriptorHandle="SC.mds0" ActivationState="On"/>
+      <dom:State xsi:type="dom:SetStringOperationState" DescriptorHandle="op.brake_release" OperatingMode="En">
+        <dom:AllowedValues>
+          <dom:Value>ENGAGED</dom:Value>
+          <dom:Value>RELEASED</dom:Value>
+        </dom:AllowedValues>
+      </dom:State>
+      <dom:State xsi:type="dom:SetValueOperationState" DescriptorHandle="op.zoom" OperatingMode="En">
+        <dom:AllowedRange Lower="1" Upper="12" StepWidth="0.1"/>
+      </dom:State>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.imaging"/>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.focus_at_travel_limit.aud" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.working_distance" ActivationState="On">
+        <dom:MetricValue Value="350">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:SetValueOperationState" DescriptorHandle="op.axis_y" OperatingMode="En">
+        <dom:AllowedRange Lower="-300" Upper="300" StepWidth="0.1"/>
+      </dom:State>
+      <dom:State xsi:type="dom:MdsState" DescriptorHandle="mds0" ActivationState="On" OperatingMode="Dmo"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.axis_z" ActivationState="On">
+        <dom:MetricValue Value="300">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:AlertSystemState" DescriptorHandle="alerts.mds0" ActivationState="On">
+        <dom:SystemSignalActivation Manifestation="Aud" State="On"/>
+        <dom:SystemSignalActivation Manifestation="Vis" State="On"/>
+      </dom:State>
+      <dom:State xsi:type="dom:ScoState" DescriptorHandle="sco.mds0" ActivationState="On"/>
+      <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.imaging"/>
+      <dom:State xsi:type="dom:SetValueOperationState" DescriptorHandle="op.focus" OperatingMode="En">
+        <dom:AllowedRange Lower="200" Upper="500" StepWidth="0.1"/>
+      </dom:State>
+      <dom:State xsi:type="dom:SetStringOperationState" DescriptorHandle="op.motion_mode" OperatingMode="En">
+        <dom:AllowedValues>
+          <dom:Value>LOCKED</dom:Value>
+          <dom:Value>FREE</dom:Value>
+          <dom:Value>FIXPOINT</dom:Value>
+          <dom:Value>ALIGNED</dom:Value>
+          <dom:Value>POSITIONING</dom:Value>
+        </dom:AllowedValues>
+      </dom:State>
+      <dom:State xsi:type="dom:DistributionSampleArrayMetricState" DescriptorHandle="m.illumination_spectrum" ActivationState="On">
+        <dom:MetricValue>
+          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:SetValueOperationState" DescriptorHandle="op.axis_yaw" OperatingMode="En">
+        <dom:AllowedRange Lower="-180" Upper="180" StepWidth="0.1"/>
+      </dom:State>
+      <dom:State xsi:type="dom:EnumStringMetricState" DescriptorHandle="m.brake_release" ActivationState="On">
+        <dom:MetricValue Value="ENGAGED">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:SetValueOperationState" DescriptorHandle="op.axis_pitch" OperatingMode="En">
+        <dom:AllowedRange Lower="-90" Upper="90" StepWidth="0.1"/>
+      </dom:State>
+      <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.optics"/>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.balance_load" ActivationState="On">
+        <dom:MetricValue Value="12.4">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:EnumStringMetricState" DescriptorHandle="m.recording" ActivationState="On">
+        <dom:MetricValue Value="OFF">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.autofocus" OperatingMode="En"/>
+      <dom:State xsi:type="dom:SetStringOperationState" DescriptorHandle="op.image_mode" OperatingMode="En">
+        <dom:AllowedValues>
+          <dom:Value>WHITE_LIGHT</dom:Value>
+          <dom:Value>ICG_FLUORESCENCE</dom:Value>
+          <dom:Value>FL560</dom:Value>
+          <dom:Value>BLUE_400</dom:Value>
+          <dom:Value>PSEUDO_COLOUR</dom:Value>
+        </dom:AllowedValues>
+      </dom:State>
+      <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.axis_pitch" ActivationState="On">
+        <dom:MetricValue Value="0">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
+      <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.focus_at_travel_limit.vis" ActivationState="On" Presence="Off" Location="Loc"/>
+      <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.park" OperatingMode="En"/>
+      <dom:State xsi:type="dom:PatientContextState" DescriptorHandle="PC.mds0" Handle="PC.mds0.state" ContextAssociation="Assoc">
+        <dom:CoreData>
+          <dom:Givenname>Alex</dom:Givenname>
+          <dom:Familyname>Example</dom:Familyname>
+          <dom:Sex>Unspec</dom:Sex>
+          <dom:PatientType>Ad</dom:PatientType>
+          <dom:DateOfBirth>1990-01-01</dom:DateOfBirth>
+          <dom:Height MeasuredValue="170">
+            <dom:MeasurementUnit Code="264184" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:ConceptDescription Lang="en-US">cm</dom:ConceptDescription>
+            </dom:MeasurementUnit>
+          </dom:Height>
+          <dom:Weight MeasuredValue="70">
+            <dom:MeasurementUnit Code="266016" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:ConceptDescription Lang="en-US">kg</dom:ConceptDescription>
+            </dom:MeasurementUnit>
+          </dom:Weight>
+        </dom:CoreData>
+      </dom:State>
+      <dom:State xsi:type="dom:LocationContextState" DescriptorHandle="LC.mds0" Handle="LC.mds0.state" ContextAssociation="Assoc">
+        <dom:Validator Root="rootWithNoMeaning" Extension="System"/>
+        <dom:Identification Root="sdc.ctxt.loc.detail" Extension="HOSP///CU1//Toolbox"/>
+        <dom:LocationDetail PoC="CU1" Bed="Toolbox" Facility="HOSP"/>
+      </dom:State>
+    </dom:MdState>
+  </msg:Mdib>
+</msg:GetMdibResponse>

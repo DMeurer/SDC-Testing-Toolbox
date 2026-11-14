@@ -2027,7 +2027,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                 str(startup.chosen_config()),
             )
 
-        startup.config_box.setCurrentText(str(ROOT / "presets" / "insufflator.json"))
+        startup.config_box.setCurrentText(str(ROOT / "presets" / "insufflator.xml"))
         startup.verbose_box.setChecked(True)
         startup._on_accept()  # noqa: SLF001
         chosen = startup.settings()

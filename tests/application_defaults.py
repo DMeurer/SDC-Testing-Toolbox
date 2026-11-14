@@ -540,7 +540,8 @@ def check_console_startup_reuses_profile() -> None:
     )
     check(
         provider_arguments
-        == [{"ip": "127.0.0.1", "instance_name": "console-authority", "device": device}],
+        == [{"ip": "127.0.0.1", "instance_name": "console-authority", "device": device,
+             "friendly_name": None, "serial_number": None}],
         "console startup uses snapshot metadata without overriding its instance name",
     )
     check(

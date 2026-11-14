@@ -6,6 +6,7 @@ import contextlib
 import io
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -20,10 +21,11 @@ from PySide6.QtWidgets import QApplication
 import run_toolbox
 from sdctoolbox import config
 from sdctoolbox.gui.startup_dialog import StartupDialog
-from sdctoolbox.mdib_io import NativeMdibConfig, load_mdib_file
+from sdctoolbox.mdib_io import NativeMdibConfig, mdib_bytes, parse_mdib
+from sdctoolbox.provider_service import ProviderService
 
 PUMP = ROOT / "presets" / "mdib-demo-infusion-pump.xml"
-JSON_PRESET = ROOT / "presets" / "ventilator.json"
+VENTILATOR = ROOT / "presets" / "ventilator.xml"
 
 
 def with_metadata(data: bytes) -> bytes:
@@ -58,8 +60,20 @@ class FriendlyNameTests(unittest.TestCase):
             run_toolbox.parse_args(["--friendly-name", "bad\x01name"])
         self.assertEqual(raised.exception.code, 2)
 
-    def test_option_overrides_a_json_preset(self) -> None:
-        service = self.service_for(["--name", "fn-json", "--config", str(JSON_PRESET), "--friendly-name", "Bed 4"])
+    def test_option_overrides_a_json_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory) / "named.json"
+            profile.write_text('{"version": 3, "device": {"friendly_name": "Ventilator"}}', encoding="utf-8")
+            self.assertEqual(self.service_for(["--name", "fn-json", "--config", str(profile)]).friendly_name, "Ventilator")
+            service = self.service_for(["--name", "fn-json", "--config", str(profile), "--friendly-name", "Bed 4"])
+        self.assertEqual(service.friendly_name, "Bed 4")
+
+    def test_a_shipped_preset_announces_the_device_it_describes(self) -> None:
+        service = self.service_for(["--name", "fn-vent", "--config", str(VENTILATOR)])
+        self.assertEqual((service.friendly_name, service.device.manufacturer, service.device.model_name,
+                          service.device.model_number, service.device.firmware_version, service.serial_number),
+                         ("Ventilator", "Toolbox", "Aeris 700", "700", "4.1.2", "fn-vent"))
+        service = self.service_for(["--name", "fn-vent", "--config", str(VENTILATOR), "--friendly-name", "Bed 4"])
         self.assertEqual(service.friendly_name, "Bed 4")
 
     def test_json_default_is_unchanged(self) -> None:
@@ -84,9 +98,53 @@ class FriendlyNameTests(unittest.TestCase):
 
     def test_mdib_without_metadata_keeps_toolbox_model_and_instance_serial(self) -> None:
         settings = run_toolbox.settings_from_args(run_toolbox.parse_args(["--name", "fn-nometa"]))
-        service = run_toolbox.make_service(settings, load_mdib_file(PUMP))
+        service = run_toolbox.make_service(settings, NativeMdibConfig(original_mdib()))
         self.assertEqual(service.serial_number, "fn-nometa")
         self.assertEqual(service.device.manufacturer, config.DeviceInfo().manufacturer)
+
+    def test_a_behaviour_export_carries_the_whole_identity_and_preset_entry(self) -> None:
+        device = config.DeviceInfo(friendly_name="Bed Pump", manufacturer="Toolbox", manufacturer_url="https://example.org",
+                                   model_name="Fluvia 1", model_number="1", firmware_version="2.3.0")
+        source = ProviderService(instance_name="fn-export", device=device)
+        source.start()
+        try:
+            source.preset = {"name": "Infusion pump", "description": "A volumetric pump."}
+            behaviour = mdib_bytes(source.mdib, source.behaviour_extensions())
+            plain = mdib_bytes(source.mdib)
+        finally:
+            source.stop()
+
+        settings = run_toolbox.settings_from_args(run_toolbox.parse_args(["--name", "fn-reload"]))
+        service = run_toolbox.make_service(settings, NativeMdibConfig(behaviour))
+        self.assertEqual(service.device, device)
+        self.assertEqual(service.friendly_name, "Bed Pump")
+        self.assertEqual(service.serial_number, "fn-reload", "a file never pins the serial number")
+        service.start(parse_mdib(behaviour))
+        try:
+            self.assertEqual(service.preset, {"name": "Infusion pump", "description": "A volumetric pump."})
+            self.assertIn(b"FriendlyName=\"Bed Pump\"", mdib_bytes(service.mdib, service.behaviour_extensions()))
+            self.assertNotIn(b"Bed Pump", mdib_bytes(service.mdib), "identity behaviour stays off the network")
+        finally:
+            service.stop()
+
+        # Plain BICEPS keeps what MetaData can hold, and nothing else.
+        plain_service = run_toolbox.make_service(settings, NativeMdibConfig(plain))
+        self.assertEqual((plain_service.device.manufacturer, plain_service.device.model_name,
+                          plain_service.device.model_number), ("Toolbox", "Fluvia 1", "1"))
+        self.assertEqual(plain_service.friendly_name, "fn-reload")
+
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "pump.xml").write_bytes(behaviour)
+            (listed,) = config.list_presets(directory)
+        self.assertEqual((listed.name, listed.description), ("Infusion pump", "A volumetric pump."))
+
+    def test_a_default_device_is_not_given_a_stored_name(self) -> None:
+        source = ProviderService(instance_name="fn-default")
+        source.start()
+        try:
+            self.assertNotIn(b"urn:sdc-testing-toolbox:behaviour", mdib_bytes(source.mdib, source.behaviour_extensions()))
+        finally:
+            source.stop()
 
     def test_startup_dialog_field(self) -> None:
         dialog = StartupDialog(name="fn-dialog")
