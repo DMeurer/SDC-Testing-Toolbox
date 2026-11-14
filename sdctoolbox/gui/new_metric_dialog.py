@@ -33,8 +33,12 @@ from ..model import (
 )
 from .decimal_input import DecimalInputError, parse_decimal_input
 from .helpers import set_form_row_visible
+from .kind_sections import kind_section, style_dialog_buttons
 from .no_wheel import NoWheelComboBox
 from .styling import constrain_dynamic_label, mark_as_error, mute
+from .widgets.base import WidgetSpec
+from .widgets.board import card_caption
+from .widgets.factory import matching_controls
 
 # Label shown in the combo box -> kind. Order decides the order in the dropdown.
 OFFERED_KINDS: list[tuple[str, MetricKind]] = [
@@ -184,7 +188,8 @@ class NewMetricDialog(QDialog):
         mark_as_error(self.error_label)
         self.error_label.hide()
 
-        form = QFormLayout()
+        # What consumers see over SDC, then how the toolbox generates values for it.
+        self.description_section, form = kind_section("Device description", "mdib")
         form.addRow("Kind", self.kind_box)
         form.addRow("Label", self.label_edit)
         form.addRow("Unit", self.unit_edit)
@@ -192,25 +197,37 @@ class NewMetricDialog(QDialog):
         form.addRow("Resolution", self.resolution_edit)
         form.addRow("Range", self.limits_widget)
         form.addRow("Sample period", self.sample_period_edit)
-        form.addRow("Shape", self.shape_box)
-        form.addRow("Cycle length (s)", self.cycle_widget)
-        form.addRow("Distribution", self.distribution_box)
         form.addRow("Domain unit", self.domain_unit_edit)
         form.addRow("Domain", self.domain_widget)
         form.addRow("", self.controllable_box)
         form.addRow("Handle", self.handle_preview)
         self.form = form
+        self.simulation_section, self.simulation_form = kind_section("Simulation", "toolbox")
+        self.simulation_form.addRow("Shape", self.shape_box)
+        self.simulation_form.addRow("Cycle length (s)", self.cycle_widget)
+        self.simulation_form.addRow("Distribution", self.distribution_box)
+        self.card_section, card_form = kind_section("Card", "toolbox")
+        self.card_type_box = NoWheelComboBox()
+        self.card_type_box.setToolTip("How the card shows this data source. Only changes the card.")
+        card_form.addRow("Card type", self.card_type_box)
+        self._card_options: list[type] = []
 
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        style_dialog_buttons(self.buttons)
         self.buttons.accepted.connect(self._on_accept)
         self.buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
-        layout.addLayout(form)
+        layout.setSpacing(12)
+        layout.addWidget(self.description_section)
+        layout.addWidget(self.simulation_section)
+        layout.addWidget(self.card_section)
         layout.addWidget(self.error_label)
         layout.addWidget(self.buttons)
 
         self.kind_box.currentIndexChanged.connect(self._on_kind_changed)
+        for edit in (self.minimum_edit, self.maximum_edit, self.values_edit, self.resolution_edit):
+            edit.textChanged.connect(self._update_card_types)
         self.label_edit.textChanged.connect(self._update_preview)
         self.cycle_edit.textChanged.connect(self._update_rate_hint)
         self.sample_period_edit.textChanged.connect(self._update_rate_hint)
@@ -220,6 +237,37 @@ class NewMetricDialog(QDialog):
         self._update_preview()
 
     # -- result --------------------------------------------------------------------
+
+    def card_control(self) -> str | None:
+        """The card type picked, by control name; None keeps whatever fits best."""
+        index = self.card_type_box.currentIndex()
+        if index <= 0 or index >= len(self._card_options):
+            return None
+        return self._card_options[index].__name__
+
+    def _card_spec(self) -> WidgetSpec:
+        """A stand-in for the metric the dialog describes, to see which cards fit it."""
+        def number(edit: QLineEdit) -> Decimal | None:
+            try:
+                return parse_decimal_input(edit.text(), "value") if edit.text().strip() else None
+            except DecimalInputError:
+                return None
+        values = tuple(part.strip() for part in self.values_edit.text().split(",") if part.strip())
+        return WidgetSpec(handle="new", label="", kind=self._kind, allowed_values=values,
+                          minimum=number(self.minimum_edit), maximum=number(self.maximum_edit),
+                          resolution=number(self.resolution_edit), editable=True)
+
+    def _update_card_types(self) -> None:
+        """Offer the card types that fit what is entered, keeping the choice where it still fits."""
+        chosen = self.card_control()
+        self._card_options = matching_controls(self._card_spec())
+        self.card_type_box.blockSignals(True)
+        self.card_type_box.clear()
+        for control in self._card_options:
+            self.card_type_box.addItem(card_caption(control, self._card_spec()))
+        names = [control.__name__ for control in self._card_options]
+        self.card_type_box.setCurrentIndex(names.index(chosen) if chosen in names else 0)
+        self.card_type_box.blockSignals(False)
 
     def spec(self) -> MetricSpec | None:
         """The definition the user entered, or None if the dialog was cancelled."""
@@ -279,7 +327,8 @@ class NewMetricDialog(QDialog):
         something to read and dismiss, and the dialog is short enough that the rows moving
         is less distracting than the clutter.
         """
-        set_form_row_visible(self.form, widget, visible=visible)
+        form = self.form if self.form.indexOf(widget) >= 0 else self.simulation_form
+        set_form_row_visible(form, widget, visible=visible)
 
     def _on_kind_changed(self) -> None:
         kind = self._kind
@@ -300,6 +349,8 @@ class NewMetricDialog(QDialog):
         self._set_row_visible(self.distribution_box, visible=is_distribution)
         self._set_row_visible(self.domain_unit_edit, visible=is_distribution)
         self._set_row_visible(self.domain_widget, visible=is_distribution)
+        self.simulation_section.setVisible(is_waveform or is_distribution)
+        self._update_card_types()
         # Neither sample-array kind can be written by anybody: BICEPS defines no operation
         # whose argument is a sample array.
         self.controllable_box.setVisible(kind.controllable)

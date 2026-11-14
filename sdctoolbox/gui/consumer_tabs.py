@@ -1,4 +1,9 @@
-"""Independent consumer sessions; selecting a tab changes only what is visible."""
+"""Independent consumer sessions; selecting a tab changes only what is visible.
+
+A tab is only created by connecting. While nothing is connected the tab bar is hidden and the
+one idle session just offers discovery. Once a host adopts the discovery slot, the current
+tab's Discovery section is shown there, above the tabs.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +12,7 @@ from html import escape
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QFontMetrics
-from PySide6.QtWidgets import QMessageBox, QTabBar, QTabWidget, QToolButton, QWidget
+from PySide6.QtWidgets import QMessageBox, QTabBar, QTabWidget, QVBoxLayout, QWidget
 
 from ..consumer_service import SharedDiscovery
 from .consumer_pane import ConsumerPane
@@ -31,17 +36,12 @@ class ConsumerTabs(QTabWidget):
         self._next_number = 1
         self.setTabBar(NoWheelTabBar())
         self.setTabsClosable(True)
+        self.setDocumentMode(True)  # no frame around the page while the tab bar is hidden
         self.setUsesScrollButtons(True)
         self.setAccessibleName("Provider connections")
         self.tabCloseRequested.connect(self.close_connection)
-
-        add = QToolButton(self)
-        add.setText("+")
-        add.setAccessibleName("Add connection")
-        add.setToolTip("Add connection (Ctrl+T)")
-        add.setShortcut("Ctrl+T")
-        add.clicked.connect(self._on_add_connection)
-        self.setCornerWidget(add)
+        self.currentChanged.connect(self._on_current_changed)
+        self.discovery_slot: QWidget | None = None
 
         close = QAction("Close current connection", self)
         close.setShortcut("Ctrl+W")
@@ -69,6 +69,7 @@ class ConsumerTabs(QTabWidget):
             pane.set_use_widgets(self._use_widgets)
             pane.setProperty("connectionNumber", self._next_number)
             pane.status_changed.connect(self._on_status_changed)
+            pane.connect_elsewhere.connect(self._connect_in_new_tab)
             index = self.addTab(pane, "")
             self._update_title(pane, pane.status_label.text())
             self.setCurrentIndex(index)
@@ -77,13 +78,49 @@ class ConsumerTabs(QTabWidget):
             pane.deleteLater()
             raise
         self._next_number += 1
+        self._update_connection_state()
         return pane
 
-    def _on_add_connection(self) -> None:
+    def attach_discovery_slot(self, slot: QWidget) -> None:
+        """Show the current tab's Discovery section in `slot` from now on."""
+        self.discovery_slot = slot
+        if slot.layout() is None:
+            QVBoxLayout(slot).setContentsMargins(0, 0, 0, 0)
+        self._on_current_changed(self.currentIndex())
+
+    def _on_current_changed(self, _index: int) -> None:
+        if self.discovery_slot is None:
+            return
+        current = self.current_pane
+        for pane in self.panes:
+            section = pane.discovery_section
+            if pane is current:
+                self.discovery_slot.layout().addWidget(section)
+                section.show()
+            elif section.parent() is not pane:
+                section.hide()
+                pane.layout().insertWidget(0, section)
+
+    def _connect_in_new_tab(self, device) -> None:  # noqa: ANN001 - a DiscoveredDevice
+        """Open a device in its own tab, or go to the tab that already shows it."""
+        for pane in self.panes:
+            if pane.remote is not None and getattr(pane.remote, "epr", None) == device.epr:
+                self.setCurrentWidget(pane)
+                return
         try:
-            self.add_connection()
+            pane = self.add_connection()
         except Exception as exc:
             self._show_add_error(exc)
+            return
+        pane.connect_to(device)
+
+    def _update_connection_state(self) -> None:
+        """Tab bar only once something is connected; Tab N chips in every discovery list."""
+        connected = {pane.remote.epr: pane.property("connectionNumber")
+                     for pane in self.panes if pane.remote is not None and getattr(pane.remote, "epr", None)}
+        self.tabBar().setVisible(self.count() > 1 or bool(connected))
+        for pane in self.panes:
+            pane.set_device_tabs(connected)
 
     def _show_add_error(self, exc: Exception) -> None:
         logger.exception("could not add consumer connection")
@@ -108,10 +145,13 @@ class ConsumerTabs(QTabWidget):
             QMessageBox.warning(self, "Could not close connection", str(exc))
             return
         self.removeTab(index)
+        pane.discovery_section.deleteLater()
         pane.deleteLater()
+        self._update_connection_state()
 
     def _on_status_changed(self, status: str) -> None:
         self._update_title(self.sender(), status)
+        self._update_connection_state()
 
     def _update_title(self, pane: ConsumerPane, status: str) -> None:
         index = self.indexOf(pane)
@@ -146,7 +186,6 @@ class ConsumerTabs(QTabWidget):
     def shutdown(self) -> None:
         """Reach every session even if one retirement fails; retain pages for retry."""
         self._shutdown = True
-        self.cornerWidget().setEnabled(False)
         error = None
         for pane in self.panes:
             try:

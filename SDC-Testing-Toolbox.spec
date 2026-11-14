@@ -15,6 +15,7 @@ from legal_payload import filter_binaries, generate_payload
 datas = [
     (str(root / "sdctoolbox" / "mdib_bootstrap.xml"), "sdctoolbox"),
     (str(root / "presets"), "presets"),
+    (str(root / "sdctoolbox" / "gui" / "icons"), "sdctoolbox/gui/icons"),
 ]
 datas += collect_data_files("sdc11073", includes=["xsd/*.xsd"])
 
@@ -47,6 +48,7 @@ executable = EXE(
     [],
     exclude_binaries=True,
     name="SDC-Testing-Toolbox",
+    icon=str(root / "sdctoolbox" / "gui" / "icons" / "app_icon.ico"),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

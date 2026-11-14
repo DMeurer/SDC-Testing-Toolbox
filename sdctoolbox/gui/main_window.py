@@ -4,9 +4,8 @@ The tool is meant to be started twice on one machine, so that one instance publi
 device and the other discovers it. Each instance is therefore both a provider and a
 consumer.
 
-By default the two sit in panels either side of a movable divider, so you can watch one
-react to the other. View > Split view turns that off and stacks them as tabs instead, which
-is easier on a narrow screen.
+By default the two are stacked as tabs. View > Split view puts them in panels either side of
+a movable divider instead, so you can watch one react to the other.
 
 The menu bar is visible and pinned by default. View > Always show menu bar can unpin it so
 that it hides when unused and Alt reveals it again.
@@ -53,6 +52,18 @@ CONFIG_FILE_FILTER = config.FILE_FILTER
 # Where the divider sits when the window opens, as a share of the width.
 PROVIDER_SHARE = 3
 NETWORK_SHARE = 2
+
+
+def network_view(tabs: ConsumerTabs) -> QWidget:
+    """The Network panel: the current tab's Discovery section above the connection tabs."""
+    view = QWidget()
+    slot = QWidget()
+    layout = QVBoxLayout(view)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.addWidget(slot)
+    layout.addWidget(tabs, 1)
+    tabs.attach_discovery_slot(slot)
+    return view
 
 
 class TitledPanel(QWidget):
@@ -110,7 +121,7 @@ class MainWindow(QMainWindow):
         )
 
         self.provider_panel = TitledPanel(PROVIDER_TITLE, self.provider_pane)
-        self.network_panel = TitledPanel(NETWORK_TITLE, self.network_tabs)
+        self.network_panel = TitledPanel(NETWORK_TITLE, network_view(self.network_tabs))
 
         # Both layouts exist all the time; the panels move between them on demand.
         self.splitter = QSplitter(Qt.Horizontal)
@@ -130,7 +141,7 @@ class MainWindow(QMainWindow):
 
         self._alt_key = BareAltTracker(self)
         self._build_menus()
-        self.set_split_view(enabled=True)
+        self.set_split_view(enabled=False)
         self.set_use_widgets(enabled=True)
 
         self._show_status_hint()
@@ -274,7 +285,6 @@ class MainWindow(QMainWindow):
 
         self.split_view_action = QAction("&Split view", self)
         self.split_view_action.setCheckable(True)
-        self.split_view_action.setChecked(True)
         self.split_view_action.setShortcut("F8")
         self.split_view_action.setStatusTip("Panels side by side, or stacked as tabs")
         self.split_view_action.toggled.connect(self.set_split_view)

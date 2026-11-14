@@ -31,6 +31,7 @@ from ..model import (
 )
 from .decimal_input import DecimalInputError, parse_decimal_input
 from .helpers import set_form_row_visible
+from .kind_sections import kind_section, style_dialog_buttons
 from .no_wheel import NoWheelComboBox
 from .styling import constrain_dynamic_label, mark_as_error, mute
 
@@ -136,7 +137,7 @@ class NewAlertDialog(QDialog):
         mark_as_error(self.error_label)
         self.error_label.hide()
 
-        form = QFormLayout()
+        section, form = kind_section("Alarm description", "mdib")
         form.addRow("Watches", self.source_box)
         form.addRow("Label", self.label_edit)
         form.addRow("Kind", self.kind_box)
@@ -148,11 +149,12 @@ class NewAlertDialog(QDialog):
         self.form = form
 
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        style_dialog_buttons(self.buttons)
         self.buttons.accepted.connect(self._on_accept)
         self.buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
-        layout.addLayout(form)
+        layout.addWidget(section)
         layout.addWidget(self.hint)
         layout.addWidget(self.error_label)
         layout.addWidget(self.buttons)

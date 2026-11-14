@@ -235,6 +235,7 @@ def check(condition: bool, message: str) -> None:  # noqa: FBT001
 def new_window(provider: ProviderService) -> tuple[MainWindow, consumer_module.ConsumerPane, FakeConsumerService]:
     window = MainWindow(provider)
     window.show()
+    window.tabs.setCurrentIndex(1)  # the Network tab
     pane = window.network_pane
     return window, pane, pane.service
 
@@ -800,7 +801,8 @@ def failed_reconnect_clears_peer_ui(
     pane.device_list.setCurrentRow(0)
     service.connect_call.error = RuntimeError("forced failure")
     generation = pane._generation  # noqa: SLF001
-    pane._on_connect()  # noqa: SLF001
+    # Connect on a connected tab opens another tab; replacing in place is connect_to's job.
+    pane.connect_to(pane.devices[0])
     check(
         service.connect_call.entered.wait(1.0),
         "replacement connection starts in the worker",

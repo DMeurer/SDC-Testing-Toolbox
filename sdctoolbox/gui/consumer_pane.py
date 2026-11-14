@@ -18,10 +18,11 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
-from PySide6.QtGui import QFontMetrics
+from PySide6.QtGui import QFontMetrics, QPainter
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -30,8 +31,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QSplitter,
     QStackedWidget,
+    QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
     QTreeWidget,
@@ -44,6 +45,7 @@ from sdc11073.xml_types import msg_types
 from ..consumer_service import BACKGROUND_PROBE_SECONDS, ConsumerError, ConsumerService
 from ..model import MetricKind
 from .async_call import AsyncCall
+from .collapsible import CollapsibleSection
 from .decimal_input import DecimalInputError, parse_decimal_input
 from .helpers import (
     sample_count_text,
@@ -58,6 +60,8 @@ from .styling import (
     constrain_dynamic_label,
     mute,
     muted_colour,
+    set_button_kind,
+    token,
 )
 from .table_columns import TableColumns
 from .widgets import WidgetBoard, from_remote_metric
@@ -134,14 +138,48 @@ def _set_action_button_caption(button: QPushButton, caption: str) -> None:
 FINISHED_STATES = (msg_types.InvocationState.FINISHED, msg_types.InvocationState.FINISHED_MOD)
 
 
+# Item data roles of a discovery row: its transport and the connection tab showing it.
+DEVICE_TRANSPORT_ROLE = Qt.UserRole + 1
+DEVICE_TAB_ROLE = Qt.UserRole + 2
+
+EMPTY_HINT = ("No device connected. Select one above and press Connect, or double-click it. "
+              "Each connection opens in its own tab.")
+
+
 def _device_item(device: DiscoveredDevice) -> QListWidgetItem:
     secure = bool(device.x_addrs and device.x_addrs[0].startswith("https://"))
-    suffix = " [HTTPS]" if secure else " [HTTP]"
-    item = QListWidgetItem(device.epr + suffix)
+    item = QListWidgetItem(device.epr)
+    item.setData(DEVICE_TRANSPORT_ROLE, "HTTPS" if secure else "HTTP")
     location = device.location_scope
     if location:
         item.setToolTip(location)
     return item
+
+
+class _DeviceRowDelegate(QStyledItemDelegate):
+    """Draws the transport and the connection tab as chips after the endpoint reference."""
+
+    def paint(self, painter: QPainter, option, index) -> None:  # noqa: ANN001
+        chips = [(index.data(DEVICE_TRANSPORT_ROLE), "border/strong", "text/muted")]
+        if index.data(DEVICE_TAB_ROLE) is not None:
+            chips.append((f"Tab {index.data(DEVICE_TAB_ROLE)}", "accent", "accent/text"))
+        metrics = option.fontMetrics
+        widths = [metrics.horizontalAdvance(text) + 12 for text, _, _ in chips if text]
+        option.rect.setRight(option.rect.right() - sum(widths) - 6 * len(widths))
+        super().paint(painter, option, index)
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        x = option.rect.right() + 6
+        height = metrics.height() + 2
+        top = option.rect.center().y() - height / 2
+        for (text, line, colour), width in zip([c for c in chips if c[0]], widths, strict=True):
+            painter.setPen(token(line))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(x, top, width, height, height / 2, height / 2)
+            painter.setPen(token(colour))
+            painter.drawText(x, int(top), width, int(height), Qt.AlignCenter, text)
+            x += width + 6
+        painter.restore()
 
 
 class ConsumerPane(QWidget):
@@ -153,6 +191,8 @@ class ConsumerPane(QWidget):
     # (remote, reason). Emitted from whichever thread noticed; queued like the above.
     connection_lost = Signal(object, str)
     status_changed = Signal(str)
+    # A device to open in another tab: Connect on a pane that already shows a connection.
+    connect_elsewhere = Signal(object)
 
     def __init__(
         self,
@@ -183,6 +223,7 @@ class ConsumerPane(QWidget):
         self._editor_definition = None
         self._activations: dict[str, str | None] = {}
         self._choice_dirty = False
+        self._device_tabs: dict[str, int] = {}
 
         self._build_ui()
         self._wire_async()
@@ -215,10 +256,13 @@ class ConsumerPane(QWidget):
         self.context_label.setTextInteractionFlags(Qt.NoTextInteraction)
         mute(self.context_label)
 
-        top = QHBoxLayout()
-        top.addWidget(self.scan_button)
-        top.addWidget(self.connect_button)
-        top.addWidget(self.disconnect_button)
+        # Most users close the tab to disconnect, so Connect leads and the rest follow.
+        top = self.discovery_row = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        for button, kind in ((self.connect_button, "highlight"), (self.disconnect_button, "design-outline"),
+                             (self.scan_button, "design-outline")):
+            set_button_kind(button, kind)
+            top.addWidget(button)
         top.addWidget(self.connect_next_box)
         top.addStretch(1)
 
@@ -234,6 +278,10 @@ class ConsumerPane(QWidget):
         self.actions_widget = QScrollArea()
         self.actions_widget.setWidget(self.actions_content)
         self.actions_widget.setWidgetResizable(False)
+        # Part of the page, not a box on it: no frame, no fill of its own.
+        self.actions_widget.setFrameShape(QFrame.NoFrame)
+        self.actions_widget.viewport().setAutoFillBackground(False)
+        self.actions_content.setAutoFillBackground(False)  # setWidget() switched it on
         self.actions_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.actions_widget.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.actions_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -243,6 +291,17 @@ class ConsumerPane(QWidget):
         self.device_list.setMaximumHeight(90)
         self.device_list.itemSelectionChanged.connect(self._update_buttons)
         self.device_list.itemDoubleClicked.connect(lambda _: self._on_connect())
+        self.device_list.setItemDelegate(_DeviceRowDelegate(self.device_list))
+        discovery = QWidget()
+        discovery_layout = QVBoxLayout(discovery)
+        discovery_layout.setContentsMargins(0, 0, 0, 0)
+        discovery_layout.addLayout(top)
+        discovery_layout.addWidget(self.device_list)
+        self.discovery_section = CollapsibleSection("Discovery", discovery)
+        self.discovery_section.set_chips(["0 found"])
+        self.empty_hint = QLabel(EMPTY_HINT)
+        self.empty_hint.setWordWrap(True)
+        mute(self.empty_hint)
 
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Element", "Handle"])
@@ -271,22 +330,19 @@ class ConsumerPane(QWidget):
         alert_box = QWidget()
         alert_layout = QVBoxLayout(alert_box)
         alert_layout.setContentsMargins(0, 0, 0, 0)
-        alert_layout.addWidget(QLabel("Alarms"))
         alert_layout.addWidget(self.alert_table)
 
         self.board = WidgetBoard()
         self.board.value_requested.connect(self._on_widget_value_requested)
+        self.board.card_rebuilt.connect(lambda _handle: self._refresh_board())
         self.metric_stack = QStackedWidget()
         self.metric_stack.addWidget(self.board)
         self.metric_stack.addWidget(self.table)
 
-        self.views = QSplitter(Qt.Vertical)
-        self.views.addWidget(self.tree)
-        self.views.addWidget(self.metric_stack)
-        self.views.addWidget(alert_box)
-        self.views.setStretchFactor(0, 1)
-        self.views.setStretchFactor(1, 3)
-        self.views.setStretchFactor(2, 2)
+        self.structure_section = CollapsibleSection("MDIB structure", self.tree, expanded=False)
+        self.structure_section.set_hint("Descriptor tree with handles")
+        self.metrics_section = CollapsibleSection("Metrics", self.metric_stack)
+        self.alarms_section = CollapsibleSection("Alarms", alert_box, expanded=False)
 
         self.editor_label = QLabel("Connect to a device to control it")
         constrain_dynamic_label(self.editor_label, max_lines=2, max_width=MIN_PANEL_WIDTH)
@@ -298,6 +354,7 @@ class ConsumerPane(QWidget):
         self.editor_stack.addWidget(self.value_edit)
         self.editor_stack.addWidget(self.choice_box)
         self.apply_button = QPushButton("Set on device")
+        set_button_kind(self.apply_button, "design")
         self.apply_button.clicked.connect(self._on_apply)
         self.invocation_label = QLabel("")
         constrain_dynamic_label(self.invocation_label, max_lines=3, max_width=MIN_PANEL_WIDTH)
@@ -326,17 +383,27 @@ class ConsumerPane(QWidget):
         for widget in (self.tree, self.board, self.device_list, self.editor_stack):
             widget.setMinimumWidth(MIN_CHILD_WIDTH)
         self.setMinimumWidth(MIN_PANEL_WIDTH)
+        # Shown above the tabs, outside this pane, so it needs the same floor of its own.
+        self.discovery_section.setMinimumWidth(MIN_PANEL_WIDTH)
+
+        # Everything about one connection, hidden while there is none.
+        self.connection_widget = QWidget()
+        connection = QVBoxLayout(self.connection_widget)
+        connection.setContentsMargins(0, 0, 0, 0)
+        connection.addWidget(self.security_label)
+        connection.addWidget(self.context_label)
+        for section in (self.structure_section, self.metrics_section, self.alarms_section):
+            connection.addWidget(section, 1)
+        connection.addWidget(self.actions_widget)
+        connection.addLayout(editor)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addLayout(top)
-        layout.addWidget(self.device_list)
+        layout.addWidget(self.discovery_section)
         layout.addWidget(self.status_label)
-        layout.addWidget(self.security_label)
-        layout.addWidget(self.context_label)
-        layout.addWidget(self.views, 1)
-        layout.addWidget(self.actions_widget)
-        layout.addLayout(editor)
+        layout.addWidget(self.empty_hint)
+        layout.addWidget(self.connection_widget, 1)
+        layout.addStretch(0)
 
     def _wire_async(self) -> None:
         # Consumer errors carry a message for the user and are shown in the pane, so they
@@ -423,7 +490,10 @@ class ConsumerPane(QWidget):
             self.devices = devices
             self.device_list.clear()
             for device in devices:
-                self.device_list.addItem(_device_item(device))
+                item = _device_item(device)
+                item.setData(DEVICE_TAB_ROLE, self._device_tabs.get(device.epr))
+                self.device_list.addItem(item)
+            self.discovery_section.set_chips([f"{len(devices)} found"])
             rows = [row for row, device in enumerate(devices) if selected is not None and device.epr == selected.epr]
             if rows:
                 self.device_list.setCurrentRow(rows[0])
@@ -438,6 +508,14 @@ class ConsumerPane(QWidget):
                 self._on_connect()
                 return
         self._update_buttons()
+
+    def set_device_tabs(self, tabs: dict[str, int]) -> None:
+        """Which connection tab shows which endpoint, for the Tab N chips in the list."""
+        self._device_tabs = dict(tabs)
+        for row in range(self.device_list.count()):
+            item = self.device_list.item(row)
+            if row < len(self.devices):
+                item.setData(DEVICE_TAB_ROLE, self._device_tabs.get(self.devices[row].epr))
 
     def _reachable(self, device: DiscoveredDevice) -> bool:
         """Whether this consumer's transport matches an address the provider advertises."""
@@ -479,6 +557,16 @@ class ConsumerPane(QWidget):
     def _on_connect(self) -> None:
         device = self._selected_device()
         if device is None or self._shutdown:
+            return
+        if self.remote is not None:
+            # This tab already shows a connection; a new one gets its own tab.
+            self.connect_elsewhere.emit(device)
+            return
+        self.connect_to(device)
+
+    def connect_to(self, device: DiscoveredDevice) -> None:
+        """Connect this pane to a device, dropping whatever it showed before."""
+        if self._shutdown:
             return
         self._advance_generation()
         self._teardown_remote()
@@ -803,6 +891,7 @@ class ConsumerPane(QWidget):
         if metrics is None:
             metrics = self.remote.metrics()
         self.board.set_metrics([from_remote_metric(metric) for _, metric in sorted(metrics.items())])
+        self.metrics_section.set_chips([str(len(metrics))])
         self.board.show_values({handle: _displayable(metric) for handle, metric in metrics.items()})
 
     def _on_widget_value_requested(self, handle: str, value: object) -> None:
@@ -850,6 +939,7 @@ class ConsumerPane(QWidget):
             button = self.action_buttons.get(handle)
             if button is None:
                 button = QPushButton()
+                set_button_kind(button, "design-outline")
                 button.clicked.connect(lambda _=False, h=handle: self._on_run_action(h))
                 self.actions_row.insertWidget(self.actions_row.count() - 1, button)
                 self.action_buttons[handle] = button
@@ -892,6 +982,8 @@ class ConsumerPane(QWidget):
         """Show the peer's alarms, including how each one is announced."""
         alerts = {} if self.remote is None else self.remote.alerts()
         self.alert_table.setRowCount(len(alerts))
+        active = sum(bool(alert.present) for alert in alerts.values())
+        self.alarms_section.set_chips([str(len(alerts)), f"{active} active" if active else "none active"])
         for row, (handle, alert) in enumerate(sorted(alerts.items())):
             cells = {
                 ACOL_HANDLE: handle,
@@ -902,12 +994,17 @@ class ConsumerPane(QWidget):
                 ACOL_PRIORITY: alert.priority or "",
                 # One condition, several signals: the reason BICEPS keeps them apart.
                 ACOL_SIGNALS: ", ".join(sorted(alert.signals.values())),
-                ACOL_STATE: "PRESENT" if alert.present else "clear",
+                ACOL_STATE: "active" if alert.present else "clear",
             }
             for column, text in cells.items():
                 item = QTableWidgetItem(text)
                 if column == ACOL_STATE and not alert.present:
                     item.setForeground(muted_colour(self))
+                if column == ACOL_STATE and alert.present:
+                    item.setForeground(token("text/error"))
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
                 if column == ACOL_SIGNALS and alert.signals:
                     item.setToolTip("\n".join(f"{h}: {m}" for h, m in sorted(alert.signals.items())))
                 self.alert_table.setItem(row, column, item)
@@ -1094,6 +1191,8 @@ class ConsumerPane(QWidget):
         self.disconnect_button.setEnabled(
             not self._shutdown and self.remote is not None,
         )
+        self.connection_widget.setVisible(self.remote is not None)
+        self.empty_hint.setVisible(self.remote is None and not connect_busy)
         self._set_editor_enabled(enabled=self.editor_stack.isEnabled())
         self.refresh_actions()
 

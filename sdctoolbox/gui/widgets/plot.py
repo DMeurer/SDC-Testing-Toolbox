@@ -23,7 +23,7 @@ from PySide6.QtGui import QPainter, QPalette, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget
 
 from ...model import MAX_DECIMAL_WIRE_CHARS
-from ..styling import muted_colour
+from ..styling import muted_colour, token
 
 # How many samples a scrolling plot keeps when it does not know the sample period.
 HISTORY = 300
@@ -56,6 +56,14 @@ MAX_BACKLOG_SECONDS = 1.5
 TWEEN_MS = 180
 
 
+def _number(value: Decimal) -> str:
+    """A bound as a short label: no exponent, no trailing zeros."""
+    text = format(value.normalize(), "f") if value == value.to_integral() else format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
 class SamplePlot(QWidget):
     """Draws a list of samples, either as a scrolling trace or as a static bar chart.
 
@@ -84,9 +92,15 @@ class SamplePlot(QWidget):
         minimum: Decimal | None = None,
         maximum: Decimal | None = None,
         sample_period: Decimal | None = None,
+        show_legend: bool = False,
+        plot_seconds: float = PLOT_SECONDS,
     ) -> None:
         super().__init__(parent)
         self.scrolling = scrolling
+        # An axis column with the maximum, 0 and the minimum, and a dashed zero line.
+        self.show_legend = show_legend
+        # Seconds of signal across the width; resizing changes resolution, not speed.
+        self._plot_seconds = plot_seconds if plot_seconds > 0 else PLOT_SECONDS
         self.setMinimumHeight(PLOT_HEIGHT)
         self.setAutoFillBackground(False)
 
@@ -133,9 +147,9 @@ class SamplePlot(QWidget):
     def _window(self) -> int:
         if self._sample_period <= 0:
             return HISTORY
-        if self._sample_period < PLOT_SECONDS / MAX_WINDOW_SAMPLES:
+        if self._sample_period < self._plot_seconds / MAX_WINDOW_SAMPLES:
             return MAX_WINDOW_SAMPLES
-        return max(2, round(PLOT_SECONDS / self._sample_period))
+        return max(2, round(self._plot_seconds / self._sample_period))
 
     @property
     def window_samples(self) -> int | None:
@@ -315,6 +329,15 @@ class SamplePlot(QWidget):
 
     # -- painting ------------------------------------------------------------------
 
+    def legend_texts(self) -> list[str]:
+        """The axis labels, top to bottom: maximum, 0 where it lies inside, minimum."""
+        low, high = self._bounds()
+        texts = [_number(high)]
+        if low < 0 < high:
+            texts.append("0")
+        texts.append(_number(low))
+        return texts
+
     def _bounds(self) -> tuple[Decimal, Decimal]:
         """The vertical extent to draw, preferring the declared range over the data.
 
@@ -346,8 +369,17 @@ class SamplePlot(QWidget):
 
         width = self.width() - 2 * MARGIN
         height = self.height() - 2 * MARGIN
+        gutter = 0
+        if self.show_legend and self._samples:
+            font = painter.font()
+            font.setPixelSize(10)
+            painter.setFont(font)
+            gutter = max(painter.fontMetrics().horizontalAdvance(text) for text in self.legend_texts()) + 6
+            width -= gutter
         if width <= 0 or height <= 0:
             return
+        # The legend sits in a column to the left; everything else moves over to make room.
+        painter.translate(gutter, 0)
 
         painter.setPen(QPen(frame, 1))
         painter.drawRect(MARGIN, MARGIN, width - 1, height - 1)
@@ -368,11 +400,25 @@ class SamplePlot(QWidget):
             # Screen y grows downwards, so the top of the box is the high value.
             return MARGIN + (1.0 - fraction) * (height - 1)
 
-        # A line at the middle of the range, so a flat trace still has something to sit
-        # against and an eye can judge amplitude.
-        painter.setPen(QPen(frame, 1, Qt.DotLine))
-        middle = y_for(0.5)
-        painter.drawLine(QPointF(MARGIN, middle), QPointF(MARGIN + width - 1, middle))
+        if gutter:
+            labels = self.legend_texts()
+            places = [MARGIN + 5, None, MARGIN + height - 1]
+            if len(labels) == 3:  # noqa: PLR2004 - a zero line between max and min
+                zero = float(-low / span)
+                places[1] = y_for(zero)
+                painter.setPen(QPen(token("plot/grid"), 1, Qt.DashLine))
+                painter.drawLine(QPointF(MARGIN, places[1]), QPointF(MARGIN + width - 1, places[1]))
+            painter.setPen(QPen(frame, 1))
+            ascent = painter.fontMetrics().ascent()
+            for text, y in zip(labels, [p for p in places if p is not None] if len(labels) == 2 else places,  # noqa: PLR2004
+                               strict=True):
+                painter.drawText(QPointF(MARGIN - gutter, min(max(y + ascent / 2 - 1, MARGIN + ascent), MARGIN + height)), text)
+        else:
+            # A line at the middle of the range, so a flat trace still has something to sit
+            # against and an eye can judge amplitude.
+            painter.setPen(QPen(frame, 1, Qt.DotLine))
+            middle = y_for(0.5)
+            painter.drawLine(QPointF(MARGIN, middle), QPointF(MARGIN + width - 1, middle))
 
         count = len(self._samples)
         step = (width - 1) / max(1, count - 1) if count > 1 else 0.0

@@ -7,14 +7,21 @@ across the whole thing.
 
 from __future__ import annotations
 
+from dataclasses import replace
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QPoint, Qt, Signal
 from PySide6.QtWidgets import (
+    QButtonGroup,
+    QCheckBox,
+    QFormLayout,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
+    QPushButton,
     QScrollArea,
     QStyle,
     QToolButton,
@@ -22,11 +29,20 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..styling import constrain_dynamic_label, mute
-from .factory import build_widget
+from ...model import MetricKind
+from ..decimal_input import DecimalInputError, parse_decimal_input
+from ..kind_sections import kind_section
+from ..no_wheel import NoWheelComboBox
+from ..styling import constrain_dynamic_label, mute, set_button_kind
+from .base import CardSettings
+from .controls import SampleArrayWidget, SliderWidget, StepperWidget, TextWidget
+from .factory import build_widget, chosen_control, matching_controls
 
 if TYPE_CHECKING:
     from .base import MetricWidget, WidgetSpec
+
+PEN_PIXELS = 17
+POPUP_WIDTH = 340
 
 # Narrowest a card may be before the board drops to fewer columns.
 MIN_CARD_WIDTH = 260
@@ -50,10 +66,12 @@ class MetricCard(QFrame):
         parent: QWidget | None = None,
         *,
         deletable: bool = False,
+        settings: CardSettings | None = None,
     ) -> None:
         super().__init__(parent)
         self.spec = spec
-        self.setFrameShape(QFrame.StyledPanel)
+        self.settings = settings or CardSettings()
+        self.setProperty("role", "card")
 
         self.heading = QLabel(spec.caption)
         constrain_dynamic_label(self.heading, max_lines=2)
@@ -66,17 +84,20 @@ class MetricCard(QFrame):
         title_row.setSpacing(4)
         title_row.addWidget(self.heading, 1)
 
+        # Every card can be edited: your own opens the data source, a peer's only how the
+        # card looks. Only your own can be removed.
+        self.edit_button = QToolButton()
+        self.edit_button.setText("\u270e")
+        font = self.edit_button.font()
+        font.setPixelSize(PEN_PIXELS)
+        self.edit_button.setFont(font)
+        self.edit_button.setAutoRaise(True)
+        self.edit_button.setToolTip(f"Edit {spec.handle} while it runs" if deletable else "Card settings")
+        self.edit_button.setAccessibleName(f"Edit {spec.handle}")
+        self.edit_button.clicked.connect(lambda: self.edit_requested.emit(spec.handle))
+        title_row.addWidget(self.edit_button, 0, Qt.AlignTop)
         self.delete_button: QToolButton | None = None
-        self.edit_button: QToolButton | None = None
         if deletable:
-            # A card you may remove is one of your own, so you may edit it as well.
-            self.edit_button = QToolButton()
-            self.edit_button.setText("✎")
-            self.edit_button.setAutoRaise(True)
-            self.edit_button.setToolTip(f"Edit {spec.handle} while it runs")
-            self.edit_button.setAccessibleName(f"Edit {spec.handle}")
-            self.edit_button.clicked.connect(lambda: self.edit_requested.emit(spec.handle))
-            title_row.addWidget(self.edit_button, 0, Qt.AlignTop)
             self.delete_button = QToolButton()
             self.delete_button.setIcon(
                 self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarCloseButton),
@@ -87,7 +108,7 @@ class MetricCard(QFrame):
             self.delete_button.clicked.connect(lambda: self.delete_requested.emit(spec.handle))
             title_row.addWidget(self.delete_button, 0, Qt.AlignTop)
 
-        self.control: MetricWidget = build_widget(spec, self)
+        self.control: MetricWidget = build_widget(spec, self, settings=self.settings)
 
         footer_parts = [spec.handle]
         if spec.unit:
@@ -100,6 +121,7 @@ class MetricCard(QFrame):
             footer_parts.append(f"{spec.sample_period}s/sample")
         if spec.note:
             footer_parts.append(spec.note)
+        footer_parts.extend(self.control.footer_extras())
         if not spec.active:
             footer_parts.append(f"switched {spec.activation}" if spec.activation == "Off" else spec.activation)
         self.footer = QLabel("  \u00b7  ".join(footer_parts))
@@ -124,6 +146,8 @@ class WidgetBoard(QScrollArea):
     # handle. A card's bin was clicked.
     delete_requested = Signal(str)
     edit_requested = Signal(str)
+    # handle. A card was rebuilt with new settings and needs its value again.
+    card_rebuilt = Signal(str)
 
     def __init__(self, parent: QWidget | None = None, *, deletable: bool = False) -> None:
         super().__init__(parent)
@@ -135,6 +159,7 @@ class WidgetBoard(QScrollArea):
         self.setFrameShape(QFrame.NoFrame)
 
         self._canvas = QWidget()
+        self._canvas.setObjectName("cardBoard")
         self._grid = QGridLayout(self._canvas)
         self._grid.setContentsMargins(4, 4, 4, 4)
         self._grid.setSpacing(8)
@@ -146,6 +171,9 @@ class WidgetBoard(QScrollArea):
 
         self._cards: dict[str, MetricCard] = {}
         self._order: list[str] = []
+        # How each card looks, by handle. Kept for the session; a rebuilt card keeps it.
+        self._settings: dict[str, CardSettings] = {}
+        self.settings_popup: CardSettingsPopup | None = None
         self._columns = 0
         # Highest column and row index we have ever stretched, so they can all be undone.
         self._stretched_columns = 0
@@ -178,14 +206,49 @@ class WidgetBoard(QScrollArea):
 
         for spec in specs:
             if spec.handle not in self._cards:
-                card = MetricCard(spec, self._canvas, deletable=self.deletable)
-                card.control.value_requested.connect(self.value_requested)
-                card.delete_requested.connect(self.delete_requested)
-                card.edit_requested.connect(self.edit_requested)
-                self._cards[spec.handle] = card
+                self._cards[spec.handle] = self._make_card(spec)
 
         self._order = [spec.handle for spec in specs]
         self._relayout(force=True)
+
+    def _make_card(self, spec: WidgetSpec) -> MetricCard:
+        card = MetricCard(spec, self._canvas, deletable=self.deletable, settings=self._settings.get(spec.handle))
+        card.control.value_requested.connect(self.value_requested)
+        card.delete_requested.connect(self.delete_requested)
+        card.edit_requested.connect(self.edit_requested if self.deletable else self.open_card_settings)
+        return card
+
+    def card_settings(self, handle: str) -> CardSettings:
+        """How the card for this handle looks."""
+        return self._settings.get(handle, CardSettings())
+
+    def set_card_settings(self, handle: str, settings: CardSettings) -> None:
+        """Change how a card looks; the card is rebuilt with its current value kept."""
+        self._settings[handle] = settings
+        old = self._cards.get(handle)
+        if old is None or old.settings == settings:
+            return
+        card = self._make_card(old.spec)
+        self._cards[handle] = card
+        old.setParent(None)
+        old.deleteLater()
+        self._relayout(force=True)
+        # Ask for the value again: whoever fills the board answers through show_values.
+        self.card_rebuilt.emit(handle)
+
+    def open_card_settings(self, handle: str) -> None:
+        """The pen on a peer's card: a popup with how this card looks, nothing else."""
+        card = self._cards.get(handle)
+        if card is None:
+            return
+        if self.settings_popup is not None:
+            self.settings_popup.close()
+            self.settings_popup.deleteLater()
+        self.settings_popup = CardSettingsPopup(card.spec, self.card_settings(handle), self)
+        self.settings_popup.editor.changed.connect(lambda settings: self.set_card_settings(handle, settings))
+        anchor = card.edit_button.mapToGlobal(QPoint(0, card.edit_button.height()))
+        self.settings_popup.move(anchor - QPoint(self.settings_popup.sizeHint().width() - card.edit_button.width(), 0))
+        self.settings_popup.show()
 
     def show_values(self, values: dict[str, Any]) -> None:
         """Push values in, skipping any control the user is currently working with."""
@@ -267,3 +330,180 @@ class WidgetBoard(QScrollArea):
     def resizeEvent(self, event) -> None:  # noqa: ANN001, N802 - Qt naming
         super().resizeEvent(event)
         self._relayout()
+
+
+def _check(caption: str, checked: bool, tooltip: str = "") -> QCheckBox:  # noqa: FBT001
+    box = QCheckBox(caption)
+    box.setChecked(checked)
+    box.setToolTip(tooltip)
+    return box
+
+
+def _note(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setWordWrap(True)
+    mute(label)
+    return label
+
+
+class CardSettingsEditor(QWidget):
+    """Card type and the options of that type, for one metric. Toolbox only.
+
+    Shown in a peer card's popup and in the Card section of Edit data source. Every change
+    is announced at once through `changed`, so a card can follow while the user clicks.
+    """
+
+    changed = Signal(object)
+
+    def __init__(self, spec: WidgetSpec, settings: CardSettings, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.spec = spec
+        self._settings = settings
+        self._options = matching_controls(spec)
+        self.type_box = NoWheelComboBox()
+        for control in self._options:
+            self.type_box.addItem(card_caption(control, spec))
+        self.type_box.setCurrentIndex(self._options.index(chosen_control(spec, settings)))
+        self.others = _note("")
+
+        self.small_box = _check("Show \u22121 / +1 buttons", settings.small_steps)
+        self.large_box = _check("Show \u221210 / +10 buttons", settings.large_steps)
+        self.release_button = QPushButton("Release")
+        self.change_button = QPushButton("Change")
+        self._update_group = QButtonGroup(self)
+        for button in (self.release_button, self.change_button):
+            button.setCheckable(True)
+            set_button_kind(button, "design-outline")
+            self._update_group.addButton(button)
+        (self.change_button if settings.update_on == "change" else self.release_button).setChecked(True)
+        self.ranges_box = _check("Show technical and allowed range", settings.show_ranges)
+        self.legend_box = _check("Show legend (min, max and 0)", settings.legend)
+        self.speed_edit = QLineEdit(str(settings.seconds_per_width))
+        self.speed_edit.setMaximumWidth(60)
+        self.split_box = _check("Split current and desired", settings.split)
+        self.multiline_box = _check("Allow multiline", settings.multiline)
+
+        update_row = QHBoxLayout()
+        update_row.setContentsMargins(0, 0, 0, 0)
+        update_row.setSpacing(0)
+        update_row.addWidget(self.release_button)
+        update_row.addWidget(self.change_button)
+        update_row.addStretch(1)
+        speed_row = QHBoxLayout()
+        speed_row.setContentsMargins(0, 0, 0, 0)
+        speed_row.addWidget(self.speed_edit)
+        speed_row.addWidget(QLabel("s per width"))
+        speed_row.addStretch(1)
+
+        self.form = QFormLayout()
+        self.form.addRow("Card type", self.type_box)
+        self.form.addRow("", self.others)
+        self._pages: dict[type, list[QWidget]] = {StepperWidget: [], SliderWidget: [],
+                                                  SampleArrayWidget: [], TextWidget: []}
+        self._add(StepperWidget, self.small_box)
+        self._add(StepperWidget, self.large_box)
+        update_widget = QWidget()
+        update_widget.setLayout(update_row)
+        self._add(SliderWidget, update_widget, "Update on")
+        self._add(SliderWidget, _note("Release sends when you let go of the knob. Change sends while you drag."))
+        self._add(SliderWidget, self.ranges_box)
+        self._add(SliderWidget, _note("The track spans the technical range; values outside the allowed range "
+                                      "are marked and cannot be picked."))
+        self._add(SampleArrayWidget, self.legend_box)
+        if spec.kind is MetricKind.WAVEFORM:
+            speed_widget = QWidget()
+            speed_widget.setLayout(speed_row)
+            self._add(SampleArrayWidget, speed_widget, "Playback speed")
+            self._add(SampleArrayWidget, _note("Seconds of signal across the plot. Resizing the card does not "
+                                               "change the speed."))
+        self._add(TextWidget, self.split_box)
+        self.split_note = _note("Shows the device value above the input. Only offered when remote control "
+                                "is enabled.")
+        self._add(TextWidget, self.split_note)
+        self._add(TextWidget, self.multiline_box)
+        self._add(TextWidget, _note("The field turns amber while it holds changes that are not sent yet. "
+                                    "This is always on."))
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addLayout(self.form)
+
+        self.type_box.currentIndexChanged.connect(self._emit)
+        for box in (self.small_box, self.large_box, self.ranges_box, self.legend_box, self.split_box,
+                    self.multiline_box):
+            box.toggled.connect(self._emit)
+        self._update_group.buttonClicked.connect(self._emit)
+        self.speed_edit.editingFinished.connect(self._emit)
+        self._show_page()
+
+    def _add(self, control: type, widget: QWidget, caption: str = "") -> None:
+        self.form.addRow(caption, widget)
+        self._pages[control].append(widget)
+
+    def _show_page(self) -> None:
+        chosen = self._options[self.type_box.currentIndex()]
+        rows = []
+        for control, widgets in self._pages.items():
+            for widget in widgets:
+                visible = control is chosen
+                if widget in (self.split_box, self.split_note):
+                    # Splitting only means something when the value can be set from here.
+                    visible = visible and self.spec.editable
+                rows.append((widget, visible))
+        # Hide before showing, or the window grows for a moment to hold both pages.
+        for widget, visible in sorted(rows, key=lambda row: row[1]):
+            self.form.setRowVisible(widget, visible)
+        others = [card_caption(control, self.spec) for control in self._options if control is not chosen]
+        self.others.setText(f"Also available: {', '.join(others)}" if others else "No other card type fits")
+
+    def settings(self) -> CardSettings:
+        """The settings as currently entered."""
+        try:
+            speed = parse_decimal_input(self.speed_edit.text(), "playback speed", positive=True)
+        except DecimalInputError:
+            speed = self._settings.seconds_per_width
+        return replace(
+            self._settings,
+            control=self._options[self.type_box.currentIndex()].__name__,
+            small_steps=self.small_box.isChecked(),
+            large_steps=self.large_box.isChecked(),
+            update_on="change" if self.change_button.isChecked() else "release",
+            show_ranges=self.ranges_box.isChecked(),
+            legend=self.legend_box.isChecked(),
+            seconds_per_width=speed if isinstance(speed, Decimal) else Decimal(str(speed)),
+            split=self.split_box.isChecked(),
+            multiline=self.multiline_box.isChecked(),
+        )
+
+    def _emit(self, *_args: object) -> None:
+        self._show_page()
+        self._settings = self.settings()
+        self.changed.emit(self._settings)
+
+
+def card_caption(control: type, spec: WidgetSpec) -> str:
+    if control is SampleArrayWidget:
+        return "Distribution" if spec.kind is MetricKind.DISTRIBUTION else "Waveform"
+    return control.caption or control.__name__
+
+
+class CardSettingsPopup(QFrame):
+    """The pen on a peer's card: how this one card looks, anchored to the card."""
+
+    def __init__(self, spec: WidgetSpec, settings: CardSettings, parent: QWidget | None = None) -> None:
+        super().__init__(parent, Qt.Popup)
+        self.setObjectName("cardSettingsPopup")
+        self.setStyleSheet("#cardSettingsPopup { border: 1px solid palette(mid); border-radius: 8px; }")
+        self.editor = CardSettingsEditor(spec, settings)
+        section, form = kind_section("Card settings", "toolbox")
+        form.addRow(_note(f"{spec.caption} ({spec.handle}). Only changes this card."))
+        form.addRow(self.editor)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.addWidget(section)
+        self.setFixedWidth(POPUP_WIDTH)
+        self.editor.changed.connect(lambda _settings: self._fit())  # each type's options differ in height
+        self._fit()
+
+    def _fit(self) -> None:
+        # Wrapped notes only know their height for a given width, so ask for exactly that.
+        self.setFixedHeight(max(self.layout().heightForWidth(POPUP_WIDTH), self.layout().minimumSize().height()))

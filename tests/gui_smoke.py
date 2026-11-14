@@ -70,7 +70,8 @@ from sdctoolbox.gui.provider_pane import (  # noqa: E402
     COL_VALUE,
 )
 from sdctoolbox.gui.startup_dialog import LINK_LOCAL_PREFIX, StartupDialog  # noqa: E402
-from sdctoolbox.gui.styling import mute  # noqa: E402
+from sdctoolbox.gui.no_wheel import NoWheelComboBox, NoWheelSlider  # noqa: E402
+from sdctoolbox.gui.styling import mute, token  # noqa: E402
 from sdctoolbox.gui.widgets import WidgetSpec  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
     AlertKind,
@@ -229,7 +230,10 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         pane = window.provider_pane
 
         print("\n1. Window layout")
-        report.check(window.split_view_enabled, "starts split")
+        report.check(not window.split_view_enabled, "starts as tabs")
+        window.split_view_action.setChecked(True)
+        pump(app)
+        report.check(window.split_view_enabled, "split view can be switched on")
         report.check(window.splitter.count() == 2, "two panels", str(window.splitter.count()))  # noqa: PLR2004
         report.check(
             window.splitter.orientation() == Qt.Horizontal,
@@ -340,7 +344,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
 
         print("\n1c. Switching layout")
         report.check(window.split_view_action.isCheckable(), "split view is a checkbox")
-        report.check(window.split_view_action.isChecked(), "and starts on")
+        report.check(window.split_view_action.isChecked(), "and is ticked while split")
 
         window.split_view_action.setChecked(False)
         pump(app)
@@ -766,8 +770,8 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         mode_input = mode_card.control.box
         zoom_input = zoom_card.control.slider
         report.check(
-            type(mode_input).__name__ == "NoWheelComboBox"
-            and type(zoom_input).__name__ == "NoWheelSlider",
+            isinstance(mode_input, NoWheelComboBox)
+            and isinstance(zoom_input, NoWheelSlider),
             "the cards are built from the wheel-proof controls",
             f"{type(mode_input).__name__}, {type(zoom_input).__name__}",
         )
@@ -1292,7 +1296,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         def signals_cell(handle: str = acked) -> str:
             for row in range(pane.alert_table.rowCount()):
                 if pane.alert_table.item(row, ACOL_HANDLE).text() == handle:
-                    return pane.alert_table.item(row, ACOL_SIGNALS).text()
+                    return pane.alert_table.item(row, ACOL_SIGNALS).data(Qt.UserRole)
             return ""
 
         # zoom sits at 100 from the range section above, so the alarm is already raised.
@@ -1418,12 +1422,15 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         # Peer labels are untrusted text. The Network pane must show markup-looking content
         # literally and must not let it dictate the splitter's minimum width.
         consumer = window.network_pane
-        consumer_minimum_before = consumer.minimumSizeHint().width()
         consumer.remote = RemoteDevice(
             SimpleNamespace(stop_all=lambda **_kwargs: None),
             SimpleNamespace(entities={}),
             "foreign-context-view",
         )
+        # The connection's sections only show once there is a peer, so measure with them.
+        consumer.connection_widget.setVisible(True)
+        pump(app)
+        consumer_minimum_before = consumer.minimumSizeHint().width()
         consumer.remote.patient_contexts = lambda: {
             "PC.foreign": PatientInfo(
                 given_name="<b>Foreign</b>",
@@ -1640,8 +1647,8 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         report.check("outline: 0" in qss, "focus ring suppressed")
         report.check("border: 0px" in qss, "per-cell borders suppressed")
         report.check(
-            "palette(highlight)" in qss and "palette(highlighted-text)" in qss,
-            "selection colours come from the palette, not hard-coded",
+            token("accent/tint").name() in qss,
+            "selection uses the design tint of the current mode, not a fixed colour",
         )
         report.check(
             ":selected:!active" in qss,

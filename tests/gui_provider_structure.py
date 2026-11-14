@@ -140,7 +140,7 @@ def check_live_edits(report: Report) -> None:
         opened = []
 
         class FakeDialog:
-            def __init__(self, _service, handle, _parent=None) -> None:
+            def __init__(self, _service, handle, _parent=None, **_options) -> None:
                 opened.append(handle)
 
             def exec(self) -> int:
@@ -199,12 +199,13 @@ def main() -> int:
             "the provider toolbar shows global actions and hides table-only removal in widget mode",
         )
         report.check(
-            pane.views.count() == 2
-            and pane.views.widget(0) is pane.metric_stack
-            and pane.alert_table.isVisible(),
-            "the provider pane contains metric and alarm views",
+            pane.metrics_section.content is pane.metric_stack
+            and pane.alarms_section.content.isAncestorOf(pane.alert_table)
+            and pane.metrics_section.expanded and not pane.alarms_section.expanded,
+            "the provider pane contains metric and alarm sections, alarms folded",
         )
         report.check(not pane.actions_widget.isVisible(), "an empty action toolbar stays hidden")
+        pane.alarms_section.set_expanded(True)
         report.check(
             pane.new_alert_button.isVisible()
             and not pane.remove_alert_button.isEnabled()

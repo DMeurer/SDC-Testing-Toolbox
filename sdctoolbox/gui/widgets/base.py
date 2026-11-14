@@ -80,6 +80,29 @@ class WidgetSpec:
         return self.control_ranges or self.technical_ranges
 
 
+@dataclass(frozen=True)
+class CardSettings:
+    """How one card looks. Toolbox only: none of this reaches the MDIB.
+
+    Kept per handle by the board for the session. `control` names the control class; None
+    means whatever the factory picks first.
+    """
+
+    control: str | None = None
+    # Number input
+    small_steps: bool = True
+    large_steps: bool = True
+    # Slider: "release" sends when the knob is let go, "change" while it is dragged.
+    update_on: str = "release"
+    show_ranges: bool = True
+    # Waveform and distribution
+    legend: bool = True
+    seconds_per_width: Decimal = Decimal(10)
+    # Text
+    split: bool = False
+    multiline: bool = False
+
+
 def from_spec(handle: str, spec: MetricSpec, *, editable: bool, note: str = "") -> WidgetSpec:
     """Convert one of our own metrics."""
     return WidgetSpec(
@@ -151,9 +174,14 @@ class MetricWidget(QWidget):
     # Lower number sorts first when the factory looks for a match.
     priority = 100
 
-    def __init__(self, spec: WidgetSpec, parent: QWidget | None = None) -> None:
+    # What the Card type combo calls this control.
+    caption = ""
+
+    def __init__(self, spec: WidgetSpec, parent: QWidget | None = None, *,
+                 settings: CardSettings | None = None) -> None:
         super().__init__(parent)
         self.spec = spec
+        self.settings = settings or CardSettings()
         self.build()
         self.set_editable(spec.editable)
 
@@ -175,6 +203,10 @@ class MetricWidget(QWidget):
     def set_editable(self, editable: bool) -> None:  # noqa: FBT001
         """Enable or disable interaction."""
         raise NotImplementedError
+
+    def footer_extras(self) -> list[str]:
+        """Extra facts for the card's footer that depend on this control's settings."""
+        return []
 
     # -- helpers -----------------------------------------------------------------
 
