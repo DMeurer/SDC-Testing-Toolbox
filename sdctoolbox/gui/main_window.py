@@ -110,6 +110,8 @@ class MainWindow(QMainWindow):
 
     def __init__(self, service: ProviderService) -> None:
         super().__init__()
+        # Set by start_mcp_server when --mcp serves this window.
+        self.mcp_url: str | None = None
         self.service = service
         self.setWindowTitle(f"SDC testing toolbox \u2014 {service.friendly_name}")
         self.resize(1100, 560)
@@ -521,6 +523,8 @@ class MainWindow(QMainWindow):
     def _show_status_hint(self) -> None:
         """Mention Alt only while it is the only way to reach the menu."""
         message = f"Publishing on {self.service.ip}   \u00b7   {self.service.epr.urn}"
+        if self.mcp_url:
+            message += f"   \u00b7   MCP on {self.mcp_url}"
         if not self.always_show_menu:
             message += "   \u00b7   press Alt for the menu"
         self.status_hint.setText(message)

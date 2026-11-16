@@ -60,6 +60,17 @@ def instance_name_argument(value: str) -> str:
     return value
 
 
+def port_argument(value: str) -> int:
+    """A TCP port, 1 to 65535."""
+    try:
+        port = int(value)
+    except ValueError:
+        port = 0
+    if not 0 < port < 65536:  # noqa: PLR2004 - the TCP port range
+        raise argparse.ArgumentTypeError(f"{value!r} is not a port number (1 to 65535)")
+    return port
+
+
 def friendly_name_argument(value: str) -> str:
     """Refuse a friendly name XML cannot carry, like the instance name."""
     try:
@@ -108,6 +119,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="do not require the peer certificate to name the advertised host or IP",
     )
+    parser.add_argument(
+        "--mcp",
+        nargs="?",
+        const=constants.MCP_DEFAULT_PORT,
+        type=port_argument,
+        metavar="PORT",
+        help=f"serve MCP for agents on 127.0.0.1 (default port {constants.MCP_DEFAULT_PORT})",
+    )
+    parser.add_argument("--headless", action="store_true", help="run without a window; needs --mcp")
     parser.add_argument("--smoke-test", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
@@ -246,6 +266,9 @@ def main(argv: list[str] | None = None) -> int:
         if settings is None:
             return 0
     else:
+        if args.headless and args.mcp is None:
+            print("error: --headless needs --mcp, or nothing could control the device", file=sys.stderr)
+            return 2
         try:
             settings = settings_from_args(args)
             if settings.tls_config is not None:
@@ -253,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
         except TlsConfigError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
-        app = create_application(args.theme)
+        app = None if args.headless else create_application(args.theme)
 
     basic_logging_setup(level=logging.INFO if settings.verbose else logging.WARNING)
 
@@ -270,7 +293,10 @@ def main(argv: list[str] | None = None) -> int:
 
     native_config = isinstance(device_config, NativeMdibConfig)
     service = make_service(settings, device_config)
+    if args.headless:
+        return run_headless(service, device_config, args.mcp)
     window = None
+    mcp_server = None
     try:
         if native_config:
             service.start(parse_mdib(device_config.xml))
@@ -284,6 +310,8 @@ def main(argv: list[str] | None = None) -> int:
             window.fullscreen_action.trigger()
         else:
             window.show()
+        if args.mcp is not None:
+            mcp_server = start_window_mcp(window, args.mcp)
         if args.smoke_test:
             bundled_files = {path.name for path in constants.PRESET_DIR.iterdir() if path.suffix.lower() == ".xml"}
             if bundled_files != constants.SHIPPED_PRESET_FILES:
@@ -315,10 +343,66 @@ def main(argv: list[str] | None = None) -> int:
         raise
     finally:
         try:
+            if mcp_server is not None:
+                mcp_server.stop()
             if window is not None:
                 window.close()
         finally:
             service.stop()
+
+
+def start_window_mcp(window: MainWindow, port: int):  # noqa: ANN201 - McpHttpServer | None
+    """Serve MCP for the window; a port already in use is reported, and the window carries on."""
+    from sdctoolbox.gui.mcp_bridge import start_mcp_server
+
+    try:
+        server = start_mcp_server(window, port)
+    except OSError as exc:
+        QMessageBox.warning(window, "Could not start the MCP server", f"Port {port}: {exc}")
+        return None
+    print(f"MCP server: {server.url}", flush=True)
+    return server
+
+
+def run_headless(
+    service: ProviderService,
+    device_config: config.DeviceConfig | NativeMdibConfig | None,
+    port: int,
+) -> int:
+    """Publish the device with no window and let an agent drive it over MCP until Ctrl+C."""
+    from sdctoolbox.mcp.server import McpApplication, McpHttpServer
+    from sdctoolbox.mcp.tools import Hooks, Network, ToolboxTools
+
+    network = server = None
+    try:
+        if isinstance(device_config, NativeMdibConfig):
+            service.start(parse_mdib(device_config.xml))
+        else:
+            service.start()
+            if device_config is not None:
+                config.apply_to(service, device_config)
+        network = Network(service)
+        tools = ToolboxTools(service, network, Hooks(service))
+        application = McpApplication(tools.tools(), tools.resources(), instructions=tools.instructions())
+        try:
+            server = McpHttpServer(application, port)
+        except OSError as exc:
+            print(f"error: cannot serve MCP on port {port}: {exc}", file=sys.stderr)
+            return 2
+        print(f"Publishing {service.friendly_name} on {service.ip}, EPR {service.epr.urn}", flush=True)
+        print(f"MCP server: {server.url}  (Ctrl+C stops)", flush=True)
+        with contextlib.suppress(KeyboardInterrupt):
+            server.serve_forever()
+        return 0
+    except config.ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        if server is not None:
+            server.stop()
+        if network is not None:
+            network.close()
+        service.stop()
 
 
 if __name__ == "__main__":

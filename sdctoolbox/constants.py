@@ -90,6 +90,9 @@ DEFAULT_IP = "127.0.0.1"
 # range, so the shipped firewall definitions can open exactly it. Discovery itself stays on 3702.
 PORT_RANGE = range(21073, 21173)
 
+# --mcp without a port listens here (loopback only). The number is the standard's, easy to remember.
+MCP_DEFAULT_PORT = 11073
+
 # EPRs are derived from this namespace plus an instance name, so restarting an instance
 # with the same name keeps its identity.
 EPR_NAMESPACE = uuid.UUID("{7c2e4a10-6b3d-4f8e-9c21-0d5a8e3f1b47}")

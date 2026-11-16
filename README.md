@@ -248,6 +248,51 @@ The menu bar is on screen by default.\
 *View → Fullscreen* (**F11**) toggles fullscreen and restores the previous normal/maximized window.\
 *View → Dark mode* switches between dark (checked) and light (unchecked) colours for this session.
 
+## Remote control for agents (MCP)
+
+`--mcp` lets an AI agent such as Claude Code drive the toolbox: build and change My device,
+connect to other devices and read or write them, change how the window looks, and explain
+what the window shows. It is meant to make the start easier ("make me an infusion pump with an
+occlusion alarm", "what does the crossed-out speaker mean?") and to make writing an MDIB a
+matter of describing the device.
+
+```powershell
+.venv\Scripts\python.exe run_toolbox.py --mcp                       # with the window, port 11073
+.venv\Scripts\python.exe run_toolbox.py --mcp 12000 --config presetsentilator.xml
+.venv\Scripts\python.exe run_toolbox.py --headless --mcp            # no window, until Ctrl+C
+```
+
+Then tell the agent where it is, for Claude Code:
+
+```powershell
+claude mcp add --transport http sdc-toolbox http://127.0.0.1:11073/mcp
+```
+
+The status line shows the address too (*MCP on ...*). With a window, every change an agent
+makes goes through the same path a click does, so the window follows it: cards appear, alarms
+light up, connections open as Network tabs, and each change is listed in the activity log as
+*MCP: ...*. Without a window (`--headless`, which needs `--mcp`) the same tools work, except
+the ones about the window.
+
+What the tools cover:
+
+| Area | Tools |
+|------|-------|
+| Getting started | `overview`, `explain_gui` (panels, columns, buttons, icons, card controls, menus), `explain_sdc` (the SDC concept behind them) |
+| My device | `list_metrics`, `add_metric`, `update_metric`, `set_value`, `remove_metric`; `list_alarms`, `add_alarm`, `update_alarm` (limits, priority, raise, acknowledge, stop latched, delegate), `remove_alarm`; `list_actions`, `add_action`, `run_action`, `remove_action`; `set_contexts`, `set_generator` |
+| Whole devices and MDIB | `build_device` (a whole device in one validated step), `get_mdib`, `export_mdib`, `load_mdib`, `list_presets`, `load_preset` |
+| Network | `scan`, `connect`, `list_connections`, `disconnect`, `read_metrics`, `read_alarms`, `read_actions`, `remote_set_value`, `remote_run_action`, `remote_mdib` |
+| The window | `get_view`, `set_view` (tab, split view, widgets or tables, dark mode, activity log), `get_card_settings`, `set_card_settings` (on My device or a connection), `read_activity_log` |
+
+Data sources, alarms and actions are described in the same shape as a toolbox profile, so an
+agent's input gets the validation a loaded file gets, and numbers are read as decimals, never
+floats. The GUI guide is also offered as MCP resources (`toolbox://guide/...`).
+
+The server speaks MCP over streamable HTTP with plain JSON responses and is built on the
+standard library, so packaged builds carry no extra dependency. It listens on 127.0.0.1 only
+and refuses requests from web pages (a foreign `Origin`). There is no authentication: any
+program on this machine can control the device while `--mcp` runs.
+
 ## Widgets
 
 By default each metric gets the control that suits it rather than a row in a table:

@@ -34,6 +34,7 @@ Message boxes are standard `QMessageBox`es and are not drawn in the design. Thes
 | Warning | Could not change the alarm, Could not acknowledge, Could not stop latched signals, Could not delegate | My device alarms |
 | Warning | Could not run the action, Could not change the contexts | My device |
 | Warning | Could not add connection, Could not close connection | Network tabs |
+| Warning | Could not start the MCP server | startup with `--mcp` when the port is taken |
 
 Native file pickers (Import config, Export config, Choose a config file, PEM file, certificate
 folder) are drawn by the operating system and are not in the design either. Keep this list
