@@ -352,8 +352,8 @@ provider> presets
 Every shipped preset is a BICEPS MDIB XML file: the seven devices and two focused examples
 below, plus two small synthetic files, **MDIB demo monitor** and **MDIB demo infusion
 pump**. Choose a preset, import an `.xml` file, or start with
-`--config presets/patient-monitor.xml`. Your own JSON profiles still import (see
-*Managed profiles* below), and the preset list still shows any you put in `presets/`.
+`--config presets/patient-monitor.xml`. JSON profiles from earlier versions still import
+(see *Older JSON profiles* below), but export writes MDIB files only.
 
 The device presets are saved with toolbox behaviour, so they load as complete devices: their
 generators run, their actions work, and they announce themselves as the machine they describe.
@@ -364,8 +364,7 @@ has no field for, are toolbox behaviour.
 
 An XML export is **one file containing both `MdDescription` and `MdState`**, including
 current sample blocks and all context states/history. *File → Export config* offers two
-choices: **MDIB (*.xml)** writes plain BICEPS, a minimal file for other tools; **MDIB with
-toolbox behaviour (*.xml)** also stores what BICEPS has no place for (which waveforms and
+choices: **MDIB with toolbox behaviour (*.xml)**, the default, stores what BICEPS has no place for (which waveforms and
 distributions the generator drives and their shapes, action effects and notes, and how each
 of your own data sources' cards looks: control type, step buttons, slider updates, ranges,
 legend, playback speed and text layout) as
@@ -373,8 +372,11 @@ legend, playback speed and text layout) as
 `MustUnderstand="false"`, so the device loads back complete: the generator starts for the
 marked sample arrays, and unmarked ones keep the samples from the file. It also stores the
 friendly name, firmware version and manufacturer URL, and the preset name of a device loaded
-from a preset. A device the toolbox builds publishes its manufacturer, model name and model
-number in the MDS `MetaData`, so both export forms carry those. The console's `export snapshot.xml` writes the plain form and `export --behaviour snapshot.xml` the one with behaviour. Combined
+from a preset. **MDIB (*.xml)** leaves the toolbox behaviour out and writes plain BICEPS, a
+minimal file for other tools. A device the toolbox builds publishes its manufacturer, model
+name and model number in the MDS `MetaData`, so both export forms carry those. The console's
+`export snapshot.xml` writes the form with behaviour and `export --plain snapshot.xml` the
+plain one. Combined
 `GetMdibResponse`, message `Mdib`, and participant `MdibContainer` inputs are accepted.
 Separate description/state files are not supported. Invalid XML, unsafe DTD/entity
 declarations, broken references and content the pinned library cannot preserve are
@@ -396,32 +398,31 @@ A failed activation attempts to restore the previous provider and reports any re
 
 An MDIB device is then edited like any other: add and remove metrics, alarms, actions and
 sections, switch remote control, set the patient and location, run the generator, and
-append a JSON profile. Edits use the file's own MDS, SCO, alert system, channels and
+append an older JSON profile. Edits use the file's own MDS, SCO, alert system, channels and
 contexts, and create one only when an edit needs it (for example a SCO for the first
 controllable metric of a file without one). A channel from the file is a section named by
 its label. Imported limit alarms follow their source metric once that metric changes;
 imported alarms otherwise keep their supplied state until something happens to them.
 Imported set operations keep their own enabled state and allowed ranges/values; imported
 Activate operations without stored toolbox behaviour fail explicitly. The containment tree
-shows every entity with XML on hover. JSON export of an MDIB device is refused because JSON
-cannot carry the whole graph; export XML instead.
+shows every entity with XML on hover.
 
 **Privacy:** full MDIB exports may include patient-identifying data and context history.
 Review them before sharing. The shipped device presets contain only the toolbox's made-up
 default patient, and the two MDIB demos no patient at all. Development-only
 reference files are not presets and are not part of the application bundle.
 
-### Managed profiles (JSON)
+### Older JSON profiles
 
-*File → Export config* writes device metadata, data-source definitions and scalar current values, alarm and action definitions, and currently associated patient/location contexts to a JSON file.
-It is not a full live-device snapshot: sample blocks, alert/signal state, control mode, generator state and context history are not exported.
-*File → Import config* validates descriptor references and generated section containment before changing the provider. Replacement removes tracked metrics, alarms and actions before rebuilding them; `replace=False` appends the profile while retaining the existing graph.
+Earlier versions exported a JSON profile: device metadata, data-source definitions and scalar values, alarm and action definitions, and the associated patient/location contexts.
+Export now writes MDIB files only, but these profiles still load, with `--config` or with *File → Import config* (choose *All files*).
+Import validates descriptor references and generated section containment before changing the provider. Replacement removes tracked metrics, alarms and actions before rebuilding them; `replace=False` appends the profile while retaining the existing graph.
 It is not a whole-MDIB replacement. In either mode, omitting `device` metadata leaves the running identity unchanged, while supplied metadata also cannot change an already running provider. Omitting `contexts.patient` or `contexts.location` leaves that currently associated context unchanged. An explicit patient block is associated, including an empty block to detach the current patient; an explicit empty location is rejected because a published location needs at least one detail.
 Both `replace=True` replacement and `replace=False` append are transactional for operational failures: the provider restores its prior managed metrics, alarms, actions, sections and associated contexts, publishing compensating transactions so connected consumers can recover the same graph. Append compensation removes only appended descriptors and restores contexts the failed import touched; it does not recreate unchanged pre-existing descriptors. This is recovery, not external atomicity: a subscribed consumer can observe temporary changes before the compensation, and a rollback failure is reported together with the import failure rather than hidden. Successful compensation keeps provider and consumer MDIB, descriptor, state and context-state versions monotonic; it advances versions instead of rewinding them.
 
 *File → Load preset* lists the ready-made devices in `presets/`, so the ones that ship with the tool need no file dialog.
-The same list appears in the startup window. Loading a profile with malformed field types or other schema errors raises `ConfigError`; `list_presets` catches those strict validation failures, invalid JSON and unreadable files and skips those entries, so one malformed preset does not interrupt discovery.
-Explicit profile versions must be JSON integers from 1 through the current format version, 3; preset discovery skips files outside that range. Profiles without a version predate versioning and are intentionally read with legacy version 1 semantics.
+The same list appears in the startup window. It lists the `.xml` files in `presets/`; `list_presets` skips files that are unreadable or not a valid MDIB, so one broken preset does not interrupt discovery.
+A JSON profile with malformed field types or other schema errors raises `ConfigError`. Explicit profile versions must be JSON integers from 1 through format version 3. Profiles without a version predate versioning and are intentionally read with legacy version 1 semantics.
 
 Any preset or profile can also be loaded at startup:
 
@@ -501,19 +502,20 @@ BICEPS models that with an `ActivateOperation`, which is a different operation k
 
 They appear as a row of buttons on both panels. Network buttons follow the peer operation's `OperatingMode`.
 My device buttons run their declared effects and do not currently mirror a locally changed operation mode.
-What one does here is apply declared effects to metrics:
+What one does here is apply declared effects to metrics, stored as toolbox behaviour on the operation:
 
-```json
-{
-	"label": "Home axes",
-	"target": "vmd.motion",
-	"effects": {
-		"m.axis_x": "0",
-		"m.axis_y": "0",
-		"m.axis_z": "300",
-		"m.motion_mode": "LOCKED"
-	}
-}
+```xml
+<dom:Operation Handle="act.home_axes" xsi:type="dom:ActivateOperationDescriptor" OperationTarget="vmd.motion">
+  <ext:Extension>
+    <tb:Action ext:MustUnderstand="false">
+      <tb:Effect Target="m.axis_x" Value="0"/>
+      <tb:Effect Target="m.axis_y" Value="0"/>
+      <tb:Effect Target="m.axis_z" Value="300"/>
+      <tb:Effect Target="m.motion_mode" Value="LOCKED"/>
+      <!-- ... -->
+    </tb:Action>
+  </ext:Extension>
+</dom:Operation>
 ```
 
 That stands in for machinery a real device would have behind homing an axis, and it is deliberately visible: an action whose result cannot be seen cannot be checked, and here the result is exactly the values it moved.
@@ -615,11 +617,11 @@ Clearing every patient field detaches the patient rather than attaching a namele
 
 The patient editor supports name, sex, patient type, date of birth, height, weight and race from `pm:PatientDemographicsCoreData`. The Network panel and consumer console show associated peer patient contexts read-only.
 
-Height and weight are BICEPS `Measurement` values: each needs a Decimal value and a coded measurement unit. Fresh providers start with Alex Example, a 170 cm height and a 70 kg weight, using MDC metric units. Race is a BICEPS `CodedValue`, not free text. The editor and JSON profile therefore require a code and coding system for each of those values. Use `mdc`, `private`, or an explicit coding-system URI, and use verified terminology when testing interoperability. The fields are informational demographics; a device's own measured height or weight should be modelled as a metric when quality and timing matter.
+Height and weight are BICEPS `Measurement` values: each needs a Decimal value and a coded measurement unit. Fresh providers start with Alex Example, a 170 cm height and a 70 kg weight, using MDC metric units. Race is a BICEPS `CodedValue`, not free text. The editor and a JSON profile therefore require a code and coding system for each of those values. Use `mdc`, `private`, or an explicit coding-system URI, and use verified terminology when testing interoperability. The fields are informational demographics; a device's own measured height or weight should be modelled as a metric when quality and timing matter.
 
-New exports use profile format version 3. Earlier profiles without these demographic fields or alert signal definitions remain readable.
+An MDIB export stores the patient as a `PatientContextState`. Older JSON profiles use format version 3; earlier ones without these demographic fields or alert signal definitions remain readable.
 
-An exported patient block has this shape:
+A patient block in a JSON profile has this shape:
 
 ```json
 {

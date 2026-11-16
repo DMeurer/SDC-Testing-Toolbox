@@ -11,7 +11,6 @@ Usage:  .venv/Scripts/python.exe tests/presets.py
 
 from __future__ import annotations
 
-import json
 import logging
 import sys
 import tempfile
@@ -345,23 +344,6 @@ def check_nomenclature(report: Report, paths: list[Path]) -> None:
     )
 
 
-def check_version_filter(report: Report) -> None:
-    """Preset discovery omits files with versions below the supported range."""
-    with tempfile.TemporaryDirectory(prefix="sdctoolbox-presets-") as directory:
-        folder = Path(directory)
-        for name, version in (("supported", config.LEGACY_CONFIG_VERSION), ("zero", 0), ("negative", -1)):
-            (folder / f"{name}.json").write_text(
-                json.dumps({"version": version, "name": name.title()}),
-                encoding="utf-8",
-            )
-        listed = config.list_presets(folder)
-    report.check(
-        [preset.name for preset in listed] == ["Supported"],
-        "preset discovery skips unsupported low config versions",
-        str([preset.name for preset in listed]),
-    )
-
-
 def main() -> int:
     basic_logging_setup(level=logging.ERROR)
     report = Report()
@@ -370,7 +352,7 @@ def main() -> int:
     print("Shipped presets")
     print("=" * 74)
 
-    paths = sorted(path for path in (ROOT / "presets").iterdir() if path.suffix in (".json", ".xml"))
+    paths = sorted(path for path in (ROOT / "presets").iterdir() if path.suffix == ".xml")
     actual_files = {path.name for path in paths}
     report.check(
         constants.SHIPPED_PRESET_FILES == EXPECTED_PRESET_FILES,
@@ -399,7 +381,6 @@ def main() -> int:
     report.check(len(set(names)) == len(names), "every preset has its own name in the menu", str(names))
     for preset in listed:
         report.check(bool(preset.description), f"{preset.name} says what it is", preset.description[:44])
-    check_version_filter(report)
 
     print()
     return report.summary()

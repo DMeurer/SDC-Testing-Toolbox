@@ -371,20 +371,19 @@ class MainWindow(QMainWindow):
 
     def export_config(self) -> Path | None:
         """Ask for a filename and write this device's configuration to it."""
-        from_mdib_file = self.service.from_mdib_file
-        suggested = f"{self.service.instance_name}{'.xml' if from_mdib_file else config.FILE_SUFFIX}"
         filename, selected_filter = QFileDialog.getSaveFileName(
             self,
             "Export config",
-            suggested,
-            CONFIG_FILE_FILTER,
-            selectedFilter=config.MDIB_FILE_FILTER if from_mdib_file else config.JSON_FILE_FILTER,
+            f"{self.service.instance_name}.xml",
+            config.EXPORT_FILE_FILTER,
+            selectedFilter=config.MDIB_BEHAVIOUR_FILE_FILTER,
         )
         if not filename:
             return None
         try:
+            # Only the plain choice leaves the behaviour out, so any other filter exports a file that loads back complete.
             written = config.save(self.service, config.export_path(filename, selected_filter),
-                                  behaviour=selected_filter == config.MDIB_BEHAVIOUR_FILE_FILTER)
+                                  behaviour=selected_filter != config.MDIB_FILE_FILTER)
         except (OSError, config.ConfigError) as exc:
             QMessageBox.warning(self, "Could not export", str(exc))
             return None

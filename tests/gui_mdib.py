@@ -160,7 +160,7 @@ class GuiMdibTests(unittest.TestCase):
             self.assertIsNone(self.service.mdib.entities.by_handle("demo.rate"))
             dialog.deleteLater()
 
-    def test_console_export_writes_behaviour_on_request(self) -> None:
+    def test_console_export_writes_behaviour_unless_plain(self) -> None:
         from examples.console import ProviderShell
         from sdctoolbox.model import ActionSpec
 
@@ -171,13 +171,13 @@ class GuiMdibTests(unittest.TestCase):
             plain, marked = Path(directory) / "plain.xml", Path(directory) / "with behaviour.xml"
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                shell.do_export(str(plain))
-                shell.do_export(f"--behaviour {marked}")
-                shell.do_export(f"--behaviour {Path(directory) / 'profile.json'}")
+                shell.do_export(f"--plain {plain}")
+                shell.do_export(str(marked))
+                shell.do_export(str(Path(directory) / "profile.json"))
             self.assertNotIn(b"urn:sdc-testing-toolbox:behaviour", plain.read_bytes())
             self.assertIn(b"urn:sdc-testing-toolbox:behaviour", marked.read_bytes())
-            self.assertFalse((Path(directory) / "profile.json").exists())
-            self.assertIn("--behaviour needs an .xml file", output.getvalue())
+            self.assertFalse((Path(directory) / "profile.json").exists(), "export never writes JSON")
+            self.assertIn("could not write", output.getvalue())
 
     def test_command_line_starts_from_native_snapshot(self) -> None:
         root = Path(__file__).resolve().parent.parent
@@ -284,7 +284,7 @@ class GuiMdibTests(unittest.TestCase):
         self.assertEqual(type(pane.board.card("demo.rate").control).__name__, "StepperWidget")
         self.assertNotIn(b"SecondsPerWidth", mdib_bytes(self.service.mdib), "card settings never reach the network")
 
-    def test_export_offers_plain_and_behaviour_mdib(self) -> None:
+    def test_export_offers_only_mdib_with_behaviour_as_default(self) -> None:
         from PySide6.QtWidgets import QFileDialog
         from sdctoolbox.model import ActionSpec
 
@@ -295,7 +295,9 @@ class GuiMdibTests(unittest.TestCase):
                 target = Path(directory) / f"{expected}.xml"
                 with patch.object(QFileDialog, "getSaveFileName", return_value=(str(target), selected)) as dialog:
                     self.assertEqual(self.window.export_config(), target)
-                self.assertEqual(dialog.call_args.kwargs["selectedFilter"], config.MDIB_FILE_FILTER)
+                self.assertEqual(dialog.call_args.kwargs["selectedFilter"], config.MDIB_BEHAVIOUR_FILE_FILTER)
+                self.assertEqual(dialog.call_args.args[2], f"{self.service.instance_name}.xml")
+                self.assertNotIn("json", dialog.call_args.args[3].lower())
                 self.assertEqual(b"urn:sdc-testing-toolbox:behaviour" in target.read_bytes(), expected)
 
     def test_failed_activation_rebinds_recovered_provider_without_retiring_consumers(self) -> None:

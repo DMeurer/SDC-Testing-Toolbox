@@ -86,7 +86,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--friendly-name",
         type=friendly_name_argument,
-        help="name the device announces; overrides the config file (default: the preset's, or --name for an MDIB)",
+        help="name the device announces; overrides the config file (default: the name the preset stores, otherwise --name)",
     )
     parser.add_argument("--config", help="config file to load on startup")
     parser.add_argument("--theme", choices=("light", "dark"), help="initial GUI colour theme")
@@ -285,7 +285,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             window.show()
         if args.smoke_test:
-            bundled_files = {path.name for path in constants.PRESET_DIR.iterdir() if path.suffix.lower() in (".json", ".xml")}
+            bundled_files = {path.name for path in constants.PRESET_DIR.iterdir() if path.suffix.lower() == ".xml"}
             if bundled_files != constants.SHIPPED_PRESET_FILES:
                 msg = f"packaged presets differ: found {sorted(bundled_files)}"
                 raise RuntimeError(msg)

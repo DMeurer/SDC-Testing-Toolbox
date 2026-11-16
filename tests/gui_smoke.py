@@ -1855,7 +1855,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         print("\n10c. Export and import from the File menu")
         with tempfile.TemporaryDirectory(prefix="sdctoolbox-gui-") as raw_workdir:
             workdir = Path(raw_workdir)
-            preset = workdir / "preset.json"
+            preset = workdir / "preset.xml"
 
             # The file dialogs would block with nobody to answer them.
             QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (str(preset), ""))  # noqa: ARG005
@@ -1888,13 +1888,14 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                 "and so are the alarms",
                 str(sorted(service.list_alerts())),
             )
+            # An MDIB import restarts the provider, and the window builds a new pane for it.
             report.check(
-                pane.table.rowCount() == len(before_metrics),
+                window.provider_pane.table.rowCount() == len(before_metrics),
                 "the table was refreshed by the import",
-                str(pane.table.rowCount()),
+                str(window.provider_pane.table.rowCount()),
             )
 
-            preset.write_text('{"metrics": [{"label": "broken"}]}', encoding="utf-8")
+            preset.write_text("<Mdib><broken", encoding="utf-8")
             shown_warnings.clear()
             report.check(not window.import_config(), "a broken file is refused")
             report.check(

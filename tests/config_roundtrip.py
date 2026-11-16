@@ -42,6 +42,7 @@ from sdc11073.xml_types import msg_types, pm_types  # noqa: E402
 
 from sdctoolbox import config, constants  # noqa: E402
 from sdctoolbox.consumer_service import RemoteDevice  # noqa: E402
+from sdctoolbox.mdib_io import NativeMdibConfig  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
     ActionSpec,
     AlertKind,
@@ -1617,10 +1618,16 @@ def check_metric_handle_resolution(report: Report, service: ProviderService) -> 
     report.check(existing not in service.list_metrics(), "successful replacement removes the prior metric")
 
 
+def write_profile(service: ProviderService, path: Path) -> Path:
+    """Write a JSON profile the way earlier versions exported one; export itself writes MDIB only."""
+    path.write_text(json.dumps(config.to_dict(service), indent=2) + "\n", encoding="utf-8")
+    return path
+
+
 def check_atomic_save(report: Report, service: ProviderService, workdir: Path) -> None:
-    """A partial ENOSPC write or failed replacement must not damage the old profile."""
-    target = workdir / "atomic.sdcprofile.json"
-    old_bytes = b'{"version": 1, "name": "previous"}\n'
+    """A partial ENOSPC write or failed replacement must not damage the old export."""
+    target = workdir / "atomic.xml"
+    old_bytes = b"<previous/>\n"
     target.write_bytes(old_bytes)
     before_files = set(workdir.iterdir())
     real_open = io.open
@@ -1643,7 +1650,7 @@ def check_atomic_save(report: Report, service: ProviderService, workdir: Path) -
             written_paths.append(Path(self.name))
             self.stream.write(text[:12])
             self.stream.flush()
-            raise OSError(errno.ENOSPC, "injected disk full after JSON prefix")
+            raise OSError(errno.ENOSPC, "injected disk full after the first bytes")
 
     with patch.object(io, "open", lambda *args, **kwargs: FullDiskFile(real_open(*args, **kwargs))):
         try:
@@ -1674,10 +1681,18 @@ def check_atomic_save(report: Report, service: ProviderService, workdir: Path) -
     )
     result = config.save(service, target)
     report.check(
-        result == target and json.loads(target.read_text(encoding="utf-8")) == config.to_dict(service)
+        result == target and isinstance(config.load_file(target), NativeMdibConfig)
         and set(workdir.iterdir()) == before_files,
-        "a successful atomic save returns the requested Path and valid JSON without temporary files",
+        "a successful atomic save returns the requested Path and a valid MDIB without temporary files",
     )
+    json_target = workdir / "atomic.json"
+    try:
+        config.save(service, json_target)
+    except config.ConfigError:
+        refused = True
+    else:
+        refused = False
+    report.check(refused and not json_target.exists(), "export refuses to write JSON")
 
 
 def check_xml_profile_preflight(report: Report, service: ProviderService) -> None:
@@ -2543,14 +2558,6 @@ def check_import_edge_cases(report: Report, workdir: Path) -> None:
             "a file that starts with a UTF-8 byte order mark is read",
         )
 
-    presets = workdir / "bom-presets"
-    presets.mkdir()
-    (presets / "bom.json").write_bytes(signed.read_bytes())
-    report.check(
-        [preset.name for preset in config.list_presets(presets)] == ["From a BOM file"],
-        "a preset that starts with a UTF-8 byte order mark is listed",
-    )
-
 
 def check_refused_create_is_not_retried(report: Report, service: ProviderService, workdir: Path) -> None:
     """Saving where files cannot be created must fail at once, not retry for days.
@@ -2570,7 +2577,7 @@ def check_refused_create_is_not_retried(report: Report, service: ProviderService
         return opener
 
     before = set(workdir.iterdir())
-    for suffix in (config.FILE_SUFFIX, ".xml"):
+    for suffix in (".xml",):
         target = workdir / f"refused{suffix}"
         attempts.clear()
         # bounded, or the unfixed code would go on for about 2 billion attempts
@@ -2594,7 +2601,7 @@ def check_refused_create_is_not_retried(report: Report, service: ProviderService
 
 
 def run_checks(report: Report, workdir: Path) -> None:
-    path = workdir / f"reference{config.FILE_SUFFIX}"
+    path = workdir / "reference.sdcprofile.json"
 
     print("=" * 74)
     print("Config round trip")
@@ -2606,7 +2613,7 @@ def run_checks(report: Report, workdir: Path) -> None:
     try:
         build_reference(source)
         before = snapshot(source)
-        config.save(source, path)
+        write_profile(source, path)
         report.check(path.exists(), "the file is written", f"{path.stat().st_size} bytes")
         data = json.loads(path.read_text(encoding="utf-8"))
         report.check(
@@ -2684,7 +2691,7 @@ def run_checks(report: Report, workdir: Path) -> None:
         else:
             report.check(False, "programmatic float measurements are refused", "it was accepted")  # noqa: FBT003
         source.set_value("m.zoom_level", Decimal("42"))
-        config.save(source, workdir / "with-values.json")
+        write_profile(source, workdir / "with-values.json")
         with_values = json.loads((workdir / "with-values.json").read_text(encoding="utf-8"))
         zoom = next(m for m in with_values["metrics"] if m["handle"] == "m.zoom_level")
         report.check(

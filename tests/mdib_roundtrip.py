@@ -864,7 +864,8 @@ class BehaviourExtensionTests(unittest.TestCase):
         from sdctoolbox import config
 
         self.assertEqual(config.export_path("x", config.MDIB_BEHAVIOUR_FILE_FILTER), Path("x.xml"))
-        self.assertIn(config.MDIB_BEHAVIOUR_FILE_FILTER, config.FILE_FILTER)
+        self.assertEqual(config.EXPORT_FILE_FILTER.split(";;"), [config.MDIB_BEHAVIOUR_FILE_FILTER, config.MDIB_FILE_FILTER])
+        self.assertNotIn("json", config.FILE_FILTER.lower())
 
 
 def pm_types_qname(name: str):
@@ -897,7 +898,7 @@ class ConfigMdibTests(unittest.TestCase):
                 self.assertEqual(mdib.entities.by_handle("pump.rate").state.MetricValue.Value, Decimal("2.5"))
                 self.assertEqual(mdib.entities.by_handle("pump.mode").state.MetricValue.Value, "IDLE")
 
-    def test_native_files_appear_alongside_json_presets_and_dispatch_without_conversion(self) -> None:
+    def test_only_native_files_are_listed_as_presets_and_dispatch_without_conversion(self) -> None:
         from sdctoolbox import config
         from sdctoolbox.mdib_io import NativeMdibConfig
 
@@ -908,8 +909,8 @@ class ConfigMdibTests(unittest.TestCase):
             (Path(directory) / "json.json").write_text('{"version":3,"name":"JSON demo","metrics":[]}', encoding="utf-8")
             self.assertIsInstance(config.load_file(native), NativeMdibConfig)
             presets = config.list_presets(directory)
-            self.assertEqual(len(presets), 2)
-            chosen = next(preset for preset in presets if preset.path.suffix == ".xml")
+            self.assertEqual([preset.path.name for preset in presets], ["native.xml"], "JSON is no preset format")
+            chosen = presets[0]
             self.assertIn("MDIB", chosen.summary())
             self.assertEqual((chosen.metrics, chosen.alerts), (3, 1))
 
@@ -921,8 +922,6 @@ class ConfigMdibTests(unittest.TestCase):
         self.assertEqual(config.export_path("snapshot.xml", config.MDIB_FILE_FILTER), Path("snapshot.xml"))
         with self.assertRaises(config.ConfigError):
             config.export_path("snapshot.json", config.MDIB_FILE_FILTER)
-        with self.assertRaises(config.ConfigError):
-            config.export_path("snapshot.xml", config.JSON_FILE_FILTER)
 
     def test_native_api_export_is_combined_and_cannot_silently_reduce_to_json(self) -> None:
         from sdctoolbox import config

@@ -3281,17 +3281,17 @@ def check_presets(report: Report) -> None:
 
     with tempfile.TemporaryDirectory(prefix="sdctoolbox-presets-") as raw:
         folder = Path(raw)
-        (folder / "broken.json").write_text("{ not json", encoding="utf-8")
-        (folder / "invalid.json").write_text('{"metrics": [{"label": "x"}]}', encoding="utf-8")
-        (folder / "malformed-shape.json").write_text('{"metrics": 1}', encoding="utf-8")
-        (folder / "good.json").write_text(
-            '{"name": "Good one", "metrics": [{"label": "v", "kind": "number"}]}',
+        (folder / "broken.xml").write_text("<Mdib><broken", encoding="utf-8")
+        (folder / "invalid.xml").write_text("<NotAnMdib/>", encoding="utf-8")
+        (folder / "profile.json").write_text(
+            '{"name": "Old profile", "metrics": [{"label": "v", "kind": "number"}]}',
             encoding="utf-8",
         )
+        (folder / "good.xml").write_bytes((constants.PRESET_DIR / "insufflator.xml").read_bytes())
         found = config.list_presets(folder)
         report.check(
-            [preset.name for preset in found] == ["Good one"],
-            "unreadable and malformed presets are skipped rather than breaking the list",
+            [preset.name for preset in found] == ["Insufflator"],
+            "unreadable, malformed and JSON files are skipped rather than breaking the list",
             str([preset.name for preset in found]),
         )
 

@@ -614,16 +614,12 @@ class ProviderShell(Cmd):
             print(f"      import {preset.path}")
 
     def do_export(self, line: str) -> None:
-        """export [--behaviour] <file>  -  write the device to a config file; --behaviour adds toolbox behaviour to an .xml MDIB."""
+        """export [--plain] <file.xml>  -  write the device as an MDIB with toolbox behaviour; --plain leaves the behaviour out."""
         path = line.strip()
-        behaviour = path.startswith("--behaviour ")
-        if behaviour:
-            path = path.removeprefix("--behaviour ").strip()
+        behaviour = not path.startswith("--plain ")
+        path = path.removeprefix("--plain ").strip()
         if not path:
-            print("usage: export [--behaviour] <file>")
-            return
-        if behaviour and Path(path).suffix.lower() != ".xml":
-            print("--behaviour needs an .xml file")
+            print("usage: export [--plain] <file.xml>")
             return
         try:
             written = config.save(self.service, path, behaviour=behaviour)

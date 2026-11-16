@@ -62,11 +62,12 @@ if TYPE_CHECKING:
 CONFIG_VERSION = 3
 LEGACY_CONFIG_VERSION = 1
 
-FILE_SUFFIX = ".sdcprofile.json"
-JSON_FILE_FILTER = "SDC toolbox config (*.json)"
 MDIB_FILE_FILTER = "MDIB (*.xml)"
 MDIB_BEHAVIOUR_FILE_FILTER = "MDIB with toolbox behaviour (*.xml)"
-FILE_FILTER = f"{JSON_FILE_FILTER};;{MDIB_FILE_FILTER};;{MDIB_BEHAVIOUR_FILE_FILTER};;All files (*)"
+# Opening a file: MDIB first. Older JSON profiles still read, through "All files".
+FILE_FILTER = f"{MDIB_FILE_FILTER};;All files (*)"
+# Exporting: the first entry is the default, and only the behaviour form loads back complete.
+EXPORT_FILE_FILTER = f"{MDIB_BEHAVIOUR_FILE_FILTER};;{MDIB_FILE_FILTER}"
 
 _TOP_LEVEL_KEYS = {"version", "name", "description", "device", "metrics", "alerts", "actions", "contexts"}
 _METRIC_KEYS = {
@@ -130,7 +131,7 @@ class ConfigError(Exception):
 def export_path(filename: str | Path, selected_filter: str) -> Path:
     """Respect an explicit export format without silently changing a conflicting suffix."""
     target = Path(filename)
-    suffix = {JSON_FILE_FILTER: ".json", MDIB_FILE_FILTER: ".xml", MDIB_BEHAVIOUR_FILE_FILTER: ".xml"}.get(selected_filter)
+    suffix = {MDIB_FILE_FILTER: ".xml", MDIB_BEHAVIOUR_FILE_FILTER: ".xml"}.get(selected_filter)
     if suffix is not None:
         if target.suffix and target.suffix.lower() != suffix:
             raise ConfigError(f"filename suffix {target.suffix!r} conflicts with the selected {suffix} format")
@@ -223,21 +224,6 @@ def list_presets(directory: str | Path | None = None) -> list[Preset]:
         return []
 
     found = []
-    for path in sorted(folder.glob("*.json")):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8-sig"), parse_float=Decimal)
-            device = parse(data)
-        except (OSError, UnicodeError, ValueError, RecursionError, ConfigError):
-            continue
-        found.append(
-            Preset(
-                path=path,
-                name=str(data.get("name") or path.stem),
-                description=str(data.get("description") or ""),
-                metrics=len(device.metrics),
-                alerts=len(device.alerts),
-            ),
-        )
     from .mdib_io import parse_mdib
     from .native_mdib import label, preset_info
 
@@ -588,19 +574,18 @@ def write_atomically(target: Path, data: str | bytes) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def save(service: ProviderService, path: str | Path, *, include_values: bool = True, behaviour: bool = False) -> Path:
-    """Atomically replace a profile, preserving the old file if writing fails.
+def save(service: ProviderService, path: str | Path, *, behaviour: bool = False) -> Path:
+    """Atomically write this device as an MDIB file, preserving the old file if writing fails.
 
-    :param behaviour: for an .xml target, also write the toolbox behaviour as extensions.
+    :param behaviour: also write the toolbox behaviour as extensions, so the file loads back complete.
     """
     target = Path(path)
-    if target.suffix.lower() == ".xml":
-        from .mdib_io import save_mdib
+    if target.suffix.lower() != ".xml":
+        msg = f"exports are MDIB files; name {target.name!r} with an .xml suffix"
+        raise ConfigError(msg)
+    from .mdib_io import save_mdib
 
-        return save_mdib(service, target, behaviour=behaviour)
-    payload = json.dumps(to_dict(service, include_values=include_values), indent=2) + "\n"
-    write_atomically(target, payload)
-    return target
+    return save_mdib(service, target, behaviour=behaviour)
 
 
 # --------------------------------------------------------------------------------------

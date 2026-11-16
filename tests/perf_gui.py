@@ -150,7 +150,8 @@ def main() -> int:
             folder = Path(tempfile.mkdtemp())
             with ProviderService(ip=args.ip, instance_name=f"perf-gui-src-{os.getpid()}") as source:
                 source.import_profile(big_device(args.json_size))
-                json_path = config.save(source, folder / "big.json")
+                json_path = folder / "big.json"
+                json_path.write_text(json.dumps(config.to_dict(source)), encoding="utf-8")
                 xml_path = config.save(source, folder / "big.xml", behaviour=True)
             imports = args.imports.split(",")
             if "json" in imports:

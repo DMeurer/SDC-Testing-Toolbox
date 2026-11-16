@@ -103,7 +103,7 @@ class StartupDialog(QDialog):
         self.friendly_name_edit.setPlaceholderText("optional")
         self.friendly_name_edit.setToolTip(
             "The name other devices show for this one. Overrides the config file.\n"
-            "Left empty, a JSON preset uses its own name and an MDIB uses the device name.",
+            "Left empty, a preset uses the name it stores, otherwise the device name.",
         )
 
         self.ip_box = NoWheelComboBox()
