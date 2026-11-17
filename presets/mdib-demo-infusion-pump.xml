@@ -39,7 +39,7 @@
               <pm:TechnicalRange Lower="0" Upper="50" StepWidth="0.1"/>
             </pm:Metric>
             <pm:Metric Handle="pump.mode" xsi:type="pm:EnumStringMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr">
-              <pm:Type Code="demo-pump-mode" CodingSystem="urn:sdc-testing-toolbox:private"><pm:ConceptDescription Lang="en">Demo pump mode</pm:ConceptDescription></pm:Type>
+              <pm:Type Code="184504" CodingSystem="urn:oid:1.3.111.2.11073.10101.3"><pm:ConceptDescription Lang="en">Demo pump mode</pm:ConceptDescription></pm:Type>
               <pm:Unit Code="262656" CodingSystem="urn:oid:1.3.111.2.11073.10101.3"/>
               <pm:AllowedValue><pm:Value>IDLE</pm:Value></pm:AllowedValue>
               <pm:AllowedValue><pm:Value>RUN</pm:Value></pm:AllowedValue>

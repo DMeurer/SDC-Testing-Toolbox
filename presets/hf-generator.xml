@@ -12,7 +12,7 @@
         </dom:Type>
         <dom:AlertSystem Handle="alerts.mds0" SelfCheckPeriod="PT30S">
           <dom:AlertCondition Handle="al.impedance_high" xsi:type="dom:LimitAlertConditionDescriptor" Kind="Tec" Priority="Me">
-            <dom:Type Code="tissue_impedance_high" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:Type Code="197776" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
               <dom:ConceptDescription Lang="en-US">Tissue impedance high</dom:ConceptDescription>
             </dom:Type>
             <dom:Source>m.tissue_impedance</dom:Source>

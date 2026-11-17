@@ -12,19 +12,19 @@
         </dom:Type>
         <dom:AlertSystem Handle="alerts.mds0" SelfCheckPeriod="PT30S">
           <dom:AlertCondition Handle="al.occlusion" xsi:type="dom:AlertConditionDescriptor" Kind="Tec" Priority="Hi">
-            <dom:Type Code="downstream_occlusion" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:Type Code="196688" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
               <dom:ConceptDescription Lang="en-US">Downstream occlusion</dom:ConceptDescription>
             </dom:Type>
             <dom:Source>m.line_pressure</dom:Source>
           </dom:AlertCondition>
           <dom:AlertCondition Handle="al.infusion_complete" xsi:type="dom:AlertConditionDescriptor" Kind="Tec" Priority="Lo">
-            <dom:Type Code="infusion_complete" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:Type Code="197332" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
               <dom:ConceptDescription Lang="en-US">Infusion complete</dom:ConceptDescription>
             </dom:Type>
             <dom:Source>m.volume_infused</dom:Source>
           </dom:AlertCondition>
           <dom:AlertCondition Handle="al.battery_low" xsi:type="dom:LimitAlertConditionDescriptor" Kind="Tec" Priority="Me">
-            <dom:Type Code="battery_low" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:Type Code="196802" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
               <dom:ConceptDescription Lang="en-US">Battery low</dom:ConceptDescription>
             </dom:Type>
             <dom:Source>m.battery</dom:Source>
@@ -183,7 +183,7 @@
               <dom:TechnicalRange Lower="0" Upper="2000" StepWidth="1"/>
             </dom:Metric>
             <dom:Metric Handle="m.drug" xsi:type="dom:StringMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr">
-              <dom:Type Code="pump_drug_name" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:Type Code="184514" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">Drug</dom:ConceptDescription>
               </dom:Type>
               <dom:Unit Code="262656" CodingSystem="urn:oid:1.3.111.2.11073.10101.3"/>
@@ -198,7 +198,7 @@
               <dom:TechnicalRange Lower="0" Upper="2000" StepWidth="1"/>
             </dom:Metric>
             <dom:Metric Handle="m.pump_state" xsi:type="dom:EnumStringMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr">
-              <dom:Type Code="pump_state" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:Type Code="184508" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">Pump state</dom:ConceptDescription>
               </dom:Type>
               <dom:Unit Code="262656" CodingSystem="urn:oid:1.3.111.2.11073.10101.3"/>

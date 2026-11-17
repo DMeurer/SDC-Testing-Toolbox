@@ -209,6 +209,16 @@ def _has_value(value) -> bool:  # noqa: ANN001 - an sdc11073 metric value
     return getattr(value, "Value", None) is not None or bool(getattr(value, "Samples", None))
 
 
+def _stamp_determination_times(mdib: ProviderMdib, now: float) -> None:
+    """Date a loaded file's values and alert conditions to the load, not to when the file was written."""
+    for state in mdib.states.objects:
+        value = getattr(state, "MetricValue", None)
+        if value is not None and value.DeterminationTime is not None:
+            value.DeterminationTime = now
+        if getattr(state, "DeterminationTime", None) is not None:
+            state.DeterminationTime = now
+
+
 def _loaded_fault(state, spec: MetricSpec) -> MetricFault:  # noqa: ANN001 - an sdc11073 metric state
     """The fault a state from a file carries, so a fault exported with the MDIB comes back with it."""
     activation = state.ActivationState
@@ -385,6 +395,7 @@ class ProviderService:
                 meta.ModelNumber = self.device.model_number
                 mdib.descriptions.handle.get_one(constants.MDS_HANDLE).MetaData = meta
             if from_mdib_file:
+                _stamp_determination_times(mdib, time.time())
                 adopted = native.adopt(mdib)
                 self._specs = adopted.specs
                 self._alerts = adopted.alerts

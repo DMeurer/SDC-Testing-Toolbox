@@ -12,7 +12,7 @@
         </dom:Type>
         <dom:AlertSystem Handle="alerts.mds0" SelfCheckPeriod="PT30S">
           <dom:AlertCondition Handle="al.service_due" xsi:type="dom:AlertConditionDescriptor" Kind="Oth" Priority="Lo">
-            <dom:Type Code="service_due" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:Type Code="203341" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
               <dom:ConceptDescription Lang="en-US">Service due</dom:ConceptDescription>
             </dom:Type>
             <dom:Source>m.flow_rate</dom:Source>
@@ -25,7 +25,7 @@
             <dom:MaxLimits Lower="0" Upper="40"/>
           </dom:AlertCondition>
           <dom:AlertCondition Handle="al.overpressure" xsi:type="dom:LimitAlertConditionDescriptor" Kind="Phy" Priority="Hi">
-            <dom:Type Code="overpressure" CodingSystem="urn:sdc-testing-toolbox:private">
+            <dom:Type Code="196976" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
               <dom:ConceptDescription Lang="en-US">Overpressure</dom:ConceptDescription>
             </dom:Type>
             <dom:Source>m.measured_pressure</dom:Source>

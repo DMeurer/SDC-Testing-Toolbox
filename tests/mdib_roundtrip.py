@@ -340,14 +340,17 @@ RUNTIME_COUNTERS = ("MdibVersion", "SequenceId", "InstanceId", "DescriptionVersi
 def canonical(payload: bytes) -> str:
     """An exported MDIB without the runtime counters on its four aggregate elements.
 
-    Sibling order is not data here (the library writes entities in dictionary order), so
-    every element's children are compared sorted.
+    DeterminationTime goes too: loading dates every value to the load. Sibling order is not
+    data here (the library writes entities in dictionary order), so every element's children
+    are compared sorted.
     """
     root = etree.fromstring(payload)
     mdib = root[0]
     for node in (root, mdib, mdib.find(f"{{{PM}}}MdDescription"), mdib.find(f"{{{PM}}}MdState")):
         for name in RUNTIME_COUNTERS:
             node.attrib.pop(name, None)
+    for node in root.iter():
+        node.attrib.pop("DeterminationTime", None)
 
     def text(node) -> str:
         children = sorted(text(child) for child in node if isinstance(child.tag, str))
@@ -897,6 +900,22 @@ class ConfigMdibTests(unittest.TestCase):
             else:
                 self.assertEqual(mdib.entities.by_handle("pump.rate").state.MetricValue.Value, Decimal("2.5"))
                 self.assertEqual(mdib.entities.by_handle("pump.mode").state.MetricValue.Value, "IDLE")
+
+    def test_a_loaded_preset_dates_its_values_to_the_load(self) -> None:
+        import time
+
+        from sdctoolbox import config
+
+        path = Path(__file__).resolve().parent.parent / "presets" / "mdib-demo-monitor.xml"
+        service = ProviderService(instance_name="preset-times")
+        service.start()
+        try:
+            before = time.time()
+            config.apply_to(service, config.load_file(path))
+            state = service.mdib.entities.by_handle("monitor.pulse").state
+            self.assertGreaterEqual(state.MetricValue.DeterminationTime, before - 1)
+        finally:
+            service.stop()
 
     def test_only_native_files_are_listed_as_presets_and_dispatch_without_conversion(self) -> None:
         from sdctoolbox import config
