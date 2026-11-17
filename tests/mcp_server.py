@@ -26,7 +26,7 @@ sys.path.insert(0, str(ROOT))
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 import run_toolbox  # noqa: E402
-from sdctoolbox import config  # noqa: E402
+from sdctoolbox import config, mdib_check  # noqa: E402
 from sdctoolbox.gui.activity_log import activity_log  # noqa: E402
 from sdctoolbox.gui.main_window import MainWindow  # noqa: E402
 from sdctoolbox.gui.mcp_bridge import start_mcp_server  # noqa: E402
@@ -150,6 +150,21 @@ class HeadlessTests(unittest.TestCase):
             self.assertIsInstance(config.load_file(target), NativeMdibConfig)
             refused = self.client.tool("export_mdib", path=str(Path(directory) / "built.json"))
             self.assertTrue(refused["isError"])
+
+    def test_check_mdib_lists_findings_for_my_device(self) -> None:
+        self.assertIn("check_mdib", self.client.rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                                                                  "clientInfo": {"name": "t", "version": "1"}})
+                      ["result"]["instructions"])
+        result = self.client.ok("check_mdib")
+        self.assertEqual(result["checked"], "My device")
+        self.assertIn("10700", result["sources"])
+        self.assertTrue(result["findings"], "the insufflator preset has findings")
+        first = result["findings"][0]
+        self.assertLessEqual({"level", "area", "handle", "text", "rule", "label"}, set(first))
+        self.assertEqual(first["level"], "error", "errors come first")
+        refused = self.client.tool("check_mdib", connection=99)
+        self.assertTrue(refused["isError"])
+        self.assertIn("not connected", refused["content"][0]["text"])
 
     def test_mistakes_come_back_as_tool_errors(self) -> None:
         for name, arguments, fragment in (
@@ -277,8 +292,43 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(str(self.peer.get_value("m.target_pressure")), "14")
         self.call("set_card_settings", connection=number, handle="m.target_pressure", settings={"control": "StepperWidget"})
         self.assertEqual(pane.board.card_settings("m.target_pressure").control, "StepperWidget")
+        checked = self.call("check_mdib", connection=number)
+        self.assertEqual(checked["checked"], f"connection {number}")
+        self.assertEqual(len(checked["findings"]), len(mdib_check.check(pane.remote.mdib)))
+        self.check_a_connection_in_the_window(pane)
         self.call("disconnect", connection=number)
         self.assertNotIn(pane, self.window.network_tabs.panes)
+
+    def check_a_connection_in_the_window(self, pane) -> None:  # noqa: ANN001
+        """The MDIB check window lists the open connection and shows its elements in its tab."""
+        from PySide6.QtCore import Qt
+
+        check_window = self.window.show_mdib_check()
+        number = pane.property("connectionNumber")
+        check_window.refresh_targets()
+        index = check_window.target_box.findData(number)
+        self.assertGreater(index, 0, "the connection is listed by its tab")
+        self.assertTrue(check_window.target_box.itemText(index).startswith(f"{number} · "))
+        check_window.target_box.setCurrentIndex(index)
+        check_window.run()
+        findings = mdib_check.check(pane.remote.mdib)
+        self.assertEqual(check_window.tree.topLevelItemCount(), len(findings))
+        handle = next(f.handle for f in findings if f.handle in pane.board.handles)
+        item = next(check_window.tree.topLevelItem(i) for i in range(check_window.tree.topLevelItemCount())
+                    if check_window.tree.topLevelItem(i).data(0, Qt.UserRole) == handle)
+        self.window.tabs.setCurrentIndex(0)
+        self.assertTrue(check_window.show_element(item))
+        self.assertEqual(self.window.tabs.currentIndex(), 1, "the Network tab comes to the front")
+        self.assertIs(self.window.network_tabs.current_pane, pane)
+        self.assertEqual(pane.selected_handle(), handle)
+        check_window.target_box.setCurrentIndex(0)
+
+    def test_check_mdib_matches_the_status_bar(self) -> None:
+        result = self.call("check_mdib")
+        self.assertEqual(result["summary"], mdib_check.summary(mdib_check.check(self.service.mdib)))
+        self.window.recheck_my_device()
+        self.assertEqual(result["summary"], mdib_check.summary(self.window.mdib_findings))
+        self.assertIn("MDIB check", self.call("explain_gui", topic="mdib check"))
 
     def test_a_port_in_use_is_reported_and_the_window_carries_on(self) -> None:
         with socket.socket() as taken:

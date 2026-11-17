@@ -280,7 +280,7 @@ What the tools cover:
 |------|-------|
 | Getting started | `overview`, `explain_gui` (panels, columns, buttons, icons, card controls, menus), `explain_sdc` (the SDC concept behind them) |
 | My device | `list_metrics`, `add_metric`, `update_metric`, `set_value`, `remove_metric`; `list_alarms`, `add_alarm`, `update_alarm` (limits, priority, raise, acknowledge, stop latched, delegate), `remove_alarm`; `list_actions`, `add_action`, `run_action`, `remove_action`; `set_contexts`, `set_generator` |
-| Whole devices and MDIB | `build_device` (a whole device in one validated step), `get_mdib`, `export_mdib`, `load_mdib`, `list_presets`, `load_preset` |
+| Whole devices and MDIB | `build_device` (a whole device in one validated step), `check_mdib` (see [Checking an MDIB](#checking-an-mdib), for My device or a connection), `get_mdib`, `export_mdib`, `load_mdib`, `list_presets`, `load_preset` |
 | Network | `scan`, `connect`, `list_connections`, `disconnect`, `read_metrics`, `read_alarms`, `read_actions`, `remote_set_value`, `remote_run_action`, `remote_mdib` |
 | The window | `get_view`, `set_view` (tab, split view, widgets or tables, dark mode, activity log), `get_card_settings`, `set_card_settings` (on My device or a connection), `read_activity_log` |
 
@@ -292,6 +292,44 @@ The server speaks MCP over streamable HTTP with plain JSON responses and is buil
 standard library, so packaged builds carry no extra dependency. It listens on 127.0.0.1 only
 and refuses requests from web pages (a foreign `Origin`). There is no authentication: any
 program on this machine can control the device while `--mcp` runs.
+
+## Checking an MDIB
+
+An MDIB the schema accepts can still leave a consumer guessing: a metric with no code, a value
+with no time stamp, a setting with no allowed range. *File > Check MDIB...* (Ctrl+K) opens a
+window beside the main one that lists these for My device or for any open connection, and says
+for each what is wrong and what a consumer loses by it. The *MDIB check* button in the status
+bar shows My device's result (*MDIB check: 2 errors*, else the warnings, else *OK*) and is kept
+up to date after every change; a connection is checked when you ask. Double-click a finding to
+see its card, row, alarm or MDIB structure entry. Agents get the same list from the MCP tool
+`check_mdib`, and are told to run it before exporting.
+
+| Level | Meaning |
+|-------|---------|
+| error | breaks a "shall" requirement, or points at an element that does not exist |
+| warning | breaks a "should" requirement or an MDC coding rule |
+| hint | a toolbox convention: not required, but leaving it out costs a consumer something |
+
+Where the rules come from, with the requirement ID shown next to each finding:
+
+- **IEEE 11073-10700** (SDC base provider): coded values (TR1814, TR1840, TR1842 name the
+  current 10101 nomenclature as `urn:oid:1.3.111.2.11073.10101.3` or later; TR1358 private
+  codes need a Translation), language of descriptions (TR0277), MetaData (TR0251), clock safety
+  class (TR1590), connector numbers for look-alike metrics (TR1438) and context association
+  bookkeeping (TR1304, TR1636 to TR1639, TR1959).
+- **IEEE 11073-10701** (SDC metric provider): values, time stamps and validity (TR0674,
+  TR0675, TR0214, TR0216, TR0187, TR0128), availability and determination period (TR0204,
+  TR0136), demo values (TR0199), technical ranges (TR0239), unique allowed values (TR0487),
+  life time and delay of medical metrics (TR0210, TR0682) and switched-off channels (TR1075).
+- **MDC coding**: a type on every metric, alarm and operation; MDC codes rather than private
+  coding systems where IEEE 11073-10101 has a term (BICEPS R0008); numeric MDC codes.
+- **Toolbox conventions**: a resolution on numbers, an allowed range on set operations, a
+  serial number, an audible signal on high-priority alarms, an alert signal on every alarm.
+
+Only what one snapshot of the MDIB shows is checked, never behaviour over time. The alert
+(-10702) and remote control (-10703) participant key purposes are not covered yet. The
+toolbox's own devices have findings too, for example the older MDC coding system it writes:
+the check reports what SDC asks, not what the toolbox does.
 
 ## Widgets
 
@@ -751,6 +789,7 @@ Linux and once on Windows through `tests/run_suites.py`. Qt jobs use
 | `tests/licensing.py` | project licensing, notices and build legal-payload sources |
 | `tests/provider_core.py` | provider descriptors, values, alarms, contexts and rollback |
 | `tests/presets.py` | every shipped preset built as a working device |
+| `tests/mdib_check.py` | each MDIB check rule on a small MDIB, the check window and its status bar button |
 | `tests/config_roundtrip.py` | versioned export/import, validation and transactional replacement/append |
 | `tests/widget_controls.py` | widget selection and real control interactions |
 | `tests/gui_dialogs.py` | metric, alarm, context and startup validation |

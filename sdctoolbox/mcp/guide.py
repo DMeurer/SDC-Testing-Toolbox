@@ -18,9 +18,11 @@ The toolbox is two things at once:
 *View > Split view* (F8) shows both side by side instead of as tabs.
 
 The **status bar** at the bottom says *Publishing on <address>* and the device's EPR (its
-network identity, `urn:uuid:...`). The **Activity log** button at its right opens a window
-listing what happened: values other devices changed, actions they ran, alarms raised and
-cleared, on My device and on connected devices.
+network identity, `urn:uuid:...`). At its right:
+- **MDIB check: 2 errors** (or *1 warning*, or *OK*): My device's live check result, updated
+  by itself after every change. Click it to open the MDIB check (see *mdib check*).
+- **Activity log** opens a window listing what happened: values other devices changed,
+  actions they ran, alarms raised and cleared, on My device and on connected devices.
 """),
     "menus": ("The File and View menus", """\
 # Menus
@@ -31,6 +33,7 @@ cleared, on My device and on connected devices.
 - *Export config...*: save My device as an MDIB file. *MDIB with toolbox behaviour* (the
   default) also stores what SDC has no place for (generated waveforms, action effects, card
   layout), so it loads back complete. *MDIB* writes plain SDC only, for other tools.
+- *Check MDIB...* (Ctrl+K): the MDIB check window (see *mdib check*).
 - *Load preset*: one of the shipped example devices.
 - *Exit*.
 
@@ -157,6 +160,28 @@ An icon is **red** while its signal announces the condition (presence *On*, or *
 latching signal after the condition cleared) and **grey** otherwise (*Off* or acknowledged).
 Hover the column to see each signal's presence: *Ack* means acknowledged, *->Rem* a simulated
 remote location.
+"""),
+    "mdib check": ("The MDIB check window and its status bar button", """\
+# MDIB check
+
+A window beside the main one (*File > Check MDIB...*, Ctrl+K, or the *MDIB check* button in
+the status bar). It lists where an MDIB differs from what SDC asks beyond the XML schema, and
+says for each what a consumer loses by it.
+
+- **Check**: *My device*, or an open connection by its tab (*1 · Insufflator*). My device is
+  checked again by itself after every change; a connection only on *Check again*.
+- **Summary**: *2 errors · 1 warning · 3 hints. Checked against ...*
+- **Columns**: *Level*, *Where* (label and handle), *Finding* (what is wrong, why it matters,
+  and the rule in brackets, such as *10701 TR0204*).
+- **Levels**: *error* (red) breaks a "shall" rule of IEEE 11073-10700 (base) or -10701
+  (metrics), or points at an element that does not exist; *warning* (orange) breaks a
+  "should" rule or an MDC coding rule; *hint* (grey) is a toolbox convention that would make
+  the device easier to use, such as a resolution or an allowed range.
+- **Double-click** a finding to show its element: its card or table row, its alarm, or its
+  entry in the MDIB structure tree. For a connection, its tab comes to the front.
+
+The status bar button shows My device's result: *MDIB check: 2 errors*, else the warnings,
+else *OK* (hints alone count as OK). Agents get the same list from the `check_mdib` tool.
 """),
     "dialogs": ("New data source, Edit, New alarm, New action, Patient and location", """\
 # Dialogs

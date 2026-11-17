@@ -290,8 +290,8 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         view_items = [a.text() for a in menu_bar.actions()[1].menu().actions() if a.text()]
         report.check(
             [t for t in file_items if t]
-            == ["&Import config\u2026", "&Export config\u2026", "Load &preset", "E&xit"],
-            "File has import, export, presets and exit",
+            == ["&Import config\u2026", "&Export config\u2026", "&Check MDIB\u2026", "Load &preset", "E&xit"],
+            "File has import, export, the MDIB check, presets and exit",
             str(file_items),
         )
         preset_items = [a.text() for a in window.presets_menu.actions()]

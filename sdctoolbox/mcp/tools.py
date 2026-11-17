@@ -19,7 +19,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .. import config
+from .. import config, mdib_check
 from ..consumer_service import ConsumerService, DiscoveredDevice, RemoteDevice
 from ..mdib_io import NativeMdibConfig, mdib_bytes, parse_mdib
 from ..model import (
@@ -214,7 +214,7 @@ class ToolboxTools:
             f"You control the SDC Testing Toolbox, running {mode}. It publishes one IEEE 11073 SDC device "
             "('My device') and can connect to other SDC devices ('Network'). Start with overview. "
             "Build a device with add_metric/add_alarm/add_action or all at once with build_device, then "
-            "get_mdib or export_mdib for the MDIB XML. explain_gui answers what something in the window means; "
+            "get_mdib or export_mdib for the MDIB XML; check_mdib before exporting, and fix what it finds. explain_gui answers what something in the window means; "
             "explain_sdc explains the SDC concept behind it. Values are decimal strings or numbers. "
             "This is a learning tool, not a medical device."
         )
@@ -314,6 +314,11 @@ class ToolboxTools:
             t("load_mdib", "Replace My device with an MDIB, from a file or XML text. Restarts the provider: "
                            "connected consumers must reconnect.",
               self.load_mdib, {"path": _string("An .xml file."), "xml": _string("MDIB XML text.")}),
+            t("check_mdib", "Check an MDIB against what SDC asks beyond the schema (IEEE 11073-10700/-10701 rules, "
+                            "MDC coding, toolbox conventions). Returns errors, warnings and hints, each with the "
+                            "element's handle, what is wrong and why it matters to a consumer, and the rule. "
+                            "My device without connection; a connected device's MDIB with it. Check before exporting.",
+              self.check_mdib, {"connection": CONNECTION}),
             t("list_presets", "The shipped example devices.", self.list_presets),
             t("load_preset", "Replace My device with a preset, by name or file name.", self.load_preset,
               {"name": _string("Preset name, such as 'Insufflator'.")}, ("name",)),
@@ -388,7 +393,7 @@ class ToolboxTools:
                 "start_here": [
                     "list_presets / load_preset for a ready-made device",
                     "add_metric, add_alarm, add_action, or build_device to build one",
-                    "get_mdib or export_mdib to get the MDIB",
+                    "check_mdib, then get_mdib or export_mdib to get the MDIB",
                     "scan, connect, read_metrics for other devices",
                     "explain_gui and explain_sdc when the user asks what something means",
                 ],
@@ -639,6 +644,14 @@ class ToolboxTools:
             parse_mdib(data)
             device, source = NativeMdibConfig(data), "MDIB XML"
         return self.hooks.on_gui(lambda: self._replaced(device, source))
+
+    def check_mdib(self, connection: int | None = None) -> dict[str, Any]:
+        if connection is None:
+            checked, findings = "My device", self.hooks.on_gui(lambda: mdib_check.check(self.service.mdib))
+        else:
+            checked, findings = f"connection {connection}", mdib_check.check(self._remote(connection).mdib)
+        return {"checked": checked, "summary": mdib_check.summary(findings), "sources": mdib_check.SOURCES,
+                "findings": plain(findings)}
 
     def list_presets(self) -> dict[str, Any]:
         return {"presets": [

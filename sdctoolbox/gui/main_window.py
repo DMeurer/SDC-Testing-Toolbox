@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QEvent, QObject, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -32,11 +32,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import config, ports
+from .. import config, mdib_check, ports
 from ..mdib_io import NativeMdibConfig
 from .activity_log import ActivityLogWindow
 from .consumer_pane import ConsumerPane
 from .consumer_tabs import ConsumerTabs
+from .mdib_check_window import MdibCheckWindow, status_text
 from .menu_keys import BareAltTracker
 from .no_wheel import NoWheelTabBar
 from .provider_pane import ProviderPane
@@ -50,6 +51,9 @@ PROVIDER_TITLE = "My device"
 NETWORK_TITLE = "Network"
 
 CONFIG_FILE_FILTER = config.FILE_FILTER
+
+# My device is checked again at most this often while its MDIB keeps changing.
+MDIB_CHECK_DELAY_MS = 1000
 
 # Where the divider sits when the window opens, as a share of the width.
 PROVIDER_SHARE = 3
@@ -168,6 +172,19 @@ class MainWindow(QMainWindow):
         self.log_button.setText("Activity log  ⤢")
         self.log_button.setToolTip("Open the log of the last actions (or double-click the status bar)")
         self.log_button.clicked.connect(self.show_activity_log)
+        # The MDIB check sits left of it and shows My device's live result.
+        self.check_window: MdibCheckWindow | None = None
+        self.mdib_findings: list[mdib_check.Finding] = []
+        self.check_button = QToolButton()
+        self.check_button.clicked.connect(self.show_mdib_check)
+        self.statusBar().addPermanentWidget(self.check_button)
+        self._check_timer = QTimer(self)
+        self._check_timer.setSingleShot(True)
+        self._check_timer.setInterval(MDIB_CHECK_DELAY_MS)
+        self._check_timer.timeout.connect(self.recheck_my_device)
+        self._watch_my_device()
+        self.recheck_my_device()
+
         self.statusBar().addPermanentWidget(self.log_button)
         self.statusBar().installEventFilter(self)
 
@@ -179,6 +196,35 @@ class MainWindow(QMainWindow):
         self.log_window.raise_()
         self.log_window.activateWindow()
         return self.log_window
+
+    def show_mdib_check(self) -> MdibCheckWindow:
+        """Open the MDIB check beside this window, or bring it to the front."""
+        if self.check_window is None:
+            self.check_window = MdibCheckWindow(self)
+            self.check_window.show_findings(self.mdib_findings)
+        self.check_window.show()
+        self.check_window.raise_()
+        self.check_window.activateWindow()
+        return self.check_window
+
+    def _watch_my_device(self) -> None:
+        """Re-check My device after its MDIB changes; at most once per MDIB_CHECK_DELAY_MS."""
+        bridge = self.provider_pane.bridge
+        for signal in (bridge.metrics_changed, bridge.descriptors_added, bridge.descriptors_updated,
+                       bridge.descriptors_deleted, bridge.operations_changed, bridge.alerts_changed,
+                       bridge.contexts_changed):
+            # Not restarted on every change: a generator changes values faster than any delay.
+            signal.connect(lambda _changes: self._check_timer.isActive() or self._check_timer.start())
+
+    def recheck_my_device(self) -> list[mdib_check.Finding]:
+        """Check My device now: the status bar button, and the window while it shows My device."""
+        mdib = getattr(self.service, "_mdib", None)
+        self.mdib_findings = mdib_check.check(mdib) if mdib is not None else []
+        self.check_button.setText(f"{status_text(self.mdib_findings)}  ⤢")
+        self.check_button.setToolTip(f"{mdib_check.summary(self.mdib_findings)}. Open the MDIB check (Ctrl+K)")
+        if self.check_window is not None and self.check_window.connection is None:
+            self.check_window.show_findings(self.mdib_findings)
+        return self.mdib_findings
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802 - Qt naming
         """A double-click on the status bar opens the activity log."""
@@ -281,6 +327,12 @@ class MainWindow(QMainWindow):
         self.export_action.setStatusTip("Save this device's data sources and alarms to a file")
         self.export_action.triggered.connect(self.export_config)
         file_menu.addAction(self.export_action)
+
+        self.check_action = QAction("&Check MDIB…", self)
+        self.check_action.setShortcut(QKeySequence("Ctrl+K"))
+        self.check_action.setStatusTip("List what this device or a connected one does differently from what SDC asks")
+        self.check_action.triggered.connect(self.show_mdib_check)
+        file_menu.addAction(self.check_action)
 
         self.presets_menu = file_menu.addMenu("Load &preset")
         self.presets_menu.setStatusTip("Ready-made devices that ship with the tool")
@@ -482,6 +534,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(pane, 1)
         self.provider_pane = pane
         self.provider_panel.content = pane
+        self._watch_my_device()
+        self.recheck_my_device()
 
     # -- the menu bar --------------------------------------------------------------
 
