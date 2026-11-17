@@ -282,7 +282,7 @@ What the tools cover:
 |------|-------|
 | Getting started | `overview`, `explain_gui` (panels, columns, buttons, icons, card controls, menus), `explain_sdc` (the SDC concept behind them) |
 | My device | `search_codes` (MDC codes by name, for a type or unit), `list_metrics`, `add_metric`, `update_metric`, `set_value`, `remove_metric`; `list_alarms`, `add_alarm`, `update_alarm` (limits, priority, raise, acknowledge, stop latched, delegate), `remove_alarm`; `list_actions`, `add_action`, `run_action`, `remove_action`; `set_contexts`, `set_generator` |
-| Whole devices and MDIB | `build_device` (a whole device in one validated step), `check_mdib` (see [Checking an MDIB](#checking-an-mdib), for My device or a connection), `get_mdib`, `export_mdib`, `load_mdib`, `list_presets`, `load_preset` |
+| Whole devices and MDIB | `build_device` (a whole device in one validated step), `check_mdib` (see [Checking an MDIB](#checking-an-mdib), for My device or a connection), `fix_mdib`, `get_mdib`, `export_mdib`, `load_mdib`, `list_presets`, `load_preset` |
 | Network | `scan`, `connect`, `list_connections`, `disconnect`, `read_metrics`, `read_alarms`, `read_actions`, `remote_set_value`, `remote_run_action`, `remote_mdib` |
 | The window | `get_view`, `set_view` (tab, split view, widgets or tables, dark mode, activity log), `get_card_settings`, `set_card_settings` (on My device or a connection), `read_activity_log` |
 
@@ -312,7 +312,8 @@ becomes the MDC code its description names outright (*Use MDC_PULS_RATE* for a s
 "Pulse rate"), an outdated or missing MDC coding system becomes `urn:oid:1.3.111.2.11073.10101.3`, and
 a high-priority alarm without an audible signal gets one. A code is only offered when the description
 matches the term's name; a near match stays a "perhaps" in the finding, for you to pick. A connection's
-MDIB belongs to the peer, so it has no Fix column.
+MDIB belongs to the peer, so it has no Fix column. Agents make the same fixes with the MCP tool
+`fix_mdib`, which only makes a fix the check offers.
 
 | Level | Meaning |
 |-------|---------|

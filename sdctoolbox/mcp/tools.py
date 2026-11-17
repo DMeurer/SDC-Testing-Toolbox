@@ -218,7 +218,7 @@ class ToolboxTools:
             f"You control the SDC Testing Toolbox, running {mode}. It publishes one IEEE 11073 SDC device "
             "('My device') and can connect to other SDC devices ('Network'). Start with overview. "
             "Build a device with add_metric/add_alarm/add_action or all at once with build_device, then "
-            "get_mdib or export_mdib for the MDIB XML; check_mdib before exporting, and fix what it finds. explain_gui answers what something in the window means; "
+            "get_mdib or export_mdib for the MDIB XML; check_mdib before exporting, and fix what it finds (fix_mdib makes the fixes it offers). explain_gui answers what something in the window means; "
             "explain_sdc explains the SDC concept behind it. Values are decimal strings or numbers. "
             "This is a learning tool, not a medical device."
         )
@@ -353,6 +353,11 @@ class ToolboxTools:
                             "element's handle, what is wrong and why it matters to a consumer, and the rule. "
                             "My device without connection; a connected device's MDIB with it. Check before exporting.",
               self.check_mdib, {"connection": CONNECTION}),
+            t("fix_mdib", "Make the fix check_mdib offers for a finding on My device (a finding's \"fix\"), as the "
+                          "MDIB check window's Fix button does: give the finding's handle, and the fix's label when "
+                          "the handle has more than one. Only offered fixes are made.",
+              self.fix_mdib, {"handle": _string("The finding's handle."),
+                              "fix": _string("The fix's label, e.g. 'Use MDC_PULS_RATE'.")}, ("handle",)),
             t("list_presets", "The shipped example devices.", self.list_presets),
             t("load_preset", "Replace My device with a preset, by name or file name.", self.load_preset,
               {"name": _string("Preset name, such as 'Insufflator'.")}, ("name",)),
@@ -749,6 +754,24 @@ class ToolboxTools:
             checked, findings = f"connection {connection}", mdib_check.check(self._remote(connection).mdib)
         return {"checked": checked, "summary": mdib_check.summary(findings), "sources": mdib_check.SOURCES,
                 "findings": plain(findings)}
+
+    def fix_mdib(self, handle: str, fix: str | None = None) -> dict[str, Any]:
+        def work() -> dict[str, Any]:
+            # Fixes come from a fresh check, never from the caller, so nothing unchecked is written.
+            offered = [f for f in mdib_check.check(self.service.mdib)
+                       if f.handle == handle and f.fix is not None and fix in (None, f.fix.label)]
+            labels = sorted({f.fix.label for f in offered})
+            if not labels:
+                raise ToolError(f"check_mdib offers no fix{'' if fix is None else f' {fix!r}'} for {handle!r}")
+            if len(labels) > 1:
+                raise ToolError(f"{handle!r} has several fixes; pass fix as one of: {', '.join(labels)}")
+            for each in dict.fromkeys(f.fix for f in offered):  # one fix may cover the type and the unit
+                self.service.apply_fix(handle, each)
+            self.hooks.changed(f"{offered[0].where}: {labels[0]}")
+            return {"fixed": offered[0].where, "fix": labels[0],
+                    "summary": mdib_check.summary(mdib_check.check(self.service.mdib))}
+
+        return self.hooks.on_gui(work)
 
     def list_presets(self) -> dict[str, Any]:
         return {"presets": [

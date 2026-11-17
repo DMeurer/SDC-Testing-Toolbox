@@ -94,6 +94,13 @@ class _EditDialog(QDialog):
         self._layout.insertWidget(len(self._sections) - 1, frame)
         return frame
 
+    def _let_grow(self, section: QFrame) -> None:
+        """Give a taller window's spare height to `section`, so a list in it shows more rows."""
+        inner = section.layout()
+        inner.takeAt(inner.count() - 1)  # kind_section's trailing stretch
+        self._layout.takeAt(len(self._sections))  # the stretch below the sections
+        self._layout.setStretchFactor(section, 1)
+
     def _form_of(self, widget: QWidget) -> QFormLayout:
         return next(form for _, form in self._sections if form.indexOf(widget) >= 0)
 
@@ -167,6 +174,7 @@ class EditSourceDialog(_EditDialog):
         self.form.addRow("Remote may pick", self.values_list)
         self._show(self.values_list, spec.kind is MetricKind.CHOICE and settable)
         remote_section.setVisible(settable and spec.kind in (MetricKind.NUMBER, MetricKind.CHOICE))
+        self._grow_values = remote_section if spec.kind is MetricKind.CHOICE and settable else None
 
         # "Switched on" stops the toolbox generating values; it is not a device setting.
         self._section("Simulation", "toolbox")
@@ -192,6 +200,8 @@ class EditSourceDialog(_EditDialog):
             self._section("Card", "toolbox")
             self.card_editor = CardSettingsEditor(*card)
             self.form.addRow(self.card_editor)
+        if self._grow_values is not None:
+            self._let_grow(self._grow_values)
 
     def card_settings(self) -> CardSettings | None:
         """The card settings as entered, or None when the dialog has no Card section."""

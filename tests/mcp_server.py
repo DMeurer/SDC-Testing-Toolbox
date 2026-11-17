@@ -180,6 +180,20 @@ class HeadlessTests(unittest.TestCase):
         self.assertTrue(refused["isError"])
         self.assertIn("not connected", refused["content"][0]["text"])
 
+    def test_fix_mdib_makes_only_an_offered_fix(self) -> None:
+        handle = self.client.ok("add_metric", metric={"label": "Pulse rate", "kind": "number", "minimum": 0,
+                                                      "maximum": 300})["handle"]
+        offered = [f["fix"] for f in self.client.ok("check_mdib")["findings"] if f["handle"] == handle and f["fix"]]
+        self.assertEqual(offered[0]["label"], "Use MDC_PULS_RATE")
+        refused = self.client.tool("fix_mdib", handle=handle, fix="Use MDC_ECG_HEART_RATE")
+        self.assertTrue(refused["isError"])
+        self.assertIn("offers no fix", refused["content"][0]["text"])
+        self.assertEqual(self.client.ok("fix_mdib", handle=handle)["fix"], "Use MDC_PULS_RATE")
+        xml = self.client.ok("get_mdib", behaviour=False)
+        descriptor = xml[xml.index(f'Handle="{handle}"'):]
+        self.assertIn('Code="149514"', descriptor[:descriptor.index("</")])
+        self.assertTrue(self.client.tool("fix_mdib", handle=handle)["isError"], "fixed, so nothing is offered")
+
     def test_search_codes_gives_the_type_and_unit_of_a_metric(self) -> None:
         measured = self.client.ok("search_codes", text="pulse rate", kind="measurement")["codes"]
         self.assertEqual(measured[0]["reference_id"], "MDC_PULS_RATE")

@@ -112,6 +112,18 @@ def check_live_edits(report: Report) -> None:
         report.check(not pane.board.card(rate).control.isEnabled(), "and so is its card")
         dialog.deleteLater()
 
+        mode = service.add_metric(MetricSpec("Edit mode", MetricKind.CHOICE, controllable=True,
+                                             allowed_values=tuple(f"mode {n}" for n in range(30)), initial_value="mode 0"))
+        dialog = EditSourceDialog(service, mode)
+        dialog.show()
+        app.processEvents()
+        before = dialog.values_list.height()
+        dialog.resize(dialog.width(), dialog.height() + 200)
+        app.processEvents()
+        report.check(dialog.values_list.height() >= before + 190, "Remote may pick grows with a taller window",
+                     f"{before} -> {dialog.values_list.height()}")
+        dialog.deleteLater()
+
         wave = service.add_metric(MetricSpec("Edit wave", MetricKind.WAVEFORM, minimum=Decimal(0), maximum=Decimal(1)))
         dialog = EditSourceDialog(service, wave)
         report.check(dialog.allowed_minimum_edit.isHidden(), "a waveform has no allowed range to edit")

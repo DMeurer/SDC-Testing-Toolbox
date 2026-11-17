@@ -186,7 +186,8 @@ says for each what a consumer loses by it.
   entry in the MDIB structure tree. For a connection, its tab comes to the front.
 
 The status bar button shows My device's result: *MDIB check: 2 errors*, else the warnings,
-else *OK* (hints alone count as OK). Agents get the same list from the `check_mdib` tool.
+else *OK* (hints alone count as OK). Agents get the same list from the `check_mdib` tool, and
+make a finding's offered fix with `fix_mdib`, as the **Fix** button does.
 """),
     "dialogs": ("New data source, Edit, New alarm, New action, Patient and location", """\
 # Dialogs
