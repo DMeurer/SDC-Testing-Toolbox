@@ -372,6 +372,8 @@ class ConsumerPane(QWidget):
         self.apply_button.clicked.connect(self._on_apply)
         # The last result of a write, kept for callers; the status bar shows it, not this pane.
         self.invocation_label = QLabel("", self)
+        self.invocation_label.setTextFormat(Qt.PlainText)  # holds the peer's refusal text
+        self.invocation_label.setMaximumWidth(240)
         self.invocation_label.hide()
 
         # The editor drives whatever is selected in the table, so it goes away in widget

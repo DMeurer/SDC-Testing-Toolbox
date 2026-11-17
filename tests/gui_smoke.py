@@ -301,8 +301,16 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             "and every entry is loadable, so none of the shipped presets is broken",
         )
         report.check(
-            view_items == ["Always show &menu bar", "Use &widgets if possible", "&Split view", "&Dark mode"],
-            "View has all four toggles, including the theme",
+            view_items
+            == [
+                "Always show &menu bar",
+                "Use &widgets if possible",
+                "&Split view",
+                "&Fullscreen",
+                "&Dark mode",
+                "&Advanced mode",
+            ],
+            "View has all its toggles, including the theme and Advanced mode",
             str(view_items),
         )
         report.check(
@@ -741,11 +749,13 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             "and the network panel follows the same rule",
         )
         # The result of a write is not part of the editor. In widget mode a card is what
-        # sends it, so hiding whether the peer accepted would take the answer away with
-        # the question.
+        # sends it, so the answer goes to the status bar, which no mode hides.
+        consumer_pane.invocation_changed.emit("smoke: accepted (Fin)")
+        pump(app)
         report.check(
-            not consumer_pane.invocation_label.isHidden(),
-            "but the invocation result stays, because a card still writes",
+            window.statusBar().currentMessage() == "smoke: accepted (Fin)",
+            "but the invocation result still reaches the status bar, because a card still writes",
+            window.statusBar().currentMessage(),
         )
 
         window.set_use_widgets(False)
