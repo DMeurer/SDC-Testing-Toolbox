@@ -217,9 +217,11 @@ type is a private code made from the label, and a typed unit is a label only.
 - **Look for**: What is measured, Units, Alarm codes or Everything. Preselected by the
   *Pick…* that opened it.
 - **Search**: filters live by name, reference ID or code; the best matches come first.
+- **Only units for …**: shown when picking a unit after a known measure; ticked, it offers
+  only that measure's usual units. Untick it to see every unit.
 - **Code | Reference ID | Term**: the context-free code ((partition << 16) + term code), the
   standard's reference ID and a short name in the toolbox's own words. Double-click picks.
-- **Load codes.csv…**: the toolbox ships a few hundred common codes. Your own export of the
+- **Load codes…**: the toolbox ships a few hundred common codes. Your own export of the
   standard (helpers/Coding Systems/export_11073_tables.py) adds the rest; the file is
   remembered and loads again next time. A file that cannot be used is reported and ignored.
 

@@ -596,6 +596,10 @@ everything), type a few words such as `pulse rate` or `mmHg`, and double-click t
 data source then carries that IEEE 11073-10101 code as its type or unit instead of a private
 code made from its label. A unit typed by hand still works and stays a plain label.
 
+Picking the unit after the measure offers only that measure's usual units, for example bpm and
+1/min for a pulse rate; untick **Only units for …** to see them all. The toolbox's own pick
+covers its shipped measures; other measures offer every unit.
+
 The toolbox ships about 300 common terms: every code the presets use and the usual vital
 signs, blood pressure, temperature, ventilation, gas, infusion, alert and unit codes. Each code
 was checked against IEEE 11073-10101:2020 and its amendments; the short terms are written in
@@ -603,7 +607,7 @@ the toolbox's own words, because the standard's descriptions are copyrighted.
 
 For the rest of the nomenclature, export your own copy of the standard with
 `helpers/Coding Systems/export_11073_tables.py` and choose the resulting `codes.csv` with
-**Load codes.csv…**. Its codes join the search for the session and the file loads again next
+**Load codes…**. Its codes join the search for the session and the file loads again next
 time; a file that cannot be used is reported and ignored. The export is made from your licensed
 copy of the standard: keep it to yourself, and never commit or share a `codes.csv`.
 

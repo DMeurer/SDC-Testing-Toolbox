@@ -1,8 +1,9 @@
 """The "Pick an MDC code" dialog: find an IEEE 11073-10101 term by name instead of by number.
 
 It searches sdctoolbox.nomenclature, the common codes that ship with the toolbox, and the
-user's own codes.csv export if one was loaded ("Load codes.csv…"). The file's path is
+user's own codes.csv export if one was loaded ("Load codes…"). The file's path is
 remembered, so it loads again in the next session the first time the dialog opens.
+Picking a unit for a known measure offers only that measure's usual units, unless unticked.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from pathlib import Path
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -76,7 +78,11 @@ def load_remembered_codes(parent: QWidget | None) -> None:
 class CodePickerDialog(QDialog):
     """Pick one MDC term; `term()` is the choice after OK."""
 
-    def __init__(self, kind: str | None = "measurement", parent: QWidget | None = None) -> None:
+    def __init__(
+        self, kind: str | None = "measurement", parent: QWidget | None = None,
+        measure: nomenclature.Term | None = None,
+    ) -> None:
+        """`measure`, when given, is what the metric measures: units can be narrowed to its own."""
         super().__init__(parent)
         self.setWindowTitle("Pick an MDC code")
         self.setMinimumSize(560, 360)
@@ -90,6 +96,13 @@ class CodePickerDialog(QDialog):
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("a name, reference ID or code, e.g. pulse rate")
         self.search_edit.setClearButtonEnabled(True)
+        self._measure = measure
+        self._units = set(nomenclature.units_for(measure.code)) if measure else set()
+        self.only_units_box = QCheckBox(
+            f"Only units for {measure.term} ({measure.ref_id})" if measure and measure.term
+            else f"Only units for {measure.ref_id}" if measure else "",
+        )
+        self.only_units_box.setChecked(bool(self._units))
 
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["Code", "Reference ID", "Term"])
@@ -107,7 +120,7 @@ class CodePickerDialog(QDialog):
         self.source_label = QLabel()
         self.source_label.setWordWrap(True)
         mute(self.source_label)
-        self.load_button = QPushButton("Load codes.csv…")
+        self.load_button = QPushButton("Load codes…")
         set_button_kind(self.load_button, "design-outline")
         self.load_button.setToolTip(
             "A codes.csv made by helpers/Coding Systems/export_11073_tables.py from your own copy\n"
@@ -120,8 +133,11 @@ class CodePickerDialog(QDialog):
         source_row.addWidget(self.load_button, 0, Qt.AlignTop)
 
         section, form = kind_section("IEEE 11073 nomenclature", "mdib")
+        self._form = form
         form.addRow("Look for", self.kind_box)
         form.addRow("Search", self.search_edit)
+        form.addRow("", self.only_units_box)
+        self._only_units_row = form.rowCount() - 1
         # Below the form, not in it: a form row never grows, so a taller window would only add
         # empty space. The table takes it instead, never shrinking below its usual height.
         box = section.layout()
@@ -142,6 +158,7 @@ class CodePickerDialog(QDialog):
 
         self.kind_box.currentIndexChanged.connect(self._refresh)
         self.search_edit.textChanged.connect(self._refresh)
+        self.only_units_box.toggled.connect(self._refresh)
         self.table.itemSelectionChanged.connect(self._update_ok)
         self.table.cellDoubleClicked.connect(lambda *_: self.accept())
         self.load_button.clicked.connect(self._on_load)
@@ -154,7 +171,17 @@ class CodePickerDialog(QDialog):
         return self._terms[rows[0].row()] if rows else None
 
     def _refresh(self) -> None:
-        self._terms = nomenclature.search(self.search_edit.text(), self.kind_box.currentData(), MAX_ROWS)
+        kind = self.kind_box.currentData()
+        narrow = bool(self._units) and kind == "unit"
+        self._form.setRowVisible(self._only_units_row, narrow)
+        if narrow and self.only_units_box.isChecked():
+            hits = nomenclature.search(self.search_edit.text(), kind)
+            self._terms = [term for term in hits if term.code in self._units]
+            if not self.search_edit.text().strip():  # the measure's own order: its usual unit first
+                order = nomenclature.units_for(self._measure.code)
+                self._terms.sort(key=lambda term: order.index(term.code))
+        else:
+            self._terms = nomenclature.search(self.search_edit.text(), kind, MAX_ROWS)
         # Empty first: replacing cells one by one makes the size-to-content columns measure every
         # row again for each cell, 1.7 s for 300 rows; filling an empty table takes 20 ms.
         self.table.setRowCount(0)

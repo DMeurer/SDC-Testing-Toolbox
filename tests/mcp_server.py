@@ -194,7 +194,7 @@ class HeadlessTests(unittest.TestCase):
         descriptor = xml[xml.index('Handle="m.coded_pulse"'):]
         self.assertIn('Code="149514"', descriptor[:descriptor.index("</")])
         self.assertIn('Code="264864"', descriptor)
-        self.assertIn("Load codes.csv", self.client.ok("explain_gui", topic="code picker"))
+        self.assertIn("Load codes…", self.client.ok("explain_gui", topic="code picker"))
 
     def test_mistakes_come_back_as_tool_errors(self) -> None:
         for name, arguments, fragment in (

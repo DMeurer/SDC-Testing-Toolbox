@@ -300,7 +300,11 @@ class NewMetricDialog(QDialog):
         return widget
 
     def _pick(self, edit: QLineEdit, kind: str) -> None:
-        dialog = CodePickerDialog(kind, self)
+        measure = None
+        if kind == "unit":
+            text = self.measures_edit.text().strip()
+            measure = self._picked_term(self.measures_edit) or (nomenclature.lookup(text) if text else None)
+        dialog = CodePickerDialog(kind, self, measure)
         if dialog.exec() == QDialog.Accepted and dialog.term() is not None:
             self._picked[edit] = dialog.term()
             edit.setText(self._picked[edit].caption)

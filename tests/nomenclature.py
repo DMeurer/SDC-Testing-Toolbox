@@ -56,6 +56,13 @@ class NomenclatureTests(unittest.TestCase):
     def tearDown(self) -> None:
         forget_loaded_codes()
 
+    def test_units_per_measure_are_shipped_units_of_shipped_measurements(self) -> None:
+        self.assertEqual(nomenclature.units_for("149514"), ("264864", "264672"))  # bpm, 1/min
+        self.assertEqual(nomenclature.units_for(184352), ())  # a ventilation mode has none
+        for measure, units in nomenclature._UNITS.items():  # noqa: SLF001
+            self.assertEqual(nomenclature.lookup(measure).kind, "measurement", measure)
+            self.assertTrue(units and all(nomenclature.lookup(u).kind == "unit" for u in units), measure)
+
     def test_shipped_terms_are_unique_and_well_formed(self) -> None:
         codes = [term.code for term in nomenclature.SHIPPED]
         self.assertEqual(len(codes), len(set(codes)))
@@ -207,6 +214,24 @@ class PickerTests(unittest.TestCase):
         self.assertEqual(dialog.term().ref_id, "MDC_EVT_OCCL")
         self.assertIn(f"{len(nomenclature.SHIPPED)} common codes ship", dialog.source_label.text())
 
+    def test_units_narrow_to_the_measure_until_unticked(self) -> None:
+        dialog = CodePickerDialog("unit", measure=nomenclature.lookup("149514"))
+        self.assertEqual(dialog.only_units_box.text(), "Only units for Pulse rate (MDC_PULS_RATE)")
+        self.assertTrue(dialog.only_units_box.isChecked())
+        self.assertEqual([dialog.table.item(r, 1).text() for r in range(dialog.table.rowCount())],
+                         ["MDC_DIM_BEAT_PER_MIN", "MDC_DIM_PER_MIN"])
+        dialog.search_edit.setText("beat")
+        self.assertEqual(dialog.term().ref_id, "MDC_DIM_BEAT_PER_MIN")
+        dialog.search_edit.setText("mmHg")
+        self.assertEqual(dialog.table.rowCount(), 0)
+        dialog.only_units_box.setChecked(False)
+        self.assertEqual(dialog.term().ref_id, "MDC_DIM_MMHG")
+        dialog.kind_box.setCurrentIndex(0)  # What is measured: the box has no say
+        self.assertFalse(dialog._form.isRowVisible(dialog._only_units_row))  # noqa: SLF001
+        self.assertFalse(CodePickerDialog("unit")._form.isRowVisible(2), "no measure, no box")  # noqa: SLF001
+        modes = CodePickerDialog("unit", measure=nomenclature.lookup("184352"))
+        self.assertFalse(modes._form.isRowVisible(modes._only_units_row), "no known units, no box")  # noqa: SLF001
+
     def test_load_codes_csv_adds_and_remembers_the_file(self) -> None:
         path = write(self.directory.name, "codes.csv", CSV_HEADER + CSV_ROWS)
         dialog = CodePickerDialog(None)
@@ -279,6 +304,14 @@ class NewDataSourceTests(unittest.TestCase):
         self.assertEqual(rows, ["Kind", "Label", "Measures", "Unit"])
         self.assertEqual(dialog.measures_widget.findChild(QPushButton).text(), "Pick…")
         self.assertEqual(dialog.measures_widget.findChild(QPushButton).property("kind"), "design-outline")
+
+    def test_the_unit_picker_knows_the_measure(self) -> None:
+        dialog = self.new_dialog()
+        self.pick(dialog, dialog.measures_widget, "pulse rate")
+        seen = []
+        with patch.object(CodePickerDialog, "exec", lambda picker: seen.append(picker.only_units_box.text()) or 0):
+            dialog.unit_widget.findChild(QPushButton).click()
+        self.assertEqual(seen, ["Only units for Pulse rate (MDC_PULS_RATE)"])
 
     def test_picked_terms_become_the_codings(self) -> None:
         dialog = self.new_dialog()
