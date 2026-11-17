@@ -279,7 +279,7 @@ What the tools cover:
 | Area | Tools |
 |------|-------|
 | Getting started | `overview`, `explain_gui` (panels, columns, buttons, icons, card controls, menus), `explain_sdc` (the SDC concept behind them) |
-| My device | `list_metrics`, `add_metric`, `update_metric`, `set_value`, `remove_metric`; `list_alarms`, `add_alarm`, `update_alarm` (limits, priority, raise, acknowledge, stop latched, delegate), `remove_alarm`; `list_actions`, `add_action`, `run_action`, `remove_action`; `set_contexts`, `set_generator` |
+| My device | `search_codes` (MDC codes by name, for a type or unit), `list_metrics`, `add_metric`, `update_metric`, `set_value`, `remove_metric`; `list_alarms`, `add_alarm`, `update_alarm` (limits, priority, raise, acknowledge, stop latched, delegate), `remove_alarm`; `list_actions`, `add_action`, `run_action`, `remove_action`; `set_contexts`, `set_generator` |
 | Whole devices and MDIB | `build_device` (a whole device in one validated step), `check_mdib` (see [Checking an MDIB](#checking-an-mdib), for My device or a connection), `get_mdib`, `export_mdib`, `load_mdib`, `list_presets`, `load_preset` |
 | Network | `scan`, `connect`, `list_connections`, `disconnect`, `read_metrics`, `read_alarms`, `read_actions`, `remote_set_value`, `remote_run_action`, `remote_mdib` |
 | The window | `get_view`, `set_view` (tab, split view, widgets or tables, dark mode, activity log), `get_card_settings`, `set_card_settings` (on My device or a connection), `read_activity_log` |
@@ -578,6 +578,28 @@ The `mdc` entries use the decimal context-free numeric codes defined by IEEE 110
 and its published amendments. Concepts and units for which those sources provide no direct
 match remain explicitly `private`; the presets do not derive or invent MDC codes.
 
+### Picking MDC codes yourself
+
+*New data source* has a **Measures** row and a **Unit** row, each with a **Pick…** button.
+It opens *Pick an MDC code*: choose what to look for (what is measured, units, alarm codes or
+everything), type a few words such as `pulse rate` or `mmHg`, and double-click the term. The
+data source then carries that IEEE 11073-10101 code as its type or unit instead of a private
+code made from its label. A unit typed by hand still works and stays a plain label.
+
+The toolbox ships about 300 common terms: every code the presets use and the usual vital
+signs, blood pressure, temperature, ventilation, gas, infusion, alert and unit codes. Each code
+was checked against IEEE 11073-10101:2020 and its amendments; the short terms are written in
+the toolbox's own words, because the standard's descriptions are copyrighted.
+
+For the rest of the nomenclature, export your own copy of the standard with
+`helpers/Coding Systems/export_11073_tables.py` and choose the resulting `codes.csv` with
+**Load codes.csv…**. Its codes join the search for the session and the file loads again next
+time; a file that cannot be used is reported and ignored. The export is made from your licensed
+copy of the standard: keep it to yourself, and never commit or share a `codes.csv`.
+
+Agents do the same over MCP with `search_codes` and pass a result's `{code, system, label}` as
+the `type` or `unit` of `add_metric`.
+
 ## Actions
 
 Not everything a device does is a value you can write. *Home the axes*, *give a bolus*, *white balance now* — there is nothing to type and nothing to read back, only something to invoke.
@@ -785,6 +807,7 @@ Linux and once on Windows through `tests/run_suites.py`. Qt jobs use
 | `tests/application_defaults.py` | shared application defaults and distinct acceptance identity |
 | `tests/console_commands.py` | rejected console writes stay interactive; text and choice values keep leading zeros |
 | `tests/coding_export.py` | PDF text-row separation and missing-text diagnostics without optional PDF dependencies |
+| `tests/nomenclature.py` | MDC code search and lookup, codes.csv loading, the code picker and coded New data source results |
 | `tests/import_bootstrap.py` | direct test imports under unrelated package shadowing |
 | `tests/licensing.py` | project licensing, notices and build legal-payload sources |
 | `tests/provider_core.py` | provider descriptors, values, alarms, contexts and rollback |

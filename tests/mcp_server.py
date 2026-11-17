@@ -166,6 +166,22 @@ class HeadlessTests(unittest.TestCase):
         self.assertTrue(refused["isError"])
         self.assertIn("not connected", refused["content"][0]["text"])
 
+    def test_search_codes_gives_the_type_and_unit_of_a_metric(self) -> None:
+        measured = self.client.ok("search_codes", text="pulse rate", kind="measurement")["codes"]
+        self.assertEqual(measured[0]["reference_id"], "MDC_PULS_RATE")
+        self.assertTrue(all(code["kind"] == "measurement" for code in measured))
+        unit = self.client.ok("search_codes", text="bpm", kind="unit")["codes"][0]
+        self.assertEqual((unit["code"], unit["label"]), ("264864", "bpm"))
+        pick = {key: measured[0][key] for key in ("code", "system", "label")}
+        self.client.ok("add_metric", metric={
+            "label": "Pulse", "kind": "number", "handle": "m.coded_pulse", "type": pick,
+            "unit": {key: unit[key] for key in ("code", "system", "label")}})
+        xml = self.client.ok("get_mdib", behaviour=False)
+        descriptor = xml[xml.index('Handle="m.coded_pulse"'):]
+        self.assertIn('Code="149514"', descriptor[:descriptor.index("</")])
+        self.assertIn('Code="264864"', descriptor)
+        self.assertIn("Load codes.csv", self.client.ok("explain_gui", topic="code picker"))
+
     def test_mistakes_come_back_as_tool_errors(self) -> None:
         for name, arguments, fragment in (
             ("set_value", {"handle": "m.nothing", "value": 1}, "no data source"),
@@ -173,6 +189,7 @@ class HeadlessTests(unittest.TestCase):
             ("set_view", {"widgets": False}, "needs the window"),
             ("load_preset", {"name": "toaster"}, "no preset"),
             ("overview", {"bogus": 1}, "unknown argument"),
+            ("search_codes", {"text": "rate", "kind": "colour"}, "colour"),
         ):
             result = self.client.tool(name, **arguments)
             self.assertTrue(result["isError"], name)

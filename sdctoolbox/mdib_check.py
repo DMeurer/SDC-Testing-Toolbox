@@ -22,6 +22,7 @@ from dataclasses import dataclass
 
 from sdc11073.xml_types import pm_qnames as pm
 
+from . import nomenclature
 from .mdib_io import live_entities
 from .native_mdib import label
 
@@ -74,6 +75,17 @@ def summary(findings: list[Finding]) -> str:
     if not findings:
         return "No findings"
     return " · ".join(f"{n} {level}{'' if n == 1 else 's'}" for level, n in counts(findings).items())
+
+
+def _suggestion(value, what: str, descriptor) -> str:  # noqa: ANN001
+    """", perhaps X (code)" from the MDC terms that match the element's description or code, else ""."""
+    texts = [text.text for text in value.ConceptDescription or () if text.text] + [value.Code or ""]
+    kind = "unit" if what == "unit" else "alert" if descriptor.is_alert_condition_descriptor else "measurement"
+    for text in texts:
+        hits = nomenclature.search(text, kind, 1) if text.strip() else []
+        if hits:
+            return f", perhaps {hits[0].ref_id} ({hits[0].code})"
+    return ""
 
 
 def _v(value: object) -> object:
@@ -157,7 +169,8 @@ class _Checker:
                     why = "cannot convert or compare the value" if what == "unit" else "cannot recognise it"
                     problems[("warning", "10207 R0008, see 10700 6.6.3",
                               f"uses the coding system {system}, which other devices do not know, so a consumer "
-                              f"{why}; use an IEEE 11073-10101 (MDC) code where one exists")].append(what)
+                              f"{why}; use an IEEE 11073-10101 (MDC) code where one exists"
+                              f"{_suggestion(value, what, descriptor)}")].append(what)
                 continue
             if system is None:
                 problems[("error", "10700 TR1842", "names IEEE 11073-10101 only by BICEPS's default coding system; "
@@ -171,7 +184,8 @@ class _Checker:
                           "already names the version; two places for one fact can disagree")].append(what)
             if not code.isdigit():
                 problems[("warning", None, f"code {code!r} is not an MDC code: those are numbers (such as 147842 "
-                          "for heart rate), so a consumer will not find it in the nomenclature")].append(what)
+                          "for heart rate), so a consumer will not find it in the nomenclature"
+                          f"{_suggestion(value, what, descriptor)}")].append(what)
             elif int(code) & 0xFFFF >= PRIVATE_TERM_CODES and not any(t.CodingSystem for t in value.Translation or ()):
                 problems[("error", "10700 TR1358", f"code {code} is a private MDC code but no Translation names the "
                           "private coding system that defines it, so a consumer cannot look it up")].append(what)

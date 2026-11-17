@@ -18,24 +18,28 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
+from .. import nomenclature
 from ..constants import METRIC_HANDLE_PREFIX
 from ..model import (
     DEFAULT_SAMPLE_PERIOD,
+    Coding,
     DistributionShape,
     MetricKind,
     MetricSpec,
     WaveformShape,
     slugify,
 )
+from .code_picker import CodePickerDialog
 from .decimal_input import DecimalInputError, parse_decimal_input
 from .helpers import set_form_row_visible
 from .kind_sections import kind_section, style_dialog_buttons
 from .no_wheel import NoWheelComboBox
-from .styling import constrain_dynamic_label, mark_as_error, mute
+from .styling import constrain_dynamic_label, mark_as_error, mute, set_button_kind
 from .widgets.base import WidgetSpec
 from .widgets.board import card_caption
 from .widgets.factory import matching_controls
@@ -124,8 +128,14 @@ class NewMetricDialog(QDialog):
         self.label_edit = QLineEdit()
         self.label_edit.setPlaceholderText("Zoom level")
 
+        # What it measures and its unit as MDC codes, picked by name. A typed unit stays a label.
+        self._picked: dict[QLineEdit, nomenclature.Term] = {}
+        self.measures_edit = QLineEdit()
+        self.measures_edit.setPlaceholderText("optional, pick a term or type a code")
+        self.measures_widget = self._with_pick_button(self.measures_edit, "measurement")
         self.unit_edit = QLineEdit()
         self.unit_edit.setPlaceholderText("optional, e.g. steps or mmHg")
+        self.unit_widget = self._with_pick_button(self.unit_edit, "unit")
 
         self.values_edit = QLineEdit()
         self.values_edit.setPlaceholderText("IDLE, RUN, PAUSE")
@@ -192,7 +202,8 @@ class NewMetricDialog(QDialog):
         self.description_section, form = kind_section("Device description", "mdib")
         form.addRow("Kind", self.kind_box)
         form.addRow("Label", self.label_edit)
-        form.addRow("Unit", self.unit_edit)
+        form.addRow("Measures", self.measures_widget)
+        form.addRow("Unit", self.unit_widget)
         form.addRow("Allowed values", self.values_edit)
         form.addRow("Resolution", self.resolution_edit)
         form.addRow("Range", self.limits_widget)
@@ -274,6 +285,39 @@ class NewMetricDialog(QDialog):
         return getattr(self, "_spec", None)
 
     # -- internals -----------------------------------------------------------------
+
+    def _with_pick_button(self, edit: QLineEdit, kind: str) -> QWidget:
+        """The field with a "Pick…" button that fills it from the MDC code picker."""
+        button = QPushButton("Pick…")
+        set_button_kind(button, "design-outline")
+        button.clicked.connect(lambda: self._pick(edit, kind))
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(edit, 1)
+        row.addWidget(button)
+        widget = QWidget()
+        widget.setLayout(row)
+        return widget
+
+    def _pick(self, edit: QLineEdit, kind: str) -> None:
+        dialog = CodePickerDialog(kind, self)
+        if dialog.exec() == QDialog.Accepted and dialog.term() is not None:
+            self._picked[edit] = dialog.term()
+            edit.setText(self._picked[edit].caption)
+
+    def _picked_term(self, edit: QLineEdit) -> nomenclature.Term | None:
+        """The term picked into `edit`, as long as its text was not changed since."""
+        term = self._picked.get(edit)
+        return term if term is not None and edit.text().strip() == term.caption else None
+
+    def _type_coding(self) -> Coding | None:
+        """What the Measures field names: a picked term, a typed code or reference ID, or nothing."""
+        text = self.measures_edit.text().strip()
+        term = self._picked_term(self.measures_edit) or (nomenclature.lookup(text) if text else None)
+        if text and term is None:
+            msg = f"No MDC term has the code or reference ID {text!r}. Use Pick… to find one by name."
+            raise ValueError(msg)
+        return Coding(code=term.code, system="mdc", label=term.term) if term else None
 
     @property
     def _kind(self) -> MetricKind:
@@ -512,11 +556,14 @@ class NewMetricDialog(QDialog):
                 )
                 return
 
+        unit = self._picked_term(self.unit_edit)
         try:
             self._spec = MetricSpec(
                 label=label,
                 kind=kind,
-                unit_label=self.unit_edit.text().strip(),
+                type_coding=self._type_coding(),
+                unit_coding=Coding(code=unit.code, system="mdc", label=unit.label) if unit else None,
+                unit_label=unit.label if unit else self.unit_edit.text().strip(),
                 allowed_values=values,
                 resolution=resolution,
                 minimum=minimum,

@@ -176,6 +176,8 @@ class RuleTests(unittest.TestCase):
         self.assertTrue(any("no Type" in f.text and f.level == "warning" for f in no_type))
         symbolic = check(('<pm:Type Code="147842"', '<pm:Type Code="MDC_ECG_HEART_RATE"'))
         self.assertTrue(any("not an MDC code" in f.text for f in symbolic), symbolic)
+        private_unit = check((HR_UNIT, '<pm:Unit Code="bpm" CodingSystem="urn:example:units"/>'))
+        self.assertTrue(any("perhaps MDC_DIM_BEAT_PER_MIN (264864)" in f.text for f in private_unit), private_unit)
         both = check((HR_UNIT, '<pm:Unit Code="264864"/>'), ('<pm:Type Code="147842" ' + MDC, '<pm:Type Code="147842"'))
         self.assertEqual([f.text.startswith("Its type and unit") for f in both if f.rule == "10700 TR1842"], [True],
                          "one finding names both codes of one element")

@@ -19,7 +19,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .. import config, mdib_check
+from .. import config, mdib_check, nomenclature
 from ..consumer_service import ConsumerService, DiscoveredDevice, RemoteDevice
 from ..mdib_io import NativeMdibConfig, mdib_bytes, parse_mdib
 from ..model import (
@@ -36,6 +36,8 @@ if TYPE_CHECKING:
 
 # Waveforms carry hundreds of samples per second; an agent needs the latest few, not all.
 MAX_SAMPLES = 32
+# The best matches are what an agent needs; a loaded codes.csv can match thousands.
+MAX_CODES = 25
 CONNECT_TIMEOUT_SECONDS = 30.0
 
 
@@ -175,7 +177,8 @@ CONNECTION = {"type": "integer", "description": "Connection number, as list_conn
 
 METRIC_SHAPE = (
     "A data source in toolbox profile form: label (required), kind (number, text, choice, waveform, distribution), "
-    "unit (\"mmHg\" or {code, system, label}; system 'mdc' for IEEE 11073 codes), type (coding of what it measures), "
+    "unit (\"mmHg\" or {code, system, label}; system 'mdc' for IEEE 11073 codes), type (coding of what it measures; "
+    "for both, search_codes gives {code, system: 'mdc', label} to use as is), "
     "minimum/maximum (the technical range), resolution, controllable (remote control by consumers), "
     "allowed_values (choice), initial_value, section (a channel name), handle (optional, stable id). "
     "Waveforms take sample_period, shape (sine, sawtooth, square, noise, pulse, ecg, arterial, respiration, flow) and "
@@ -238,6 +241,14 @@ class ToolboxTools:
             t("explain_sdc", "Explain an SDC/BICEPS concept as the toolbox uses it (MDIB, metric kinds, alarms, "
                              "operations, contexts, handles, discovery). Without a topic, lists them.",
               self.explain_sdc, {"topic": _string("A concept, such as 'alarms' or 'handles'.")}),
+            t("search_codes", "Find IEEE 11073-10101 (MDC) codes by name, reference ID or code, best match first, "
+                              "as the Pick an MDC code dialog does. Use a result's code, system and label as the "
+                              "type or unit of add_metric.",
+              self.search_codes,
+              {"text": _string("Words to look for, such as 'pulse rate', 'mmHg' or 'MDC_PRESS_BLD'."),
+               "kind": _string("measurement (what a metric measures), unit, alert or other; default all.",
+                               enum=list(nomenclature.KINDS))},
+              ("text",)),
             # -- My device: data sources
             t("list_metrics", "My device's data sources with their definition, current value and card settings.",
               self.list_metrics),
@@ -406,6 +417,17 @@ class ToolboxTools:
 
     def explain_sdc(self, topic: str | None = None) -> str:
         return guide.lookup(guide.CONCEPTS, topic, "SDC")
+
+    def search_codes(self, text: str, kind: str | None = None) -> dict[str, Any]:
+        try:
+            found = nomenclature.search(text, kind, MAX_CODES)
+        except ValueError as exc:
+            raise ToolError(str(exc)) from exc
+        return {"codes": [
+            {"code": term.code, "system": "mdc", "label": term.label, "reference_id": term.ref_id,
+             "term": term.term, "kind": term.kind}
+            for term in found
+        ], "from_codes_csv": str(nomenclature.loaded_from) if nomenclature.loaded_from else None}
 
     # -- My device: data sources -------------------------------------------------------
 

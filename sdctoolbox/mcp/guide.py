@@ -198,6 +198,28 @@ else *OK* (hints alone count as OK). Agents get the same list from the `check_md
 - **Patient and location**: name, sex, type, date of birth, height, weight and race; facility,
   building, floor, point of care, room and bed. Clearing every patient field detaches the
   patient.
+- **Pick an MDC code**: opened by the *Pick…* buttons beside Measures and Unit in New data
+  source; see the topic "code picker".
+"""),
+    "code picker": ("Pick an MDC code: choosing IEEE 11073-10101 codes by name", """# Pick an MDC code
+
+New data source has two rows for codes: **Measures** (what the metric is, its Type) and
+**Unit**. Each has a *Pick…* button that opens this dialog; picking fills the field with the
+term, its reference ID and its code, e.g. `Pulse rate · MDC_PULS_RATE (149514)`, and the
+data source gets that code in the IEEE 11073-10101 (MDC) coding system. Without a pick the
+type is a private code made from the label, and a typed unit is a label only.
+
+- **Look for**: What is measured, Units, Alarm codes or Everything. Preselected by the
+  *Pick…* that opened it.
+- **Search**: filters live by name, reference ID or code; the best matches come first.
+- **Code | Reference ID | Term**: the context-free code ((partition << 16) + term code), the
+  standard's reference ID and a short name in the toolbox's own words. Double-click picks.
+- **Load codes.csv…**: the toolbox ships a few hundred common codes. Your own export of the
+  standard (helpers/Coding Systems/export_11073_tables.py) adds the rest; the file is
+  remembered and loads again next time. A file that cannot be used is reported and ignored.
+
+Over MCP, search_codes does the same search; pass a result's {code, system, label} as the
+`type` or `unit` of add_metric.
 """),
     "startup": ("The start dialog and command line", """\
 # Starting the toolbox
