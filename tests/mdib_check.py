@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+from decimal import Decimal
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -256,6 +257,68 @@ class OwnDeviceTests(unittest.TestCase):
         self.assertEqual(errors, [])
 
 
+class FixTests(unittest.TestCase):
+    """What a finding offers to fix, and that applying it settles the finding."""
+
+    def setUp(self) -> None:
+        from sdctoolbox.provider_service import ProviderService
+
+        self.service = ProviderService(instance_name=f"mdib-fix-{self._testMethodName}")
+        self.service.start()
+        self.addCleanup(self.service.stop)
+
+    def findings(self, handle: str) -> list[mdib_check.Finding]:
+        return [f for f in mdib_check.check(self.service.mdib) if f.handle == handle]
+
+    def test_a_private_code_named_outright_becomes_its_mdc_code(self) -> None:
+        from sdctoolbox.model import MetricKind, MetricSpec
+
+        handle = self.service.add_metric(MetricSpec("Pulse rate", MetricKind.NUMBER, minimum=Decimal(0), maximum=Decimal(300)))
+        fix = next(f.fix for f in self.findings(handle) if f.fix is not None)
+        self.assertEqual((fix.label, fix.parts, fix.code), ("Use MDC_PULS_RATE", ("type",), "149514"))
+        self.service.apply_fix(handle, fix)
+        descriptor = self.service.mdib.entities.by_handle(handle).descriptor
+        self.assertEqual((descriptor.Type.Code, descriptor.Type.CodingSystem), ("149514", "urn:oid:1.3.111.2.11073.10101.3"))
+        self.assertEqual(self.service.list_metrics()[handle].type_coding.code, "149514", "later edits keep it")
+        self.assertFalse(any(f.area == "Coding" and "type" in f.text for f in self.findings(handle)))
+
+    def test_a_near_miss_stays_a_hint_without_a_fix(self) -> None:
+        from sdctoolbox.model import MetricKind, MetricSpec
+
+        # The search finds respiration rate for "Flow rate"; a button must not apply that.
+        handle = self.service.add_metric(MetricSpec("Flow rate", MetricKind.NUMBER, minimum=Decimal(0), maximum=Decimal(30)))
+        coding = [f for f in self.findings(handle) if f.area == "Coding"]
+        self.assertTrue(coding)
+        self.assertTrue(all(f.fix is None for f in coding))
+
+    def test_the_outdated_coding_system_is_renamed(self) -> None:
+        from sdctoolbox.mdib_io import NativeMdibConfig
+
+        xml = (ROOT / "presets" / "patient-monitor.xml").read_text(encoding="utf-8")
+        legacy = xml.replace("urn:oid:1.3.111.2.11073.10101.3", "urn:oid:1.2.840.10004.1.1.1.0.0.1")
+        self.service.replace_mdib(NativeMdibConfig(legacy.encode("utf-8")))
+        fixable = [f for f in mdib_check.check(self.service.mdib) if f.rule == "10700 TR1840, TR1842"]
+        self.assertTrue(fixable)
+        for finding in fixable:
+            self.assertEqual(finding.fix.label, "Use the current MDC coding system")
+            self.service.apply_fix(finding.handle, finding.fix)
+        self.assertFalse([f for f in mdib_check.check(self.service.mdib) if f.level == "error"])
+
+    def test_a_high_priority_alarm_gets_an_audible_signal(self) -> None:
+        from sdctoolbox.model import AlertPriority, AlertSignalSpec, AlertSpec, MetricKind, MetricSpec
+
+        source = self.service.add_metric(MetricSpec("Pulse rate", MetricKind.NUMBER, minimum=Decimal(0), maximum=Decimal(300)))
+        alarm = self.service.add_alert(AlertSpec("Pulse high", source, priority=AlertPriority.HIGH, upper_limit=Decimal(120),
+                                                 signals=(AlertSignalSpec("Vis"),)))
+        fix = next(f.fix for f in self.findings(alarm) if f.fix is not None)
+        self.assertEqual(fix.label, "Add an audible signal")
+        self.service.apply_fix(alarm, fix)
+        self.assertEqual(sorted(s.manifestation for s in self.service.signal_states(alarm)), ["Aud", "Vis"])
+        self.assertFalse(any(f.fix is not None for f in self.findings(alarm)))
+        self.service.set_value(source, Decimal(150))
+        self.assertTrue(self.service.alert_present(alarm), "the new signal belongs to a working alarm")
+
+
 class WindowTests(unittest.TestCase):
     """The window and the status bar button, on a running My device."""
 
@@ -341,6 +404,34 @@ class WindowTests(unittest.TestCase):
         self.assertTrue(check_window.show_element(shown))
         self.assertEqual(self.window.tabs.currentIndex(), 0, "My device comes to the front")
         self.assertEqual(self.window.provider_pane.selected_handle(), "m.shown")
+
+    def test_fix_changes_my_device_and_only_my_device(self) -> None:
+        from PySide6.QtCore import Qt
+
+        from sdctoolbox.model import MetricKind, MetricSpec
+
+        if "m.fix_me" not in self.service.list_metrics():
+            self.service.add_metric(MetricSpec("Pulse rate", MetricKind.NUMBER, handle="m.fix_me",
+                                               minimum=Decimal(0), maximum=Decimal(300)))
+        self.window.check_action.trigger()
+        check_window = self.window.check_window
+        check_window.run()
+        self.assertFalse(check_window.tree.isColumnHidden(3))
+        items = [check_window.tree.topLevelItem(i) for i in range(check_window.tree.topLevelItemCount())]
+        item = next(i for i in items if i.data(0, Qt.UserRole) == "m.fix_me" and i.text(3))
+        self.assertEqual(item.text(3), "Use MDC_PULS_RATE")
+        check_window.tree.setCurrentItem(item)
+        self.assertTrue(check_window.fix_button.isEnabled())
+        self.assertTrue(check_window.fix_selected())
+        self.assertEqual(self.service.mdib.entities.by_handle("m.fix_me").descriptor.Type.Code, "149514")
+        self.assertFalse(any(f.handle == "m.fix_me" and f.fix for f in self.window.mdib_findings), "checked again")
+        check_window.show_findings([], note="A connection.")  # what a connection's check looks like
+        check_window.target_box.addItem("Peer", 7)
+        check_window.target_box.setCurrentIndex(check_window.target_box.count() - 1)
+        check_window.show_findings([])
+        self.assertTrue(check_window.tree.isColumnHidden(3), "a peer's MDIB is not ours to change")
+        self.assertFalse(check_window.fix_button.isVisible())
+        check_window.target_box.setCurrentIndex(0)
 
     def test_a_new_pane_is_watched_too(self) -> None:
         from sdctoolbox.model import MetricKind, MetricSpec

@@ -225,6 +225,8 @@ server. `--ip` is the discovery interface on the machine running the application
 Start it twice under different names to have two devices find each other. The name decides the EPR, so restarting under the same name keeps that device's identity on the network — and two instances must not share one.
 
 The **My device** panel is the device you publish. *New data source…* creates a number, text, choice, waveform or distribution.
+A number needs its range, lowest and highest value: IEEE 11073-10701 TR0239 requires a TechnicalRange with both ends on every
+numeric metric. A waveform or distribution takes the range of the samples the toolbox generates when you leave it empty.
 The remote-control checkbox is offered only for number, text and choice sources. The value column is live — it updates whether you edit it here or somebody changes it over the network.
 *Patient and location…* edits the two contexts, and the line beside it shows what they currently say.
 
@@ -303,6 +305,14 @@ bar shows My device's result (*MDIB check: 2 errors*, else the warnings, else *O
 up to date after every change; a connection is checked when you ask. Double-click a finding to
 see its card, row, alarm or MDIB structure entry. Agents get the same list from the MCP tool
 `check_mdib`, and are told to run it before exporting.
+
+Some findings on My device can be fixed for you: the **Fix** column says what would change, and
+**Fix** makes that change for the selected finding. There are three: a private or non-numeric code
+becomes the MDC code its description names outright (*Use MDC_PULS_RATE* for a source described as
+"Pulse rate"), an outdated or missing MDC coding system becomes `urn:oid:1.3.111.2.11073.10101.3`, and
+a high-priority alarm without an audible signal gets one. A code is only offered when the description
+matches the term's name; a near match stays a "perhaps" in the finding, for you to pick. A connection's
+MDIB belongs to the peer, so it has no Fix column.
 
 | Level | Meaning |
 |-------|---------|
@@ -840,7 +850,7 @@ Linux and once on Windows through `tests/run_suites.py`. Qt jobs use
 | `tests/licensing.py` | project licensing, notices and build legal-payload sources |
 | `tests/provider_core.py` | provider descriptors, values, alarms, contexts and rollback |
 | `tests/presets.py` | every shipped preset built as a working device |
-| `tests/mdib_check.py` | each MDIB check rule on a small MDIB, the check window and its status bar button |
+| `tests/mdib_check.py` | each MDIB check rule on a small MDIB, the fixes it offers, the check window and its status bar button |
 | `tests/config_roundtrip.py` | versioned export/import, validation and transactional replacement/append |
 | `tests/widget_controls.py` | widget selection and real control interactions |
 | `tests/gui_dialogs.py` | metric, alarm, context and startup validation |

@@ -51,6 +51,8 @@ from .ports import PROVIDER_ACTIONS, RangeWSDiscovery
 from .model import (
     DEFAULT_PATIENT,
     ActionSpec,
+    AlertManifestation,
+    AlertSignalSpec,
     AlertSpec,
     CardSettings,
     Coding,
@@ -73,6 +75,8 @@ from .security import CertificateInfo, TlsConfig, VerifiedSoapClientAsync
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
+
+    from . import mdib_check
 
     from sdc11073.provider.sco import AbstractScoOperationsRegistry
 
@@ -1534,28 +1538,9 @@ class ProviderService:
             if spec.has_limits:
                 _write_limits(entity.state, spec)
 
-            signal_entities = []
             handles = set(self._parents()) | {handle}
-            for signal_spec in spec.signals:
-                manifestation = signal_spec.manifestation
-                signal_handle = _unique_in(
-                    handles,
-                    f"{constants.SIGNAL_HANDLE_PREFIX}{spec.slug}.{manifestation.value.lower()}",
-                )
-                handles.add(signal_handle)
-                signal = self.mdib.entities.new_entity(
-                    pm.AlertSignalDescriptor,
-                    signal_handle,
-                    alert_system,
-                )
-                signal.descriptor.ConditionSignaled = handle
-                signal.descriptor.Manifestation = manifestation
-                signal.descriptor.Latching = signal_spec.latching
-                signal.descriptor.SignalDelegationSupported = spec.delegable
-                signal.state.ActivationState = pm_types.AlertActivation.ON
-                signal.state.Presence = pm_types.AlertSignalPresence.OFF
-                signal.state.Location = pm_types.AlertSignalPrimaryLocation.LOCAL
-                signal_entities.append(signal)
+            signal_entities = [self._new_signal(spec, handle, signal_spec, alert_system, handles)
+                               for signal_spec in spec.signals]
 
             self._create_entities([entity, *signal_entities])
 
@@ -1575,6 +1560,72 @@ class ProviderService:
                 # Names the new alarm so its system signals are published without re-deriving the others.
                 self._coordinate_alert_transition(condition_truths={handle: False})
             return handle
+
+    def _new_signal(self, spec: AlertSpec, handle: str, signal_spec: AlertSignalSpec, alert_system: str,  # noqa: PLR0913
+                    handles: set[str]):  # noqa: ANN202 - an sdc11073 entity
+        """An Off signal entity announcing condition `handle`; its handle is added to `handles`."""
+        manifestation = signal_spec.manifestation
+        signal_handle = _unique_in(handles, f"{constants.SIGNAL_HANDLE_PREFIX}{spec.slug}.{manifestation.value.lower()}")
+        handles.add(signal_handle)
+        signal = self.mdib.entities.new_entity(pm.AlertSignalDescriptor, signal_handle, alert_system)
+        signal.descriptor.ConditionSignaled = handle
+        signal.descriptor.Manifestation = manifestation
+        signal.descriptor.Latching = signal_spec.latching
+        signal.descriptor.SignalDelegationSupported = spec.delegable
+        signal.state.ActivationState = pm_types.AlertActivation.ON
+        signal.state.Presence = pm_types.AlertSignalPresence.OFF
+        signal.state.Location = pm_types.AlertSignalPrimaryLocation.LOCAL
+        return signal
+
+    def add_alert_signal(self, handle: str, manifestation: AlertManifestation) -> str:
+        """Give an alarm one more signal, announcing it the way the alarm currently is."""
+        with self._lock:
+            spec = self._alerts.get(handle)
+            if spec is None:
+                msg = f"no alarm with handle {handle!r}"
+                raise KeyError(msg)
+            signal_spec = AlertSignalSpec(manifestation)
+            # Beside its condition, which a loaded file may keep in an alert system of its own.
+            alert_system = self.mdib.entities.by_handle(handle).parent_handle
+            signal = self._new_signal(spec, handle, signal_spec, alert_system, set(self._parents()) | {handle})
+            self._create_entities([signal])
+            self._alerts[handle] = replace(spec, signals=(*spec.signals, signal_spec))
+            self._alert_signals[handle] = [*self._alert_signals.get(handle, []), signal.handle]
+            self._coordinate_alert_transition(condition_truths={handle: self.alert_present(handle)})
+            return signal.handle
+
+    def apply_fix(self, handle: str, fix: mdib_check.Fix) -> None:
+        """Make the change an MDIB-check finding offers, on My device."""
+        with self._lock:
+            if fix.action == "audible":
+                self.add_alert_signal(handle, AlertManifestation.AUD)
+                return
+            if fix.action != "coding":
+                msg = f"unknown fix {fix.action!r}"
+                raise ValueError(msg)
+            entity = self.mdib.entities.by_handle(handle)
+            if entity is None:
+                msg = f"nothing with handle {handle!r}"
+                raise KeyError(msg)
+            names = {"type": "Type", "unit": "Unit"}
+            for part in fix.parts:
+                old = getattr(entity.descriptor, names[part])
+                setattr(entity.descriptor, names[part], pm_types.CodedValue(
+                    code=fix.code or old.Code,
+                    coding_system=constants.CODING_SYSTEM_MDC,
+                    concept_descriptions=list(old.ConceptDescription or ()),
+                ))
+            with self.mdib.descriptor_transaction() as mgr:
+                mgr.write_entity(entity)
+            spec = self._specs.get(handle)
+            if spec is not None:
+                # The spec feeds later edits of this metric; keep it on the new codes.
+                codings = {f"{part}_coding": Coding.from_wire(
+                    code=getattr(entity.descriptor, names[part]).Code, coding_system=constants.CODING_SYSTEM_MDC,
+                    label=getattr(getattr(spec, f"{part}_coding"), "label", "") or "",
+                ) for part in fix.parts}
+                self._specs[handle] = replace(spec, **codings)
+            logger.info("fixed %s: %s", handle, fix.label)
 
     def remove_alert(self, handle: str) -> None:
         """Delete an alarm condition together with its signals."""

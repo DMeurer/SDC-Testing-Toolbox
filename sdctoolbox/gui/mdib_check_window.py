@@ -1,7 +1,8 @@
 """The MDIB check window: findings for My device or a connection, beside the main window.
 
 My device is checked again by the main window whenever its MDIB changes; a connection only
-when asked. Double-clicking a finding shows that element in its pane.
+when asked. Double-clicking a finding shows that element in its pane. On My device, Fix makes
+the change the selected finding offers.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -29,6 +31,7 @@ if TYPE_CHECKING:
     from .main_window import MainWindow
 
 MY_DEVICE = "My device"
+FIX_COLUMN = 3
 LEVEL_COLOURS = {"error": "text/error", "warning": "state/pending"}
 
 
@@ -84,7 +87,7 @@ class MdibCheckWindow(QWidget):
         super().__init__(main, Qt.Window)
         self.main = main
         self.setWindowTitle(f"MDIB check — {main.service.friendly_name}")
-        self.resize(820, 420)
+        self.resize(1000, 420)
 
         self.target_box = _TargetBox(self.refresh_targets)
         self.target_box.setAccessibleName("What to check")
@@ -92,25 +95,33 @@ class MdibCheckWindow(QWidget):
         self.again_button = QPushButton("Check again")
         set_button_kind(self.again_button, "design-outline")
         self.again_button.clicked.connect(self.run)
+        self.fix_button = QPushButton("Fix")
+        set_button_kind(self.fix_button, "design")
+        self.fix_button.setToolTip("Make the change in the Fix column for the selected finding")
+        self.fix_button.clicked.connect(self.fix_selected)
         self.summary_label = QLabel()
         self.summary_label.setWordWrap(True)
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Level", "Where", "Finding"])
+        self.tree.setHeaderLabels(["Level", "Where", "Finding", "Fix"])
         self.tree.setRootIsDecorated(False)
         self.tree.setWordWrap(True)
         self.tree.setColumnWidth(0, 80)
         self.tree.setColumnWidth(1, 200)
+        self.tree.setColumnWidth(2, 480)
         self.tree.itemDoubleClicked.connect(lambda item, _column: self.show_element(item))
+        self.tree.currentItemChanged.connect(lambda *_: self._update_fix_button())
 
         top = QHBoxLayout()
         top.addWidget(QLabel("Check"))
         top.addWidget(self.target_box, 1)
         top.addWidget(self.again_button)
+        top.addWidget(self.fix_button)
         layout = QVBoxLayout(self)
         layout.addLayout(top)
         layout.addWidget(self.summary_label)
         layout.addWidget(self.tree, 1)
         self.refresh_targets()
+        self._update_fix_button()
 
     @property
     def connection(self) -> int | None:
@@ -147,12 +158,21 @@ class MdibCheckWindow(QWidget):
         self.show_findings(mdib_check.check(pane.remote.mdib))
 
     def show_findings(self, findings: list[mdib_check.Finding], note: str = "") -> None:
-        self.summary_label.setText(note or f"{mdib_check.summary(findings)}. Checked against {mdib_check.SOURCES}.")
+        mine = self.connection is None
+        self.summary_label.setText(note or f"{mdib_check.summary(findings)}. Checked against {mdib_check.SOURCES}."
+                                   + (" Fix makes the change in the Fix column." if mine else ""))
+        # Only My device can be changed; a connection's MDIB belongs to the peer.
+        self.tree.setColumnHidden(FIX_COLUMN, not mine)
+        self.fix_button.setVisible(mine)
+        selected = self._selected_finding()
         self.tree.clear()
         for finding in findings:
             text = finding.text + (f" ({finding.rule})" if finding.rule else "")
-            item = QTreeWidgetItem([finding.level, finding.where, text])
+            item = QTreeWidgetItem([finding.level, finding.where, text, finding.fix.label if finding.fix else ""])
             item.setData(0, Qt.UserRole, finding.handle)
+            item.setData(0, Qt.UserRole + 1, finding)
+            if finding.fix is not None:
+                item.setForeground(FIX_COLUMN, token("accent/text"))
             item.setToolTip(2, text)
             colour = token(LEVEL_COLOURS[finding.level]) if finding.level in LEVEL_COLOURS else muted_colour(self.tree)
             item.setForeground(0, colour)
@@ -161,6 +181,34 @@ class MdibCheckWindow(QWidget):
                 font.setBold(True)
                 item.setFont(0, font)
             self.tree.addTopLevelItem(item)
+            if selected is not None and (finding.handle, finding.text) == (selected.handle, selected.text):
+                self.tree.setCurrentItem(item)
+        self._update_fix_button()
+
+    def _selected_finding(self) -> mdib_check.Finding | None:
+        item = self.tree.currentItem()
+        return None if item is None else item.data(0, Qt.UserRole + 1)
+
+    def _update_fix_button(self) -> None:
+        finding = self._selected_finding()
+        self.fix_button.setEnabled(self.connection is None and finding is not None and finding.fix is not None)
+
+    def fix_selected(self) -> bool:
+        """Make the selected finding's fix on My device, then check again."""
+        finding = self._selected_finding()
+        if self.connection is not None or finding is None or finding.fix is None:
+            return False
+        main = self.main
+        try:
+            main.service.apply_fix(finding.handle, finding.fix)
+        except (KeyError, TypeError, ValueError) as exc:
+            QMessageBox.warning(self, "Could not fix", str(exc))
+            return False
+        main.provider_pane.refresh()
+        main.provider_pane.refresh_alerts()
+        main.statusBar().showMessage(f"{finding.where}: {finding.fix.label}", 8000)
+        main.recheck_my_device()
+        return True
 
     def show_element(self, item: QTreeWidgetItem) -> bool:
         """Show the finding's element in My device or in its connection's tab."""

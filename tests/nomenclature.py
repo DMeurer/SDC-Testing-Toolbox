@@ -269,6 +269,8 @@ class NewDataSourceTests(unittest.TestCase):
     def new_dialog(self) -> NewMetricDialog:
         dialog = NewMetricDialog()
         dialog.label_edit.setText("Pulse")
+        dialog.minimum_edit.setText("0")  # a number needs both ends (10701 TR0239)
+        dialog.maximum_edit.setText("300")
         return dialog
 
     def test_rows_sit_after_label(self) -> None:

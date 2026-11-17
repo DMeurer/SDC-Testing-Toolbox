@@ -36,6 +36,7 @@ Message boxes are standard `QMessageBox`es and are not drawn in the design. Thes
 | Warning | Could not change the fault | My device Faults section (Advanced mode) |
 | Warning | Could not add connection, Could not close connection | Network tabs |
 | Warning | Could not load codes | Pick an MDC code (Load codes.csv…, or a remembered file that no longer loads) |
+| Warning | Could not fix | MDIB check window (Fix) |
 | Warning | Could not start the MCP server | startup with `--mcp` when the port is taken |
 
 Native file pickers (Import config, Export config, Choose a config file, PEM file, certificate

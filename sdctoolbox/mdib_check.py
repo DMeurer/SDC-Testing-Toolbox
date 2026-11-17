@@ -44,6 +44,16 @@ PRESENT_STATES = frozenset({"On", "StndBy", "Shtdn", "Fail"})
 
 
 @dataclass(frozen=True)
+class Fix:
+    """A change the toolbox can make to its own MDIB that settles a finding."""
+
+    label: str  # what the fix does, in a few words: "Use MDC_PULS_RATE"
+    action: str  # coding | audible
+    parts: tuple[str, ...] = ()  # coding: which of "type" and "unit" to change
+    code: str | None = None  # coding: the new MDC code; None keeps the code and only names the current system
+
+
+@dataclass(frozen=True)
 class Finding:
     """One thing the check found: how bad, where, what and why, and the rule it rests on."""
 
@@ -53,6 +63,7 @@ class Finding:
     text: str
     rule: str | None = None
     label: str = ""
+    fix: Fix | None = None
 
     @property
     def where(self) -> str:
@@ -77,15 +88,31 @@ def summary(findings: list[Finding]) -> str:
     return " · ".join(f"{n} {level}{'' if n == 1 else 's'}" for level, n in counts(findings).items())
 
 
-def _suggestion(value, what: str, descriptor) -> str:  # noqa: ANN001
-    """", perhaps X (code)" from the MDC terms that match the element's description or code, else ""."""
+def _match(value, what: str, descriptor) -> nomenclature.Term | None:  # noqa: ANN001
+    """The MDC term that best matches the element's description or code, if any."""
     texts = [text.text for text in value.ConceptDescription or () if text.text] + [value.Code or ""]
     kind = "unit" if what == "unit" else "alert" if descriptor.is_alert_condition_descriptor else "measurement"
     for text in texts:
         hits = nomenclature.search(text, kind, 1) if text.strip() else []
         if hits:
-            return f", perhaps {hits[0].ref_id} ({hits[0].code})"
-    return ""
+            return hits[0]
+    return None
+
+
+def _exact(term: nomenclature.Term | None, value) -> nomenclature.Term | None:  # noqa: ANN001
+    """The term only when the element's description names it outright, so a fix cannot guess wrong.
+
+    The search also finds near misses ("Flow rate" finds respiration rate); those stay a hint.
+    """
+    if term is None:
+        return None
+    names = {term.term.casefold(), term.term.split(",")[0].strip().casefold(), term.symbol.casefold()} - {""}
+    texts = {text.text.strip().casefold() for text in value.ConceptDescription or () if text.text}
+    return term if names & texts else None
+
+
+def _suggestion(term: nomenclature.Term | None) -> str:
+    return f", perhaps {term.ref_id} ({term.code})" if term is not None else ""
 
 
 def _v(value: object) -> object:
@@ -105,8 +132,9 @@ class _Checker:
         self.known = set(self.by_handle) | {state.Handle for entity in entities for state in entity.states}
         self.findings: list[Finding] = []
 
-    def add(self, level: str, area: str, entity, text: str, rule: str | None = None) -> None:  # noqa: ANN001
-        self.findings.append(Finding(level, area, entity.handle, text, rule, label(entity.descriptor)))
+    def add(self, level: str, area: str, entity, text: str, rule: str | None = None,  # noqa: ANN001
+            fix: Fix | None = None) -> None:
+        self.findings.append(Finding(level, area, entity.handle, text, rule, label(entity.descriptor), fix))
 
     def run(self) -> list[Finding]:
         signalled = defaultdict(list)  # condition handle -> the manifestations announcing it
@@ -156,6 +184,8 @@ class _Checker:
             self.add("warning", "Coding", entity, "Has no Type, so a consumer can only guess what it is from its "
                      "handle or label. A code lets a consumer recognise it and show or use it correctly.")
         problems: dict[tuple[str, str | None, str], list[str]] = defaultdict(list)
+        # What settles a problem: an MDC term to use, or None for naming the current coding system.
+        fixes: dict[tuple[str, str | None, str], nomenclature.Term | None] = {}
         for what, value in coded.items():
             if value is None:
                 continue
@@ -167,30 +197,46 @@ class _Checker:
             if not mdc:
                 if what == "unit" or descriptor.is_metric_descriptor or descriptor.is_alert_condition_descriptor:
                     why = "cannot convert or compare the value" if what == "unit" else "cannot recognise it"
-                    problems[("warning", "10207 R0008, see 10700 6.6.3",
-                              f"uses the coding system {system}, which other devices do not know, so a consumer "
-                              f"{why}; use an IEEE 11073-10101 (MDC) code where one exists"
-                              f"{_suggestion(value, what, descriptor)}")].append(what)
+                    term = _match(value, what, descriptor)
+                    key = ("warning", "10207 R0008, see 10700 6.6.3",
+                           f"uses the coding system {system}, which other devices do not know, so a consumer "
+                           f"{why}; use an IEEE 11073-10101 (MDC) code where one exists{_suggestion(term)}")
+                    problems[key].append(what)
+                    if _exact(term, value) is not None:
+                        fixes[key] = term
                 continue
             if system is None:
-                problems[("error", "10700 TR1842", "names IEEE 11073-10101 only by BICEPS's default coding system; "
-                          f"set CodingSystem to {MDC_SYSTEM_PREFIX}3 (or later) so a consumer knows which "
-                          "nomenclature version the code is from")].append(what)
+                key = ("error", "10700 TR1842", "names IEEE 11073-10101 only by BICEPS's default coding system; "
+                       f"set CodingSystem to {MDC_SYSTEM_PREFIX}3 (or later) so a consumer knows which "
+                       "nomenclature version the code is from")
+                problems[key].append(what)
+                fixes[key] = None
             elif system == LEGACY_MDC_SYSTEM:
-                problems[("error", "10700 TR1840, TR1842", f"uses the outdated coding system {system} (10101-2004); "
-                          f"use {MDC_SYSTEM_PREFIX}3 (or later), which current consumers expect")].append(what)
+                key = ("error", "10700 TR1840, TR1842", f"uses the outdated coding system {system} (10101-2004); "
+                       f"use {MDC_SYSTEM_PREFIX}3 (or later), which current consumers expect")
+                problems[key].append(what)
+                fixes[key] = None
             elif value.CodingSystemVersion:
                 problems[("error", "10700 TR1814", "gives a CodingSystemVersion although the CodingSystem URI "
                           "already names the version; two places for one fact can disagree")].append(what)
             if not code.isdigit():
-                problems[("warning", None, f"code {code!r} is not an MDC code: those are numbers (such as 147842 "
-                          "for heart rate), so a consumer will not find it in the nomenclature"
-                          f"{_suggestion(value, what, descriptor)}")].append(what)
+                term = _match(value, what, descriptor)
+                key = ("warning", None, f"code {code!r} is not an MDC code: those are numbers (such as 147842 "
+                       f"for heart rate), so a consumer will not find it in the nomenclature{_suggestion(term)}")
+                problems[key].append(what)
+                if _exact(term, value) is not None:
+                    fixes[key] = term
             elif int(code) & 0xFFFF >= PRIVATE_TERM_CODES and not any(t.CodingSystem for t in value.Translation or ()):
                 problems[("error", "10700 TR1358", f"code {code} is a private MDC code but no Translation names the "
                           "private coding system that defines it, so a consumer cannot look it up")].append(what)
-        for (level, rule, text), whats in problems.items():
-            self.add(level, "Coding", entity, f"Its {' and '.join(whats)} {text}.", rule)
+        for key, whats in problems.items():
+            level, rule, text = key
+            fix = None
+            if key in fixes:
+                term = fixes[key]
+                fix = (Fix("Use the current MDC coding system", "coding", tuple(whats)) if term is None
+                       else Fix(f"Use {term.ref_id}", "coding", tuple(whats), term.code))
+            self.add(level, "Coding", entity, f"Its {' and '.join(whats)} {text}.", rule, fix)
 
     # -- metrics -----------------------------------------------------------------------
 
@@ -296,7 +342,7 @@ class _Checker:
                      "condition but not how the device itself would alert anyone.")
         elif _v(d.Priority) == "Hi" and "Aud" not in manifestations:
             self.add("hint", "Alarm", entity, "Is high priority but has no audible signal, so nobody who is not "
-                     "looking at a screen notices it.")
+                     "looking at a screen notices it.", fix=Fix("Add an audible signal", "audible"))
 
     def _signal(self, entity) -> None:  # noqa: ANN001
         condition = entity.descriptor.ConditionSignaled

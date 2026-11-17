@@ -446,6 +446,15 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         dialog._on_accept()  # noqa: SLF001
         report.check(dialog.spec() is None, "minimum above maximum is refused")
 
+        fill_dialog(dialog, kind=MetricKind.NUMBER, label="Zoom", minimum="1")
+        dialog._on_accept()  # noqa: SLF001
+        report.check(
+            dialog.spec() is None and "range" in dialog.error_label.text()
+            and dialog.maximum_edit.placeholderText() == "required",
+            "a number needs both ends of its range (10701 TR0239)",
+            dialog.error_label.text(),
+        )
+
         fill_dialog(dialog, kind=MetricKind.NUMBER, label="Zoom level", unit="steps", minimum="1", maximum="100")
         report.check(
             dialog.handle_preview.text() == "m.zoom_level",

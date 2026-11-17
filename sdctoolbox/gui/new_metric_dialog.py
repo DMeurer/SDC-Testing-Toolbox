@@ -387,6 +387,8 @@ class NewMetricDialog(QDialog):
         self._set_row_visible(self.values_edit, visible=is_choice)
         self._set_row_visible(self.resolution_edit, visible=has_scale)
         self._set_row_visible(self.limits_widget, visible=has_scale)
+        for edit in (self.minimum_edit, self.maximum_edit):
+            edit.setPlaceholderText("required" if is_number else "optional")
         self._set_row_visible(self.sample_period_edit, visible=is_waveform)
         self._set_row_visible(self.shape_box, visible=is_waveform)
         self._set_row_visible(self.cycle_widget, visible=is_waveform)
@@ -409,7 +411,8 @@ class NewMetricDialog(QDialog):
             "kinds. Use 1 for whole numbers.",
         )
         self.limits_widget.setToolTip(
-            "Optional lower and upper limit. Either can be left blank.\n"
+            "Lower and upper limit. A number needs both; on a waveform or distribution\n"
+            "they are optional.\n"
             "Becomes TechnicalRange on the metric and AllowedRange on its set operation, "
             "so other devices are refused values outside it.",
         )
@@ -500,6 +503,10 @@ class NewMetricDialog(QDialog):
                 else:
                     maximum = parsed
 
+            if kind is MetricKind.NUMBER and (minimum is None or maximum is None):
+                # 10701 TR0239: without both ends a consumer cannot scale or sanity-check it.
+                self._fail("A number needs a range: give its lowest and its highest value.")
+                return
             if minimum is not None and maximum is not None and minimum > maximum:
                 self._fail(f"The minimum ({minimum}) must not be greater than the maximum ({maximum}).")
                 return
