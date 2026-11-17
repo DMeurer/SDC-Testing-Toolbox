@@ -296,6 +296,8 @@ class Coding:
         A missing CodingSystem has BICEPS's IEEE 11073-10101 default. Known toolbox URIs
         become their concise aliases; every other URI is retained verbatim.
         """
+        if coding_system == constants.CODING_SYSTEM_MDC_LEGACY:
+            coding_system = constants.CODING_SYSTEM_MDC
         system = next(
             (name for name, uri in CODING_SYSTEMS.items() if uri == coding_system),
             coding_system or "mdc",
@@ -1130,11 +1132,11 @@ DEFAULT_PATIENT = PatientInfo(
     date_of_birth="1990-01-01",
     height=PatientMeasurement(
         value=Decimal("170"),
-        unit=Coding(code="264184", system="mdc", label="cm"),
+        unit=Coding(code="263441", system="mdc", label="cm"),
     ),
     weight=PatientMeasurement(
         value=Decimal("70"),
-        unit=Coding(code="266016", system="mdc", label="kg"),
+        unit=Coding(code="263875", system="mdc", label="kg"),
     ),
 )
 

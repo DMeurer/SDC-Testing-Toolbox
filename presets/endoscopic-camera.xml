@@ -114,7 +114,7 @@
               <dom:Type Code="light_intensity" CodingSystem="urn:sdc-testing-toolbox:private">
                 <dom:ConceptDescription Lang="en-US">Light intensity</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="262688" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="262688" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">%</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="0" Upper="100" StepWidth="1"/>
@@ -123,7 +123,7 @@
               <dom:Type Code="light_state" CodingSystem="urn:sdc-testing-toolbox:private">
                 <dom:ConceptDescription Lang="en-US">Lamp</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.3.111.2.11073.10101.3"/>
               <dom:AllowedValue>
                 <dom:Value>OFF</dom:Value>
               </dom:AllowedValue>
@@ -154,7 +154,7 @@
               <dom:Type Code="light_lamp_hours" CodingSystem="urn:sdc-testing-toolbox:private">
                 <dom:ConceptDescription Lang="en-US">Lamp hours</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="264384" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="264384" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">h</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="0" Upper="20000" StepWidth="1"/>
@@ -192,7 +192,7 @@
               <dom:Type Code="cam_scene_brightness" CodingSystem="urn:sdc-testing-toolbox:private">
                 <dom:ConceptDescription Lang="en-US">Scene brightness</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="262688" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="262688" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">%</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="0" Upper="100" StepWidth="0.1"/>
@@ -201,7 +201,7 @@
               <dom:Type Code="cam_gain" CodingSystem="urn:sdc-testing-toolbox:private">
                 <dom:ConceptDescription Lang="en-US">Gain</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="268576" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="268576" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">dB</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="0" Upper="24" StepWidth="0.5"/>
@@ -210,7 +210,7 @@
               <dom:Type Code="cam_enhancement_mode" CodingSystem="urn:sdc-testing-toolbox:private">
                 <dom:ConceptDescription Lang="en-US">Contrast enhancement</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.3.111.2.11073.10101.3"/>
               <dom:AllowedValue>
                 <dom:Value>OFF</dom:Value>
               </dom:AllowedValue>
@@ -228,7 +228,7 @@
               <dom:Type Code="cam_white_balance" CodingSystem="urn:sdc-testing-toolbox:private">
                 <dom:ConceptDescription Lang="en-US">White balance</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="266528" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="266528" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">K</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="2800" Upper="7500" StepWidth="50"/>
@@ -237,7 +237,7 @@
               <dom:Type Code="cam_image_profile" CodingSystem="urn:sdc-testing-toolbox:private">
                 <dom:ConceptDescription Lang="en-US">Image profile</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.3.111.2.11073.10101.3"/>
               <dom:AllowedValue>
                 <dom:Value>LAPAROSCOPY</dom:Value>
               </dom:AllowedValue>
@@ -258,7 +258,7 @@
               <dom:Type Code="cam_exposure_time" CodingSystem="urn:sdc-testing-toolbox:private">
                 <dom:ConceptDescription Lang="en-US">Exposure time</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="264338" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="264338" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">ms</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="0.5" Upper="40" StepWidth="0.1"/>
@@ -269,12 +269,12 @@
     </dom:MdDescription>
     <dom:MdState>
       <dom:State xsi:type="dom:EnumStringMetricState" DescriptorHandle="m.image_profile" ActivationState="On">
-        <dom:MetricValue Value="LAPAROSCOPY">
+        <dom:MetricValue Value="LAPAROSCOPY" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.gain" ActivationState="On">
-        <dom:MetricValue Value="6">
+        <dom:MetricValue Value="6" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
@@ -286,7 +286,7 @@
         </dom:AllowedValues>
       </dom:State>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.lamp_hours" ActivationState="On">
-        <dom:MetricValue Value="1840">
+        <dom:MetricValue Value="1840" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
@@ -308,7 +308,7 @@
       <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.lamp_service_due.aud" ActivationState="On" Presence="Off" Location="Loc"/>
       <dom:State xsi:type="dom:DistributionSampleArrayMetricState" DescriptorHandle="m.colour_histogram" ActivationState="On">
         <dom:MetricValue>
-          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+          <dom:MetricQuality Validity="NA" Mode="Demo"/>
         </dom:MetricValue>
       </dom:State>
       <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.image_too_dark.vis" ActivationState="On" Presence="Off" Location="Loc"/>
@@ -317,11 +317,11 @@
       </dom:State>
       <dom:State xsi:type="dom:DistributionSampleArrayMetricState" DescriptorHandle="m.light_spectrum" ActivationState="On">
         <dom:MetricValue>
-          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+          <dom:MetricQuality Validity="NA" Mode="Demo"/>
         </dom:MetricValue>
       </dom:State>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.light_intensity" ActivationState="On">
-        <dom:MetricValue Value="70">
+        <dom:MetricValue Value="70" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
@@ -330,7 +330,7 @@
         <dom:Limits Lower="15"/>
       </dom:State>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.white_balance" ActivationState="On">
-        <dom:MetricValue Value="5600">
+        <dom:MetricValue Value="5600" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
@@ -353,12 +353,12 @@
         <dom:AllowedRange Lower="0" Upper="24" StepWidth="0.5"/>
       </dom:State>
       <dom:State xsi:type="dom:EnumStringMetricState" DescriptorHandle="m.light_state" ActivationState="On">
-        <dom:MetricValue Value="ON">
+        <dom:MetricValue Value="ON" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.exposure" ActivationState="On">
-        <dom:MetricValue Value="8">
+        <dom:MetricValue Value="8" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
@@ -375,17 +375,18 @@
         </dom:AllowedValues>
       </dom:State>
       <dom:State xsi:type="dom:EnumStringMetricState" DescriptorHandle="m.enhancement" ActivationState="On">
-        <dom:MetricValue Value="OFF">
+        <dom:MetricValue Value="OFF" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
       <dom:State xsi:type="dom:RealTimeSampleArrayMetricState" DescriptorHandle="m.brightness_trace" ActivationState="On">
         <dom:MetricValue>
-          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+          <dom:MetricQuality Validity="NA" Mode="Demo"/>
         </dom:MetricValue>
       </dom:State>
       <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.camera"/>
-      <dom:State xsi:type="dom:PatientContextState" DescriptorHandle="PC.mds0" Handle="PC.mds0.state" ContextAssociation="Assoc">
+      <dom:State xsi:type="dom:PatientContextState" DescriptorHandle="PC.mds0" Handle="PC.mds0.state" ContextAssociation="Assoc" BindingMdibVersion="0" BindingStartTime="1794904033000">
+        <dom:Identification Root="urn:sdc-testing-toolbox:patient" Extension="a6550f215d8c41d1b9171b0d7d84ebcf"/>
         <dom:CoreData>
           <dom:Givenname>Alex</dom:Givenname>
           <dom:Familyname>Example</dom:Familyname>
@@ -393,18 +394,18 @@
           <dom:PatientType>Ad</dom:PatientType>
           <dom:DateOfBirth>1990-01-01</dom:DateOfBirth>
           <dom:Height MeasuredValue="170">
-            <dom:MeasurementUnit Code="264184" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+            <dom:MeasurementUnit Code="263441" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
               <dom:ConceptDescription Lang="en-US">cm</dom:ConceptDescription>
             </dom:MeasurementUnit>
           </dom:Height>
           <dom:Weight MeasuredValue="70">
-            <dom:MeasurementUnit Code="266016" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+            <dom:MeasurementUnit Code="263875" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
               <dom:ConceptDescription Lang="en-US">kg</dom:ConceptDescription>
             </dom:MeasurementUnit>
           </dom:Weight>
         </dom:CoreData>
       </dom:State>
-      <dom:State xsi:type="dom:LocationContextState" DescriptorHandle="LC.mds0" Handle="LC.mds0.state" ContextAssociation="Assoc">
+      <dom:State xsi:type="dom:LocationContextState" DescriptorHandle="LC.mds0" Handle="LC.mds0.state" ContextAssociation="Assoc" BindingMdibVersion="0" BindingStartTime="1794904033000">
         <dom:Validator Root="rootWithNoMeaning" Extension="System"/>
         <dom:Identification Root="sdc.ctxt.loc.detail" Extension="HOSP///CU1//Toolbox"/>
         <dom:LocationDetail PoC="CU1" Bed="Toolbox" Facility="HOSP"/>

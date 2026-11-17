@@ -65,13 +65,18 @@ SIGNAL_HANDLE_PREFIX = "sig."
 # Coded values
 # --------------------------------------------------------------------------------------
 
-# The default nomenclature of IEEE 11073-10101.
-CODING_SYSTEM_MDC = "urn:oid:1.2.840.10004.1.1.1.0.0.1"
+# IEEE 11073-10101:2020 (nomenclature version 3), named as IEEE 11073-10700 TR1840/TR1842 ask.
+CODING_SYSTEM_MDC = "urn:oid:1.3.111.2.11073.10101.3"
+# The 10101:2004 OID that older devices (and BICEPS's default) use; read as MDC, never written.
+CODING_SYSTEM_MDC_LEGACY = "urn:oid:1.2.840.10004.1.1.1.0.0.1"
 
 # Our own coding system. Everything we invent lives here rather than pretending to be MDC.
 # This is the "semantic gap" the thesis comparison table lists as an SDC weakness: without
 # device specialisations there is no agreed vocabulary for what we model.
 CODING_SYSTEM_PRIVATE = "urn:sdc-testing-toolbox:private"
+
+# Root of the made-up patient IDs the toolbox gives each patient it associates (10700 TR1304).
+PATIENT_ID_ROOT = "urn:sdc-testing-toolbox:patient"
 
 # MDC_DIM_DIMLESS - the real 11073-10101 code for "no unit".
 CODE_DIMENSIONLESS = "262656"

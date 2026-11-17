@@ -398,6 +398,7 @@ def apply_metric_value(state: object, value: object, fault: MetricFault = NO_FAU
     if getattr(state, "MetricValue", None) is None:
         state.mk_metric_value()
     state.MetricValue.Value = value
+    state.MetricValue.DeterminationTime = time.time()  # 10701 TR0214: a value says how old it is
     state.MetricValue.MetricQuality.Validity = pm_types.MeasurementValidity.VALID
     # A value makes a metric On, except one deliberately switched Off: that stays Off.
     if state.ActivationState != pm_types.ComponentActivation.OFF:

@@ -74,10 +74,15 @@ class NomenclatureTests(unittest.TestCase):
         for path in (ROOT / "presets").glob("*.xml"):
             for element in ET.parse(path).iter():
                 tag = element.tag.rpartition("}")[2]
-                if tag in {"Type", "Unit", "DomainUnit"} and element.get("CodingSystem", mdc) == mdc:
+                if tag in {"Type", "Unit", "DomainUnit", "MeasurementUnit"} and element.get("CodingSystem", mdc) == mdc:
                     used.add(element.get("Code"))
         self.assertTrue(used)
         self.assertEqual(sorted(code for code in used if nomenclature.lookup(code) is None), [])
+
+    def test_the_old_mdc_oid_is_read_as_mdc_and_written_as_the_new_one(self) -> None:
+        coding = Coding.from_wire(code="147842", coding_system=constants.CODING_SYSTEM_MDC_LEGACY)
+        self.assertEqual((coding.system, coding.coding_system), ("mdc", "urn:oid:1.3.111.2.11073.10101.3"))
+        self.assertTrue(coding.is_standard)
 
     def test_kind_comes_from_the_partition(self) -> None:
         self.assertEqual(nomenclature.kind_of("149514"), "measurement")  # 2::18442

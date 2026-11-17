@@ -328,8 +328,8 @@ Where the rules come from, with the requirement ID shown next to each finding:
 
 Only what one snapshot of the MDIB shows is checked, never behaviour over time. The alert
 (-10702) and remote control (-10703) participant key purposes are not covered yet. The
-toolbox's own devices have findings too, for example the older MDC coding system it writes:
-the check reports what SDC asks, not what the toolbox does.
+default My device and every shipped preset pass without errors; they still have warnings and
+hints, mostly private codes for things the MDC nomenclature has no term for.
 
 ## Widgets
 
@@ -555,7 +555,7 @@ Select either name in the startup config dropdown or *File → Load preset*, or 
 Every metric carries a **coded value**, because a label is not semantics. A unit written only as "mmHg" publishes a dimensionless number with a human comment attached; another device can do nothing with it.
 The shipped device presets use two coding systems:
 
-- **`mdc`** — IEEE 11073-10101 (`urn:oid:1.2.840.10004.1.1.1.0.0.1`), for parameters that genuinely have a standard term.
+- **`mdc`** — IEEE 11073-10101:2020 (`urn:oid:1.3.111.2.11073.10101.3`; the older `urn:oid:1.2.840.10004.1.1.1.0.0.1` is still read as MDC), for parameters that genuinely have a standard term.
 - **`private`** — `urn:sdc-testing-toolbox:private`, for everything that does not.
 
 Which is which is the interesting part, and `tests/presets.py` counts it:

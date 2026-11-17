@@ -95,10 +95,10 @@
               <dom:ConceptDescription Lang="en-US">Temperature</dom:ConceptDescription>
             </dom:Type>
             <dom:Metric Handle="m.temp_body" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="0.1">
-              <dom:Type Code="150364" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Type Code="150364" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">Body temperature</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="268192" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="268192" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">°C</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="25" Upper="45" StepWidth="0.1"/>
@@ -127,37 +127,37 @@
               <ext:Extension>
                 <tb:Generator Shape="arterial" CycleSeconds="1" ext:MustUnderstand="false"/>
               </ext:Extension>
-              <dom:Type Code="150032" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Type Code="150032" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">Arterial pressure</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="266016" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="266016" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">mmHg</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="40" Upper="160" StepWidth="1"/>
             </dom:Metric>
             <dom:Metric Handle="m.nibp_sys" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
-              <dom:Type Code="150021" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Type Code="150021" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">NIBP systolic</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="266016" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="266016" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">mmHg</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="0" Upper="300" StepWidth="1"/>
             </dom:Metric>
             <dom:Metric Handle="m.nibp_mean" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
-              <dom:Type Code="150023" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Type Code="150023" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">NIBP mean</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="266016" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="266016" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">mmHg</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="0" Upper="200" StepWidth="1"/>
             </dom:Metric>
             <dom:Metric Handle="m.nibp_dia" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
-              <dom:Type Code="150022" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Type Code="150022" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">NIBP diastolic</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="266016" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="266016" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">mmHg</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="0" Upper="200" StepWidth="1"/>
@@ -173,10 +173,10 @@
               <dom:ConceptDescription Lang="en-US">Respiration</dom:ConceptDescription>
             </dom:Type>
             <dom:Metric Handle="m.resp_rate" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
-              <dom:Type Code="151554" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Type Code="151554" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">Respiration rate</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="264928" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="264928" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">1/min</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="0" Upper="80" StepWidth="1"/>
@@ -192,10 +192,10 @@
               <dom:ConceptDescription Lang="en-US">Oximetry</dom:ConceptDescription>
             </dom:Type>
             <dom:Metric Handle="m.spo2" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
-              <dom:Type Code="150456" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Type Code="150456" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">SpO2</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="262688" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="262688" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">%</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="0" Upper="100" StepWidth="1"/>
@@ -204,19 +204,19 @@
               <ext:Extension>
                 <tb:Generator Shape="pulse" CycleSeconds="1" ext:MustUnderstand="false"/>
               </ext:Extension>
-              <dom:Type Code="150452" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Type Code="150452" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">Plethysmogram</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="262688" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="262688" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">%</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="0" Upper="100" StepWidth="0.1"/>
             </dom:Metric>
             <dom:Metric Handle="m.pulse_rate" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
-              <dom:Type Code="149530" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Type Code="149530" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">Pulse rate</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="264864" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="264864" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">bpm</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="0" Upper="300" StepWidth="1"/>
@@ -235,13 +235,13 @@
               <dom:Type Code="monitor_display_note" CodingSystem="urn:sdc-testing-toolbox:private">
                 <dom:ConceptDescription Lang="en-US">Display note</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.3.111.2.11073.10101.3"/>
             </dom:Metric>
             <dom:Metric Handle="m.alarm_volume" xsi:type="dom:EnumStringMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr">
               <dom:Type Code="monitor_alarm_volume" CodingSystem="urn:sdc-testing-toolbox:private">
                 <dom:ConceptDescription Lang="en-US">Alarm volume</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.3.111.2.11073.10101.3"/>
               <dom:AllowedValue>
                 <dom:Value>OFF</dom:Value>
               </dom:AllowedValue>
@@ -269,19 +269,19 @@
               <ext:Extension>
                 <tb:Generator Shape="ecg" CycleSeconds="1" ext:MustUnderstand="false"/>
               </ext:Extension>
-              <dom:Type Code="131330" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Type Code="131330" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">ECG lead II</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="266418" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="266418" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">mV</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="-1" Upper="2" StepWidth="0.01"/>
             </dom:Metric>
             <dom:Metric Handle="m.heart_rate" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
-              <dom:Type Code="147842" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Type Code="147842" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">Heart rate</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="264864" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="264864" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">bpm</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="0" Upper="300" StepWidth="1"/>
@@ -297,7 +297,7 @@
       </dom:State>
       <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.haemodynamics"/>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.heart_rate" ActivationState="On">
-        <dom:MetricValue Value="72">
+        <dom:MetricValue Value="72" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
@@ -309,20 +309,20 @@
       <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.temperature"/>
       <dom:State xsi:type="dom:RealTimeSampleArrayMetricState" DescriptorHandle="m.abp" ActivationState="On">
         <dom:MetricValue>
-          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+          <dom:MetricQuality Validity="NA" Mode="Demo"/>
         </dom:MetricValue>
       </dom:State>
       <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch0.vmd0" ActivationState="On"/>
       <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.respiration"/>
       <dom:State xsi:type="dom:MdsState" DescriptorHandle="mds0" ActivationState="On" OperatingMode="Dmo"/>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.resp_rate" ActivationState="On">
-        <dom:MetricValue Value="14">
+        <dom:MetricValue Value="14" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
       <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.temperature_high.aud" ActivationState="On" Presence="Off" Location="Loc"/>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.nibp_sys" ActivationState="On">
-        <dom:MetricValue Value="118">
+        <dom:MetricValue Value="118" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
@@ -331,7 +331,7 @@
         <dom:Limits Upper="38.5"/>
       </dom:State>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.nibp_dia" ActivationState="On">
-        <dom:MetricValue Value="74">
+        <dom:MetricValue Value="74" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
@@ -343,7 +343,7 @@
       <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.start_nibp" OperatingMode="En"/>
       <dom:State xsi:type="dom:RealTimeSampleArrayMetricState" DescriptorHandle="m.pleth" ActivationState="On">
         <dom:MetricValue>
-          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+          <dom:MetricQuality Validity="NA" Mode="Demo"/>
         </dom:MetricValue>
       </dom:State>
       <dom:State xsi:type="dom:AlertConditionState" DescriptorHandle="al.sensor_check" ActivationState="On" Presence="false"/>
@@ -353,7 +353,7 @@
       <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.haemodynamics"/>
       <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.silence_alarms" OperatingMode="En"/>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.nibp_mean" ActivationState="On">
-        <dom:MetricValue Value="89">
+        <dom:MetricValue Value="89" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
@@ -362,34 +362,38 @@
       </dom:State>
       <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.check_oximetry_sensor.vis" ActivationState="On" Presence="Off" Location="Loc"/>
       <dom:State xsi:type="dom:EnumStringMetricState" DescriptorHandle="m.alarm_volume" ActivationState="On">
-        <dom:MetricValue Value="MEDIUM">
+        <dom:MetricValue Value="MEDIUM" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
       <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.heart_rate_out_of_range.aud" ActivationState="On" Presence="Off" Location="Loc"/>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.spo2" ActivationState="On">
-        <dom:MetricValue Value="98">
+        <dom:MetricValue Value="98" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
-      <dom:State xsi:type="dom:StringMetricState" DescriptorHandle="m.display_note"/>
+      <dom:State xsi:type="dom:StringMetricState" DescriptorHandle="m.display_note">
+        <dom:MetricValue Value="" DeterminationTime="1794904033000">
+          <dom:MetricQuality Validity="Vld"/>
+        </dom:MetricValue>
+      </dom:State>
       <dom:State xsi:type="dom:SetStringOperationState" DescriptorHandle="op.display_note" OperatingMode="En"/>
       <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.settings"/>
       <dom:State xsi:type="dom:RealTimeSampleArrayMetricState" DescriptorHandle="m.ecg_ii" ActivationState="On">
         <dom:MetricValue>
-          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+          <dom:MetricQuality Validity="NA" Mode="Demo"/>
         </dom:MetricValue>
       </dom:State>
       <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.temperature"/>
       <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.check_oximetry_sensor.aud" ActivationState="On" Presence="Off" Location="Loc"/>
       <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd0" ActivationState="On"/>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.temp_body" ActivationState="On">
-        <dom:MetricValue Value="36.8">
+        <dom:MetricValue Value="36.8" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.pulse_rate" ActivationState="On">
-        <dom:MetricValue Value="74">
+        <dom:MetricValue Value="74" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
@@ -402,7 +406,8 @@
         </dom:AllowedValues>
       </dom:State>
       <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.oximetry"/>
-      <dom:State xsi:type="dom:PatientContextState" DescriptorHandle="PC.mds0" Handle="PC.mds0.state" ContextAssociation="Assoc">
+      <dom:State xsi:type="dom:PatientContextState" DescriptorHandle="PC.mds0" Handle="PC.mds0.state" ContextAssociation="Assoc" BindingMdibVersion="0" BindingStartTime="1794904033000">
+        <dom:Identification Root="urn:sdc-testing-toolbox:patient" Extension="4e1787876a3c48cc9d21f62743850340"/>
         <dom:CoreData>
           <dom:Givenname>Alex</dom:Givenname>
           <dom:Familyname>Example</dom:Familyname>
@@ -410,18 +415,18 @@
           <dom:PatientType>Ad</dom:PatientType>
           <dom:DateOfBirth>1990-01-01</dom:DateOfBirth>
           <dom:Height MeasuredValue="170">
-            <dom:MeasurementUnit Code="264184" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+            <dom:MeasurementUnit Code="263441" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
               <dom:ConceptDescription Lang="en-US">cm</dom:ConceptDescription>
             </dom:MeasurementUnit>
           </dom:Height>
           <dom:Weight MeasuredValue="70">
-            <dom:MeasurementUnit Code="266016" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+            <dom:MeasurementUnit Code="263875" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
               <dom:ConceptDescription Lang="en-US">kg</dom:ConceptDescription>
             </dom:MeasurementUnit>
           </dom:Weight>
         </dom:CoreData>
       </dom:State>
-      <dom:State xsi:type="dom:LocationContextState" DescriptorHandle="LC.mds0" Handle="LC.mds0.state" ContextAssociation="Assoc">
+      <dom:State xsi:type="dom:LocationContextState" DescriptorHandle="LC.mds0" Handle="LC.mds0.state" ContextAssociation="Assoc" BindingMdibVersion="0" BindingStartTime="1794904033000">
         <dom:Validator Root="rootWithNoMeaning" Extension="System"/>
         <dom:Identification Root="sdc.ctxt.loc.detail" Extension="HOSP/Surgery/2/OR1/1/Table"/>
         <dom:LocationDetail PoC="OR1" Room="1" Bed="Table" Facility="HOSP" Building="Surgery" Floor="2"/>

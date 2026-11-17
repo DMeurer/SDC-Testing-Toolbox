@@ -171,10 +171,11 @@ class HeadlessTests(unittest.TestCase):
         result = self.client.ok("check_mdib")
         self.assertEqual(result["checked"], "My device")
         self.assertIn("10700", result["sources"])
-        self.assertTrue(result["findings"], "the insufflator preset has findings")
+        self.assertTrue(result["findings"], "the insufflator preset has warnings")
         first = result["findings"][0]
         self.assertLessEqual({"level", "area", "handle", "text", "rule", "label"}, set(first))
-        self.assertEqual(first["level"], "error", "errors come first")
+        ranks = [mdib_check.LEVELS.index(f["level"]) for f in result["findings"]]
+        self.assertEqual(ranks, sorted(ranks), "the most severe findings come first")
         refused = self.client.tool("check_mdib", connection=99)
         self.assertTrue(refused["isError"])
         self.assertIn("not connected", refused["content"][0]["text"])

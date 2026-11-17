@@ -239,6 +239,21 @@ class ShapeTests(unittest.TestCase):
             with self.subTest(path.name):
                 findings = mdib_check.check(parse_mdib(path.read_bytes()))
                 self.assertTrue(all(f.level in mdib_check.LEVELS and f.text for f in findings))
+                errors = [f"{f.rule} {f.where}: {f.text}" for f in findings if f.level == "error"]
+                self.assertEqual(errors, [], "a shipped preset breaks no rule the check knows")
+
+
+class OwnDeviceTests(unittest.TestCase):
+    def test_my_device_starts_without_errors(self) -> None:
+        from sdctoolbox.provider_service import ProviderService
+
+        service = ProviderService(instance_name="mdib-check-default")
+        service.start()
+        try:
+            errors = [f"{f.rule} {f.where}" for f in mdib_check.check(service.mdib) if f.level == "error"]
+        finally:
+            service.stop()
+        self.assertEqual(errors, [])
 
 
 class WindowTests(unittest.TestCase):

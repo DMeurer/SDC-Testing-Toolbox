@@ -140,10 +140,10 @@
               <ext:Extension>
                 <tb:Generator Shape="flow" ext:MustUnderstand="false"/>
               </ext:Extension>
-              <dom:Type Code="151764" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Type Code="151764" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">Airway flow</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="265216" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="265216" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">L/min</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="-60" Upper="60" StepWidth="0.1"/>
@@ -152,10 +152,10 @@
               <ext:Extension>
                 <tb:Generator Shape="respiration" ext:MustUnderstand="false"/>
               </ext:Extension>
-              <dom:Type Code="152708" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Type Code="152708" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">Airway volume</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="263762" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="263762" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">mL</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="0" Upper="800" StepWidth="1"/>
@@ -164,10 +164,10 @@
               <ext:Extension>
                 <tb:Generator Shape="respiration" ext:MustUnderstand="false"/>
               </ext:Extension>
-              <dom:Type Code="151792" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Type Code="151792" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">Airway pressure</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="266048" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="266048" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">cmH2O</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="0" Upper="40" StepWidth="0.1"/>
@@ -183,25 +183,25 @@
               <dom:ConceptDescription Lang="en-US">Measured</dom:ConceptDescription>
             </dom:Type>
             <dom:Metric Handle="m.tidal_volume" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
-              <dom:Type Code="151868" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Type Code="151868" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">Tidal volume</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="263762" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="263762" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">mL</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="0" Upper="1500" StepWidth="1"/>
             </dom:Metric>
             <dom:Metric Handle="m.peak_pressure" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
-              <dom:Type Code="151817" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Type Code="151817" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">Peak pressure</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="266048" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="266048" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">cmH2O</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="0" Upper="60" StepWidth="1"/>
             </dom:Metric>
             <dom:Metric Handle="m.compliance" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="0.1">
-              <dom:Type Code="151696" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Type Code="151696" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">Compliance</dom:ConceptDescription>
               </dom:Type>
               <dom:Unit Code="vent_compliance_unit" CodingSystem="urn:sdc-testing-toolbox:private">
@@ -210,10 +210,10 @@
               <dom:TechnicalRange Lower="0" Upper="150" StepWidth="0.1"/>
             </dom:Metric>
             <dom:Metric Handle="m.minute_volume" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="0.1">
-              <dom:Type Code="151880" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Type Code="151880" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">Minute volume</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="265216" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="265216" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">L/min</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="0" Upper="30" StepWidth="0.1"/>
@@ -229,28 +229,28 @@
               <dom:ConceptDescription Lang="en-US">Settings</dom:ConceptDescription>
             </dom:Type>
             <dom:Metric Handle="m.fio2" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="1">
-              <dom:Type Code="152196" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Type Code="152196" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">FiO2</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="262688" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="262688" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">%</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="21" Upper="100" StepWidth="1"/>
             </dom:Metric>
             <dom:Metric Handle="m.resp_rate_set" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="1">
-              <dom:Type Code="16928802" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Type Code="16928802" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">Set rate</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="264928" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="264928" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">1/min</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="4" Upper="60" StepWidth="1"/>
             </dom:Metric>
             <dom:Metric Handle="m.vent_mode" xsi:type="dom:EnumStringMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr">
-              <dom:Type Code="184352" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Type Code="184352" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">Ventilation mode</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.3.111.2.11073.10101.3"/>
               <dom:AllowedValue>
                 <dom:Value>VC_CMV</dom:Value>
               </dom:AllowedValue>
@@ -271,19 +271,19 @@
               </dom:AllowedValue>
             </dom:Metric>
             <dom:Metric Handle="m.insp_pressure" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="1">
-              <dom:Type Code="16929188" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Type Code="16929188" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">Inspiratory pressure</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="266048" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="266048" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">cmH2O</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="5" Upper="50" StepWidth="1"/>
             </dom:Metric>
             <dom:Metric Handle="m.peep" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr" Resolution="1">
-              <dom:Type Code="151804" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Type Code="151804" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">PEEP</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="266048" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="266048" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">cmH2O</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="0" Upper="25" StepWidth="1"/>
@@ -296,18 +296,18 @@
       <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.patient_disconnected.aud" ActivationState="On" Presence="Off" Location="Loc"/>
       <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.recruitment" OperatingMode="En"/>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.peep" ActivationState="On">
-        <dom:MetricValue Value="5">
+        <dom:MetricValue Value="5" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
       <dom:State xsi:type="dom:RealTimeSampleArrayMetricState" DescriptorHandle="m.paw" ActivationState="On">
         <dom:MetricValue>
-          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+          <dom:MetricQuality Validity="NA" Mode="Demo"/>
         </dom:MetricValue>
       </dom:State>
       <dom:State xsi:type="dom:ScoState" DescriptorHandle="sco.mds0" ActivationState="On"/>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.insp_pressure" ActivationState="On">
-        <dom:MetricValue Value="18">
+        <dom:MetricValue Value="18" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
@@ -319,7 +319,7 @@
       </dom:State>
       <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.tidal_volume_out_of_range.aud" ActivationState="On" Presence="Off" Location="Loc"/>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.peak_pressure" ActivationState="On">
-        <dom:MetricValue Value="23">
+        <dom:MetricValue Value="23" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
@@ -329,23 +329,23 @@
       <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch.waveforms"/>
       <dom:State xsi:type="dom:RealTimeSampleArrayMetricState" DescriptorHandle="m.volume" ActivationState="On">
         <dom:MetricValue>
-          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+          <dom:MetricQuality Validity="NA" Mode="Demo"/>
         </dom:MetricValue>
       </dom:State>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.tidal_volume" ActivationState="On">
-        <dom:MetricValue Value="480">
+        <dom:MetricValue Value="480" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
       <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.airway_pressure_high.vis" ActivationState="On" Presence="Off" Location="Loc"/>
       <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.measured"/>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.fio2" ActivationState="On">
-        <dom:MetricValue Value="40">
+        <dom:MetricValue Value="40" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.minute_volume" ActivationState="On">
-        <dom:MetricValue Value="6.7">
+        <dom:MetricValue Value="6.7" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
@@ -359,7 +359,7 @@
         <dom:Limits Lower="3"/>
       </dom:State>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.resp_rate_set" ActivationState="On">
-        <dom:MetricValue Value="14">
+        <dom:MetricValue Value="14" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
@@ -371,7 +371,7 @@
         <dom:Limits Lower="250" Upper="750"/>
       </dom:State>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.compliance" ActivationState="On">
-        <dom:MetricValue Value="42">
+        <dom:MetricValue Value="42" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
@@ -392,14 +392,14 @@
       <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.minute_volume_low.vis" ActivationState="On" Presence="Off" Location="Loc"/>
       <dom:State xsi:type="dom:RealTimeSampleArrayMetricState" DescriptorHandle="m.flow" ActivationState="On">
         <dom:MetricValue>
-          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+          <dom:MetricQuality Validity="NA" Mode="Demo"/>
         </dom:MetricValue>
       </dom:State>
       <dom:State xsi:type="dom:LimitAlertConditionState" DescriptorHandle="al.pressure_high" ActivationState="On" Presence="false" MonitoredAlertLimits="LoOff">
         <dom:Limits Upper="35"/>
       </dom:State>
       <dom:State xsi:type="dom:EnumStringMetricState" DescriptorHandle="m.vent_mode" ActivationState="On">
-        <dom:MetricValue Value="PC_CMV">
+        <dom:MetricValue Value="PC_CMV" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
@@ -414,7 +414,8 @@
         </dom:AllowedValues>
       </dom:State>
       <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch0.vmd0" ActivationState="On"/>
-      <dom:State xsi:type="dom:PatientContextState" DescriptorHandle="PC.mds0" Handle="PC.mds0.state" ContextAssociation="Assoc">
+      <dom:State xsi:type="dom:PatientContextState" DescriptorHandle="PC.mds0" Handle="PC.mds0.state" ContextAssociation="Assoc" BindingMdibVersion="0" BindingStartTime="1794904033000">
+        <dom:Identification Root="urn:sdc-testing-toolbox:patient" Extension="2623007df9d1491b80d1fb5935d5955c"/>
         <dom:CoreData>
           <dom:Givenname>Alex</dom:Givenname>
           <dom:Familyname>Example</dom:Familyname>
@@ -422,18 +423,18 @@
           <dom:PatientType>Ad</dom:PatientType>
           <dom:DateOfBirth>1990-01-01</dom:DateOfBirth>
           <dom:Height MeasuredValue="170">
-            <dom:MeasurementUnit Code="264184" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+            <dom:MeasurementUnit Code="263441" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
               <dom:ConceptDescription Lang="en-US">cm</dom:ConceptDescription>
             </dom:MeasurementUnit>
           </dom:Height>
           <dom:Weight MeasuredValue="70">
-            <dom:MeasurementUnit Code="266016" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+            <dom:MeasurementUnit Code="263875" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
               <dom:ConceptDescription Lang="en-US">kg</dom:ConceptDescription>
             </dom:MeasurementUnit>
           </dom:Weight>
         </dom:CoreData>
       </dom:State>
-      <dom:State xsi:type="dom:LocationContextState" DescriptorHandle="LC.mds0" Handle="LC.mds0.state" ContextAssociation="Assoc">
+      <dom:State xsi:type="dom:LocationContextState" DescriptorHandle="LC.mds0" Handle="LC.mds0.state" ContextAssociation="Assoc" BindingMdibVersion="0" BindingStartTime="1794904033000">
         <dom:Validator Root="rootWithNoMeaning" Extension="System"/>
         <dom:Identification Root="sdc.ctxt.loc.detail" Extension="HOSP///CU1//Toolbox"/>
         <dom:LocationDetail PoC="CU1" Bed="Toolbox" Facility="HOSP"/>

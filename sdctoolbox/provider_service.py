@@ -205,11 +205,17 @@ def _fault_value(enum: type, value: str, what: str) -> str:
         raise ValueError(msg) from None
 
 
+def _has_value(value) -> bool:  # noqa: ANN001 - an sdc11073 metric value
+    return getattr(value, "Value", None) is not None or bool(getattr(value, "Samples", None))
+
+
 def _loaded_fault(state, spec: MetricSpec) -> MetricFault:  # noqa: ANN001 - an sdc11073 metric state
     """The fault a state from a file carries, so a fault exported with the MDIB comes back with it."""
     activation = state.ActivationState
     quality = getattr(getattr(state, "MetricValue", None), "MetricQuality", None)
     validity = getattr(quality, "Validity", None)
+    if validity == pm_types.MeasurementValidity.NA and not _has_value(state.MetricValue):
+        validity = None  # "no value yet", how the toolbox writes a metric before its first value
     mode = getattr(quality, "Mode", None)
     return MetricFault(
         None if activation in (None, pm_types.ComponentActivation.ON, pm_types.ComponentActivation.OFF) else activation,
@@ -1038,6 +1044,9 @@ class ProviderService:
                 self._channel_for(spec.section),
             )
             self._apply_spec_to_descriptor(entity.descriptor, spec)
+            # An On metric always has a MetricValue (10701 TR0674); until the first value it is NA.
+            entity.state.mk_metric_value()
+            entity.state.MetricValue.MetricQuality.Validity = pm_types.MeasurementValidity.NA
 
             self._create_entities([entity])
             if spec.is_sample_array:
@@ -1048,6 +1057,8 @@ class ProviderService:
 
             if spec.initial_value is not None:
                 self.set_value(handle, spec.initial_value)
+            elif spec.kind is MetricKind.TEXT:
+                self.set_value(handle, "")  # an empty text is a value; a text setting needs one (10701 TR0128)
             if spec.controllable:
                 self.enable_control(handle)
             if not spec.active:
@@ -2156,6 +2167,8 @@ class ProviderService:
                 raise ValueError(msg) from exc
 
             state = entity.new_state()
+            # An associated patient needs an Identification (10700 TR1304); this one is made up.
+            state.Identification = [pm_types.InstanceIdentifier(constants.PATIENT_ID_ROOT, extension_string=uuid.uuid4().hex)]
             state.CoreData = core
             state.ContextAssociation = pm_types.ContextAssociation.ASSOCIATED
             state.BindingStartTime = time.time()

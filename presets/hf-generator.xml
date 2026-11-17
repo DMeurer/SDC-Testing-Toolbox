@@ -120,11 +120,11 @@
               <dom:Type Code="hf_impedance_spectrum" CodingSystem="urn:sdc-testing-toolbox:private">
                 <dom:ConceptDescription Lang="en-US">Impedance spectrum</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="268576" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="268576" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">dB</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="0" Upper="60" StepWidth="0.1"/>
-              <dom:DomainUnit Code="264643" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:DomainUnit Code="264643" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">kHz</dom:ConceptDescription>
               </dom:DomainUnit>
               <dom:DistributionRange Lower="300" Upper="1000" StepWidth="22.5806"/>
@@ -136,7 +136,7 @@
               <dom:Type Code="hf_impedance_trace" CodingSystem="urn:sdc-testing-toolbox:private">
                 <dom:ConceptDescription Lang="en-US">Impedance trace</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="266432" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="266432" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">Ω</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="50" Upper="600" StepWidth="1"/>
@@ -145,7 +145,7 @@
               <dom:Type Code="hf_tissue_impedance" CodingSystem="urn:sdc-testing-toolbox:private">
                 <dom:ConceptDescription Lang="en-US">Tissue impedance</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="266432" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="266432" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">Ω</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="0" Upper="2000" StepWidth="1"/>
@@ -164,7 +164,7 @@
               <dom:Type Code="hf_activation_source" CodingSystem="urn:sdc-testing-toolbox:private">
                 <dom:ConceptDescription Lang="en-US">Activation</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.3.111.2.11073.10101.3"/>
               <dom:AllowedValue>
                 <dom:Value>IDLE</dom:Value>
               </dom:AllowedValue>
@@ -179,7 +179,7 @@
               <dom:Type Code="hf_active_mode" CodingSystem="urn:sdc-testing-toolbox:private">
                 <dom:ConceptDescription Lang="en-US">Active mode</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.3.111.2.11073.10101.3"/>
               <dom:AllowedValue>
                 <dom:Value>STANDBY</dom:Value>
               </dom:AllowedValue>
@@ -200,7 +200,7 @@
               <dom:Type Code="hf_cut_power_setpoint" CodingSystem="urn:sdc-testing-toolbox:private">
                 <dom:ConceptDescription Lang="en-US">Cut power setpoint</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="266176" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="266176" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">W</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="0" Upper="300" StepWidth="1"/>
@@ -209,7 +209,7 @@
               <dom:Type Code="hf_delivered_power" CodingSystem="urn:sdc-testing-toolbox:private">
                 <dom:ConceptDescription Lang="en-US">Delivered power</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="266176" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="266176" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">W</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="0" Upper="300" StepWidth="1"/>
@@ -218,7 +218,7 @@
               <dom:Type Code="hf_coag_power_setpoint" CodingSystem="urn:sdc-testing-toolbox:private">
                 <dom:ConceptDescription Lang="en-US">Coagulation power setpoint</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="266176" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="266176" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">W</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="0" Upper="200" StepWidth="1"/>
@@ -237,7 +237,7 @@
               <dom:Type Code="hf_neutral_electrode_quality" CodingSystem="urn:sdc-testing-toolbox:private">
                 <dom:ConceptDescription Lang="en-US">Neutral electrode contact</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="262688" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+              <dom:Unit Code="262688" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">%</dom:ConceptDescription>
               </dom:Unit>
               <dom:TechnicalRange Lower="0" Upper="100" StepWidth="1"/>
@@ -246,7 +246,7 @@
               <dom:Type Code="hf_connected_instrument" CodingSystem="urn:sdc-testing-toolbox:private">
                 <dom:ConceptDescription Lang="en-US">Connected instrument</dom:ConceptDescription>
               </dom:Type>
-              <dom:Unit Code="262656" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1"/>
+              <dom:Unit Code="262656" CodingSystem="urn:oid:1.3.111.2.11073.10101.3"/>
             </dom:Metric>
           </dom:Channel>
         </dom:Vmd>
@@ -260,18 +260,18 @@
         <dom:Limits Lower="70"/>
       </dom:State>
       <dom:State xsi:type="dom:StringMetricState" DescriptorHandle="m.instrument" ActivationState="On">
-        <dom:MetricValue Value="Monopolar pencil">
+        <dom:MetricValue Value="Monopolar pencil" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
       <dom:State xsi:type="dom:ActivateOperationState" DescriptorHandle="act.stop_output" OperatingMode="En"/>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.delivered_power" ActivationState="On">
-        <dom:MetricValue Value="0">
+        <dom:MetricValue Value="0" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.coag_power_set" ActivationState="On">
-        <dom:MetricValue Value="50">
+        <dom:MetricValue Value="50" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
@@ -299,31 +299,31 @@
       </dom:State>
       <dom:State xsi:type="dom:RealTimeSampleArrayMetricState" DescriptorHandle="m.impedance_trace" ActivationState="On">
         <dom:MetricValue>
-          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+          <dom:MetricQuality Validity="NA" Mode="Demo"/>
         </dom:MetricValue>
       </dom:State>
       <dom:State xsi:type="dom:ChannelState" DescriptorHandle="ch0.vmd0" ActivationState="On"/>
       <dom:State xsi:type="dom:SetStringOperationState" DescriptorHandle="op.instrument" OperatingMode="En"/>
       <dom:State xsi:type="dom:DistributionSampleArrayMetricState" DescriptorHandle="m.impedance_spectrum" ActivationState="On">
         <dom:MetricValue>
-          <dom:MetricQuality Validity="Vld" Mode="Demo"/>
+          <dom:MetricQuality Validity="NA" Mode="Demo"/>
         </dom:MetricValue>
       </dom:State>
       <dom:State xsi:type="dom:ScoState" DescriptorHandle="sco.mds0" ActivationState="On"/>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.neutral_electrode" ActivationState="On">
-        <dom:MetricValue Value="96">
+        <dom:MetricValue Value="96" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
       <dom:State xsi:type="dom:VmdState" DescriptorHandle="vmd.tissue"/>
       <dom:State xsi:type="dom:EnumStringMetricState" DescriptorHandle="m.active_mode" ActivationState="On">
-        <dom:MetricValue Value="STANDBY">
+        <dom:MetricValue Value="STANDBY" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
       <dom:State xsi:type="dom:AlertSignalState" DescriptorHandle="sig.neutral_electrode_contact_poor.aud" ActivationState="On" Presence="Off" Location="Loc"/>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.tissue_impedance" ActivationState="On">
-        <dom:MetricValue Value="180">
+        <dom:MetricValue Value="180" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
@@ -343,21 +343,22 @@
         <dom:AllowedRange Lower="0" Upper="300" StepWidth="1"/>
       </dom:State>
       <dom:State xsi:type="dom:NumericMetricState" DescriptorHandle="m.cut_power_set" ActivationState="On">
-        <dom:MetricValue Value="80">
+        <dom:MetricValue Value="80" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
       <dom:State xsi:type="dom:EnumStringMetricState" DescriptorHandle="m.activation" ActivationState="On">
-        <dom:MetricValue Value="IDLE">
+        <dom:MetricValue Value="IDLE" DeterminationTime="1794904033000">
           <dom:MetricQuality Validity="Vld"/>
         </dom:MetricValue>
       </dom:State>
-      <dom:State xsi:type="dom:LocationContextState" DescriptorHandle="LC.mds0" Handle="LC.mds0.state" ContextAssociation="Assoc">
+      <dom:State xsi:type="dom:LocationContextState" DescriptorHandle="LC.mds0" Handle="LC.mds0.state" ContextAssociation="Assoc" BindingMdibVersion="0" BindingStartTime="1794904033000">
         <dom:Validator Root="rootWithNoMeaning" Extension="System"/>
         <dom:Identification Root="sdc.ctxt.loc.detail" Extension="HOSP///CU1//Toolbox"/>
         <dom:LocationDetail PoC="CU1" Bed="Toolbox" Facility="HOSP"/>
       </dom:State>
-      <dom:State xsi:type="dom:PatientContextState" DescriptorHandle="PC.mds0" Handle="PC.mds0.state" ContextAssociation="Assoc">
+      <dom:State xsi:type="dom:PatientContextState" DescriptorHandle="PC.mds0" Handle="PC.mds0.state" ContextAssociation="Assoc" BindingMdibVersion="0" BindingStartTime="1794904033000">
+        <dom:Identification Root="urn:sdc-testing-toolbox:patient" Extension="1b875f2ddde440d5a31c41d6d31e498a"/>
         <dom:CoreData>
           <dom:Givenname>Alex</dom:Givenname>
           <dom:Familyname>Example</dom:Familyname>
@@ -365,12 +366,12 @@
           <dom:PatientType>Ad</dom:PatientType>
           <dom:DateOfBirth>1990-01-01</dom:DateOfBirth>
           <dom:Height MeasuredValue="170">
-            <dom:MeasurementUnit Code="264184" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+            <dom:MeasurementUnit Code="263441" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
               <dom:ConceptDescription Lang="en-US">cm</dom:ConceptDescription>
             </dom:MeasurementUnit>
           </dom:Height>
           <dom:Weight MeasuredValue="70">
-            <dom:MeasurementUnit Code="266016" CodingSystem="urn:oid:1.2.840.10004.1.1.1.0.0.1">
+            <dom:MeasurementUnit Code="263875" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
               <dom:ConceptDescription Lang="en-US">kg</dom:ConceptDescription>
             </dom:MeasurementUnit>
           </dom:Weight>
