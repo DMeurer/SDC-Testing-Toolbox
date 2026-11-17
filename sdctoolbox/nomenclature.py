@@ -48,8 +48,8 @@ class Term:
 
     @property
     def label(self) -> str:
-        """The label a coding gets: the symbol of a unit, else the term."""
-        return self.symbol or self.term
+        """The label a coding gets: the symbol of a unit, else the term, else the reference ID."""
+        return self.symbol or self.term or self.ref_id
 
     @property
     def caption(self) -> str:
@@ -59,7 +59,7 @@ class Term:
     @property
     def display(self) -> str:
         """The Term column: the name, with the symbol first for a unit."""
-        return f"{self.symbol}, {self.term}" if self.symbol else self.term
+        return f"{self.symbol}, {self.term}" if self.symbol and self.term else self.symbol or self.term
 
 
 # (code, reference ID, term) and, for units, the symbol as a fourth item.
@@ -271,6 +271,7 @@ _TABLE: tuple[tuple[str, ...], ...] = (
     # -- units: plain numbers
     ("262656", "MDC_DIM_DIMLESS", "no unit, a plain number", "1"),
     ("262688", "MDC_DIM_PERCENT", "percent", "%"),
+    ("263232", "MDC_DIM_BEAT", "beats, a count", "beats"),
     ("262752", "MDC_DIM_PARTS_PER_MILLION", "parts per million", "ppm"),
     ("268384", "MDC_DIM_VOL_PERCENT", "percent by volume", "vol%"),
     ("263136", "MDC_DIM_PH", "pH value", "pH"),
@@ -278,6 +279,7 @@ _TABLE: tuple[tuple[str, ...], ...] = (
     ("263424", "MDC_DIM_X_M", "metre", "m"),
     ("263441", "MDC_DIM_CENTI_M", "centimetre", "cm"),
     ("263442", "MDC_DIM_MILLI_M", "millimetre", "mm"),
+    ("263520", "MDC_DIM_INCH", "inch", "in"),
     ("263443", "MDC_DIM_MICRO_M", "micrometre", "µm"),
     ("262880", "MDC_DIM_ANG_DEG", "degree of angle", "°"),
     ("262912", "MDC_DIM_ANG_RAD", "radian", "rad"),
@@ -286,6 +288,7 @@ _TABLE: tuple[tuple[str, ...], ...] = (
     ("263875", "MDC_DIM_KILO_G", "kilogram", "kg"),
     ("263890", "MDC_DIM_MILLI_G", "milligram", "mg"),
     ("263891", "MDC_DIM_MICRO_G", "microgram", "µg"),
+    ("263904", "MDC_DIM_LB", "pound", "lb"),
     ("263744", "MDC_DIM_X_L", "litre", "L"),
     ("263762", "MDC_DIM_MILLI_L", "millilitre", "mL"),
     ("263763", "MDC_DIM_MICRO_L", "microlitre", "µL"),
@@ -303,6 +306,7 @@ _TABLE: tuple[tuple[str, ...], ...] = (
     ("264644", "MDC_DIM_MEGA_HZ", "megahertz", "MHz"),
     ("264672", "MDC_DIM_PER_MIN", "per minute", "1/min"),
     ("264864", "MDC_DIM_BEAT_PER_MIN", "beats per minute", "bpm"),
+    ("264896", "MDC_DIM_PULS_PER_MIN", "pulses per minute", "pulses/min"),
     ("264928", "MDC_DIM_RESP_PER_MIN", "breaths per minute", "breaths/min"),
     ("270240", "MDC_DIM_X_ROTATIONS_PER_MIN", "revolutions per minute", "rpm"),
     ("264960", "MDC_DIM_X_M_PER_SEC", "metre per second", "m/s"),
@@ -311,6 +315,7 @@ _TABLE: tuple[tuple[str, ...], ...] = (
     ("265216", "MDC_DIM_X_L_PER_MIN", "litre per minute", "L/min"),
     ("265184", "MDC_DIM_X_L_PER_SEC", "litre per second", "L/s"),
     ("265202", "MDC_DIM_MILLI_L_PER_SEC", "millilitre per second", "mL/s"),
+    ("265234", "MDC_DIM_MILLI_L_PER_MIN", "millilitre per minute", "mL/min"),
     ("265266", "MDC_DIM_MILLI_L_PER_HR", "millilitre per hour", "mL/h"),
     ("264992", "MDC_DIM_L_PER_MIN_PER_M_SQ", "litre per minute per square metre", "L/min/m²"),
     # -- units: drug doses
@@ -324,6 +329,7 @@ _TABLE: tuple[tuple[str, ...], ...] = (
     # -- units: concentration
     ("264274", "MDC_DIM_MILLI_G_PER_DL", "milligram per decilitre", "mg/dL"),
     ("264256", "MDC_DIM_G_PER_DL", "gram per decilitre", "g/dL"),
+    ("264192", "MDC_DIM_X_G_PER_L", "gram per litre", "g/L"),
     ("266866", "MDC_DIM_MILLI_MOLE_PER_L", "millimole per litre", "mmol/L"),
     ("266994", "MDC_DIM_MILLI_EQUIV_PER_L", "milliequivalent per litre", "mEq/L"),
     # -- units: pressure
@@ -336,7 +342,10 @@ _TABLE: tuple[tuple[str, ...], ...] = (
     ("266098", "MDC_DIM_MILLI_BAR", "millibar", "mbar"),
     # -- units: lung mechanics
     ("268050", "MDC_DIM_MILLI_L_PER_CM_H2O", "millilitre per centimetre of water", "mL/cmH2O"),
+    ("273042", "MDC_DIM_MILLI_L_PER_MBAR", "millilitre per millibar", "mL/mbar"),
     ("268064", "MDC_DIM_CM_H2O_PER_L_PER_SEC", "centimetre of water per litre per second", "cmH2O/(L/s)"),
+    ("272914", "MDC_DIM_MILLI_BAR_SEC_PER_L", "millibar per litre per second", "mbar/(L/s)"),
+    ("266242", "MDC_DIM_HECTO_PASCAL_SEC_PER_L", "hectopascal per litre per second", "hPa/(L/s)"),
     # -- units: temperature
     ("268192", "MDC_DIM_DEGC", "degree Celsius", "°C"),
     ("266560", "MDC_DIM_FAHR", "degree Fahrenheit", "°F"),
@@ -398,15 +407,21 @@ _TABLE: tuple[tuple[str, ...], ...] = (
 
 SHIPPED: tuple[Term, ...] = tuple(Term(*row) for row in _TABLE)
 
-# Our own pick of the usual units for the shipped measurements, so the unit picker can offer
-# just those. A measurement missing here (a mode, a name, an age) offers every unit.
+# Our own pick of the usual units for the shipped measurements, best first, so the unit picker
+# can offer just those; checked against the units NIST RTMMS lists (December 2024), which also
+# leaves some measures without any (the ECG leads). A measurement missing here (a mode, a name,
+# an age) offers every unit, unless a loaded codes.csv names its units.
 _PRESSURE_BLOOD = ("MDC_DIM_MMHG", "MDC_DIM_KILO_PASCAL")
-_PRESSURE_GAS = ("MDC_DIM_CM_H2O", "MDC_DIM_MILLI_BAR", "MDC_DIM_HECTO_PASCAL", "MDC_DIM_KILO_PASCAL")
-_GAS_SHARE = ("MDC_DIM_PERCENT", "MDC_DIM_VOL_PERCENT")
+_PRESSURE_GAS = ("MDC_DIM_CM_H2O", "MDC_DIM_MILLI_BAR", "MDC_DIM_HECTO_PASCAL", "MDC_DIM_KILO_PASCAL", "MDC_DIM_MMHG")
+# A gas share, or its partial pressure.
+_GAS_SHARE = ("MDC_DIM_PERCENT", "MDC_DIM_VOL_PERCENT", "MDC_DIM_KILO_PASCAL", "MDC_DIM_MMHG", "MDC_DIM_MILLI_BAR")
 _UNIT_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("ECG_HEART_RATE PULS_RATE PULS_OXIM_PULS_RATE PULS_RATE_NON_INV ECG_V_P_C_RATE",
-     ("MDC_DIM_BEAT_PER_MIN", "MDC_DIM_PER_MIN")),
-    ("ECG_V_P_C_CNT PULS_OXIM_PLETH RATIO_IE RATIO_IE_SETTING CONC_MAC_SUM EEG_BISPECTRAL_INDEX "
+    ("ECG_HEART_RATE ECG_V_P_C_RATE", ("MDC_DIM_BEAT_PER_MIN", "MDC_DIM_PER_MIN")),
+    ("PULS_RATE PULS_OXIM_PULS_RATE PULS_RATE_NON_INV",
+     ("MDC_DIM_BEAT_PER_MIN", "MDC_DIM_PULS_PER_MIN", "MDC_DIM_PER_MIN")),
+    ("ECG_V_P_C_CNT", ("MDC_DIM_BEAT", "MDC_DIM_DIMLESS")),
+    ("RATIO_IE RATIO_IE_SETTING", ("MDC_DIM_DIMLESS", "MDC_DIM_PERCENT")),
+    ("PULS_OXIM_PLETH CONC_MAC_SUM EEG_BISPECTRAL_INDEX "
      "EEG_ENTROPY_STATE EEG_ENTROPY_RESPONSE", ("MDC_DIM_DIMLESS",)),
     ("ECG_ELEC_POTL ECG_ELEC_POTL_I ECG_ELEC_POTL_II ECG_ELEC_POTL_III ECG_ELEC_POTL_AVR ECG_ELEC_POTL_AVL "
      "ECG_ELEC_POTL_AVF ECG_ELEC_POTL_V1 ECG_ELEC_POTL_V2 ECG_ELEC_POTL_V3 ECG_ELEC_POTL_V4 ECG_ELEC_POTL_V5 "
@@ -436,14 +451,17 @@ _UNIT_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
      "VENT_PRESS_AWAY_SETTING VENT_PRESS_AWAY_SUPP_SETTING VENT_PRESS_AWAY_LIMIT_PMAX_SETTING "
      "VENT_PRESS_TRIG_SENS_SETTING", _PRESSURE_GAS),
     ("FLOW_AWAY FLOW_AWAY_INSP FLOW_AWAY_INSP_MAX FLOW_AWAY_EXP FLOW_AWAY_EXP_MAX VENT_FLOW_INSP_SETTING "
-     "VENT_FLOW_TRIG_SENS_SETTING", ("MDC_DIM_X_L_PER_MIN", "MDC_DIM_X_L_PER_SEC", "MDC_DIM_MILLI_L_PER_SEC")),
-    ("VOL_AWAY VENT_VOL_LEAK", ("MDC_DIM_MILLI_L", "MDC_DIM_X_L")),
+     "VENT_FLOW_TRIG_SENS_SETTING",
+     ("MDC_DIM_X_L_PER_MIN", "MDC_DIM_X_L_PER_SEC", "MDC_DIM_MILLI_L_PER_SEC", "MDC_DIM_MILLI_L_PER_MIN")),
+    ("VOL_AWAY", ("MDC_DIM_MILLI_L", "MDC_DIM_X_L")),
+    ("VENT_VOL_LEAK", ("MDC_DIM_X_L_PER_MIN", "MDC_DIM_MILLI_L_PER_MIN", "MDC_DIM_PERCENT")),
     ("VOL_AWAY_TIDAL VOL_AWAY_TIDAL_INSP VOL_AWAY_TIDAL_EXP VENT_VOL_TIDAL_SETTING",
      ("MDC_DIM_MILLI_L", "MDC_DIM_X_L", "MDC_DIM_MILLI_L_PER_KG")),
     ("VOL_MINUTE_AWAY VOL_MINUTE_AWAY_INSP VOL_MINUTE_AWAY_EXP VENT_VOL_MINUTE_AWAY_SETTING",
-     ("MDC_DIM_X_L_PER_MIN",)),
-    ("COMPL_LUNG COMPL_LUNG_DYN COMPL_LUNG_STATIC", ("MDC_DIM_MILLI_L_PER_CM_H2O",)),
-    ("RES_AWAY RES_AWAY_INSP RES_AWAY_EXP", ("MDC_DIM_CM_H2O_PER_L_PER_SEC",)),
+     ("MDC_DIM_X_L_PER_MIN", "MDC_DIM_MILLI_L_PER_MIN", "MDC_DIM_X_L_PER_SEC")),
+    ("COMPL_LUNG COMPL_LUNG_DYN COMPL_LUNG_STATIC", ("MDC_DIM_MILLI_L_PER_CM_H2O", "MDC_DIM_MILLI_L_PER_MBAR")),
+    ("RES_AWAY RES_AWAY_INSP RES_AWAY_EXP",
+     ("MDC_DIM_CM_H2O_PER_L_PER_SEC", "MDC_DIM_MILLI_BAR_SEC_PER_L", "MDC_DIM_HECTO_PASCAL_SEC_PER_L")),
     ("TIME_PD_INSP TIME_PD_EXP VENT_TIME_PD_INSP_SETTING", ("MDC_DIM_X_SEC", "MDC_DIM_MILLI_SEC")),
     ("CONC_AWAY_CO2 CONC_AWAY_CO2_ET CONC_AWAY_CO2_INSP CONC_AWAY_O2_INSP CONC_AWAY_O2_ET "
      "CONC_GASDLV_O2_INSP_SETTING CONC_AWAY_N2O_ET CONC_AWAY_N2O_INSP CONC_AWAY_SEVOFL CONC_AWAY_SEVOFL_ET "
@@ -454,16 +472,17 @@ _UNIT_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("VOL_FLUID_BOLUS VOL_FLUID_TBI VOL_FLUID_TBI_REMAIN VOL_FLUID_DELIV VOL_FLUID_DELIV_TOTAL",
      ("MDC_DIM_MILLI_L", "MDC_DIM_MICRO_L", "MDC_DIM_X_L")),
     ("TIME_PD_REMAIN ATTR_TIME_BATT_REMAIN", ("MDC_DIM_MIN", "MDC_DIM_HR", "MDC_DIM_X_SEC")),
-    ("PRESS_FLUID_LINE_DOWNSTREAM", ("MDC_DIM_MMHG", "MDC_DIM_KILO_PASCAL", "MDC_DIM_MILLI_BAR")),
+    ("PRESS_FLUID_LINE_DOWNSTREAM", ("MDC_DIM_MMHG", "MDC_DIM_KILO_PASCAL", "MDC_DIM_MILLI_BAR", "MDC_DIM_CM_H2O")),
     ("RATE_DOSE", ("MDC_DIM_MILLI_G_PER_MIN", "MDC_DIM_MILLI_G_PER_HR", "MDC_DIM_MICRO_G_PER_MIN",
                    "MDC_DIM_MICRO_G_PER_HR", "MDC_DIM_MILLI_G_PER_KG_PER_HR", "MDC_DIM_MICRO_G_PER_KG_PER_MIN")),
     ("DOSE_DRUG_BOLUS DOSE_DRUG_TBI DOSE_DRUG_DELIV_TOTAL",
      ("MDC_DIM_MILLI_G", "MDC_DIM_MICRO_G", "MDC_DIM_X_G", "MDC_DIM_X_INTL_UNIT")),
-    ("CONC_GLU_GEN CONC_GLU_CAPILLARY_WHOLEBLOOD", ("MDC_DIM_MILLI_G_PER_DL", "MDC_DIM_MILLI_MOLE_PER_L")),
-    ("CONC_HB_GEN CONC_HB_ART", ("MDC_DIM_G_PER_DL", "MDC_DIM_MILLI_MOLE_PER_L")),
+    ("CONC_GLU_GEN CONC_GLU_CAPILLARY_WHOLEBLOOD",
+     ("MDC_DIM_MILLI_G_PER_DL", "MDC_DIM_MILLI_MOLE_PER_L", "MDC_DIM_X_G_PER_L")),
+    ("CONC_HB_GEN CONC_HB_ART", ("MDC_DIM_G_PER_DL", "MDC_DIM_MILLI_MOLE_PER_L", "MDC_DIM_X_G_PER_L")),
     ("CONC_PH_ART", ("MDC_DIM_PH",)),
-    ("MASS_BODY_ACTUAL ATTR_PT_WEIGHT", ("MDC_DIM_KILO_G", "MDC_DIM_X_G")),
-    ("LEN_BODY_ACTUAL ATTR_PT_HEIGHT", ("MDC_DIM_CENTI_M", "MDC_DIM_X_M")),
+    ("MASS_BODY_ACTUAL ATTR_PT_WEIGHT", ("MDC_DIM_KILO_G", "MDC_DIM_X_G", "MDC_DIM_LB")),
+    ("LEN_BODY_ACTUAL ATTR_PT_HEIGHT", ("MDC_DIM_CENTI_M", "MDC_DIM_X_M", "MDC_DIM_INCH")),
     ("RATIO_MASS_BODY_LEN_SQ", ("MDC_DIM_KILO_G_PER_M_SQ",)),
     ("ATTR_BATT_VOLTAGE", ("MDC_DIM_X_VOLT", "MDC_DIM_MILLI_VOLT")),
 )
@@ -474,8 +493,9 @@ _UNITS: dict[str, tuple[str, ...]] = {
     for measures, units in _UNIT_GROUPS for measure in measures.split()
 }
 
-# Terms from the user's own codes.csv, for this session only.
+# Terms from the user's own codes.csv, for this session only, and the units it names per measure.
 _loaded: list[Term] = []
+_loaded_units: dict[str, tuple[str, ...]] = {}
 loaded_from: Path | None = None
 
 
@@ -494,9 +514,19 @@ def lookup(code: str | int) -> Term | None:
     return next((t for t in terms() if wanted in (t.code, t.ref_id)), None)
 
 
+def has_loaded_units() -> bool:
+    """Whether the loaded codes.csv names units for its measures (an RTMMS one does)."""
+    return bool(_loaded_units)
+
+
 def units_for(code: str | int) -> tuple[str, ...]:
-    """The codes of the usual units of a measurement code, best first; empty if not known."""
-    return _UNITS.get(str(code).strip(), ())
+    """The codes of the usual units of a measurement code, best first; empty if not known.
+
+    The toolbox's own pick comes first, then any other unit a loaded codes.csv names.
+    """
+    code = str(code).strip()
+    own = _UNITS.get(code, ())
+    return own + tuple(unit for unit in _loaded_units.get(code, ()) if unit not in own)
 
 
 def _score(term: Term, query: str, words: list[str]) -> int | None:
@@ -555,8 +585,9 @@ def _csv_code(row: dict[str, str]) -> str | None:
 def load_csv(path: str | Path) -> int:
     """Add the terms of a codes.csv (from helpers/Coding Systems) for this session.
 
-    Replaces what an earlier file added. Rows without a reference ID or a valid code are
-    skipped; a file without the columns, or without a single usable row, is refused with
+    Replaces what an earlier file added. An optional ``unit_codes`` column lists a measure's
+    units as context-free codes separated by spaces, and ``symbol`` a unit's symbol (helpers/Coding Systems/rtmms_to_codes_csv.py
+    fills it from NIST RTMMS). Rows without a reference ID or a valid code are skipped; a file without the columns, or without a single usable row, is refused with
     NomenclatureFileError and changes nothing. Returns how many terms it added.
     """
     global loaded_from  # noqa: PLW0603 - the session's one extra list
@@ -574,16 +605,26 @@ def load_csv(path: str | Path) -> int:
         raise NomenclatureFileError(msg) from exc
     known = {(t.code, t.ref_id) for t in SHIPPED}
     found: dict[tuple[str, str], Term] = {}
+    units: dict[str, list[str]] = {}
     for row in rows:
         ref_id = (row.get("reference_id") or "").strip()
         code = _csv_code(row)
-        if code is None or re.fullmatch(r"MDC(_[A-Z0-9]+)+", ref_id) is None or (code, ref_id) in known:
+        if code is None or re.fullmatch(r"MDC(_[A-Z0-9]+)+", ref_id) is None:
+            continue
+        if kind_of(code) == "measurement":  # shipped measures too: the file may know more units
+            for unit in (row.get("unit_codes") or "").split():
+                if unit.isdigit() and kind_of(unit) == "unit" and unit not in units.setdefault(code, []):
+                    units[code].append(unit)
+        if (code, ref_id) in known:
             continue
         term = next((row.get(c, "").strip() for c in ("common_term", "systematic_name") if row.get(c, "").strip()), "")
-        found.setdefault((code, ref_id), Term(code, ref_id, term, shipped=False))
+        symbol = (row.get("symbol") or "").strip() if kind_of(code) == "unit" else ""
+        found.setdefault((code, ref_id), Term(code, ref_id, term, symbol, shipped=False))
     if not found and not any((_csv_code(r), (r.get("reference_id") or "").strip()) in known for r in rows):
         msg = f"{path.name} has no row with a reference ID and a valid code"
         raise NomenclatureFileError(msg)
     _loaded[:] = found.values()
+    _loaded_units.clear()
+    _loaded_units.update((code, tuple(codes)) for code, codes in units.items() if codes)
     loaded_from = path
     return len(found)

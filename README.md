@@ -596,9 +596,10 @@ everything), type a few words such as `pulse rate` or `mmHg`, and double-click t
 data source then carries that IEEE 11073-10101 code as its type or unit instead of a private
 code made from its label. A unit typed by hand still works and stays a plain label.
 
-Picking the unit after the measure offers only that measure's usual units, for example bpm and
-1/min for a pulse rate; untick **Only units for …** to see them all. The toolbox's own pick
-covers its shipped measures; other measures offer every unit.
+Picking the unit after the measure offers only that measure's usual units, for example bpm,
+pulses/min and 1/min for a pulse rate; untick **Only units for …** to see them all. The
+toolbox's own pick covers its shipped measures and was checked against the units NIST RTMMS
+lists; other measures offer every unit, unless a loaded file names their units (below).
 
 The toolbox ships about 300 common terms: every code the presets use and the usual vital
 signs, blood pressure, temperature, ventilation, gas, infusion, alert and unit codes. Each code
@@ -610,6 +611,17 @@ For the rest of the nomenclature, export your own copy of the standard with
 **Load codes…**. Its codes join the search for the session and the file loads again next
 time; a file that cannot be used is reported and ignored. The export is made from your licensed
 copy of the standard: keep it to yourself, and never commit or share a `codes.csv`.
+
+[NIST RTMMS](https://rtmms.nist.gov) also lists which units each measure may use. With a free
+account, download the base term file under *Download Term Files* and turn it into `rtmms.csv`,
+a codes.csv with units:
+
+```powershell
+.venv\Scripts\python.exe "helpers\Coding Systems\rtmms_to_codes_csv.py" rtmms_base_terms.xlsx
+```
+
+Loaded with **Load codes…**, it adds RTMMS's terms to the search and its units to **Only units
+for …**, after the toolbox's own pick.
 
 Agents do the same over MCP with `search_codes` and pass a result's `{code, system, label}` as
 the `type` or `unit` of `add_metric`.

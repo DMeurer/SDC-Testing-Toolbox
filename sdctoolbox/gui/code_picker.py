@@ -3,7 +3,8 @@
 It searches sdctoolbox.nomenclature, the common codes that ship with the toolbox, and the
 user's own codes.csv export if one was loaded ("Load codes…"). The file's path is
 remembered, so it loads again in the next session the first time the dialog opens.
-Picking a unit for a known measure offers only that measure's usual units, unless unticked.
+Picking a unit for a known measure offers only that measure's usual units, unless unticked:
+the toolbox's own pick, then any a loaded codes.csv names.
 """
 
 from __future__ import annotations
@@ -97,7 +98,7 @@ class CodePickerDialog(QDialog):
         self.search_edit.setPlaceholderText("a name, reference ID or code, e.g. pulse rate")
         self.search_edit.setClearButtonEnabled(True)
         self._measure = measure
-        self._units = set(nomenclature.units_for(measure.code)) if measure else set()
+        self._units: set[str] = set(nomenclature.units_for(measure.code)) if measure else set()
         self.only_units_box = QCheckBox(
             f"Only units for {measure.term} ({measure.ref_id})" if measure and measure.term
             else f"Only units for {measure.ref_id}" if measure else "",
@@ -124,7 +125,8 @@ class CodePickerDialog(QDialog):
         set_button_kind(self.load_button, "design-outline")
         self.load_button.setToolTip(
             "A codes.csv made by helpers/Coding Systems/export_11073_tables.py from your own copy\n"
-            "of IEEE 11073-10101. It is remembered and loads again next time.",
+            "of IEEE 11073-10101, or by rtmms_to_codes_csv.py from a NIST RTMMS download, which\n"
+            "also knows each measure's units. It is remembered and loads again next time.",
         )
         source = QWidget()
         source_row = QHBoxLayout(source)
@@ -200,7 +202,10 @@ class CodePickerDialog(QDialog):
     def _update_source(self) -> None:
         text = f"{len(nomenclature.SHIPPED)} common codes ship with the toolbox."
         extra = len(nomenclature.terms()) - len(nomenclature.SHIPPED)
-        if nomenclature.loaded_from is not None:
+        if nomenclature.loaded_from is not None and nomenclature.has_loaded_units():
+            text = (f"{len(nomenclature.SHIPPED)} common codes ship with the toolbox; {nomenclature.loaded_from.name}"
+                    " adds the rest and which units each measure allows.")
+        elif nomenclature.loaded_from is not None:
             text += f" {extra} more come from {nomenclature.loaded_from.name}."
         else:
             text += " Your own export of IEEE 11073-10101 adds the rest."
@@ -209,6 +214,11 @@ class CodePickerDialog(QDialog):
     def _on_load(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Choose codes.csv", "", "CSV files (*.csv);;All files (*)")
         if path and load_codes(self, str(Path(path))):
+            if self._measure is not None:  # the file may name units the measure had none of
+                had_units = bool(self._units)
+                self._units = set(nomenclature.units_for(self._measure.code))
+                if not had_units:
+                    self.only_units_box.setChecked(bool(self._units))
             self._refresh()
 
     def accept(self) -> None:

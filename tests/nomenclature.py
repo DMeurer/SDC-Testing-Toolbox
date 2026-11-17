@@ -5,10 +5,12 @@ Usage:  .venv/Scripts/python.exe tests/nomenclature.py
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
 import tempfile
 import unittest
+import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
@@ -40,6 +42,48 @@ CSV_ROWS = (
 )
 
 
+# The same with the optional columns: a measure's units and a unit's symbol.
+UNITS_CSV = (
+    "reference_id,common_term,systematic_name,symbol,part_code,cf_code10,unit_codes\n"
+    "MDC_PULS_RATE,,,,2::18442,149514,264864 264928 149514 x\n"  # bpm, breaths/min; a measure and junk: ignored
+    "MDC_VENT_MODE,,,,2::53280,184352,327146\n"  # a measure the toolbox knows no units for
+    "MDC_TOY_UNIT,,,toy/s,4::65002,327146,\n"  # its symbol, no term
+)
+
+
+def rtmms_converter():  # noqa: ANN201 - the helper module
+    """helpers/Coding Systems/rtmms_to_codes_csv.py, imported from its folder with a space."""
+    path = ROOT / "helpers" / "Coding Systems" / "rtmms_to_codes_csv.py"
+    spec = importlib.util.spec_from_file_location("rtmms_to_codes_csv", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def write_xlsx(path: Path, sheets: dict[str, list[list[str]]]) -> Path:
+    """A minimal .xlsx with inline strings, shaped like an RTMMS download."""
+    main = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    with zipfile.ZipFile(path, "w") as book:
+        listed, rels = [], []
+        for number, (name, rows) in enumerate(sheets.items(), 1):
+            listed.append(f'<sheet name="{name}" sheetId="{number}" r:id="rId{number}"/>')
+            rels.append(f'<Relationship Id="rId{number}" Target="worksheets/sheet{number}.xml" Type="{rel}/worksheet"/>')
+            cells = "".join(
+                f'<row r="{r + 1}">' + "".join(
+                    f'<c r="{chr(65 + c)}{r + 1}" t="inlineStr"><is><t>{text}</t></is></c>'
+                    for c, text in enumerate(row) if text) + "</row>"
+                for r, row in enumerate(rows))
+            book.writestr(f"xl/worksheets/sheet{number}.xml",
+                          f'<worksheet xmlns="{main}"><sheetData>{cells}</sheetData></worksheet>')
+        book.writestr("xl/workbook.xml",
+                      f'<workbook xmlns="{main}" xmlns:r="{rel}"><sheets>{"".join(listed)}</sheets></workbook>')
+        book.writestr("xl/_rels/workbook.xml.rels",
+                      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                      f'{"".join(rels)}</Relationships>')
+    return path
+
+
 def write(directory: str, name: str, text: str, encoding: str = "utf-8") -> Path:
     path = Path(directory) / name
     path.write_text(text, encoding=encoding)
@@ -48,6 +92,7 @@ def write(directory: str, name: str, text: str, encoding: str = "utf-8") -> Path
 
 def forget_loaded_codes() -> None:
     nomenclature._loaded.clear()  # noqa: SLF001 - reset the session state between tests
+    nomenclature._loaded_units.clear()  # noqa: SLF001
     nomenclature.loaded_from = None
     code_picker._remembered_tried = False  # noqa: SLF001
 
@@ -57,8 +102,10 @@ class NomenclatureTests(unittest.TestCase):
         forget_loaded_codes()
 
     def test_units_per_measure_are_shipped_units_of_shipped_measurements(self) -> None:
-        self.assertEqual(nomenclature.units_for("149514"), ("264864", "264672"))  # bpm, 1/min
+        self.assertEqual(nomenclature.units_for("149514"), ("264864", "264896", "264672"))  # bpm, pulses/min, 1/min
         self.assertEqual(nomenclature.units_for(184352), ())  # a ventilation mode has none
+        measures = [m for group, _ in nomenclature._UNIT_GROUPS for m in group.split()]  # noqa: SLF001
+        self.assertEqual(len(measures), len(set(measures)), "a measure in two groups gets only the last")
         for measure, units in nomenclature._UNITS.items():  # noqa: SLF001
             self.assertEqual(nomenclature.lookup(measure).kind, "measurement", measure)
             self.assertTrue(units and all(nomenclature.lookup(u).kind == "unit" for u in units), measure)
@@ -151,6 +198,42 @@ class NomenclatureTests(unittest.TestCase):
         self.assertEqual([t.ref_id for t in nomenclature.search("toy", "unit")], ["MDC_TOY_UNIT"])
         self.assertEqual(nomenclature.search("rate")[0].shipped, True, "shipped terms rank first")
 
+    def test_a_codes_csv_adds_units_after_the_toolbox_pick(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            nomenclature.load_csv(write(directory, "codes.csv", UNITS_CSV))
+        self.assertEqual(nomenclature.units_for("149514"), ("264864", "264896", "264672", "264928"))
+        self.assertEqual(nomenclature.units_for("184352"), ("327146",))
+        toy = nomenclature.lookup("327146")
+        self.assertEqual((toy.label, toy.display, toy.caption), ("toy/s", "toy/s", "toy/s · MDC_TOY_UNIT (327146)"))
+        forget_loaded_codes()
+        self.assertEqual(nomenclature.units_for("184352"), ())
+
+    def test_an_rtmms_download_becomes_a_codes_csv_with_units(self) -> None:
+        head = ["Status", "CF_CODE10", "PartCode", "RefID", "CommonTerm", "CF_UCODE10", "UNIT_GROUPS"]
+        with tempfile.TemporaryDirectory() as directory:
+            source = write_xlsx(Path(directory) / "rtmms.xlsx", {
+                "partition_2": [
+                    head,
+                    ["Published", "196073", "2::65001", "MDC_TOY_WIDGET_RATE(Preferred)", "Toy widget rate",
+                     "264864\n264928", ""],
+                    ["Withdrawn", "196074", "2::65002", "MDC_TOY_GONE", "Gone", "264864", ""],
+                    ["Published", "196075", "2::65003", "MDC_TOY_GROUPED", "Grouped", "", "_UOM_TOY"],
+                ],
+                "partition_4": [
+                    ["Status", "CF_CODE10", "PartCode", "RefID", "Symbol", "UOM_UCUM"],
+                    ["Published", "327146", "4::65002", "MDC_TOY_UNIT", "t", "toy/s {toy}/s"],
+                ],
+                "enum_values": [["Status", "Value"], ["Published", "not a term"]],
+            })
+            target = Path(directory) / "out" / "codes.csv"
+            self.assertEqual(rtmms_converter().convert(source, target), 3)
+            nomenclature.load_csv(target)
+        self.assertEqual(nomenclature.lookup("MDC_TOY_WIDGET_RATE").term, "Toy widget rate")
+        self.assertEqual(nomenclature.units_for("196073"), ("264864", "264928"))
+        self.assertEqual(nomenclature.units_for("196075"), (), "units only through a group are left out")
+        self.assertIsNone(nomenclature.lookup("MDC_TOY_GONE"))
+        self.assertEqual(nomenclature.lookup("MDC_TOY_UNIT").symbol, "toy/s")
+
     def test_a_malformed_codes_csv_is_refused_and_changes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             nomenclature.load_csv(write(directory, "good.csv", CSV_HEADER + CSV_ROWS))
@@ -219,7 +302,7 @@ class PickerTests(unittest.TestCase):
         self.assertEqual(dialog.only_units_box.text(), "Only units for Pulse rate (MDC_PULS_RATE)")
         self.assertTrue(dialog.only_units_box.isChecked())
         self.assertEqual([dialog.table.item(r, 1).text() for r in range(dialog.table.rowCount())],
-                         ["MDC_DIM_BEAT_PER_MIN", "MDC_DIM_PER_MIN"])
+                         ["MDC_DIM_BEAT_PER_MIN", "MDC_DIM_PULS_PER_MIN", "MDC_DIM_PER_MIN"])
         dialog.search_edit.setText("beat")
         self.assertEqual(dialog.term().ref_id, "MDC_DIM_BEAT_PER_MIN")
         dialog.search_edit.setText("mmHg")
@@ -246,6 +329,18 @@ class PickerTests(unittest.TestCase):
         forget_loaded_codes()  # the next session
         CodePickerDialog()
         self.assertEqual(nomenclature.loaded_from, path)
+
+    def test_loading_codes_can_give_the_measure_units(self) -> None:
+        dialog = CodePickerDialog("unit", measure=nomenclature.lookup("184352"))
+        self.assertFalse(dialog._form.isRowVisible(dialog._only_units_row))  # noqa: SLF001
+        path = write(self.directory.name, "codes.csv", UNITS_CSV)
+        with patch.object(code_picker.QFileDialog, "getOpenFileName", return_value=(str(path), "")):
+            dialog.load_button.click()
+        self.assertTrue(dialog._form.isRowVisible(dialog._only_units_row))  # noqa: SLF001
+        self.assertTrue(dialog.only_units_box.isChecked())
+        self.assertEqual([dialog.table.item(r, 1).text() for r in range(dialog.table.rowCount())], ["MDC_TOY_UNIT"])
+        self.assertEqual(dialog.source_label.text(), f"{len(nomenclature.SHIPPED)} common codes ship with the "
+                         "toolbox; codes.csv adds the rest and which units each measure allows.")
 
     def test_a_malformed_file_is_reported_and_ignored(self) -> None:
         good = write(self.directory.name, "codes.csv", CSV_HEADER + CSV_ROWS)

@@ -222,7 +222,8 @@ type is a private code made from the label, and a typed unit is a label only.
 - **Code | Reference ID | Term**: the context-free code ((partition << 16) + term code), the
   standard's reference ID and a short name in the toolbox's own words. Double-click picks.
 - **Load codes…**: the toolbox ships a few hundred common codes. Your own export of the
-  standard (helpers/Coding Systems/export_11073_tables.py) adds the rest; the file is
+  standard (helpers/Coding Systems/export_11073_tables.py) adds the rest, and a NIST RTMMS
+  download (rtmms_to_codes_csv.py) also adds each measure's units; the file is
   remembered and loads again next time. A file that cannot be used is reported and ignored.
 
 Over MCP, search_codes does the same search; pass a result's {code, system, label} as the

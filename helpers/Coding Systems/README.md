@@ -42,6 +42,21 @@ For a specific term, filter `codes.csv` or the **Codes** worksheet by
 `reference_id`, `common_term`, `systematic_name`, `part_code`, or any source column retained in the JSON fields. The row's `source_pdf_page` and
 `source_filename` lead back to the standard.
 
+## Units per measure from NIST RTMMS
+
+The standard's tables do not say which units a measure may use; NIST RTMMS does.
+`rtmms_to_codes_csv.py` turns an RTMMS term download (free account at https://rtmms.nist.gov,
+*Download Term Files*, the base terms `.xlsx`) into a `codes.csv` with a `unit_codes` column,
+using the standard library only:
+
+```powershell
+.venv\Scripts\python.exe "helpers\Coding Systems\rtmms_to_codes_csv.py" rtmms_base_terms_2024-12-04.xlsx
+```
+
+It writes `output/rtmms.csv` (or the path given second). Rejected, withdrawn and deprecated
+terms are left out, and so are units RTMMS gives only through a unit group, which the download
+does not resolve.
+
 ## Limitations
 
 - The 10101 amendments describe insertions and replacements. Their rows are exported with their own source document. They are not silently merged into the 2020 base edition.
