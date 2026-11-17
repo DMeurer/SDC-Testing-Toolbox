@@ -33,6 +33,7 @@ Message boxes are standard `QMessageBox`es and are not drawn in the design. Thes
 | Warning | Outside the allowed range, Invalid value, Could not set value, Could not change remote control | My device values |
 | Warning | Could not change the alarm, Could not acknowledge, Could not stop latched signals, Could not delegate | My device alarms |
 | Warning | Could not run the action, Could not change the contexts | My device |
+| Warning | Could not change the fault | My device Faults section (Advanced mode) |
 | Warning | Could not add connection, Could not close connection | Network tabs |
 | Warning | Could not load codes | Pick an MDC code (Load codes.csv…, or a remembered file that no longer loads) |
 | Warning | Could not start the MCP server | startup with `--mcp` when the port is taken |

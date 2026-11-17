@@ -54,6 +54,8 @@ class WidgetSpec:
     selected_operation_handle: str | None = None
     # The metric's ActivationState. Anything but On (or unknown) greys the whole card.
     activation: str | None = None
+    # A simulated fault, such as "StndBy" or "Qst", shown as a chip by the title (Advanced mode).
+    fault: str = ""
 
     @property
     def active(self) -> bool:
@@ -80,7 +82,7 @@ class WidgetSpec:
         return self.control_ranges or self.technical_ranges
 
 
-def from_spec(handle: str, spec: MetricSpec, *, editable: bool, note: str = "") -> WidgetSpec:
+def from_spec(handle: str, spec: MetricSpec, *, editable: bool, note: str = "", fault: str = "") -> WidgetSpec:
     """Convert one of our own metrics."""
     return WidgetSpec(
         handle=handle,
@@ -96,6 +98,7 @@ def from_spec(handle: str, spec: MetricSpec, *, editable: bool, note: str = "") 
         sample_period=spec.sample_period,
         domain=spec.domain_text(),
         activation=None if spec.active else "Off",
+        fault=fault,
     )
 
 

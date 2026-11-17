@@ -43,6 +43,9 @@ network identity, `urn:uuid:...`). At its right:
 - *Split view* (F8): My device and Network side by side.
 - *Fullscreen* (F11).
 - *Dark mode*.
+- *Advanced mode*: the controls for testing consumers (see *advanced mode*). The
+  *Simple | Advanced* switch at the right of the tab strip does the same; the choice is
+  remembered for the next start.
 """),
     "my device": ("The My device tab: buttons, info lines and sections", """\
 # My device
@@ -62,6 +65,8 @@ network identity, `urn:uuid:...`). At its right:
   Hovering an entry shows its XML.
 - *Metrics* (the chip counts them): one card or table row per data source.
 - *Alarms* (chips: how many, and how many are active): the alarm table and its buttons.
+- *Faults* (Advanced mode only; chips: *Advanced* and how many faults are on): simulated
+  faults for testing consumers, see *faults*.
 
 **Actions** row at the bottom: *New action...* and one button per action, which runs it.
 """),
@@ -220,6 +225,51 @@ type is a private code made from the label, and a typed unit is a label only.
 
 Over MCP, search_codes does the same search; pass a result's {code, system, label} as the
 `type` or `unit` of add_metric.
+"""),
+    "advanced mode": ("Simple and Advanced mode: what Advanced mode adds", """\
+# Advanced mode
+
+The toolbox starts in **Simple** mode, for learning SDC. **Advanced** mode (View > Advanced
+mode, or the *Simple | Advanced* switch at the right of the tab strip) adds controls for
+people testing their own SDC consumer. Nothing Simple mode shows is hidden in Advanced mode.
+
+It adds, on My device:
+- the **Faults** section under Alarms (see *faults*),
+- a chip next to a card's title naming its fault, such as *StndBy*, *Qst* or *Fail*.
+
+The mode is a view setting only: faults set over MCP work in either mode, and stay on when
+you switch back to Simple.
+"""),
+    "faults": ("The Faults section: simulated faults and what a consumer sees", """\
+# Faults
+
+States that go wrong, so you can see how a consumer copes. Shown in Advanced mode.
+
+**Device-wide** (buttons; a tinted one is on; runtime only, never saved):
+- *Answer after ... ms*: wait 250 to 5000 ms before answering Set, Activate, GetMdib,
+  GetMdState and GetMdDescription requests. Tests timeouts.
+- *Refuse every write*: every set and activate is answered *Fail*, with a reason saying it is
+  a simulated fault.
+- *Pause reports*: no state or waveform reports go out (descriptor changes and operation
+  reports still do). Switched off, every current state is reported once so consumers catch up.
+- *Drop subscriptions*: forgets every subscription now without telling the subscriber (no
+  SubscriptionEnd). Reports stop; the consumer finds out when its Renew fails.
+- *Leave without Bye*: vanishes like a crashed device: no Bye, no answer to Probe or Resolve,
+  every request dropped unanswered, subscriptions forgotten. Switched off, the device comes
+  back with a Hello and consumers must connect again.
+- *Reset all faults*: ends every fault, device-wide and per metric.
+
+**Per metric** (table: Handle, Label, Activation, Validity, Mode, What consumers see). These
+are real MDIB state, stay on every value written later (by you, a consumer, an action or the
+generator) and are saved in MDIB exports. A value differing from normal is in the accent colour.
+- *Activation* (ActivationState): *On* normal; *StndBy* sensor in standby, *NotRdy* not ready
+  yet, *Fail* failed, *Shtdn* shutting down: a consumer should show no value; generated
+  waveforms stop. *Off* is the ordinary switch.
+- *Validity* (MetricQuality/@Validity): *Vld* valid; *Vldated* validated by a clinician; *Ong*
+  measurement still going on; *Qst* questionable; *Calib* taken while calibrating; *Inv*
+  invalid, do not use; *Oflw* / *Uflw* above / below the measuring range; *NA* not available.
+- *Mode* (MetricQuality/@Mode): *Real* from a real measurement; *Test* test data; *Demo* demo
+  data (normal for generated waveforms and distributions).
 """),
     "startup": ("The start dialog and command line", """\
 # Starting the toolbox

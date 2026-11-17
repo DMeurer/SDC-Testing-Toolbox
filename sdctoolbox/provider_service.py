@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING
 from sdc11073.location import SdcLocation
 from sdc11073.mdib import ProviderMdib, mdibbase
 from sdc11073.mdib.statecontainers import AllowedValuesType
-from sdc11073.provider import SdcProvider
 from sdc11073.provider.operations import ActivateOperation
 from sdc11073.provider.porttypes.getserviceimpl import GetService
 from sdc11073.provider.providerimpl import RoleProviderComponents, provider_components_async_factory
@@ -31,9 +30,15 @@ from sdc11073.xml_types.xml_structure import DateOfBirthProperty
 from . import constants, ports
 from .config import _unique_in
 from .handlers import (
+    MAX_ANSWER_DELAY_MS,
+    NO_FAULT,
+    DeviceFaults,
+    FaultableProvider,
+    MetricFault,
     QuietSubscriptionsManager,
     ReasonedSetService,
     VersionedGetService,
+    apply_fault,
     apply_metric_value,
     make_activate_handler,
     make_set_handler,
@@ -186,6 +191,33 @@ def _write_limits(state, spec: AlertSpec) -> None:  # noqa: ANN001 - an sdc11073
         state.MonitoredAlertLimits = pm_types.AlertConditionMonitoredLimits.HIGH_OFF
 
 
+def _usual_mode(spec: MetricSpec) -> str:
+    """The GenerationMode the toolbox publishes a metric with: sample arrays are generated demo data."""
+    return pm_types.GenerationMode.DEMO.value if spec.is_sample_array else pm_types.GenerationMode.REAL.value
+
+
+def _fault_value(enum: type, value: str, what: str) -> str:
+    """A BICEPS enumeration value, or a ValueError naming the ones there are."""
+    try:
+        return enum(value).value
+    except ValueError:
+        msg = f"{value!r} is not a {what}; use one of {', '.join(member.value for member in enum)}"
+        raise ValueError(msg) from None
+
+
+def _loaded_fault(state, spec: MetricSpec) -> MetricFault:  # noqa: ANN001 - an sdc11073 metric state
+    """The fault a state from a file carries, so a fault exported with the MDIB comes back with it."""
+    activation = state.ActivationState
+    quality = getattr(getattr(state, "MetricValue", None), "MetricQuality", None)
+    validity = getattr(quality, "Validity", None)
+    mode = getattr(quality, "Mode", None)
+    return MetricFault(
+        None if activation in (None, pm_types.ComponentActivation.ON, pm_types.ComponentActivation.OFF) else activation,
+        None if validity in (None, pm_types.MeasurementValidity.VALID) else validity,
+        None if mode in (None, _usual_mode(spec)) else mode,
+    )
+
+
 def _coded_value(coding: Coding, label: str = "") -> pm_types.CodedValue:
     """Turn one of our Codings into the BICEPS element.
 
@@ -261,6 +293,10 @@ class ProviderService:
         self._operations: dict[str, str] = {}
         # metric handle -> the spec it was created from
         self._specs: dict[str, MetricSpec] = {}
+        # metric handle -> its simulated fault; only metrics that have one
+        self._metric_faults: dict[str, MetricFault] = {}
+        # Device-wide simulated faults. Runtime only: a new device starts without them.
+        self.faults = DeviceFaults()
         # alarm handle -> the spec it was created from
         self._alerts: dict[str, AlertSpec] = {}
         # alarm handle -> condition truth before activation predicates are applied
@@ -288,6 +324,7 @@ class ProviderService:
             lambda: self._specs,
             self._lock,
             instance_name,
+            fault_for=self._fault,
         )
 
     # -- lifecycle -----------------------------------------------------------------
@@ -350,6 +387,10 @@ class ProviderService:
                 self._operations = adopted.operations
                 self._sections = adopted.sections
                 self._adopted_metrics = set(adopted.specs)
+                for handle, spec in adopted.specs.items():
+                    fault = _loaded_fault(mdib.entities.by_handle(handle).state, spec)
+                    if fault.parts:
+                        self._metric_faults[handle] = fault
                 behaviour = getattr(mdib, "toolbox_behaviour", {})
                 self._actions = native.apply_behaviour(
                     mdib, behaviour, adopted.specs,
@@ -371,10 +412,13 @@ class ProviderService:
                 coerce_value=self._coerce_value,
                 on_applied=self._on_metric_applied,
                 execution_lock=self._lock,
+                faults=self.faults,
+                fault_for=self._fault,
             )
             self._activate_handler = make_activate_handler(
                 self._mdib,
                 execute_effects=self._execute_remote_action,
+                faults=self.faults,
             )
 
             this_model = ThisModelType(
@@ -415,7 +459,8 @@ class ProviderService:
             if self.tls_config is not None:
                 provider_components.soap_client_class = partial(VerifiedSoapClientAsync, tls_config=self.tls_config)
 
-            self._provider = SdcProvider(
+            self._provider = FaultableProvider(
+                faults=self.faults,
                 ws_discovery=self._discovery,
                 epr=self.epr,
                 this_model=this_model,
@@ -463,7 +508,7 @@ class ProviderService:
         with self._lifecycle_lock:
             running = self.generator_running
             self.stop_generator()
-            names = ("_operations", "_specs", "_alerts", "_alert_truths", "_alert_signals", "_actions",
+            names = ("_operations", "_specs", "_metric_faults", "_alerts", "_alert_truths", "_alert_signals", "_actions",
                      "_sections", "_pending_alert_sources", "_mds_mode_before_demo", "_adopted_metrics",
                      "_file_generated", "preset", "card_settings")
             try:
@@ -541,6 +586,8 @@ class ProviderService:
             self._tls_contexts = None
             self._operations.clear()
             self._specs.clear()
+            self._metric_faults.clear()
+            self.faults = DeviceFaults()
             self._alerts.clear()
             self._alert_truths.clear()
             self._alert_signals.clear()
@@ -1073,6 +1120,7 @@ class ProviderService:
                 self._alert_truths.pop(alert_handle, None)
                 self._alert_signals.pop(alert_handle, None)
             self._specs.pop(handle, None)
+            self._metric_faults.pop(handle, None)
             self._pending_alert_sources.discard(handle)
             self._sample_generator.forget(handle)
             for entity in section_entities:
@@ -1125,7 +1173,7 @@ class ProviderService:
                 msg = f"no metric with handle {handle!r}"
                 raise KeyError(msg)
             normalized = self._coerce_value(handle, value)
-            apply_metric_value(entity.state, normalized)
+            apply_metric_value(entity.state, normalized, self._fault(handle))
             with self.mdib.metric_state_transaction() as mgr:
                 mgr.write_entity(entity)
 
@@ -1229,22 +1277,154 @@ class ProviderService:
             self._specs[handle] = spec
 
     def set_metric_active(self, handle: str, *, active: bool) -> None:
-        """Switch a metric On or Off through its ActivationState."""
+        """Switch a metric On or Off through its ActivationState; it also ends an activation fault."""
+        self.set_metric_fault(handle, activation="On" if active else "Off")
+
+    # -- simulated faults ----------------------------------------------------------
+
+    def _fault(self, handle: str) -> MetricFault:
+        """A metric's fault overrides; NO_FAULT when it has none. Read by the generator and the SCO thread."""
+        return self._metric_faults.get(handle, NO_FAULT)
+
+    def set_metric_fault(
+        self,
+        handle: str,
+        *,
+        activation: str | None = None,
+        validity: str | None = None,
+        mode: str | None = None,
+    ) -> MetricFault:
+        """Simulate a metric's sensor state or value quality; None leaves that part as it is.
+
+        Values are BICEPS's: ActivationState (On, StndBy, NotRdy, Fail, Off, Shtdn), MetricQuality
+        Validity (Vld, Vldated, Ong, Qst, Calib, Inv, Oflw, Uflw, NA) and Mode (Real, Test, Demo).
+        On and Off are the ordinary switch; Vld and the metric's usual mode end their fault. A fault
+        is real MDIB state and stays on every value written later, locally, remotely or by the
+        generator. Returns what consumers are now told (see metric_fault).
+        """
+        if activation is not None:
+            activation = _fault_value(pm_types.ComponentActivation, activation, "ComponentActivation")
+        if validity is not None:
+            validity = _fault_value(pm_types.MeasurementValidity, validity, "MeasurementValidity")
+        if mode is not None:
+            mode = _fault_value(pm_types.GenerationMode, mode, "GenerationMode")
         with self._lock:
             spec = self._specs.get(handle)
-            if spec is None:
+            entity = self.mdib.entities.by_handle(handle)
+            if spec is None or entity is None:
                 msg = f"no metric with handle {handle!r}"
                 raise KeyError(msg)
-            updated = replace(spec, active=active)
-            entity = self.mdib.entities.by_handle(handle)
-            entity.state.ActivationState = pm_types.ComponentActivation.ON if active else pm_types.ComponentActivation.OFF
+            changes = {}
+            if activation is not None:
+                changes["activation"] = None if activation in ("On", "Off") else activation
+                self._specs[handle] = spec = replace(spec, active=activation != "Off")
+                entity.state.ActivationState = pm_types.ComponentActivation(activation)
+            quality = getattr(entity.state.MetricValue, "MetricQuality", None)
+            if validity is not None:
+                changes["validity"] = None if validity == "Vld" else validity
+                if quality is not None:
+                    quality.Validity = pm_types.MeasurementValidity(validity)
+            if mode is not None:
+                changes["mode"] = None if mode == _usual_mode(spec) else mode
+                if quality is not None:
+                    quality.Mode = pm_types.GenerationMode(mode)
+            fault = replace(self._fault(handle), **changes)
+            if fault.parts:
+                self._metric_faults[handle] = fault
+            else:
+                self._metric_faults.pop(handle, None)
+            apply_fault(entity.state, fault)
             transaction = (
                 self.mdib.rt_sample_state_transaction if spec.kind is MetricKind.WAVEFORM else self.mdib.metric_state_transaction
             )
             with transaction() as mgr:
                 mgr.write_entity(entity)
-            self._specs[handle] = updated
+        if fault.parts:
+            logger.info("metric %s simulates %s", handle, " ".join(fault.parts))
         self._evaluate_alerts({handle})
+        return self.metric_fault(handle)
+
+    def metric_fault(self, handle: str) -> MetricFault:
+        """What consumers are told about a metric: its activation, validity and mode, faulted or not."""
+        spec = self._specs.get(handle)
+        if spec is None:
+            msg = f"no metric with handle {handle!r}"
+            raise KeyError(msg)
+        fault = self._fault(handle)
+        return MetricFault(
+            fault.activation or ("On" if spec.active else "Off"),
+            fault.validity or "Vld",
+            fault.mode or _usual_mode(spec),
+        )
+
+    def metric_faults(self) -> dict[str, MetricFault]:
+        """The metrics that simulate a fault, with only their faulted parts set."""
+        return dict(self._metric_faults)
+
+    def set_device_faults(
+        self,
+        *,
+        answer_delay_ms: int | None = None,
+        refuse_writes: bool | None = None,
+        pause_reports: bool | None = None,
+        silent: bool | None = None,
+    ) -> DeviceFaults:
+        """Change the device-wide faults; None leaves one as it is. Returns a copy of them all.
+
+        * answer_delay_ms: wait this long before answering Set, Activate, GetMdib, GetMdState
+          and GetMdDescription requests (0 answers at once).
+        * refuse_writes: answer every remote set and activate with Fail, saying it is simulated.
+        * pause_reports: send no state or waveform reports; descriptor changes and operation
+          reports still go out. Switched off, every current state is reported once.
+        * silent: leave as a crashed device does, without Bye: no discovery answers, every
+          request dropped unanswered, subscriptions forgotten. Switched off, it comes back with
+          a Hello and consumers must connect again.
+        """
+        if answer_delay_ms is not None and not 0 <= int(answer_delay_ms) <= MAX_ANSWER_DELAY_MS:
+            msg = f"the answer delay must be 0 to {MAX_ANSWER_DELAY_MS} ms, not {answer_delay_ms}"
+            raise ValueError(msg)
+        provider = self._provider
+        if provider is None:
+            msg = "provider is not started"
+            raise RuntimeError(msg)
+        if answer_delay_ms is not None:
+            self.faults.answer_delay_ms = int(answer_delay_ms)
+        if refuse_writes is not None:
+            self.faults.refuse_writes = bool(refuse_writes)
+        if pause_reports is not None:
+            resumed = self.faults.pause_reports and not pause_reports
+            self.faults.pause_reports = bool(pause_reports)
+            if resumed and not self.faults.silent:
+                provider.catch_up()
+        if silent is not None:
+            provider.set_silent(bool(silent))
+        logger.info("device faults now %s", self.faults)
+        return replace(self.faults)
+
+    def drop_subscriptions(self) -> int:
+        """End every subscription now without telling the subscribers; returns how many there were."""
+        if self._provider is None:
+            msg = "provider is not started"
+            raise RuntimeError(msg)
+        dropped = self._provider.drop_subscriptions()
+        logger.info("dropped %d subscription(s) as a simulated fault", dropped)
+        return dropped
+
+    def reset_faults(self) -> None:
+        """End every simulated fault, device-wide and on each metric."""
+        for handle, fault in self.metric_faults().items():
+            self.set_metric_fault(
+                handle,
+                activation="On" if fault.activation else None,
+                validity="Vld" if fault.validity else None,
+                mode=_usual_mode(self._specs[handle]) if fault.mode else None,
+            )
+        self.set_device_faults(answer_delay_ms=0, refuse_writes=False, pause_reports=False, silent=False)
+
+    @property
+    def faults_on(self) -> int:
+        """How many faults are on: each device-wide one, and each metric with a fault."""
+        return self.faults.count + len(self._metric_faults)
 
     def set_generator(
         self,
@@ -2211,7 +2391,7 @@ class ProviderService:
                         (entity.handle, entity.state.StateVersion) for entity, _ in prepared
                     )
                     for entity, value in prepared:
-                        apply_metric_value(entity.state, value)
+                        apply_metric_value(entity.state, value, self._fault(entity.handle))
                     try:
                         with self.mdib.metric_state_transaction() as mgr:
                             for entity, _ in prepared:

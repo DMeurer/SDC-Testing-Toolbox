@@ -242,6 +242,12 @@ def check_gui_startup_reuses_profile(*, interactive: bool) -> None:
         def close(self) -> None:
             events.append("close")
 
+        # What run_toolbox.remember_view touches; the remembered mode is not this test's concern.
+        advanced_mode_changed = SimpleNamespace(connect=lambda _slot: None)
+
+        def set_advanced_mode(self, _enabled: bool) -> None:
+            pass
+
     originals = (
         run_toolbox.QApplication,
         run_toolbox.ProviderService,
@@ -802,6 +808,7 @@ def check_ctrl_c_closes_the_toolbox(*, in_startup_dialog: bool) -> None:
         patch.object(run_toolbox, "StartupDialog", Dialog),
         patch.object(run_toolbox, "ProviderService", FakeProvider),
         patch.object(run_toolbox, "MainWindow", Window),
+        patch.object(run_toolbox, "remember_view", lambda _window, _settings: None),
         patch.object(run_toolbox, "basic_logging_setup", lambda **_kwargs: None),
     ):
         try:

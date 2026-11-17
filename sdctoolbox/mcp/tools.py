@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from .. import config, mdib_check, nomenclature
 from ..consumer_service import ConsumerService, DiscoveredDevice, RemoteDevice
+from ..handlers import ACTIVATIONS, MODES, NO_FAULT, VALIDITIES, MetricFault, what_consumers_see
 from ..mdib_io import NativeMdibConfig, mdib_bytes, parse_mdib
 from ..model import (
     AlertPriority,
@@ -308,6 +309,28 @@ class ToolboxTools:
                                   "Inf, Neo, Unkn), date_of_birth (YYYY-MM-DD), height/weight ({value, unit: {code, "
                                   "system}}), race ({code, system})."),
                }),
+            # -- My device: simulated faults (Advanced mode in the window, but usable in any mode)
+            t("get_faults", "My device's simulated faults: the device-wide ones, and each metric's activation, "
+                            "validity and mode with what a consumer sees. See explain_gui topic 'faults'.",
+              self.get_faults),
+            t("set_metric_fault", "Make one metric tell consumers a sensor state or value quality. Omitted parts stay. "
+                                  "On/Off is the ordinary switch, Vld and the usual mode (Real; Demo for sample "
+                                  "arrays) end a fault. Kept on every later value.",
+              self.set_metric_fault,
+              {"handle": _string("Metric handle."),
+               "activation": _string("ActivationState.", enum=list(ACTIVATIONS)),
+               "validity": _string("MetricQuality Validity.", enum=list(VALIDITIES)),
+               "mode": _string("MetricQuality Mode.", enum=list(MODES))},
+              ("handle",)),
+            t("set_device_faults", "Change My device's device-wide faults; omitted ones stay. Runtime only, never saved.",
+              self.set_device_faults,
+              {"answer_delay_ms": {"type": "integer", "description": "Wait this long before answering Set, Activate "
+                                                                    "and Get requests; 0 is off."},
+               "refuse_writes": _boolean("Answer every set and activate request with Fail."),
+               "pause_reports": _boolean("Send no state or waveform reports; false catches consumers up."),
+               "leave_without_bye": _boolean("Vanish like a crashed device (no Bye, no answers); false comes back."),
+               "drop_subscriptions": _boolean("true ends every subscription now without telling the subscribers.")}),
+            t("reset_faults", "End every simulated fault on My device, device-wide and per metric.", self.reset_faults),
             t("set_generator", "Start or stop generating samples for waveforms and distributions.",
               self.set_generator, {"running": _boolean("true to generate, false to stop.")}, ("running",)),
             # -- My device: whole device, MDIB in and out
@@ -359,14 +382,17 @@ class ToolboxTools:
             t("remote_mdib", "A connected device's MDIB as XML.", self.remote_mdib,
               {"connection": CONNECTION}, ("connection",)),
             # -- The window
-            t("get_view", "How the window is set up: tab, split view, widgets or tables, dark mode, menu bar.",
+            t("get_view", "How the window is set up: tab, split view, widgets or tables, dark mode, advanced mode, "
+                          "menu bar.",
               self.get_view),
             t("set_view", "Change the window: tab (my_device or network), split_view, widgets (cards instead of "
-                          "tables), dark_mode, connection (bring a Network tab to the front), activity_log (open it).",
+                          "tables), dark_mode, advanced (Advanced mode: the Faults section and fault chips), connection "
+                          "(bring a Network tab to the front), activity_log (open it).",
               self.set_view,
               {"tab": _string("my_device or network", enum=["my_device", "network"]),
                "split_view": _boolean("Both panels side by side."), "widgets": _boolean("Cards instead of tables."),
-               "dark_mode": _boolean("Dark colours."), "connection": CONNECTION,
+               "dark_mode": _boolean("Dark colours."), "advanced": _boolean("Advanced mode."),
+               "connection": CONNECTION,
                "activity_log": _boolean("Open the activity log window.")}),
             t("get_card_settings", "How one metric's card looks, on My device or on a connection.",
               self.get_card_settings, {"handle": _string("Metric handle."), "connection": CONNECTION}, ("handle",)),
@@ -629,6 +655,55 @@ class ToolboxTools:
             (self.service.start_generator if running else self.service.stop_generator)()
             self.hooks.changed("started the generator" if running else "stopped the generator")
             return "generating" if self.service.generator_running else "stopped"
+
+        return self.hooks.on_gui(work)
+
+    # -- My device: simulated faults ---------------------------------------------------
+
+    def _faults(self) -> dict[str, Any]:
+        service = self.service
+        overrides = service.metric_faults()
+        metrics = []
+        for handle, spec in sorted(service.list_metrics().items()):
+            own = overrides.get(handle, NO_FAULT)
+            seen = MetricFault(own.activation or (None if spec.active else "Off"), own.validity, own.mode)
+            metrics.append({"handle": handle, "label": spec.label, **plain(service.metric_fault(handle)),
+                            "faulted": list(own.parts),
+                            "consumers_see": what_consumers_see(seen, sample_array=spec.is_sample_array)})
+        device = plain(service.faults)
+        device["leave_without_bye"] = device.pop("silent")
+        return {"device": device, "faults_on": service.faults_on, "metrics": metrics}
+
+    def get_faults(self) -> dict[str, Any]:
+        return self.hooks.on_gui(self._faults)
+
+    def set_metric_fault(self, handle: str, activation: str | None = None, validity: str | None = None,
+                         mode: str | None = None) -> dict[str, Any]:
+        def work() -> dict[str, Any]:
+            self._spec(handle)
+            self.service.set_metric_fault(handle, activation=activation, validity=validity, mode=mode)
+            self.hooks.changed(f"changed the fault of {handle}")
+            return next(entry for entry in self._faults()["metrics"] if entry["handle"] == handle)
+
+        return self.hooks.on_gui(work)
+
+    def set_device_faults(self, answer_delay_ms: int | None = None, refuse_writes: bool | None = None,  # noqa: FBT001
+                          pause_reports: bool | None = None, leave_without_bye: bool | None = None,  # noqa: FBT001
+                          drop_subscriptions: bool | None = None) -> dict[str, Any]:  # noqa: FBT001
+        def work() -> dict[str, Any]:
+            self.service.set_device_faults(answer_delay_ms=answer_delay_ms, refuse_writes=refuse_writes,
+                                           pause_reports=pause_reports, silent=leave_without_bye)
+            dropped = self.service.drop_subscriptions() if drop_subscriptions else 0
+            self.hooks.changed("changed the device-wide faults")
+            return {**self._faults()["device"], "subscriptions_dropped": dropped}
+
+        return self.hooks.on_gui(work)
+
+    def reset_faults(self) -> dict[str, Any]:
+        def work() -> dict[str, Any]:
+            self.service.reset_faults()
+            self.hooks.changed("reset every fault")
+            return self._faults()
 
         return self.hooks.on_gui(work)
 

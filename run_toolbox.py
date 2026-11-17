@@ -26,13 +26,13 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Literal
 
-from PySide6.QtCore import QCoreApplication, QTimer
+from PySide6.QtCore import QCoreApplication, QSettings, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 from sdc11073.loghelper import basic_logging_setup
 
 from sdctoolbox import config, constants, native_mdib
-from sdctoolbox.gui.main_window import MainWindow
+from sdctoolbox.gui.main_window import MainWindow, remember_view
 from sdctoolbox.gui.startup_dialog import StartupDialog, StartupSettings
 from sdctoolbox.gui.icons import app_icon
 from sdctoolbox.gui.styling import apply_theme_style, set_dark_mode
@@ -303,6 +303,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             service.start()
         window = MainWindow(service)
+        remember_view(window, QSettings(constants.SETTINGS_ORGANISATION, constants.APP_NAME))
         if settings.config_path and device_config is not None and not native_config:
             if not window.apply_config(device_config, settings.config_path):
                 return 2

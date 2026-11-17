@@ -82,6 +82,10 @@ def theme_style_sheet(dark: bool) -> str:  # noqa: FBT001
     rules += [
         f'*[kind="highlight-outline"]:pressed, *[kind="design-outline"]:pressed {{ background: {t["accent/tint"]}; }}',
         f'*[kind="design-outline"]:checked {{ background: {t["accent"]}; color: {t["text/on-accent"]}; }}',
+        # A fault that is on is tinted, not filled: it is a state, not the selected segment of a switch.
+        f'*[kind="design-outline"][role="fault-toggle"]:checked, *[kind="design-outline"][role="fault-toggle"][on="true"]'
+        f' {{ background: {t["accent/tint"]}; color: {t["accent/text"]}; }}',
+        f'QComboBox[faulted="true"] {{ color: {t["accent/text"]}; }}',
         f'*[kind]:disabled {{ background: transparent; border: 1px solid {t["border/default"]};'
         f' color: {t["text/disabled"]}; }}',
         f'QFrame[role="card"] {{ background: {t["bg/surface"]}; border: 1px solid {t["border/strong"]};'
@@ -102,6 +106,7 @@ def theme_style_sheet(dark: bool) -> str:  # noqa: FBT001
         f'QLabel[role="chip-toolbox"] {{ border: 1px solid {t["kind/toolbox"]};'
         f' color: {t["kind/toolbox-text"]}; {_CHIP} }}',
         f'QLabel[role="chip-tab"] {{ border: 1px solid {t["accent"]}; color: {t["accent/text"]}; {_CHIP} }}',
+        f'QLabel[role="chip-fault"] {{ background: {t["accent/tint"]}; color: {t["accent/text"]}; {_CHIP} }}',
         f'QFrame[role="sect-mdib"] {{ border: none; border-left: 3px solid {t["kind/mdib"]}; }}',
         f'QFrame[role="sect-toolbox"] {{ border: none; border-left: 3px solid {t["kind/toolbox"]}; }}',
     ]

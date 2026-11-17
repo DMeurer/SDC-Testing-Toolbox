@@ -33,6 +33,13 @@ class PlainEmptyReplyHandler(DispatchingRequestHandler):
     CPU. An uncompressed body is always acceptable to the peer.
     """
 
+    def handle_one_request(self) -> None:
+        # A provider simulating a crash (Faults > Leave without Bye) drops every request unanswered.
+        if getattr(self.server, "silent", False):
+            self.close_connection = True
+            return
+        super().handle_one_request()
+
     def _compress_if_supported(self, response_bytes: bytes) -> bytes:
         if not response_bytes:
             return response_bytes

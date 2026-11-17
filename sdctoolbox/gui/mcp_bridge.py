@@ -172,6 +172,7 @@ class GuiTools(ToolboxTools):
                 "split_view": window.split_view_enabled,
                 "widgets": window.widgets_enabled,
                 "dark_mode": window.dark_mode_action.isChecked(),
+                "advanced": window.advanced_mode,
                 "always_show_menu_bar": window.always_show_menu,
                 "fullscreen": window.isFullScreen(),
                 "current_connection": current.property("connectionNumber") if current is not None else None,
@@ -185,7 +186,7 @@ class GuiTools(ToolboxTools):
             window = self.window
             # Through the menu actions, so their check marks stay true.
             for name, action in (("split_view", window.split_view_action), ("widgets", window.widgets_action),
-                                 ("dark_mode", window.dark_mode_action)):
+                                 ("dark_mode", window.dark_mode_action), ("advanced", window.advanced_mode_action)):
                 if options.get(name) is not None:
                     action.setChecked(bool(options[name]))
             if options.get("connection") is not None:

@@ -136,6 +136,8 @@ FIRMWARE_VERSION = "0.1"
 # StartupWMClass, and that entry's file name, so the dock shows the icon.
 APP_NAME = "SDC-Testing-Toolbox"
 DESKTOP_ID = "sdc-testing-toolbox"
+# Where QSettings keeps what the window remembers between runs, with APP_NAME as the application.
+SETTINGS_ORGANISATION = "SDC-Testing-Toolbox"
 
 
 def epr_for(instance_name: str) -> uuid.UUID:

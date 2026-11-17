@@ -151,6 +151,19 @@ class HeadlessTests(unittest.TestCase):
             refused = self.client.tool("export_mdib", path=str(Path(directory) / "built.json"))
             self.assertTrue(refused["isError"])
 
+    def test_faults_without_a_window(self) -> None:
+        handle = self.client.ok("list_metrics")["metrics"][0]["handle"]
+        changed = self.client.ok("set_metric_fault", handle=handle, activation="StndBy", validity="Qst")
+        self.assertEqual((changed["activation"], changed["validity"]), ("StndBy", "Qst"))
+        self.assertEqual(changed["consumers_see"], "the sensor in standby: no value")
+        self.assertIn('Validity="Qst"', self.client.ok("get_mdib", behaviour=False))
+        device = self.client.ok("set_device_faults", answer_delay_ms=250, refuse_writes=True, drop_subscriptions=True)
+        self.assertEqual((device["answer_delay_ms"], device["refuse_writes"]), (250, True))
+        self.assertEqual(self.client.ok("get_faults")["faults_on"], 3)
+        self.assertTrue(self.client.tool("set_metric_fault", handle=handle, validity="Wobbly")["isError"])
+        self.assertEqual(self.client.ok("reset_faults")["faults_on"], 0)
+        self.assertIn("Qst", self.client.ok("explain_gui", topic="faults"))
+
     def test_check_mdib_lists_findings_for_my_device(self) -> None:
         self.assertIn("check_mdib", self.client.rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
                                                                   "clientInfo": {"name": "t", "version": "1"}})
@@ -280,6 +293,10 @@ class WindowTests(unittest.TestCase):
         self.assertEqual((view["widgets"], view["split_view"]), (False, True))
         self.assertFalse(self.window.widgets_action.isChecked())
         self.assertTrue(self.window.split_view_action.isChecked())
+        self.assertTrue(self.call("set_view", advanced=True)["advanced"])
+        self.assertTrue(self.window.advanced_mode_action.isChecked())
+        self.assertTrue(self.window.provider_pane.faults_section.isVisibleTo(self.window))
+        self.assertFalse(self.call("set_view", advanced=False)["advanced"])
         self.call("set_view", widgets=True, split_view=False, tab="network", activity_log=True)
         self.assertEqual(self.window.tabs.currentIndex(), 1)
         self.assertTrue(self.window.log_window.isVisible())

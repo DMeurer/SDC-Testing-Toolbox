@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QStackedWidget,
@@ -34,6 +35,7 @@ from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types import pm_types
 from lxml import etree
 
+from ..handlers import ACTIVATIONS, ANSWER_DELAYS_MS, MODES, NO_FAULT, VALIDITIES, MetricFault, what_consumers_see
 from ..model import MetricKind
 from ..mdib_io import live_entities, mdib_bytes
 from .activity_log import MdibActivity, activity_log
@@ -87,6 +89,12 @@ ALERT_COLUMNS = ["Handle", "Label", "Watches", "Raise when", "Kind", "Priority",
     ACOL_SIGNALS,
 ) = range(len(ALERT_COLUMNS))
 
+FAULT_COLUMNS = ["Handle", "Label", "Activation", "Validity", "Mode", "What consumers see"]
+FCOL_HANDLE, FCOL_LABEL, FCOL_ACTIVATION, FCOL_VALIDITY, FCOL_MODE, FCOL_SEEN = range(len(FAULT_COLUMNS))
+# Each dropdown column: the MetricFault part it sets and the values it offers.
+FAULT_CHOICES = {FCOL_ACTIVATION: ("activation", ACTIVATIONS), FCOL_VALIDITY: ("validity", VALIDITIES),
+                 FCOL_MODE: ("mode", MODES)}
+
 EDITOR_TEXT = 0
 EDITOR_CHOICE = 1
 
@@ -119,6 +127,8 @@ class ProviderPane(QWidget):
         self._refreshing = False
         self._editor_definition = None
         self._pending_rebuilds: list = []
+        # Advanced mode shows the Faults section and the fault chips on the cards.
+        self.advanced = False
 
         self._build_ui()
 
@@ -290,6 +300,8 @@ class ProviderPane(QWidget):
 
         self.metrics_section = CollapsibleSection("Metrics", self.metric_stack)
         self.alarms_section = CollapsibleSection("Alarms", alert_box, expanded=False)
+        self.faults_section = CollapsibleSection("Faults", self._build_faults(), expanded=False)
+        self.faults_section.setVisible(False)
         self.structure_section = None
         self.native_tree = None
         self._native_items = {}
@@ -315,11 +327,138 @@ class ProviderPane(QWidget):
                           "state until their source changes. Hover containment entries for XML.")
             hint.setWordWrap(True)
             layout.addWidget(hint)
-        for section in (self.structure_section, self.metrics_section, self.alarms_section):
+        for section in (self.structure_section, self.metrics_section, self.alarms_section, self.faults_section):
             if section is not None:
                 layout.addWidget(section, 1)
         layout.addWidget(self.actions_widget)
         layout.addWidget(self.editor_widget)
+
+    def _build_faults(self) -> QWidget:
+        """The Faults section: device-wide faults as buttons, and each metric's state in a table."""
+        self.delay_button = QPushButton()
+        self.delay_button.setToolTip("Wait before answering Set, Activate and Get requests")
+        delay_menu = QMenu(self.delay_button)
+        for milliseconds in ANSWER_DELAYS_MS:
+            action = delay_menu.addAction(f"{milliseconds} ms" if milliseconds else "off")
+            action.triggered.connect(lambda _checked=False, ms=milliseconds: self._set_device_faults(answer_delay_ms=ms))
+        self.delay_button.setMenu(delay_menu)
+        self.refuse_button = QPushButton("Refuse every write")
+        self.refuse_button.setToolTip("Answer every set and action request with Fail, saying it is a simulated fault")
+        self.refuse_button.clicked.connect(lambda checked: self._set_device_faults(refuse_writes=checked))
+        self.pause_button = QPushButton("Pause reports")
+        self.pause_button.setToolTip("Send no state or waveform reports; switched off, consumers get the current state")
+        self.pause_button.clicked.connect(lambda checked: self._set_device_faults(pause_reports=checked))
+        self.drop_button = QPushButton("Drop subscriptions")
+        self.drop_button.setToolTip("Forget every subscription now without telling the subscribers")
+        self.drop_button.clicked.connect(self._on_drop_subscriptions)
+        self.silent_button = QPushButton("Leave without Bye")
+        self.silent_button.setToolTip("Vanish like a crashed device: no Bye, no answers. Off brings the device back")
+        self.silent_button.clicked.connect(lambda checked: self._set_device_faults(silent=checked))
+        self.reset_faults_button = QPushButton("Reset all faults")
+        self.reset_faults_button.clicked.connect(self._on_reset_faults)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        for button in (self.delay_button, self.refuse_button, self.pause_button, None,
+                       self.drop_button, self.silent_button, self.reset_faults_button):
+            if button is None:
+                row.addSpacing(16)
+                continue
+            set_button_kind(button, "design-outline")
+            if button not in (self.drop_button, self.reset_faults_button):
+                button.setProperty("role", "fault-toggle")
+                button.setCheckable(button is not self.delay_button)
+            row.addWidget(button)
+        row.addStretch(1)
+
+        self.fault_table = QTableWidget(0, len(FAULT_COLUMNS))
+        self.fault_table.setHorizontalHeaderLabels(FAULT_COLUMNS)
+        self.fault_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.fault_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.fault_table.verticalHeader().setVisible(False)
+        self._fault_columns = TableColumns(self.fault_table, flexible=FCOL_SEEN)
+
+        box = QWidget()
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addLayout(row)
+        layout.addWidget(self.fault_table)
+        return box
+
+    def set_advanced(self, enabled: bool) -> None:  # noqa: FBT001 - matches the Qt signal
+        """Show or hide what only Advanced mode shows: the Faults section and the cards' fault chips."""
+        self.advanced = enabled
+        self.faults_section.setVisible(enabled)
+        self._refresh_board()
+
+    def refresh_faults(self) -> None:
+        """Show the device-wide faults on their buttons and every metric's state in the table."""
+        faults = self.service.faults
+        delay = faults.answer_delay_ms
+        self.delay_button.setText(f"Answer after {delay} ms" if delay else "Answer after … ms")
+        self.delay_button.setProperty("on", delay > 0)
+        self.delay_button.style().unpolish(self.delay_button)
+        self.delay_button.style().polish(self.delay_button)
+        for button, on in ((self.refuse_button, faults.refuse_writes), (self.pause_button, faults.pause_reports),
+                           (self.silent_button, faults.silent)):
+            button.setChecked(on)
+
+        specs = self.service.list_metrics()
+        overrides = self.service.metric_faults()
+        # Dropping the rows first deletes the old dropdowns; replacing a cell widget left them drawn.
+        self.fault_table.setRowCount(0)
+        self.fault_table.setRowCount(len(specs))
+        for row, (handle, spec) in enumerate(sorted(specs.items())):
+            own = overrides.get(handle, NO_FAULT)
+            told = self.service.metric_fault(handle)
+            self.fault_table.setItem(row, FCOL_HANDLE, QTableWidgetItem(handle))
+            self.fault_table.setItem(row, FCOL_LABEL, QTableWidgetItem(spec.label))
+            for column, (part, choices) in FAULT_CHOICES.items():
+                box = NoWheelComboBox()
+                box.addItems(choices)
+                box.setCurrentText(getattr(told, part))
+                box.setAccessibleName(f"{part.capitalize()} of {handle}")
+                # Changed from what the toolbox normally publishes: the accent colour says so.
+                box.setProperty("faulted", getattr(own, part) is not None)
+                box.textActivated.connect(lambda text, handle=handle, part=part: self._set_metric_fault(handle, part, text))
+                self.fault_table.setCellWidget(row, column, box)
+            seen = MetricFault(own.activation or (None if spec.active else "Off"), own.validity, own.mode)
+            item = QTableWidgetItem(what_consumers_see(seen, sample_array=spec.is_sample_array))
+            item.setForeground(muted_colour(self))
+            self.fault_table.setItem(row, FCOL_SEEN, item)
+        self._fault_columns.refit()
+        count = self.service.faults_on
+        self.faults_section.set_chips(["Advanced", f"{count} fault{'s' if count != 1 else ''} on" if count else "none on"])
+
+    def _set_metric_fault(self, handle: str, part: str, value: str) -> None:
+        try:
+            self.service.set_metric_fault(handle, **{part: value})
+        except (KeyError, ValueError) as exc:
+            QMessageBox.warning(self, "Could not change the fault", str(exc))
+        # Not now: this runs inside the dropdown's own signal, and refresh replaces the dropdown.
+        self._schedule(self.refresh)
+
+    def _set_device_faults(self, **changes: object) -> None:
+        try:
+            self.service.set_device_faults(**changes)
+        except (RuntimeError, ValueError) as exc:
+            QMessageBox.warning(self, "Could not change the fault", str(exc))
+        self.refresh_faults()
+
+    def _on_drop_subscriptions(self) -> None:
+        try:
+            dropped = self.service.drop_subscriptions()
+        except RuntimeError as exc:
+            QMessageBox.warning(self, "Could not change the fault", str(exc))
+            return
+        activity_log().add(OWN_DEVICE, f"dropped {dropped} subscription(s) without telling the subscribers")
+
+    def _on_reset_faults(self) -> None:
+        try:
+            self.service.reset_faults()
+        except (KeyError, RuntimeError, ValueError) as exc:
+            QMessageBox.warning(self, "Could not change the fault", str(exc))
+        self.refresh()
 
     # -- widgets or table ----------------------------------------------------------
 
@@ -345,9 +484,11 @@ class ProviderPane(QWidget):
         specs = self.service.list_metrics()
         waveform_cards = {handle: self.board.card(handle) for handle, spec in specs.items()
                           if spec.kind is MetricKind.WAVEFORM}
+        overrides = self.service.metric_faults() if self.advanced else {}
         self.board.set_metrics(
             [
-                from_spec(handle, spec, editable=True)
+                from_spec(handle, spec, editable=True,
+                          fault=" \u00b7 ".join(overrides.get(handle, NO_FAULT).parts))
                 for handle, spec in sorted(specs.items())
             ],
         )
@@ -429,6 +570,7 @@ class ProviderPane(QWidget):
         self.metrics_section.set_chips([str(len(specs))])
         self._columns.refit()
         self._refresh_board()
+        self.refresh_faults()
         if self.native_tree is not None:
             self._refresh_native_tree()
 

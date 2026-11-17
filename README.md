@@ -747,6 +747,34 @@ A patient block in a JSON profile has this shape:
 }
 ```
 
+## Advanced mode and faults
+
+The toolbox starts in **Simple** mode. **Advanced** mode (View > Advanced mode, or the
+*Simple | Advanced* switch at the right of the tab strip; remembered between runs) adds
+controls for testing your own SDC consumer: a **Faults** section under Alarms on My device,
+and a chip on each card whose metric has a fault.
+
+Device-wide faults are runtime only and never saved:
+
+| Button | What the device does | Limits |
+|--------|----------------------|--------|
+| Answer after ... ms | Waits 250 to 5000 ms before answering Set, Activate, GetMdib, GetMdState and GetMdDescription. | Other requests (contexts, metadata, eventing) answer at once. |
+| Refuse every write | Answers every remote set and activate with `Fail`, error `Oth`, and a reason saying it is simulated. | Local edits and actions run from the window still work. |
+| Pause reports | Sends no episodic state reports and no waveforms. Switched off, every current state is reported once so consumers catch up. | Descriptor changes and OperationInvokedReports still go out. |
+| Drop subscriptions | Forgets every subscription at once without a SubscriptionEnd; the consumer finds out when its Renew fails. | |
+| Leave without Bye | Vanishes like a crashed device: no Bye, no answer to Probe or Resolve, every HTTP request dropped unanswered, subscriptions forgotten. Switched off, it comes back with a Hello. | The listening port stays open and the MDIB keeps its SequenceId. |
+| Reset all faults | Ends every fault, device-wide and per metric. | |
+
+Per metric, the table sets the BICEPS values a consumer reads: **Activation**
+(`ActivationState`: On, StndBy, NotRdy, Fail, Off, Shtdn), **Validity** (`MetricQuality/@Validity`:
+Vld, Vldated, Ong, Qst, Calib, Inv, Oflw, Uflw, NA) and **Mode** (`MetricQuality/@Mode`: Real,
+Test, Demo), and says in plain words what a consumer sees. They are MDIB state: they stay on
+every later value (a local edit, a remote write, an action or the generator), a generated
+waveform stops while its sensor is not On, and they are saved in MDIB exports and come back
+when the file is loaded. On and Off are the ordinary switch from the Edit dialog. The MCP
+tools `get_faults`, `set_metric_fault`, `set_device_faults` and `reset_faults` do the same,
+with or without a window.
+
 ## Not Supported at the Moment - What might cause Problems
 
 This is a focused SDC learning fixture, not an IEEE 11073 conformance claim. IEEE 11073-10207 (BICEPS) defines a wider information and service model than one device must use; IEEE 11073-20701 and IEEE 11073-20702 define the surrounding SDC architecture and medical-device web-services profile. `sdc11073` supplies much of the DPWS/BICEPS wire plumbing, but a library capability is not automatically an end-to-end toolbox feature.
@@ -764,7 +792,7 @@ This is a focused SDC learning fixture, not an IEEE 11073 conformance claim. IEE
 | **Will cause problems** | Remote control covers `SetValueOperation`, `SetStringOperation`, and argumentless `ActivateOperation` only. The consumer cannot send `SetContextState`, `SetAlertState`, `SetMetricState` or `SetComponentState`; a provider built from an imported MDIB that declares one publishes it but refuses every request with a failed invocation (`Fail`, error `Oth`). | Valid state-changing workflows, actions requiring arguments, remote context association, and remote alert handling cannot be exercised end to end. |
 | **Might cause problems** | Contexts cover patient and location only. The Network panel shows associated peer patients read-only, but ensemble, workflow, means and operator contexts are not modelled or shown. | Tests involving care-team, workflow or multi-device context coordination need another fixture or direct access to the raw MDIB. |
 | **Might cause problems** | The locally published alert model has one source metric per condition, local acknowledgement/delegation, and automatic limits only for decimal scalar values. Signals can use every standard manifestation and latching option. The consumer still displays peer source handles and signal manifestations. | Remote alert control, interoperable delegation, and limit conditions on text or choice sources cannot be exercised correctly. |
-| **Might cause problems** | The provider is a small MDIB model: scalar writes set `Validity=Valid`, and a metric can only be switched On or Off. There are no controls for quality, other activation states (`StndBy`, `NotRdy`, `Fail`) or lifecycle transitions. | It cannot simulate many degraded, unavailable or quality-qualified states a consumer may need to handle. |
+| **Might cause problems** | The provider is a small MDIB model. Advanced mode sets each metric's activation state, validity and mode and a few device-wide faults (see [Advanced mode and faults](#advanced-mode-and-faults)), but there are no lifecycle transitions: a metric does not go through `NotRdy` to `On` by itself, and components (MDS, VMD, channel) have no fault controls. | Degraded states have to be set by hand or over MCP; timed or component-level failure sequences cannot be simulated. |
 | **Might cause problems** | Sample arrays have no waveform annotations and use one non-real-time generator thread. | It is useful for basic streaming and display tests, not for timing or annotation conformance tests. |
 | **Might cause problems** | Network tabs keep independent peers active. When a peer changes MDIB sequence or instance identity, only its tab disconnects and requires a manual reconnect. | Automatic restart/reload recovery is not covered. |
 | **Might cause problems** | A provider drops a consumer that does not accept a notification within 2 s (`constants.NOTIFICATION_TIMEOUT_SECONDS`), so that one silent or stalled consumer cannot hold up every other request. | A consumer on a very slow link, or one paused in a debugger, loses its subscriptions, shows the connection as lost and has to reconnect. |

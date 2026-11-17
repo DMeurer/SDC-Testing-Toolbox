@@ -9,6 +9,9 @@ a movable divider instead, so you can watch one react to the other.
 
 The menu bar is visible and pinned by default. View > Always show menu bar can unpin it so
 that it hides when unused and Alt reveals it again.
+
+View > Advanced mode, or the Simple | Advanced switch at the right of the tab strip, shows the
+controls for testing consumers: for now the Faults section and the cards' fault chips.
 """
 
 from __future__ import annotations
@@ -16,14 +19,17 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QFileDialog,
     QFrame,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
+    QPushButton,
     QSplitter,
     QStackedWidget,
     QTabWidget,
@@ -41,7 +47,7 @@ from .mdib_check_window import MdibCheckWindow, status_text
 from .menu_keys import BareAltTracker
 from .no_wheel import NoWheelTabBar
 from .provider_pane import ProviderPane
-from .styling import is_dark, set_dark_mode
+from .styling import is_dark, set_button_kind, set_dark_mode
 from .window_actions import FullscreenAction
 
 if TYPE_CHECKING:
@@ -51,6 +57,9 @@ PROVIDER_TITLE = "My device"
 NETWORK_TITLE = "Network"
 
 CONFIG_FILE_FILTER = config.FILE_FILTER
+
+# Where the window remembers Advanced mode between runs (see remember_view).
+ADVANCED_MODE_KEY = "view/advanced_mode"
 
 # My device is checked again at most this often while its MDIB keeps changing.
 MDIB_CHECK_DELAY_MS = 1000
@@ -106,11 +115,34 @@ class TitledPanel(QWidget):
         self.rule.setVisible(visible)
 
 
+class ModeSwitch(QWidget):
+    """Simple | Advanced: two segments, the selected one filled with the accent."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.simple = QPushButton("Simple")
+        self.advanced = QPushButton("Advanced")
+        self.simple.setToolTip("Hide the controls for testing consumers")
+        self.advanced.setToolTip("Show the controls for testing consumers, such as simulated faults")
+        self.group = QButtonGroup(self)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 2, 6, 2)
+        layout.setSpacing(0)
+        for button in (self.simple, self.advanced):
+            button.setCheckable(True)
+            set_button_kind(button, "design-outline")
+            self.group.addButton(button)
+            layout.addWidget(button)
+        self.simple.setChecked(True)
+
+
 class MainWindow(QMainWindow):
     """Hosts the provider and consumer panels in whichever layout is selected."""
 
     # A port fallback is reported on whichever thread bound the socket; this hops to the GUI.
     _port_warning = Signal(str)
+    # Advanced mode was switched on (True) or off, from the menu, the switch or code.
+    advanced_mode_changed = Signal(bool)
 
     def __init__(self, service: ProviderService) -> None:
         super().__init__()
@@ -138,6 +170,9 @@ class MainWindow(QMainWindow):
         # A tab bar flicks between tabs on wheel by default, so scrolling near the top of
         # the window swaps the panels under the pointer.
         self.tabs.setTabBar(NoWheelTabBar())
+        self.mode_switch = ModeSwitch()
+        self.mode_switch.advanced.toggled.connect(self.set_advanced_mode)
+        self.tabs.setCornerWidget(self.mode_switch, Qt.TopRightCorner)
 
         self.stack = QStackedWidget()
         self.stack.addWidget(self.splitter)
@@ -305,6 +340,21 @@ class MainWindow(QMainWindow):
         return self.widgets_action.isChecked()
 
     @property
+    def advanced_mode(self) -> bool:
+        """Whether the controls for testing consumers are shown."""
+        return self.advanced_mode_action.isChecked()
+
+    def set_advanced_mode(self, enabled: bool) -> None:  # noqa: FBT001 - matches the Qt signal
+        """Show or hide the controls for testing consumers; the menu and the switch follow."""
+        changed = self.provider_pane.advanced != enabled
+        self.provider_pane.set_advanced(enabled)
+        if self.advanced_mode_action.isChecked() != enabled:
+            self.advanced_mode_action.setChecked(enabled)
+        (self.mode_switch.advanced if enabled else self.mode_switch.simple).setChecked(True)
+        if changed:
+            self.advanced_mode_changed.emit(enabled)
+
+    @property
     def split_view_enabled(self) -> bool:
         """Whether the panels are currently side by side."""
         return self.stack.currentWidget() is self.splitter
@@ -385,6 +435,13 @@ class MainWindow(QMainWindow):
         self.dark_mode_action.setStatusTip("Use dark colours, or switch back to light mode")
         self.dark_mode_action.toggled.connect(set_dark_mode)
         view_menu.addAction(self.dark_mode_action)
+
+        view_menu.addSeparator()
+        self.advanced_mode_action = QAction("&Advanced mode", self)
+        self.advanced_mode_action.setCheckable(True)
+        self.advanced_mode_action.setStatusTip("Show the controls for testing consumers, such as simulated faults")
+        self.advanced_mode_action.toggled.connect(self.set_advanced_mode)
+        view_menu.addAction(self.advanced_mode_action)
 
         # Hiding is opt-in. The actions keep working through their shortcuts either way.
         for menu in (file_menu, view_menu):
@@ -526,6 +583,7 @@ class MainWindow(QMainWindow):
             return
         pane = ProviderPane(self.service, self.provider_panel)
         pane.set_use_widgets(self.widgets_enabled)
+        pane.set_advanced(self.advanced_mode)
         layout = self.provider_panel.layout()
         layout.removeWidget(old)
         old.hide()
@@ -602,3 +660,13 @@ class MainWindow(QMainWindow):
         self.provider_pane.bridge.close()
         self.network_tabs.shutdown()
         super().closeEvent(event)
+
+
+def remember_view(window: MainWindow, settings: QSettings) -> None:
+    """Restore Advanced mode from `settings` and store it there whenever it changes.
+
+    The window itself never opens settings, so a test's window leaves the user's alone; the
+    application passes its own and a test may pass a QSettings on a temporary file.
+    """
+    window.set_advanced_mode(settings.value(ADVANCED_MODE_KEY, False, type=bool))
+    window.advanced_mode_changed.connect(lambda enabled: settings.setValue(ADVANCED_MODE_KEY, enabled))

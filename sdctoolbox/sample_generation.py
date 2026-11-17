@@ -17,6 +17,7 @@ from sdc11073.xml_types import msg_qnames, pm_types
 from sdc11073.xml_types.dataconverters import DecimalConverter
 
 from . import constants
+from .handlers import NO_FAULT, MetricFault, apply_fault
 from .model import (
     MAX_DECIMAL_WIRE_CHARS,
     DistributionShape,
@@ -64,8 +65,13 @@ class _PreparedSamples:
 class SamplePublisher:
     """Prepare sample states and dispatch them through their distinct report paths."""
 
-    def __init__(self, mdib: Callable[[], ProviderMdib]) -> None:
+    def __init__(
+        self,
+        mdib: Callable[[], ProviderMdib],
+        fault_for: Callable[[str], MetricFault] = lambda _handle: NO_FAULT,
+    ) -> None:
         self._mdib = mdib
+        self._fault_for = fault_for
 
     def prepare(
         self,
@@ -103,6 +109,7 @@ class SamplePublisher:
         entity.state.MetricValue.MetricQuality.Mode = pm_types.GenerationMode.DEMO
         if entity.state.ActivationState != pm_types.ComponentActivation.OFF:
             entity.state.ActivationState = pm_types.ComponentActivation.ON
+        apply_fault(entity.state, self._fault_for(handle))
 
         # Catch conversion failures before entering a transaction. sdc11073 commits its
         # copied state before report serialization, at which point rollback is impossible.
@@ -164,14 +171,16 @@ class DemoSampleGenerator:
         *,
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
+        fault_for: Callable[[str], MetricFault] = lambda _handle: NO_FAULT,
     ) -> None:
         self._mdib = mdib
+        self._fault_for = fault_for
         self._specs = specs
         self._lock = lock
         self._instance_name = instance_name
         self._clock = clock
         self._monotonic = monotonic
-        self._publisher = SamplePublisher(mdib)
+        self._publisher = SamplePublisher(mdib, fault_for)
         self.phases: dict[str, float] = {}
         self.pinned: set[str] = set()
         self.quarantined: set[str] = set()
@@ -283,6 +292,8 @@ class DemoSampleGenerator:
                 for handle, spec in self._specs().items()
                 if spec.is_sample_array
                 and spec.active
+                # A sensor in standby, failed or not ready measures nothing.
+                and self._fault_for(handle).activation is None
                 and handle not in self.pinned
                 and handle not in self.quarantined
                 and (force or self.deadlines.get(handle, now) <= now)

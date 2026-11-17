@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 
 from ...model import MetricKind
 from ..decimal_input import DecimalInputError, parse_decimal_input
+from ..collapsible import chip
 from ..kind_sections import kind_section
 from ..no_wheel import NoWheelComboBox
 from ..styling import constrain_dynamic_label, mute, set_button_kind
@@ -83,6 +84,11 @@ class MetricCard(QFrame):
         title_row.setContentsMargins(0, 0, 0, 0)
         title_row.setSpacing(4)
         title_row.addWidget(self.heading, 1)
+        self.fault_chip: QLabel | None = None
+        if spec.fault:
+            self.fault_chip = chip(spec.fault, "chip-fault")
+            self.fault_chip.setToolTip("Simulated fault: what this metric tells consumers (Faults section)")
+            title_row.addWidget(self.fault_chip, 0, Qt.AlignTop)
 
         # Every card can be edited: your own opens the data source, a peer's only how the
         # card looks. Only your own can be removed.
