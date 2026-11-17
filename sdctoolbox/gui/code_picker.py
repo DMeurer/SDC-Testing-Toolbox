@@ -122,8 +122,13 @@ class CodePickerDialog(QDialog):
         section, form = kind_section("IEEE 11073 nomenclature", "mdib")
         form.addRow("Look for", self.kind_box)
         form.addRow("Search", self.search_edit)
-        form.addRow(self.table)
-        form.addRow(source)
+        # Below the form, not in it: a form row never grows, so a taller window would only add
+        # empty space. The table takes it instead, never shrinking below its usual height.
+        box = section.layout()
+        box.takeAt(box.count() - 1)  # kind_section's trailing stretch
+        self.table.setMinimumHeight(self.table.sizeHint().height())
+        box.addWidget(self.table, 1)
+        box.addWidget(source)
 
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         style_dialog_buttons(self.buttons)
@@ -150,6 +155,9 @@ class CodePickerDialog(QDialog):
 
     def _refresh(self) -> None:
         self._terms = nomenclature.search(self.search_edit.text(), self.kind_box.currentData(), MAX_ROWS)
+        # Empty first: replacing cells one by one makes the size-to-content columns measure every
+        # row again for each cell, 1.7 s for 300 rows; filling an empty table takes 20 ms.
+        self.table.setRowCount(0)
         self.table.setRowCount(len(self._terms))
         for row, term in enumerate(self._terms):
             for column, text in enumerate((term.code, term.ref_id, term.display)):
