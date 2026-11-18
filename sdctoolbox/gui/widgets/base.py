@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QLineEdit, QWidget
 
-from ...model import MetricKind, RemoteRange
+from ...model import CardSettings, MetricKind, RemoteRange  # noqa: F401 - CardSettings is re-exported for the cards
 
 if TYPE_CHECKING:
     from ...model import MetricSpec, RemoteMetric
@@ -52,6 +52,15 @@ class WidgetSpec:
     technical_ranges: tuple[RemoteRange, ...] = ()
     # A replacement operation invalidates unfinished input even if its domain is identical.
     selected_operation_handle: str | None = None
+    # The metric's ActivationState. Anything but On (or unknown) greys the whole card.
+    activation: str | None = None
+    # A simulated fault, such as "StndBy" or "Qst", shown as a chip by the title (Advanced mode).
+    fault: str = ""
+
+    @property
+    def active(self) -> bool:
+        """Whether the metric is switched on, so its value can be relied on."""
+        return self.activation in (None, "On")
 
     @property
     def caption(self) -> str:
@@ -73,7 +82,7 @@ class WidgetSpec:
         return self.control_ranges or self.technical_ranges
 
 
-def from_spec(handle: str, spec: MetricSpec, *, editable: bool, note: str = "") -> WidgetSpec:
+def from_spec(handle: str, spec: MetricSpec, *, editable: bool, note: str = "", fault: str = "") -> WidgetSpec:
     """Convert one of our own metrics."""
     return WidgetSpec(
         handle=handle,
@@ -88,6 +97,8 @@ def from_spec(handle: str, spec: MetricSpec, *, editable: bool, note: str = "") 
         note=note,
         sample_period=spec.sample_period,
         domain=spec.domain_text(),
+        activation=None if spec.active else "Off",
+        fault=fault,
     )
 
 
@@ -124,6 +135,7 @@ def from_remote_metric(metric: RemoteMetric) -> WidgetSpec:
         note=note,
         sample_period=metric.sample_period,
         domain=metric.domain_text(),
+        activation=metric.activation,
     )
 
 
@@ -142,9 +154,14 @@ class MetricWidget(QWidget):
     # Lower number sorts first when the factory looks for a match.
     priority = 100
 
-    def __init__(self, spec: WidgetSpec, parent: QWidget | None = None) -> None:
+    # What the Card type combo calls this control.
+    caption = ""
+
+    def __init__(self, spec: WidgetSpec, parent: QWidget | None = None, *,
+                 settings: CardSettings | None = None) -> None:
         super().__init__(parent)
         self.spec = spec
+        self.settings = settings or CardSettings()
         self.build()
         self.set_editable(spec.editable)
 
@@ -166,6 +183,10 @@ class MetricWidget(QWidget):
     def set_editable(self, editable: bool) -> None:  # noqa: FBT001
         """Enable or disable interaction."""
         raise NotImplementedError
+
+    def footer_extras(self) -> list[str]:
+        """Extra facts for the card's footer that depend on this control's settings."""
+        return []
 
     # -- helpers -----------------------------------------------------------------
 

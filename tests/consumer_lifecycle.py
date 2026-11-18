@@ -235,6 +235,7 @@ def check(condition: bool, message: str) -> None:  # noqa: FBT001
 def new_window(provider: ProviderService) -> tuple[MainWindow, consumer_module.ConsumerPane, FakeConsumerService]:
     window = MainWindow(provider)
     window.show()
+    window.tabs.setCurrentIndex(1)  # the Network tab
     pane = window.network_pane
     return window, pane, pane.service
 
@@ -800,7 +801,8 @@ def failed_reconnect_clears_peer_ui(
     pane.device_list.setCurrentRow(0)
     service.connect_call.error = RuntimeError("forced failure")
     generation = pane._generation  # noqa: SLF001
-    pane._on_connect()  # noqa: SLF001
+    # Connect on a connected tab opens another tab; replacing in place is connect_to's job.
+    pane.connect_to(pane.devices[0])
     check(
         service.connect_call.entered.wait(1.0),
         "replacement connection starts in the worker",
@@ -1369,6 +1371,34 @@ def controllable_peer(epr: str, value: Decimal = Decimal(7)) -> FakeRemote:
     return remote
 
 
+def switched_off_metric_greys_its_card(app: QApplication, provider: ProviderService) -> None:
+    window, pane, _service = new_window(provider)
+    remote = controllable_peer("switching")
+    attach(pane, remote)
+    pane.set_use_widgets(True)
+    check(pane.board.card("metric").control.isEnabled(), "a switched-on peer metric starts readable")
+    remote.metric_values["metric"].activation = "Off"
+    pane.bridge.metrics_changed.emit({"metric": object()})
+    check(wait_for(app, lambda: not pane.board.card("metric").control.isEnabled()),
+          "a metric report that switches the metric off greys its card")
+    remote.metric_values["metric"].activation = "On"
+    pane.bridge.metrics_changed.emit({"metric": object()})
+    check(wait_for(app, lambda: pane.board.card("metric").control.isEnabled()), "switched on again, it is readable")
+
+    pane.set_use_widgets(False)
+    muted = consumer_module.muted_colour(pane)
+
+    def label_colour():  # noqa: ANN202
+        row = next(row for row in range(pane.table.rowCount()) if pane.table.item(row, 0).text() == "metric")
+        return pane.table.item(row, consumer_module.COL_LABEL).foreground().color()
+
+    check(label_colour() != muted, "a switched-on peer metric's row is not greyed")
+    remote.metric_values["metric"].activation = "Off"
+    pane.bridge.metrics_changed.emit({"metric": object()})
+    check(wait_for(app, lambda: label_colour() == muted), "a switched-off peer metric's row is greyed")
+    window.close()
+
+
 def connection_loss_clears_the_peer(app: QApplication, provider: ProviderService) -> None:
     window, pane, _service = new_window(provider)
     remote = controllable_peer("vanishing")
@@ -1565,6 +1595,7 @@ def main() -> int:
         metric_reports_update_selected_editor(app, provider)
         technical_only_range_is_visible(app, provider)
         passive_discovery_and_connect_next(app, provider)
+        switched_off_metric_greys_its_card(app, provider)
         connection_loss_clears_the_peer(app, provider)
         refused_subscriptions_are_announced(app, provider)
         departure_of_connected_peer(app, provider)

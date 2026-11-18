@@ -205,13 +205,13 @@ class NativeProviderTests(unittest.TestCase):
     def test_native_replacement_is_discoverable_again(self) -> None:
         self.service.start()
         self.service.replace_mdib(self.io.NativeMdibConfig(original_mdib()))
-        self.assertTrue(self.service.native_mode)
+        self.assertTrue(self.service.from_mdib_file)
         self.assert_discoverable()
 
     def test_native_start_preserves_graph_state_contexts_and_does_not_generate(self) -> None:
         self.start_native()
         service = self.service
-        self.assertTrue(service.native_mode)
+        self.assertTrue(service.from_mdib_file)
         self.assertNotEqual(service.mdib.sequence_id, "urn:uuid:11111111-1111-1111-1111-111111111111")
         self.assertEqual(len(service.list_metrics()), 3)
         self.assertEqual(len(service.list_alerts()), 1)
@@ -224,10 +224,6 @@ class NativeProviderTests(unittest.TestCase):
         self.assertEqual(service.get_value("demo.rate"), Decimal("45"))
         self.assertTrue(service.alert_present("demo.alarm"), "native alarms must not acquire invented rules")
         self.assertEqual(service.get_samples("demo.wave"), [Decimal("0"), Decimal("1.5"), Decimal("-0.5")])
-        with self.assertRaises(ValueError):
-            service.add_metric(MetricSpec("not permitted", MetricKind.NUMBER))
-        with self.assertRaises(ValueError):
-            service.enable_control("demo.rate")
 
     def test_context_state_target_is_published_but_unsupported_execution_fails(self) -> None:
         root = etree.fromstring(original_mdib())
@@ -304,7 +300,7 @@ class NativeProviderTests(unittest.TestCase):
         with patch.object(self.service, "_start_graph", side_effect=fail_once):
             with self.assertRaisesRegex(RuntimeError, "injected activation failure"):
                 self.service.replace_mdib(self.io.NativeMdibConfig(original_mdib()))
-        self.assertFalse(self.service.native_mode)
+        self.assertFalse(self.service.from_mdib_file)
         self.assertEqual(self.service.get_value(handle), Decimal("8"))
         self.assertEqual(self.service.get_patient(), previous_patient)
         self.assertNotEqual(self.service.mdib.sequence_id, previous_sequence)
@@ -317,7 +313,7 @@ class NativeProviderTests(unittest.TestCase):
     def test_native_replacement_and_failed_recovery_are_explicit(self) -> None:
         self.service.start()
         self.service.replace_mdib(self.io.NativeMdibConfig(original_mdib()))
-        self.assertTrue(self.service.native_mode)
+        self.assertTrue(self.service.from_mdib_file)
         self.assertEqual(self.service.get_value("demo.rate"), Decimal("12.5"))
         with patch.object(self.service, "_start_graph", side_effect=RuntimeError("injected startup failure")):
             with self.assertRaisesRegex(RuntimeError, "import failed:.*recovery also failed:"):
@@ -332,35 +328,596 @@ class NativeProviderTests(unittest.TestCase):
             self.service.replace_mdib(self.io.NativeMdibConfig(b"<broken/>"))
         self.assertIs(self.service.mdib, original)
         profile = config.parse({"version": 3, "metrics": [{"label": "Back to JSON", "kind": "number"}]})
-        with self.assertRaises(ValueError):
-            self.service.import_profile(profile, replace=False)
         self.service.import_profile(profile)
-        self.assertFalse(self.service.native_mode)
+        self.assertFalse(self.service.from_mdib_file)
         self.assertEqual(len(self.service.list_metrics()), 1)
         self.assertIn("m.back_to_json", self.service.list_metrics())
 
 
+RUNTIME_COUNTERS = ("MdibVersion", "SequenceId", "InstanceId", "DescriptionVersion", "StateVersion")
+
+
+def canonical(payload: bytes) -> str:
+    """An exported MDIB without the runtime counters on its four aggregate elements.
+
+    DeterminationTime goes too: loading dates every value to the load. Sibling order is not
+    data here (the library writes entities in dictionary order), so every element's children
+    are compared sorted.
+    """
+    root = etree.fromstring(payload)
+    mdib = root[0]
+    for node in (root, mdib, mdib.find(f"{{{PM}}}MdDescription"), mdib.find(f"{{{PM}}}MdState")):
+        for name in RUNTIME_COUNTERS:
+            node.attrib.pop(name, None)
+    for node in root.iter():
+        node.attrib.pop("DeterminationTime", None)
+
+    def text(node) -> str:
+        children = sorted(text(child) for child in node if isinstance(child.tag, str))
+        return f"<{node.tag} {sorted(node.attrib.items())} {(node.text or '').strip()!r}>{''.join(children)}</>"
+
+    return text(root)
+
+
+class AdoptedMdibTests(unittest.TestCase):
+    """A file MDIB joins the normal bookkeeping without any of its data changing."""
+
+    def setUp(self) -> None:
+        self.io = importlib.import_module("sdctoolbox.mdib_io")
+        self.service = ProviderService(instance_name=f"adopt-{self._testMethodName}")
+        self.addCleanup(self.service.stop)
+
+    def start(self, data: bytes | None = None) -> None:
+        from mdib_test_support import adoption_mdib
+
+        self.data = data or adoption_mdib()
+        self.service.start(self.io.parse_mdib(self.data))
+
+    def test_loading_changes_nothing_but_runtime_counters(self) -> None:
+        from mdib_test_support import adoption_mdib
+
+        for data in (original_mdib(), adoption_mdib(), (Path(__file__).resolve().parent.parent / "presets" / "demo-monitor.xml").read_bytes()):
+            with self.subTest(size=len(data)):
+                service = ProviderService(instance_name=f"adopt-unchanged-{len(data)}")
+                service.start(self.io.parse_mdib(data))
+                try:
+                    self.assertEqual(canonical(self.io.mdib_bytes(service.mdib)),
+                                     canonical(self.io.mdib_bytes(self.io.parse_mdib(data))))
+                finally:
+                    service.stop()
+
+    def test_origin_flag(self) -> None:
+        self.start()
+        self.assertTrue(self.service.from_mdib_file)
+        bootstrap = ProviderService(instance_name="adopt-bootstrap")
+        bootstrap.start()
+        self.addCleanup(bootstrap.stop)
+        self.assertFalse(bootstrap.from_mdib_file)
+
+    def test_imported_metrics_and_alarms_join_the_bookkeeping(self) -> None:
+        self.start()
+        metrics = self.service.list_metrics()
+        self.assertEqual(metrics["demo.rate"].section, "demo.channel")
+        self.assertEqual(self.service.sections()["demo.channel"], "demo.channel")
+        alerts = self.service.list_alerts()
+        self.assertEqual((alerts["demo.limit"].source_handle, alerts["demo.limit"].lower_limit,
+                          alerts["demo.limit"].upper_limit), ("demo.rate", Decimal("5"), Decimal("40")))
+        self.assertFalse(alerts["demo.alarm"].has_limits)
+        self.assertEqual(self.service.signal_handles_for("demo.limit"), ["demo.limit.signal"])
+
+    def test_imported_limit_alarm_follows_its_source_only_after_a_change(self) -> None:
+        self.start()
+        self.assertFalse(self.service.alert_present("demo.limit"))
+        self.service.set_value("demo.rate", Decimal("45"))
+        self.assertTrue(self.service.alert_present("demo.limit"))
+        self.assertEqual(self.service.signal_states("demo.limit")[0].presence, str(pm_types.AlertSignalPresence.ON))
+        self.service.set_value("demo.rate", Decimal("20"))
+        self.assertFalse(self.service.alert_present("demo.limit"))
+
+    def test_other_imported_alarms_are_not_rederived_by_unrelated_changes(self) -> None:
+        self.start()
+        self.service.set_value("demo.rate", Decimal("45"))
+        self.service.set_alert_presence("demo.alarm", False)
+        self.assertTrue(self.service.alert_present("demo.paused"), "a paused but present imported alarm was rewritten")
+        self.assertFalse(self.service.alert_present("demo.alarm"))
+        self.service.set_alert_presence("demo.alarm", True)
+        self.assertTrue(self.service.alert_present("demo.alarm"))
+        self.assertEqual(self.service.signal_states("demo.alarm")[0].presence, str(pm_types.AlertSignalPresence.ON))
+        present = self.service.mdib.entities.by_handle("demo.alerts").state
+        self.assertIn("demo.limit", present.PresentPhysiologicalAlarmConditions)
+        self.assertIn("demo.alarm", present.PresentTechnicalAlarmConditions)
+
+    def test_imported_signal_acknowledge_and_delegation(self) -> None:
+        self.start()
+        self.service.set_value("demo.rate", Decimal("45"))
+        self.assertEqual(self.service.acknowledge_alert("demo.limit"), 1)
+        self.assertEqual(self.service.signal_states("demo.limit")[0].presence, str(pm_types.AlertSignalPresence.ACK))
+
+
+MONITOR = Path(__file__).resolve().parent.parent / "presets" / "demo-monitor.xml"
+
+
+def bare_mds() -> bytes:
+    """Only an MDS: no channel, alert system, SCO or context to put anything in."""
+    root = etree.fromstring(original_mdib())
+    description, states = root[0]
+    mds = description[0]
+    for child in list(mds):
+        if child.tag != f"{{{PM}}}Type":
+            mds.remove(child)
+    for state in list(states):
+        if state.get("DescriptorHandle") != "demo.root":
+            states.remove(state)
+    return etree.tostring(root)
+
+
+class EditableMdibTests(unittest.TestCase):
+    """Everything a JSON preset can do also works on a graph loaded from a file."""
+
+    def setUp(self) -> None:
+        self.io = importlib.import_module("sdctoolbox.mdib_io")
+        self.service = ProviderService(instance_name=f"edit-{self._testMethodName}")
+        self.addCleanup(self.service.stop)
+
+    def start(self, data: bytes) -> None:
+        self.service.start(self.io.parse_mdib(data))
+
+    def invoke(self, handle: str, value):
+        operation = self.service._provider.get_operation_by_handle(handle)
+        self.assertIsNotNone(operation, handle)
+        return operation.execute_operation(None, SimpleNamespace(argument=value)).invocation_state
+
+    def assert_exportable(self) -> None:
+        self.io.parse_mdib(self.io.mdib_bytes(self.service.mdib))
+
+    def test_metrics_go_into_existing_and_new_sections(self) -> None:
+        self.start(MONITOR.read_bytes())
+        into_existing = self.service.add_metric(MetricSpec("SpO2", MetricKind.NUMBER, section="monitor.vitals.channel",
+                                                           initial_value=Decimal("97")))
+        self.assertEqual(self.service.mdib.entities.by_handle(into_existing).parent_handle, "monitor.vitals.channel")
+        into_new = self.service.add_metric(MetricSpec("Mode", MetricKind.TEXT, section="Settings"))
+        channel = self.service.mdib.entities.by_handle(self.service.mdib.entities.by_handle(into_new).parent_handle)
+        self.assertEqual(self.service.mdib.entities.by_handle(channel.parent_handle).parent_handle, "monitor")
+        unsectioned = self.service.add_metric(MetricSpec("Loose", MetricKind.NUMBER))
+        self.assertIsNotNone(self.service.mdib.entities.by_handle(unsectioned))
+        for kind in (MetricKind.CHOICE, MetricKind.WAVEFORM, MetricKind.DISTRIBUTION):
+            extra = {"allowed_values": ("A", "B")} if kind is MetricKind.CHOICE else {}
+            self.service.add_metric(MetricSpec(f"New {kind.value}", kind, **extra))
+        self.assertEqual(self.service.get_value(into_existing), Decimal("97"))
+        self.assert_exportable()
+
+    def test_control_creates_a_sco_when_the_file_has_none(self) -> None:
+        self.start(MONITOR.read_bytes())
+        operation = self.service.enable_control("monitor.pulse")
+        self.assertEqual(self.service.mdib.entities.by_handle(
+            self.service.mdib.entities.by_handle(operation).parent_handle).node_type, pm_types_qname("ScoDescriptor"))
+        self.assertEqual(self.invoke(operation, Decimal("80")), msg_types.InvocationState.FINISHED)
+        self.assertEqual(self.service.get_value("monitor.pulse"), Decimal("80"))
+        self.service.disable_control("monitor.pulse")
+        self.assertEqual(self.invoke(operation, Decimal("81")), msg_types.InvocationState.FAILED)
+        self.assert_exportable()
+
+    def test_imported_operation_can_be_switched_off_and_on(self) -> None:
+        self.start(original_mdib())
+        self.service.disable_control("demo.rate")
+        self.assertEqual(self.invoke("demo.set", Decimal("15")), msg_types.InvocationState.FAILED)
+        self.service.enable_control("demo.rate")
+        self.assertEqual(self.invoke("demo.set", Decimal("15")), msg_types.InvocationState.FINISHED)
+
+    def test_alarms_on_a_graph_without_alert_system(self) -> None:
+        self.start(bare_mds())
+        source = self.service.add_metric(MetricSpec("Pressure", MetricKind.NUMBER, initial_value=Decimal("10")))
+        from sdctoolbox.model import AlertSpec
+        alarm = self.service.add_alert(AlertSpec("Too high", source, upper_limit=Decimal("20"), delegable=True))
+        self.service.set_value(source, Decimal("25"))
+        self.assertTrue(self.service.alert_present(alarm))
+        signal = self.service.signal_handles_for(alarm)[0]
+        self.service.set_signal_delegated(signal, delegated=True)
+        self.service.remove_alert(alarm)
+        self.assertNotIn(alarm, self.service.list_alerts())
+        self.assert_exportable()
+
+    def test_actions_with_effects(self) -> None:
+        self.start(MONITOR.read_bytes())
+        from sdctoolbox.model import ActionSpec
+        action = self.service.add_action(ActionSpec("Reset pulse", "monitor", effects={"monitor.pulse": Decimal("60")}))
+        self.assertEqual(self.invoke(action, None), msg_types.InvocationState.FINISHED)
+        self.assertEqual(self.service.get_value("monitor.pulse"), Decimal("60"))
+        self.service.set_value("monitor.pulse", Decimal("70"))
+        self.service.run_action(action)
+        self.assertEqual(self.service.get_value("monitor.pulse"), Decimal("60"))
+        self.service.remove_action(action)
+        self.assert_exportable()
+
+    def test_contexts_are_created_when_missing_and_reuse_imported_ones(self) -> None:
+        from sdctoolbox.model import LocationInfo, PatientInfo
+        self.start(MONITOR.read_bytes())
+        self.service.set_location(LocationInfo(facility="NEW", bed="7"))
+        self.assertEqual(self.service.get_location().bed, "7")
+        self.service.set_patient(PatientInfo(given_name="Synthetic"))
+        self.assertEqual(self.service.get_patient().given_name, "Synthetic")
+        self.service.clear_patient()
+        self.assertEqual(self.service.get_patient().given_name, "")
+        self.assert_exportable()
+
+        imported = ProviderService(instance_name="edit-contexts-imported")
+        imported.start(self.io.parse_mdib(original_mdib()))
+        self.addCleanup(imported.stop)
+        imported.set_patient(PatientInfo(given_name="Next"))
+        patient = imported.mdib.entities.by_handle("demo.patient")
+        self.assertEqual(len(patient.states), 3, "history is kept and the imported descriptor reused")
+        imported.set_location(LocationInfo(facility="OTHER"))
+        self.assertEqual(imported.get_location().facility, "OTHER")
+
+    def test_runtime_states_reload_from_an_mdib_file(self) -> None:
+        from sdctoolbox import config
+        from sdctoolbox.model import AlertPriority, AlertSpec
+
+        self.start(bare_mds())
+        rate = self.service.add_metric(MetricSpec("Rate", MetricKind.NUMBER, controllable=True,
+                                                  minimum=Decimal("0"), maximum=Decimal("100"), initial_value=Decimal("50")))
+        mode = self.service.add_metric(MetricSpec("Mode", MetricKind.CHOICE, controllable=True,
+                                                  allowed_values=("A", "B", "C"), initial_value="A"))
+        alarm = self.service.add_alert(AlertSpec("Rate high", rate, upper_limit=Decimal("80")))
+        self.service.set_allowed_range(rate, Decimal("20"), Decimal("40"))
+        self.service.set_allowed_values(mode, ["A", "B"])
+        self.service.set_metric_active(mode, active=False)
+        self.service.set_alert_limits(alarm, Decimal("10"), Decimal("90"))
+        self.service.set_alert_priority(alarm, AlertPriority.HIGH)
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "states.xml"
+            config.save(self.service, target)
+            reloaded = ProviderService(instance_name="states-reloaded")
+            reloaded.start(self.io.parse_mdib(target.read_bytes()))
+        self.addCleanup(reloaded.stop)
+
+        metrics, alert = reloaded.list_metrics(), reloaded.list_alerts()[alarm]
+        self.assertEqual(metrics[rate].effective_allowed_range(), (Decimal("20"), Decimal("40")))
+        self.assertEqual((metrics[rate].minimum, metrics[rate].maximum), (Decimal("0"), Decimal("100")))
+        self.assertEqual(metrics[mode].operation_values, ("A", "B"))
+        self.assertFalse(metrics[mode].active)
+        self.assertEqual((alert.lower_limit, alert.upper_limit), (Decimal("10"), Decimal("90")))
+        self.assertEqual(alert.effective_max_limits(), (Decimal("0"), Decimal("100")))
+        self.assertIs(alert.actual_priority, AlertPriority.HIGH)
+        self.assertIs(alert.priority, AlertPriority.MEDIUM)
+        # Still editable after the reload.
+        reloaded.set_allowed_range(rate, Decimal("10"), Decimal("60"))
+        reloaded.set_alert_limits(alarm, Decimal("0"), Decimal("100"))
+
+    def test_an_edited_graph_reloads_unchanged(self) -> None:
+        from sdctoolbox import config
+        from sdctoolbox.model import ActionSpec, AlertSpec, LocationInfo, PatientInfo
+
+        self.start(bare_mds())
+        pulse = self.service.add_metric(MetricSpec("Pulse", MetricKind.NUMBER, section="Vitals", controllable=True,
+                                                   minimum=Decimal("0"), maximum=Decimal("250"), initial_value=Decimal("70")))
+        alarm = self.service.add_alert(AlertSpec("Pulse high", pulse, upper_limit=Decimal("120")))
+        action = self.service.add_action(ActionSpec("Reset", "demo.root", effects={pulse: Decimal("60")}, note="back to rest"))
+        self.service.set_patient(PatientInfo(given_name="Synthetic"))
+        self.service.set_location(LocationInfo(facility="F", bed="2"))
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "edited.xml"
+            config.save(self.service, target, behaviour=True)
+            reloaded = ProviderService(instance_name="edit-reloaded")
+            reloaded.start(self.io.parse_mdib(target.read_bytes()))
+        self.addCleanup(reloaded.stop)
+
+        self.assertEqual(canonical(self.io.mdib_bytes(reloaded.mdib)), canonical(self.io.mdib_bytes(self.service.mdib)))
+        self.assertEqual(set(reloaded.list_metrics()), set(self.service.list_metrics()))
+        self.assertEqual(reloaded.list_alerts()[alarm].upper_limit, Decimal("120"))
+        self.assertEqual((reloaded.list_actions()[action].effects, reloaded.list_actions()[action].note),
+                         ({pulse: Decimal("60")}, "back to rest"))
+        self.assertEqual(reloaded.get_patient().given_name, "Synthetic")
+        self.assertEqual(reloaded.get_location().bed, "2")
+        operation = reloaded.operation_handle_for(pulse)
+        self.assertIsNotNone(operation)
+        reloaded_invoke = lambda handle, value: reloaded._provider.get_operation_by_handle(handle).execute_operation(
+            None, SimpleNamespace(argument=value)).invocation_state
+        self.assertEqual(reloaded_invoke(operation, Decimal("130")), msg_types.InvocationState.FINISHED)
+        self.assertTrue(reloaded.alert_present(alarm), "the reloaded alarm follows its source")
+        self.assertEqual(reloaded_invoke(action, None), msg_types.InvocationState.FINISHED)
+        self.assertEqual(reloaded.get_value(pulse), Decimal("60"))
+
+    def test_removing_a_metric_unregisters_its_operation_from_a_second_sco(self) -> None:
+        root = etree.fromstring(original_mdib())
+        description, states = root[0]
+        description.append(etree.fromstring(etree.tostring(description[0]).replace(b"demo.", b"other.")))
+        for state in list(states):
+            states.append(etree.fromstring(etree.tostring(state).replace(b"demo.", b"other.")))
+        self.start(etree.tostring(root))
+        self.assertIsNotNone(self.service._provider.get_operation_by_handle("other.set"))
+        self.service.remove_metric("other.rate")
+        self.assertIsNone(self.service._provider.get_operation_by_handle("other.set"))
+        self.assertIsNotNone(self.service._provider.get_operation_by_handle("demo.set"), "the first Sco keeps its own")
+
+    def test_removing_an_imported_metric_takes_its_dependents(self) -> None:
+        self.start(original_mdib())
+        self.service.remove_metric("demo.rate")
+        for handle in ("demo.rate", "demo.alarm", "demo.signal", "demo.set", "demo.disabled"):
+            self.assertIsNone(self.service.mdib.entities.by_handle(handle), handle)
+        self.assertNotIn("demo.alarm", self.service.list_alerts())
+        self.assert_exportable()
+
+    def test_generator_drives_new_and_imported_waveforms_only_when_started(self) -> None:
+        self.start(MONITOR.read_bytes())
+        before = self.service.get_samples("monitor.trace")
+        self.assertFalse(self.service.generator_running)
+        self.service.start_generator()
+        self.assertTrue(wait_until(lambda: self.service.get_samples("monitor.trace") != before, timeout=5.0))
+        self.service.stop_generator()
+
+    def test_json_profile_appends_and_replaces(self) -> None:
+        from sdctoolbox import config
+
+        self.start(original_mdib())
+        profile = config.parse({"version": 3, "metrics": [{"label": "Appended", "kind": "number", "section": "demo.channel"}],
+                                "alerts": [{"label": "Appended alarm", "watches": "m.appended", "upper_limit": "3"}]})
+        self.service.import_profile(profile, replace=False)
+        self.assertIn("m.appended", self.service.list_metrics())
+        self.assertIn("demo.rate", self.service.list_metrics())
+        self.assertEqual(self.service.mdib.entities.by_handle("m.appended").parent_handle, "demo.channel")
+        self.assertTrue(self.service.from_mdib_file)
+        self.service.import_profile(profile)
+        self.assertFalse(self.service.from_mdib_file)
+        self.assertNotIn("demo.rate", self.service.list_metrics())
+
+
+BEHAVIOUR = "urn:sdc-testing-toolbox:behaviour"
+
+
+class BehaviourExtensionTests(unittest.TestCase):
+    """Toolbox behaviour travels in the exported file on request, and never on the network."""
+
+    def setUp(self) -> None:
+        self.io = importlib.import_module("sdctoolbox.mdib_io")
+        self.service = ProviderService(instance_name=f"behaviour-{self._testMethodName}")
+        self.addCleanup(self.service.stop)
+        self.service.start(self.io.parse_mdib(original_mdib()))
+
+    def configure(self) -> tuple[str, str]:
+        from sdctoolbox.model import ActionSpec, WaveformShape
+
+        wave = self.service.add_metric(MetricSpec("Pleth", MetricKind.WAVEFORM, shape=WaveformShape.SQUARE,
+                                                  cycle_seconds=Decimal("2.5"), minimum=Decimal("0"), maximum=Decimal("10")))
+        self.service.stop_generator()
+        action = self.service.add_action(ActionSpec("Run", "demo.root", effects={"demo.mode": "RUN", "demo.rate": Decimal("20")},
+                                                    note="starts the demo"))
+        return wave, action
+
+    def export(self, behaviour: bool) -> bytes:
+        from sdctoolbox import config
+
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "out.xml"
+            config.save(self.service, target, behaviour=behaviour)
+            return target.read_bytes()
+
+    def test_plain_export_has_no_toolbox_extensions(self) -> None:
+        self.configure()
+        payload = self.export(behaviour=False)
+        self.assertNotIn(BEHAVIOUR.encode(), payload)
+        self.assertIn(b"urn:sdc-testing-toolbox:test-extension", payload, "foreign extensions must survive")
+
+    def test_behaviour_round_trips_and_stays_off_the_live_mdib(self) -> None:
+        wave, action = self.configure()
+        payload = self.export(behaviour=True)
+        root = etree.fromstring(payload)
+        marked = root.findall(f".//{{{EXT}}}Extension/{{{BEHAVIOUR}}}*")
+        self.assertTrue(marked)
+        self.assertTrue(all(node.get(f"{{{EXT}}}MustUnderstand") == "false" for node in marked))
+        self.assertIn(b"urn:sdc-testing-toolbox:test-extension", payload)
+
+        reloaded = ProviderService(instance_name="behaviour-reloaded")
+        reloaded.start(self.io.parse_mdib(payload))
+        self.addCleanup(reloaded.stop)
+        live = self.io.mdib_bytes(reloaded.mdib)
+        self.assertNotIn(BEHAVIOUR.encode(), live, "toolbox behaviour must not be published")
+        self.assertIn(b"urn:sdc-testing-toolbox:test-extension", live)
+        spec = reloaded.list_metrics()[wave]
+        self.assertEqual((spec.shape.value, spec.cycle_seconds), ("square", Decimal("2.5")))
+        self.assertIn(b'CycleSeconds="2.5"', payload)
+
+        # An export from before cycles were durations counted samples at its own period.
+        older = payload.replace(b'CycleSeconds="2.5"', b'CycleSamples="25"')
+        legacy = ProviderService(instance_name="behaviour-legacy")
+        legacy.start(self.io.parse_mdib(older))
+        self.addCleanup(legacy.stop)
+        self.assertEqual(legacy.list_metrics()[wave].cycle_seconds, Decimal("2.5"))
+        restored = reloaded.list_actions()[action]
+        self.assertEqual(restored.effects, {"demo.mode": "RUN", "demo.rate": Decimal("20")})
+        self.assertEqual(restored.note, "starts the demo")
+        operation = reloaded._provider.get_operation_by_handle(action)
+        self.assertEqual(operation.execute_operation(None, SimpleNamespace(argument=None)).invocation_state,
+                         msg_types.InvocationState.FINISHED)
+        self.assertEqual(reloaded.get_value("demo.mode"), "RUN")
+        self.assertEqual(reloaded.get_value("demo.rate"), Decimal("20"))
+        self.assertIn(BEHAVIOUR.encode(), self.export_from(reloaded), "behaviour survives a second round trip")
+
+    def export_from(self, service) -> bytes:
+        from sdctoolbox import config
+
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "again.xml"
+            config.save(service, target, behaviour=True)
+            return target.read_bytes()
+
+    def reload(self, payload: bytes) -> ProviderService:
+        service = ProviderService(instance_name=f"reloaded-{self._testMethodName}")
+        self.addCleanup(service.stop)
+        service.start(self.io.parse_mdib(payload))
+        return service
+
+    def test_generated_waveforms_are_marked_and_generate_again_after_reload(self) -> None:
+        sine = self.service.add_metric(MetricSpec("Sine", MetricKind.WAVEFORM, minimum=Decimal("0"), maximum=Decimal("10")))
+        self.assertTrue(self.service.generator_running)
+        payload = self.export(behaviour=True)
+        markers = {node.getparent().getparent().get("Handle")
+                   for node in etree.fromstring(payload).iter(f"{{{BEHAVIOUR}}}Generator")}
+        self.assertIn(sine, markers, "a default sine is generated too, so it needs a marker")
+        self.assertIn("demo.wave", markers, "an imported waveform the running generator drives is marked")
+        self.assertTrue(self.reload(payload).generator_running)
+        self.assertFalse(self.reload(self.export(behaviour=False)).generator_running, "a plain file stays static")
+
+    def test_unmarked_waveforms_keep_their_file_samples_while_others_generate(self) -> None:
+        wave, _ = self.configure()  # generator stopped: the imported demo.wave is not driven
+        exported = self.service.get_samples("demo.wave")
+        payload = self.export(behaviour=True)
+        markers = {node.getparent().getparent().get("Handle")
+                   for node in etree.fromstring(payload).iter(f"{{{BEHAVIOUR}}}Generator")}
+        self.assertEqual(markers, {wave})
+        reloaded = self.reload(payload)
+        self.assertTrue(reloaded.generator_running)
+        reloaded.stop_generator()
+        reloaded._sample_generator.publish_once(force=True)
+        self.assertEqual(reloaded.get_samples("demo.wave"), exported)
+        self.assertTrue(reloaded.get_samples(wave))
+
+    def test_an_undriven_waveform_keeps_its_curve_without_being_generated(self) -> None:
+        from sdctoolbox.config import ConfigError
+        from sdctoolbox.model import WaveformShape
+
+        wave, _ = self.configure()  # generator stopped: the imported demo.wave is not driven
+        self.service.set_generator("demo.wave", shape=WaveformShape.SAWTOOTH, cycle_seconds=Decimal("1.5"))
+        exported = self.service.get_samples("demo.wave")
+        payload = self.export(behaviour=True)
+        generators = {node.getparent().getparent().get("Handle"): node.get("Generate")
+                      for node in etree.fromstring(payload).iter(f"{{{BEHAVIOUR}}}Generator")}
+        self.assertEqual(generators, {wave: None, "demo.wave": "false"})
+
+        reloaded = self.reload(payload)
+        spec = reloaded.list_metrics()["demo.wave"]
+        self.assertEqual((spec.shape, spec.cycle_seconds), (WaveformShape.SAWTOOTH, Decimal("1.5")))
+        reloaded.stop_generator()
+        reloaded._sample_generator.publish_once(force=True)
+        self.assertEqual(reloaded.get_samples("demo.wave"), exported, "it keeps the file's samples")
+        self.assertIn(b'Generate="false"', self.export_from(reloaded), "and survives a second round trip")
+
+        with self.assertRaisesRegex(ConfigError, "demo.wave"):
+            self.io.parse_mdib(payload.replace(b'Generate="false"', b'Generate="maybe"'))
+
+    def test_action_with_a_refused_effect_reloads_and_is_still_refused(self) -> None:
+        from sdctoolbox.model import ActionSpec
+
+        action = self.service.add_action(ActionSpec("Bad", "demo.root", effects={"demo.mode": "INVALID"}))
+        reloaded = ProviderService(instance_name="behaviour-refused")
+        reloaded.start(self.io.parse_mdib(self.export(behaviour=True)))
+        self.addCleanup(reloaded.stop)
+        self.assertEqual(reloaded.list_actions()[action].effects, {"demo.mode": "INVALID"})
+        operation = reloaded._provider.get_operation_by_handle(action)
+        self.assertEqual(operation.execute_operation(None, SimpleNamespace(argument=None)).invocation_state,
+                         msg_types.InvocationState.FAILED)
+        self.assertEqual(reloaded.get_value("demo.mode"), "RUN")
+
+    def test_malformed_toolbox_extension_names_the_item(self) -> None:
+        from sdctoolbox.config import ConfigError
+
+        bad = original_mdib().replace(
+            b'<pm:Operation Handle="demo.action" xsi:type="pm:ActivateOperationDescriptor" OperationTarget="demo.root"/>',
+            b'<pm:Operation Handle="demo.action" xsi:type="pm:ActivateOperationDescriptor" OperationTarget="demo.root">'
+            b'<ext:Extension><tb:Action xmlns:tb="urn:sdc-testing-toolbox:behaviour" ext:MustUnderstand="false">'
+            b'<tb:Effect Value="1"/></tb:Action></ext:Extension></pm:Operation>',
+        )
+        with self.assertRaisesRegex(ConfigError, "demo.action"):
+            self.io.parse_mdib(bad)
+
+    def with_card(self, handle: str, attributes: str) -> bytes:
+        """The fixture with a toolbox Card element on one descriptor."""
+        opening = {
+            "demo.rate": b'<pm:Metric Handle="demo.rate" xsi:type="pm:NumericMetricDescriptor" MetricCategory="Set"'
+                         b' MetricAvailability="Cont" Resolution="0.1">',
+            "demo.vmd": b'<pm:Vmd Handle="demo.vmd">',
+        }[handle]
+        card = (b'<ext:Extension><tb:Card xmlns:tb="urn:sdc-testing-toolbox:behaviour" ext:MustUnderstand="false" '
+                + attributes.encode() + b'/></ext:Extension>')
+        data = original_mdib()
+        self.assertIn(opening, data)
+        return data.replace(opening, opening + card)
+
+    def test_card_settings_round_trip_and_bad_values_name_the_metric(self) -> None:
+        from sdctoolbox.config import ConfigError
+        from sdctoolbox.model import CardSettings
+
+        settings = CardSettings(control="StepperWidget", small_steps=False, update_on="change",
+                                seconds_per_width=Decimal("2.5"), multiline=True)
+        self.assertEqual(CardSettings.from_attributes(settings.to_attributes()), settings)
+        self.assertEqual(CardSettings().to_attributes(), {}, "default cards write nothing")
+
+        mdib = self.io.parse_mdib(self.with_card("demo.rate", 'Control="StepperWidget" LargeSteps="false"'))
+        self.assertEqual(mdib.toolbox_behaviour["demo.rate"]["card"],
+                         CardSettings(control="StepperWidget", large_steps=False))
+        for bad in ('UpdateOn="sometimes"', 'Legend="yes"', 'SecondsPerWidth="0"', 'SecondsPerWidth="fast"'):
+            with self.subTest(bad), self.assertRaisesRegex(ConfigError, "demo.rate"):
+                self.io.parse_mdib(self.with_card("demo.rate", bad))
+
+        service = ProviderService(instance_name="card-on-vmd")
+        self.addCleanup(service.stop)
+        with self.assertRaisesRegex(ValueError, "not a metric"):
+            service.start(self.io.parse_mdib(self.with_card("demo.vmd", 'Legend="false"')))
+
+    def test_card_settings_are_exported_only_for_existing_metrics(self) -> None:
+        from sdctoolbox.model import CardSettings
+
+        self.service.card_settings["demo.rate"] = CardSettings(split=True)
+        self.service.card_settings["gone"] = CardSettings(split=True)
+        payload = self.export(behaviour=True)
+        self.assertEqual(payload.count(b'Split="true"'), 1)
+        self.assertEqual(self.reload(payload).card_settings, {"demo.rate": CardSettings(split=True)})
+
+    def test_export_filters(self) -> None:
+        from sdctoolbox import config
+
+        self.assertEqual(config.export_path("x", config.MDIB_BEHAVIOUR_FILE_FILTER), Path("x.xml"))
+        self.assertEqual(config.EXPORT_FILE_FILTER.split(";;"), [config.MDIB_BEHAVIOUR_FILE_FILTER, config.MDIB_FILE_FILTER])
+        self.assertNotIn("json", config.FILE_FILTER.lower())
+
+
+def pm_types_qname(name: str):
+    from sdc11073.xml_types import pm_qnames
+    return getattr(pm_qnames, name)
+
+
 class ConfigMdibTests(unittest.TestCase):
     def test_two_original_native_presets_are_shipped_and_include_state(self) -> None:
-        from sdctoolbox import config, constants
+        from sdctoolbox import config, constants, native_mdib
         from sdctoolbox.mdib_io import parse_mdib
 
-        expected = {"mdib-demo-monitor.xml", "mdib-demo-infusion-pump.xml"}
+        expected = {"demo-monitor.xml", "demo-infusion-pump.xml"}
         for name in expected:
             path = Path(__file__).resolve().parent.parent / "presets" / name
             self.assertTrue(path.is_file(), f"missing original native preset: {name}")
             self.assertIn(name, constants.SHIPPED_PRESET_FILES)
             snapshot = config.load_file(path)
             mdib = parse_mdib(snapshot.xml)
-            self.assertFalse(mdib.context_states.objects, "shipped demos must not include patient data")
-            if name == "mdib-demo-monitor.xml":
+            self.assertFalse(mdib.entities.by_node_type(pm_types_qname("PatientContextDescriptor")),
+                             "shipped demos must not include patient data")
+            # A location makes them discoverable by location, and MetaData says who made them.
+            self.assertTrue(any("sdc.ctxt.loc:/" in scope for scope in native_mdib.scopes(mdib).text))
+            identity, serial = native_mdib.device_identity(mdib)
+            self.assertEqual((identity.manufacturer, serial), ("Toolbox", None))
+            if name == "demo-monitor.xml":
                 self.assertEqual(mdib.entities.by_handle("monitor.pulse").state.MetricValue.Value, Decimal("72"))
                 self.assertEqual(len(mdib.entities.by_handle("monitor.trace").state.MetricValue.Samples), 8)
             else:
                 self.assertEqual(mdib.entities.by_handle("pump.rate").state.MetricValue.Value, Decimal("2.5"))
                 self.assertEqual(mdib.entities.by_handle("pump.mode").state.MetricValue.Value, "IDLE")
 
-    def test_native_files_appear_alongside_json_presets_and_dispatch_without_conversion(self) -> None:
+    def test_a_loaded_preset_dates_its_values_to_the_load(self) -> None:
+        import time
+
+        from sdctoolbox import config
+
+        path = Path(__file__).resolve().parent.parent / "presets" / "demo-monitor.xml"
+        service = ProviderService(instance_name="preset-times")
+        service.start()
+        try:
+            before = time.time()
+            config.apply_to(service, config.load_file(path))
+            state = service.mdib.entities.by_handle("monitor.pulse").state
+            self.assertGreaterEqual(state.MetricValue.DeterminationTime, before - 1)
+        finally:
+            service.stop()
+
+    def test_only_native_files_are_listed_as_presets_and_dispatch_without_conversion(self) -> None:
         from sdctoolbox import config
         from sdctoolbox.mdib_io import NativeMdibConfig
 
@@ -371,8 +928,8 @@ class ConfigMdibTests(unittest.TestCase):
             (Path(directory) / "json.json").write_text('{"version":3,"name":"JSON demo","metrics":[]}', encoding="utf-8")
             self.assertIsInstance(config.load_file(native), NativeMdibConfig)
             presets = config.list_presets(directory)
-            self.assertEqual(len(presets), 2)
-            chosen = next(preset for preset in presets if preset.path.suffix == ".xml")
+            self.assertEqual([preset.path.name for preset in presets], ["native.xml"], "JSON is no preset format")
+            chosen = presets[0]
             self.assertIn("MDIB", chosen.summary())
             self.assertEqual((chosen.metrics, chosen.alerts), (3, 1))
 
@@ -384,8 +941,6 @@ class ConfigMdibTests(unittest.TestCase):
         self.assertEqual(config.export_path("snapshot.xml", config.MDIB_FILE_FILTER), Path("snapshot.xml"))
         with self.assertRaises(config.ConfigError):
             config.export_path("snapshot.json", config.MDIB_FILE_FILTER)
-        with self.assertRaises(config.ConfigError):
-            config.export_path("snapshot.xml", config.JSON_FILE_FILTER)
 
     def test_native_api_export_is_combined_and_cannot_silently_reduce_to_json(self) -> None:
         from sdctoolbox import config

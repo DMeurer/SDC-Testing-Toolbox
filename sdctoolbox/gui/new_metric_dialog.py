@@ -8,6 +8,7 @@ one is chosen and a field that does not apply is worse than absent.
 from __future__ import annotations
 
 import math
+from decimal import Decimal
 
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -17,23 +18,31 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
+from .. import nomenclature
 from ..constants import METRIC_HANDLE_PREFIX
 from ..model import (
     DEFAULT_SAMPLE_PERIOD,
+    Coding,
     DistributionShape,
     MetricKind,
     MetricSpec,
     WaveformShape,
     slugify,
 )
+from .code_picker import CodePickerDialog
 from .decimal_input import DecimalInputError, parse_decimal_input
 from .helpers import set_form_row_visible
+from .kind_sections import kind_section, style_dialog_buttons
 from .no_wheel import NoWheelComboBox
-from .styling import constrain_dynamic_label, mark_as_error, mute
+from .styling import constrain_dynamic_label, mark_as_error, mute, set_button_kind
+from .widgets.base import WidgetSpec
+from .widgets.board import card_caption
+from .widgets.factory import matching_controls
 
 # Label shown in the combo box -> kind. Order decides the order in the dropdown.
 OFFERED_KINDS: list[tuple[str, MetricKind]] = [
@@ -75,7 +84,33 @@ OFFERED_DISTRIBUTIONS: list[tuple[str, DistributionShape]] = [
 
 # What a manually created waveform gets if nothing is said. Forty samples a cycle at the
 # default period is a four second cycle, which is slow enough to watch.
-DEFAULT_CYCLE_SAMPLES = 40
+DEFAULT_CYCLE_SECONDS = Decimal(4)
+
+
+def shape_combo() -> NoWheelComboBox:
+    """The waveform curves, with a separator before the physiological ones."""
+    box = NoWheelComboBox()
+    for index, (caption, shape) in enumerate(OFFERED_SHAPES):
+        if index == FIRST_PHYSIOLOGICAL:
+            box.insertSeparator(box.count())
+        box.addItem(caption, shape)
+    return box
+
+
+def selected_shape(box: NoWheelComboBox) -> WaveformShape:
+    """The curve a shape_combo() shows. The separator takes an index of its own."""
+    index = box.currentIndex()
+    if index > FIRST_PHYSIOLOGICAL:
+        index -= 1
+    return OFFERED_SHAPES[max(0, min(index, len(OFFERED_SHAPES) - 1))][1]
+
+
+def distribution_combo() -> NoWheelComboBox:
+    """The distribution curves."""
+    box = NoWheelComboBox()
+    for caption, shape in OFFERED_DISTRIBUTIONS:
+        box.addItem(caption, shape)
+    return box
 
 
 class NewMetricDialog(QDialog):
@@ -93,8 +128,14 @@ class NewMetricDialog(QDialog):
         self.label_edit = QLineEdit()
         self.label_edit.setPlaceholderText("Zoom level")
 
+        # What it measures and its unit as MDC codes, picked by name. A typed unit stays a label.
+        self._picked: dict[QLineEdit, nomenclature.Term] = {}
+        self.measures_edit = QLineEdit()
+        self.measures_edit.setPlaceholderText("optional, pick a term or type a code")
+        self.measures_widget = self._with_pick_button(self.measures_edit, "measurement")
         self.unit_edit = QLineEdit()
         self.unit_edit.setPlaceholderText("optional, e.g. steps or mmHg")
+        self.unit_widget = self._with_pick_button(self.unit_edit, "unit")
 
         self.values_edit = QLineEdit()
         self.values_edit.setPlaceholderText("IDLE, RUN, PAUSE")
@@ -120,13 +161,9 @@ class NewMetricDialog(QDialog):
         # -- waveform
         self.sample_period_edit = QLineEdit()
         self.sample_period_edit.setPlaceholderText(str(DEFAULT_SAMPLE_PERIOD))
-        self.shape_box = NoWheelComboBox()
-        for index, (caption, shape) in enumerate(OFFERED_SHAPES):
-            if index == FIRST_PHYSIOLOGICAL:
-                self.shape_box.insertSeparator(self.shape_box.count())
-            self.shape_box.addItem(caption, shape)
+        self.shape_box = shape_combo()
         self.cycle_edit = QLineEdit()
-        self.cycle_edit.setPlaceholderText(str(DEFAULT_CYCLE_SAMPLES))
+        self.cycle_edit.setPlaceholderText(str(DEFAULT_CYCLE_SECONDS))
         self.rate_hint = QLabel("")
         mute(self.rate_hint)
         cycle_row = QHBoxLayout()
@@ -137,9 +174,7 @@ class NewMetricDialog(QDialog):
         self.cycle_widget.setLayout(cycle_row)
 
         # -- distribution
-        self.distribution_box = NoWheelComboBox()
-        for caption, shape in OFFERED_DISTRIBUTIONS:
-            self.distribution_box.addItem(caption, shape)
+        self.distribution_box = distribution_combo()
         self.domain_unit_edit = QLineEdit()
         self.domain_unit_edit.setPlaceholderText("Hz")
         self.domain_min_edit = QLineEdit()
@@ -163,33 +198,47 @@ class NewMetricDialog(QDialog):
         mark_as_error(self.error_label)
         self.error_label.hide()
 
-        form = QFormLayout()
+        # What consumers see over SDC, then how the toolbox generates values for it.
+        self.description_section, form = kind_section("Device description", "mdib")
         form.addRow("Kind", self.kind_box)
         form.addRow("Label", self.label_edit)
-        form.addRow("Unit", self.unit_edit)
+        form.addRow("Measures", self.measures_widget)
+        form.addRow("Unit", self.unit_widget)
         form.addRow("Allowed values", self.values_edit)
         form.addRow("Resolution", self.resolution_edit)
         form.addRow("Range", self.limits_widget)
         form.addRow("Sample period", self.sample_period_edit)
-        form.addRow("Shape", self.shape_box)
-        form.addRow("Samples per cycle", self.cycle_widget)
-        form.addRow("Distribution", self.distribution_box)
         form.addRow("Domain unit", self.domain_unit_edit)
         form.addRow("Domain", self.domain_widget)
         form.addRow("", self.controllable_box)
         form.addRow("Handle", self.handle_preview)
         self.form = form
+        self.simulation_section, self.simulation_form = kind_section("Simulation", "toolbox")
+        self.simulation_form.addRow("Shape", self.shape_box)
+        self.simulation_form.addRow("Cycle length (s)", self.cycle_widget)
+        self.simulation_form.addRow("Distribution", self.distribution_box)
+        self.card_section, card_form = kind_section("Card", "toolbox")
+        self.card_type_box = NoWheelComboBox()
+        self.card_type_box.setToolTip("How the card shows this data source. Only changes the card.")
+        card_form.addRow("Card type", self.card_type_box)
+        self._card_options: list[type] = []
 
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        style_dialog_buttons(self.buttons)
         self.buttons.accepted.connect(self._on_accept)
         self.buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
-        layout.addLayout(form)
+        layout.setSpacing(12)
+        layout.addWidget(self.description_section)
+        layout.addWidget(self.simulation_section)
+        layout.addWidget(self.card_section)
         layout.addWidget(self.error_label)
         layout.addWidget(self.buttons)
 
         self.kind_box.currentIndexChanged.connect(self._on_kind_changed)
+        for edit in (self.minimum_edit, self.maximum_edit, self.values_edit, self.resolution_edit):
+            edit.textChanged.connect(self._update_card_types)
         self.label_edit.textChanged.connect(self._update_preview)
         self.cycle_edit.textChanged.connect(self._update_rate_hint)
         self.sample_period_edit.textChanged.connect(self._update_rate_hint)
@@ -200,11 +249,79 @@ class NewMetricDialog(QDialog):
 
     # -- result --------------------------------------------------------------------
 
+    def card_control(self) -> str | None:
+        """The card type picked, by control name; None keeps whatever fits best."""
+        index = self.card_type_box.currentIndex()
+        if index <= 0 or index >= len(self._card_options):
+            return None
+        return self._card_options[index].__name__
+
+    def _card_spec(self) -> WidgetSpec:
+        """A stand-in for the metric the dialog describes, to see which cards fit it."""
+        def number(edit: QLineEdit) -> Decimal | None:
+            try:
+                return parse_decimal_input(edit.text(), "value") if edit.text().strip() else None
+            except DecimalInputError:
+                return None
+        values = tuple(part.strip() for part in self.values_edit.text().split(",") if part.strip())
+        return WidgetSpec(handle="new", label="", kind=self._kind, allowed_values=values,
+                          minimum=number(self.minimum_edit), maximum=number(self.maximum_edit),
+                          resolution=number(self.resolution_edit), editable=True)
+
+    def _update_card_types(self) -> None:
+        """Offer the card types that fit what is entered, keeping the choice where it still fits."""
+        chosen = self.card_control()
+        self._card_options = matching_controls(self._card_spec())
+        self.card_type_box.blockSignals(True)
+        self.card_type_box.clear()
+        for control in self._card_options:
+            self.card_type_box.addItem(card_caption(control, self._card_spec()))
+        names = [control.__name__ for control in self._card_options]
+        self.card_type_box.setCurrentIndex(names.index(chosen) if chosen in names else 0)
+        self.card_type_box.blockSignals(False)
+
     def spec(self) -> MetricSpec | None:
         """The definition the user entered, or None if the dialog was cancelled."""
         return getattr(self, "_spec", None)
 
     # -- internals -----------------------------------------------------------------
+
+    def _with_pick_button(self, edit: QLineEdit, kind: str) -> QWidget:
+        """The field with a "Pick…" button that fills it from the MDC code picker."""
+        button = QPushButton("Pick…")
+        set_button_kind(button, "design-outline")
+        button.clicked.connect(lambda: self._pick(edit, kind))
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(edit, 1)
+        row.addWidget(button)
+        widget = QWidget()
+        widget.setLayout(row)
+        return widget
+
+    def _pick(self, edit: QLineEdit, kind: str) -> None:
+        measure = None
+        if kind == "unit":
+            text = self.measures_edit.text().strip()
+            measure = self._picked_term(self.measures_edit) or (nomenclature.lookup(text) if text else None)
+        dialog = CodePickerDialog(kind, self, measure)
+        if dialog.exec() == QDialog.Accepted and dialog.term() is not None:
+            self._picked[edit] = dialog.term()
+            edit.setText(self._picked[edit].caption)
+
+    def _picked_term(self, edit: QLineEdit) -> nomenclature.Term | None:
+        """The term picked into `edit`, as long as its text was not changed since."""
+        term = self._picked.get(edit)
+        return term if term is not None and edit.text().strip() == term.caption else None
+
+    def _type_coding(self) -> Coding | None:
+        """What the Measures field names: a picked term, a typed code or reference ID, or nothing."""
+        text = self.measures_edit.text().strip()
+        term = self._picked_term(self.measures_edit) or (nomenclature.lookup(text) if text else None)
+        if text and term is None:
+            msg = f"No MDC term has the code or reference ID {text!r}. Use Pick… to find one by name."
+            raise ValueError(msg)
+        return Coding(code=term.code, system="mdc", label=term.term) if term else None
 
     @property
     def _kind(self) -> MetricKind:
@@ -226,10 +343,7 @@ class NewMetricDialog(QDialog):
         own, so the combo's index is not the list's: everything past the separator is one
         further along.
         """
-        index = self.shape_box.currentIndex()
-        if index > FIRST_PHYSIOLOGICAL:
-            index -= 1
-        return OFFERED_SHAPES[max(0, min(index, len(OFFERED_SHAPES) - 1))][1]
+        return selected_shape(self.shape_box)
 
     @property
     def _distribution_shape(self) -> DistributionShape:
@@ -239,24 +353,20 @@ class NewMetricDialog(QDialog):
     def _update_rate_hint(self) -> None:
         """Say what the sample period and cycle length come out as.
 
-        Samples per cycle is not a number anybody thinks in. What they want to know is how
-        fast the thing beats, so work it out for them rather than making them do it.
+        A cycle length is exact but not how anybody thinks of a heartbeat. What they want to
+        know is how fast the thing beats, so work it out for them.
         """
         try:
-            period = parse_decimal_input(
-                self.sample_period_edit.text().strip() or str(DEFAULT_SAMPLE_PERIOD),
-                "sample period",
-                positive=True,
-            )
-            cycle = int(self.cycle_edit.text().strip() or DEFAULT_CYCLE_SAMPLES)
-            seconds = float(period) * cycle
+            seconds = float(parse_decimal_input(
+                self.cycle_edit.text().strip() or str(DEFAULT_CYCLE_SECONDS), "cycle length", positive=True,
+            ))
         except (ArithmeticError, DecimalInputError, OverflowError, ValueError):
             self.rate_hint.setText("")
             return
-        if cycle < 2 or not math.isfinite(seconds) or seconds <= 0:  # noqa: PLR2004
+        if not math.isfinite(seconds) or seconds <= 0:
             self.rate_hint.setText("")
             return
-        self.rate_hint.setText(f"= {seconds:.2f} s per cycle, {60.0 / seconds:.0f}/min")
+        self.rate_hint.setText(f"= {60.0 / seconds:.0f}/min")
 
     def _set_row_visible(self, widget: QWidget, *, visible: bool) -> None:
         """Show or hide a form row, label included.
@@ -265,7 +375,8 @@ class NewMetricDialog(QDialog):
         something to read and dismiss, and the dialog is short enough that the rows moving
         is less distracting than the clutter.
         """
-        set_form_row_visible(self.form, widget, visible=visible)
+        form = self.form if self.form.indexOf(widget) >= 0 else self.simulation_form
+        set_form_row_visible(form, widget, visible=visible)
 
     def _on_kind_changed(self) -> None:
         kind = self._kind
@@ -280,12 +391,16 @@ class NewMetricDialog(QDialog):
         self._set_row_visible(self.values_edit, visible=is_choice)
         self._set_row_visible(self.resolution_edit, visible=has_scale)
         self._set_row_visible(self.limits_widget, visible=has_scale)
+        for edit in (self.minimum_edit, self.maximum_edit):
+            edit.setPlaceholderText("required" if is_number else "optional")
         self._set_row_visible(self.sample_period_edit, visible=is_waveform)
         self._set_row_visible(self.shape_box, visible=is_waveform)
         self._set_row_visible(self.cycle_widget, visible=is_waveform)
         self._set_row_visible(self.distribution_box, visible=is_distribution)
         self._set_row_visible(self.domain_unit_edit, visible=is_distribution)
         self._set_row_visible(self.domain_widget, visible=is_distribution)
+        self.simulation_section.setVisible(is_waveform or is_distribution)
+        self._update_card_types()
         # Neither sample-array kind can be written by anybody: BICEPS defines no operation
         # whose argument is a sample array.
         self.controllable_box.setVisible(kind.controllable)
@@ -300,7 +415,8 @@ class NewMetricDialog(QDialog):
             "kinds. Use 1 for whole numbers.",
         )
         self.limits_widget.setToolTip(
-            "Optional lower and upper limit. Either can be left blank.\n"
+            "Lower and upper limit. A number needs both; on a waveform or distribution\n"
+            "they are optional.\n"
             "Becomes TechnicalRange on the metric and AllowedRange on its set operation, "
             "so other devices are refused values outside it.",
         )
@@ -391,12 +507,16 @@ class NewMetricDialog(QDialog):
                 else:
                     maximum = parsed
 
+            if kind is MetricKind.NUMBER and (minimum is None or maximum is None):
+                # 10701 TR0239: without both ends a consumer cannot scale or sanity-check it.
+                self._fail("A number needs a range: give its lowest and its highest value.")
+                return
             if minimum is not None and maximum is not None and minimum > maximum:
                 self._fail(f"The minimum ({minimum}) must not be greater than the maximum ({maximum}).")
                 return
 
         sample_period = None
-        cycle_samples = DEFAULT_CYCLE_SAMPLES
+        cycle_seconds = DEFAULT_CYCLE_SECONDS
         if kind is MetricKind.WAVEFORM:
             raw = self.sample_period_edit.text().strip() or str(DEFAULT_SAMPLE_PERIOD)
             try:
@@ -405,14 +525,14 @@ class NewMetricDialog(QDialog):
                 self._fail(str(exc))
                 return
 
-            raw = self.cycle_edit.text().strip() or str(DEFAULT_CYCLE_SAMPLES)
+            raw = self.cycle_edit.text().strip() or str(DEFAULT_CYCLE_SECONDS)
             try:
-                cycle_samples = int(raw)
-            except ValueError:
-                self._fail(f"{raw!r} is not a whole number of samples per cycle.")
+                cycle_seconds = parse_decimal_input(raw, "cycle length", positive=True)
+            except DecimalInputError as exc:
+                self._fail(str(exc))
                 return
-            if cycle_samples < 2:  # noqa: PLR2004
-                self._fail("A cycle needs at least two samples.")
+            if cycle_seconds < 2 * sample_period:
+                self._fail(f"A cycle needs at least two samples, so at least {2 * sample_period} s.")
                 return
 
         domain_unit = ""
@@ -447,11 +567,14 @@ class NewMetricDialog(QDialog):
                 )
                 return
 
+        unit = self._picked_term(self.unit_edit)
         try:
             self._spec = MetricSpec(
                 label=label,
                 kind=kind,
-                unit_label=self.unit_edit.text().strip(),
+                type_coding=self._type_coding(),
+                unit_coding=Coding(code=unit.code, system="mdc", label=unit.label) if unit else None,
+                unit_label=unit.label if unit else self.unit_edit.text().strip(),
                 allowed_values=values,
                 resolution=resolution,
                 minimum=minimum,
@@ -460,7 +583,7 @@ class NewMetricDialog(QDialog):
                 initial_value=values[0] if values else None,
                 sample_period=sample_period,
                 shape=self._shape,
-                cycle_samples=cycle_samples,
+                cycle_seconds=cycle_seconds,
                 distribution_shape=self._distribution_shape,
                 domain_unit_label=domain_unit,
                 domain_minimum=domain_minimum,

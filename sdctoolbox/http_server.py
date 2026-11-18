@@ -25,7 +25,28 @@ class DeferredHandshakeSocket(ssl.SSLSocket):
         return request, address
 
 
-class ShutdownAwareRequestHandler(DispatchingRequestHandler):
+class PlainEmptyReplyHandler(DispatchingRequestHandler):
+    """Send empty replies uncompressed.
+
+    A consumer answers every report it receives with an empty body. Gzip turns nothing into
+    a 20-byte header, and setting up the compressor for it was a seventh of a busy consumer's
+    CPU. An uncompressed body is always acceptable to the peer.
+    """
+
+    def handle_one_request(self) -> None:
+        # A provider simulating a crash (Faults > Leave without Bye) drops every request unanswered.
+        if getattr(self.server, "silent", False):
+            self.close_connection = True
+            return
+        super().handle_one_request()
+
+    def _compress_if_supported(self, response_bytes: bytes) -> bytes:
+        if not response_bytes:
+            return response_bytes
+        return super()._compress_if_supported(response_bytes)
+
+
+class ShutdownAwareRequestHandler(PlainEmptyReplyHandler):
     """Treat an interrupted next-request read as EOF only after local TLS shutdown."""
 
     def handle(self) -> None:

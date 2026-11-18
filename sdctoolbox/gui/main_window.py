@@ -4,12 +4,14 @@ The tool is meant to be started twice on one machine, so that one instance publi
 device and the other discovers it. Each instance is therefore both a provider and a
 consumer.
 
-By default the two sit in panels either side of a movable divider, so you can watch one
-react to the other. View > Split view turns that off and stacks them as tabs instead, which
-is easier on a narrow screen.
+By default the two are stacked as tabs. View > Split view puts them in panels either side of
+a movable divider instead, so you can watch one react to the other.
 
 The menu bar is visible and pinned by default. View > Always show menu bar can unpin it so
 that it hides when unused and Alt reveals it again.
+
+View > Advanced mode, or the Simple | Advanced switch at the right of the tab strip, shows the
+controls for testing consumers: for now the Faults section and the cards' fault chips.
 """
 
 from __future__ import annotations
@@ -17,29 +19,36 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QFileDialog,
     QFrame,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
+    QPushButton,
     QSplitter,
     QStackedWidget,
     QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from .. import config, ports
+from .. import config, mdib_check, ports
 from ..mdib_io import NativeMdibConfig
+from .activity_log import ActivityLogWindow
 from .consumer_pane import ConsumerPane
 from .consumer_tabs import ConsumerTabs
+from .device_test_window import DeviceTestWindow
+from .mdib_check_window import MdibCheckWindow, status_text
 from .menu_keys import BareAltTracker
 from .no_wheel import NoWheelTabBar
 from .provider_pane import ProviderPane
-from .styling import is_dark, set_dark_mode
+from .styling import is_dark, set_button_kind, set_dark_mode
 from .window_actions import FullscreenAction
 
 if TYPE_CHECKING:
@@ -50,9 +59,27 @@ NETWORK_TITLE = "Network"
 
 CONFIG_FILE_FILTER = config.FILE_FILTER
 
+# Where the window remembers Advanced mode between runs (see remember_view).
+ADVANCED_MODE_KEY = "view/advanced_mode"
+
+# My device is checked again at most this often while its MDIB keeps changing.
+MDIB_CHECK_DELAY_MS = 1000
+
 # Where the divider sits when the window opens, as a share of the width.
 PROVIDER_SHARE = 3
 NETWORK_SHARE = 2
+
+
+def network_view(tabs: ConsumerTabs) -> QWidget:
+    """The Network panel: the current tab's Discovery section above the connection tabs."""
+    view = QWidget()
+    slot = QWidget()
+    layout = QVBoxLayout(view)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.addWidget(slot)
+    layout.addWidget(tabs, 1)
+    tabs.attach_discovery_slot(slot)
+    return view
 
 
 class TitledPanel(QWidget):
@@ -89,14 +116,39 @@ class TitledPanel(QWidget):
         self.rule.setVisible(visible)
 
 
+class ModeSwitch(QWidget):
+    """Simple | Advanced: two segments, the selected one filled with the accent."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.simple = QPushButton("Simple")
+        self.advanced = QPushButton("Advanced")
+        self.simple.setToolTip("Hide the controls for testing consumers")
+        self.advanced.setToolTip("Show the controls for testing consumers, such as simulated faults")
+        self.group = QButtonGroup(self)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 2, 6, 2)
+        layout.setSpacing(0)
+        for button in (self.simple, self.advanced):
+            button.setCheckable(True)
+            set_button_kind(button, "design-outline")
+            self.group.addButton(button)
+            layout.addWidget(button)
+        self.simple.setChecked(True)
+
+
 class MainWindow(QMainWindow):
     """Hosts the provider and consumer panels in whichever layout is selected."""
 
     # A port fallback is reported on whichever thread bound the socket; this hops to the GUI.
     _port_warning = Signal(str)
+    # Advanced mode was switched on (True) or off, from the menu, the switch or code.
+    advanced_mode_changed = Signal(bool)
 
     def __init__(self, service: ProviderService) -> None:
         super().__init__()
+        # Set by start_mcp_server when --mcp serves this window.
+        self.mcp_url: str | None = None
         self.service = service
         self.setWindowTitle(f"SDC testing toolbox \u2014 {service.friendly_name}")
         self.resize(1100, 560)
@@ -110,7 +162,7 @@ class MainWindow(QMainWindow):
         )
 
         self.provider_panel = TitledPanel(PROVIDER_TITLE, self.provider_pane)
-        self.network_panel = TitledPanel(NETWORK_TITLE, self.network_tabs)
+        self.network_panel = TitledPanel(NETWORK_TITLE, network_view(self.network_tabs))
 
         # Both layouts exist all the time; the panels move between them on demand.
         self.splitter = QSplitter(Qt.Horizontal)
@@ -119,6 +171,9 @@ class MainWindow(QMainWindow):
         # A tab bar flicks between tabs on wheel by default, so scrolling near the top of
         # the window swaps the panels under the pointer.
         self.tabs.setTabBar(NoWheelTabBar())
+        self.mode_switch = ModeSwitch()
+        self.mode_switch.advanced.toggled.connect(self.set_advanced_mode)
+        self.tabs.setCornerWidget(self.mode_switch, Qt.TopRightCorner)
 
         self.stack = QStackedWidget()
         self.stack.addWidget(self.splitter)
@@ -130,10 +185,16 @@ class MainWindow(QMainWindow):
 
         self._alt_key = BareAltTracker(self)
         self._build_menus()
-        self.set_split_view(enabled=True)
+        self.set_split_view(enabled=False)
         self.set_use_widgets(enabled=True)
 
+        # A normal status-bar widget, not a message: a temporary message or a menu's status
+        # tip hides it only while it shows, where it would wipe a message for good.
+        self.status_hint = QLabel()
+        self.statusBar().addWidget(self.status_hint, 1)
         self._show_status_hint()
+        self.network_tabs.message.connect(lambda text: self.statusBar().showMessage(text, 8000))
+        self.network_tabs.test_requested.connect(self.show_device_test)
 
         # Stays in the status bar: a firewall that blocks the toolbox is easy to miss otherwise.
         self.port_warning_label = QLabel()
@@ -141,6 +202,85 @@ class MainWindow(QMainWindow):
         self._port_warning.connect(self._show_port_warnings)
         self._show_port_warnings()
         self._unsubscribe_port_warnings = ports.subscribe_fallback_warnings(self._port_warning.emit)
+
+        # The activity log opens from the status bar: this button, or a double-click anywhere on it.
+        self.log_window: ActivityLogWindow | None = None
+        self.log_button = QToolButton()
+        self.log_button.setText("Activity log  ⤢")
+        self.log_button.setToolTip("Open the log of the last actions (or double-click the status bar)")
+        self.log_button.clicked.connect(self.show_activity_log)
+        # The MDIB check sits left of it and shows My device's live result.
+        self.check_window: MdibCheckWindow | None = None
+        self.test_window: DeviceTestWindow | None = None
+        self.mdib_findings: list[mdib_check.Finding] = []
+        self.check_button = QToolButton()
+        self.check_button.clicked.connect(self.show_mdib_check)
+        self.statusBar().addPermanentWidget(self.check_button)
+        self._check_timer = QTimer(self)
+        self._check_timer.setSingleShot(True)
+        self._check_timer.setInterval(MDIB_CHECK_DELAY_MS)
+        self._check_timer.timeout.connect(self.recheck_my_device)
+        self._watch_my_device()
+        self.recheck_my_device()
+
+        self.statusBar().addPermanentWidget(self.log_button)
+        self.statusBar().installEventFilter(self)
+
+    def show_activity_log(self) -> ActivityLogWindow:
+        """Open the activity log beside this window, or bring it to the front."""
+        if self.log_window is None:
+            self.log_window = ActivityLogWindow(f"Activity log — {self.service.friendly_name}", self)
+        self.log_window.show()
+        self.log_window.raise_()
+        self.log_window.activateWindow()
+        return self.log_window
+
+    def show_mdib_check(self) -> MdibCheckWindow:
+        """Open the MDIB check beside this window, or bring it to the front."""
+        if self.check_window is None:
+            self.check_window = MdibCheckWindow(self)
+            self.check_window.show_findings(self.mdib_findings)
+        self.check_window.show()
+        self.check_window.raise_()
+        self.check_window.activateWindow()
+        return self.check_window
+
+    def show_device_test(self, pane) -> DeviceTestWindow:  # noqa: ANN001 - a ConsumerPane
+        """Open the Device test for this pane's connection and run it."""
+        if self.test_window is None:
+            self.test_window = DeviceTestWindow(self)
+        self.test_window.choose(pane.property("connectionNumber"))
+        self.test_window.show()
+        self.test_window.raise_()
+        self.test_window.activateWindow()
+        self.test_window.run()
+        return self.test_window
+
+    def _watch_my_device(self) -> None:
+        """Re-check My device after its MDIB changes; at most once per MDIB_CHECK_DELAY_MS."""
+        bridge = self.provider_pane.bridge
+        for signal in (bridge.metrics_changed, bridge.descriptors_added, bridge.descriptors_updated,
+                       bridge.descriptors_deleted, bridge.operations_changed, bridge.alerts_changed,
+                       bridge.contexts_changed):
+            # Not restarted on every change: a generator changes values faster than any delay.
+            signal.connect(lambda _changes: self._check_timer.isActive() or self._check_timer.start())
+
+    def recheck_my_device(self) -> list[mdib_check.Finding]:
+        """Check My device now: the status bar button, and the window while it shows My device."""
+        mdib = getattr(self.service, "_mdib", None)
+        self.mdib_findings = mdib_check.check(mdib) if mdib is not None else []
+        self.check_button.setText(f"{status_text(self.mdib_findings)}  ⤢")
+        self.check_button.setToolTip(f"{mdib_check.summary(self.mdib_findings)}. Open the MDIB check (Ctrl+K)")
+        if self.check_window is not None and self.check_window.connection is None:
+            self.check_window.show_findings(self.mdib_findings)
+        return self.mdib_findings
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802 - Qt naming
+        """A double-click on the status bar opens the activity log."""
+        if watched is self.statusBar() and event.type() == QEvent.MouseButtonDblClick:
+            self.show_activity_log()
+            return True
+        return super().eventFilter(watched, event)
 
     def _show_port_warnings(self, _message: str = "") -> None:
         warnings = ports.fallback_warnings()
@@ -214,6 +354,22 @@ class MainWindow(QMainWindow):
         return self.widgets_action.isChecked()
 
     @property
+    def advanced_mode(self) -> bool:
+        """Whether the controls for testing consumers are shown."""
+        return self.advanced_mode_action.isChecked()
+
+    def set_advanced_mode(self, enabled: bool) -> None:  # noqa: FBT001 - matches the Qt signal
+        """Show or hide the controls for testing consumers; the menu and the switch follow."""
+        changed = self.provider_pane.advanced != enabled
+        self.provider_pane.set_advanced(enabled)
+        self.network_tabs.set_advanced(enabled)
+        if self.advanced_mode_action.isChecked() != enabled:
+            self.advanced_mode_action.setChecked(enabled)
+        (self.mode_switch.advanced if enabled else self.mode_switch.simple).setChecked(True)
+        if changed:
+            self.advanced_mode_changed.emit(enabled)
+
+    @property
     def split_view_enabled(self) -> bool:
         """Whether the panels are currently side by side."""
         return self.stack.currentWidget() is self.splitter
@@ -236,6 +392,12 @@ class MainWindow(QMainWindow):
         self.export_action.setStatusTip("Save this device's data sources and alarms to a file")
         self.export_action.triggered.connect(self.export_config)
         file_menu.addAction(self.export_action)
+
+        self.check_action = QAction("&Check MDIB…", self)
+        self.check_action.setShortcut(QKeySequence("Ctrl+K"))
+        self.check_action.setStatusTip("List what this device or a connected one does differently from what SDC asks")
+        self.check_action.triggered.connect(self.show_mdib_check)
+        file_menu.addAction(self.check_action)
 
         self.presets_menu = file_menu.addMenu("Load &preset")
         self.presets_menu.setStatusTip("Ready-made devices that ship with the tool")
@@ -274,7 +436,6 @@ class MainWindow(QMainWindow):
 
         self.split_view_action = QAction("&Split view", self)
         self.split_view_action.setCheckable(True)
-        self.split_view_action.setChecked(True)
         self.split_view_action.setShortcut("F8")
         self.split_view_action.setStatusTip("Panels side by side, or stacked as tabs")
         self.split_view_action.toggled.connect(self.set_split_view)
@@ -289,6 +450,13 @@ class MainWindow(QMainWindow):
         self.dark_mode_action.setStatusTip("Use dark colours, or switch back to light mode")
         self.dark_mode_action.toggled.connect(set_dark_mode)
         view_menu.addAction(self.dark_mode_action)
+
+        view_menu.addSeparator()
+        self.advanced_mode_action = QAction("&Advanced mode", self)
+        self.advanced_mode_action.setCheckable(True)
+        self.advanced_mode_action.setStatusTip("Show the controls for testing consumers, such as simulated faults")
+        self.advanced_mode_action.toggled.connect(self.set_advanced_mode)
+        view_menu.addAction(self.advanced_mode_action)
 
         # Hiding is opt-in. The actions keep working through their shortcuts either way.
         for menu in (file_menu, view_menu):
@@ -329,19 +497,19 @@ class MainWindow(QMainWindow):
 
     def export_config(self) -> Path | None:
         """Ask for a filename and write this device's configuration to it."""
-        native_mode = self.service.native_mode
-        suggested = f"{self.service.instance_name}{'.xml' if native_mode else config.FILE_SUFFIX}"
         filename, selected_filter = QFileDialog.getSaveFileName(
             self,
             "Export config",
-            suggested,
-            CONFIG_FILE_FILTER,
-            selectedFilter=config.MDIB_FILE_FILTER if native_mode else config.JSON_FILE_FILTER,
+            f"{self.service.instance_name}.xml",
+            config.EXPORT_FILE_FILTER,
+            selectedFilter=config.MDIB_BEHAVIOUR_FILE_FILTER,
         )
         if not filename:
             return None
         try:
-            written = config.save(self.service, config.export_path(filename, selected_filter))
+            # Only the plain choice leaves the behaviour out, so any other filter exports a file that loads back complete.
+            written = config.save(self.service, config.export_path(filename, selected_filter),
+                                  behaviour=selected_filter != config.MDIB_FILE_FILTER)
         except (OSError, config.ConfigError) as exc:
             QMessageBox.warning(self, "Could not export", str(exc))
             return None
@@ -376,7 +544,7 @@ class MainWindow(QMainWindow):
         except config.ConfigError as exc:
             QMessageBox.warning(self, "Could not import", str(exc))
             return False
-        restart = isinstance(device_config, NativeMdibConfig) or self.service.native_mode
+        restart = isinstance(device_config, NativeMdibConfig) or self.service.from_mdib_file
         existing = len(self.service.list_metrics()) + len(self.service.list_alerts()) + len(self.service.list_actions())
         if confirm and (existing or restart):
             detail = "\n\nThe provider will restart; connected consumers must reconnect." if restart else ""
@@ -406,11 +574,13 @@ class MainWindow(QMainWindow):
             return False
 
         if getattr(self.service, "_mdib", None) is not previous_mdib:
+            # A new pane draws itself; drawing it again doubled the cost of a large import.
             self._replace_provider_pane()
-        self.provider_pane.refresh()
-        self.provider_pane.refresh_alerts()
-        self.provider_pane.refresh_actions()
-        self.provider_pane.refresh_contexts()
+        else:
+            self.provider_pane.refresh()
+            self.provider_pane.refresh_alerts()
+            self.provider_pane.refresh_actions()
+            self.provider_pane.refresh_contexts()
         self.statusBar().showMessage(
             f"Imported {metrics} data source(s) and {alarms} alarm(s) "
             f"from {Path(source).name}",
@@ -428,6 +598,7 @@ class MainWindow(QMainWindow):
             return
         pane = ProviderPane(self.service, self.provider_panel)
         pane.set_use_widgets(self.widgets_enabled)
+        pane.set_advanced(self.advanced_mode)
         layout = self.provider_panel.layout()
         layout.removeWidget(old)
         old.hide()
@@ -436,6 +607,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(pane, 1)
         self.provider_pane = pane
         self.provider_panel.content = pane
+        self._watch_my_device()
+        self.recheck_my_device()
 
     # -- the menu bar --------------------------------------------------------------
 
@@ -477,9 +650,11 @@ class MainWindow(QMainWindow):
     def _show_status_hint(self) -> None:
         """Mention Alt only while it is the only way to reach the menu."""
         message = f"Publishing on {self.service.ip}   \u00b7   {self.service.epr.urn}"
+        if self.mcp_url:
+            message += f"   \u00b7   MCP on {self.mcp_url}"
         if not self.always_show_menu:
             message += "   \u00b7   press Alt for the menu"
-        self.statusBar().showMessage(message)
+        self.status_hint.setText(message)
 
     def keyReleaseEvent(self, event) -> None:  # noqa: ANN001, N802 - Qt naming
         """Alt on its own reveals the menu bar; Escape puts it away."""
@@ -496,6 +671,17 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # noqa: ANN001, N802 - Qt naming
         """Drop the consumer's subscriptions and discovery socket on the way out."""
         self._unsubscribe_port_warnings()
+        self.service.on_remote_control = None
         self.provider_pane.bridge.close()
         self.network_tabs.shutdown()
         super().closeEvent(event)
+
+
+def remember_view(window: MainWindow, settings: QSettings) -> None:
+    """Restore Advanced mode from `settings` and store it there whenever it changes.
+
+    The window itself never opens settings, so a test's window leaves the user's alone; the
+    application passes its own and a test may pass a QSettings on a temporary file.
+    """
+    window.set_advanced_mode(settings.value(ADVANCED_MODE_KEY, False, type=bool))
+    window.advanced_mode_changed.connect(lambda enabled: settings.setValue(ADVANCED_MODE_KEY, enabled))

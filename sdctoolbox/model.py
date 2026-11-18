@@ -296,6 +296,8 @@ class Coding:
         A missing CodingSystem has BICEPS's IEEE 11073-10101 default. Known toolbox URIs
         become their concise aliases; every other URI is retained verbatim.
         """
+        if coding_system == constants.CODING_SYSTEM_MDC_LEGACY:
+            coding_system = constants.CODING_SYSTEM_MDC
         system = next(
             (name for name, uri in CODING_SYSTEMS.items() if uri == coding_system),
             coding_system or "mdc",
@@ -444,9 +446,11 @@ class MetricSpec:
     sample_period: Decimal | None = None
     # The curve to generate. Nothing in BICEPS; see WaveformShape.
     shape: WaveformShape = WaveformShape.SINE
-    # How many samples make one full cycle of that curve. A heartbeat and a breath are the
-    # same shape machinery at very different rates, and this is what separates them.
-    cycle_samples: int = 40
+    # How long one full cycle of that curve takes, in seconds. A heartbeat and a breath are
+    # the same shape machinery at very different rates, and this is what separates them. A
+    # duration rather than a sample count, so the sample period sets the resolution of the
+    # curve and never its speed.
+    cycle_seconds: Decimal = Decimal(4)
 
     # -- distribution only -------------------------------------------------------------
     # DistributionSampleArrayMetricDescriptor/DomainUnit: what the samples are distributed
@@ -464,6 +468,18 @@ class MetricSpec:
     # a name gives it a Vmd and Channel of its own, so a consumer browsing the containment
     # tree sees a device with parts rather than one flat list of metrics.
     section: str = ""
+
+    # -- runtime state, editable while the provider runs ------------------------------
+    # SetValueOperationState/AllowedRange: what a remote caller may ask for. None falls back
+    # to minimum/maximum. Must stay inside them, since the state may not leave its descriptor.
+    allowed_minimum: Decimal | None = None
+    allowed_maximum: Decimal | None = None
+    # SetStringOperationState/AllowedValues: the choices a remote caller may pick. Empty
+    # means all of allowed_values.
+    operation_values: tuple[str, ...] = ()
+    # AbstractMetricState/@ActivationState On (True) or Off (False). An Off metric keeps its
+    # last value but generates no samples, refuses remote sets and raises no alarms.
+    active: bool = True
 
     def __post_init__(self) -> None:
         self.validate_text()
@@ -493,8 +509,8 @@ class MetricSpec:
         if self.kind is MetricKind.WAVEFORM:
             if self.sample_period is None:
                 self.sample_period = DEFAULT_SAMPLE_PERIOD
-            self.waveform_cycle_sample_count()
             self.generated_waveform_block_sample_count()
+            self.waveform_cycle_sample_count()
             self.shape = _coerce_enum(WaveformShape, self.shape, "shape")
         elif self.sample_period is not None:
             msg = f"sample_period is only meaningful for {MetricKind.WAVEFORM.value} metrics"
@@ -548,6 +564,7 @@ class MetricSpec:
         if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
             msg = f"minimum {self.minimum} is greater than maximum {self.maximum}"
             raise ValueError(msg)
+        self._validate_runtime_state()
         if self.kind in SAMPLE_ARRAY_KINDS:
             self.generated_sample_range()
         if self.kind in SAMPLE_ARRAY_KINDS and self.initial_value is not None:
@@ -555,6 +572,47 @@ class MetricSpec:
             raise ValueError(msg)
         if self.initial_value is not None:
             self.initial_value = coerce_metric_value(self, self.initial_value)
+
+    def _validate_runtime_state(self) -> None:
+        if not isinstance(self.active, bool):
+            msg = "active must be a bool"
+            raise TypeError(msg)
+        for name in ("allowed_minimum", "allowed_maximum"):
+            limit = getattr(self, name)
+            if limit is None:
+                continue
+            if not isinstance(limit, Decimal):
+                msg = f"{name} must be a Decimal, never a float"
+                raise TypeError(msg)
+            fixed_point_decimal(limit, name)
+            if self.kind is not MetricKind.NUMBER:
+                msg = f"{name} is only meaningful for {MetricKind.NUMBER.value} metrics"
+                raise ValueError(msg)
+        lower, upper = self.effective_allowed_range()
+        for bound, name in ((lower, "allowed minimum"), (upper, "allowed maximum")):
+            if bound is None:
+                continue
+            if (self.minimum is not None and bound < self.minimum) or (self.maximum is not None and bound > self.maximum):
+                msg = f"{name} {bound} is outside the technical range {self.range_text()}"
+                raise ValueError(msg)
+        if lower is not None and upper is not None and lower > upper:
+            msg = f"allowed minimum {lower} is greater than allowed maximum {upper}"
+            raise ValueError(msg)
+        self.operation_values = tuple(self.operation_values)
+        if self.operation_values and self.kind is not MetricKind.CHOICE:
+            msg = f"operation_values is only meaningful for {MetricKind.CHOICE.value} metrics"
+            raise ValueError(msg)
+        unknown = [value for value in self.operation_values if value not in self.allowed_values]
+        if unknown:
+            msg = f"{', '.join(unknown)} is not one of the metric's allowed values"
+            raise ValueError(msg)
+
+    def effective_allowed_range(self) -> tuple[Decimal | None, Decimal | None]:
+        """What a remote caller may ask for: the allowed range, or the technical one."""
+        return (
+            self.allowed_minimum if self.allowed_minimum is not None else self.minimum,
+            self.allowed_maximum if self.allowed_maximum is not None else self.maximum,
+        )
 
     def validate_text(self) -> None:
         """Validate descriptor text again when a mutable spec reaches a write boundary."""
@@ -663,19 +721,21 @@ class MetricSpec:
             raise ValueError(msg)
         return max(1, round(ratio))
 
-    def waveform_cycle_sample_count(self) -> int:
-        """Validate and return the mutable waveform cycle length."""
+    def waveform_cycle_sample_count(self) -> float:
+        """Validate the cycle length and return how many samples one cycle spans."""
         if self.kind is not MetricKind.WAVEFORM:
             msg = f"{self.kind.value} metrics do not have waveform cycles"
             raise ValueError(msg)
-        if (
-            isinstance(self.cycle_samples, bool)
-            or not isinstance(self.cycle_samples, int)
-            or self.cycle_samples < 2  # noqa: PLR2004
-        ):
-            msg = f"cycle_samples must be an integer of at least 2, not {self.cycle_samples!r}"
+        if not isinstance(self.cycle_seconds, Decimal):
+            msg = f"cycle_seconds must be a Decimal, not {self.cycle_seconds!r}"
             raise ValueError(msg)
-        return self.cycle_samples
+        validate_decimal(self.cycle_seconds, "cycle_seconds", positive=True, float_representable=True)
+        period = self.sample_period if self.sample_period is not None else DEFAULT_SAMPLE_PERIOD
+        samples = float(self.cycle_seconds) / float(period)
+        if not math.isfinite(samples) or samples < 2:  # noqa: PLR2004
+            msg = f"cycle_seconds {self.cycle_seconds} must span at least two samples of {period} s"
+            raise ValueError(msg)
+        return samples
 
     def domain_text(self) -> str:
         """The distribution's domain as something readable, e.g. '0 to 100 Hz'."""
@@ -794,6 +854,12 @@ class AlertSpec:
     # SignalDelegationSupported on every signal; without it a delegation is refused.
     delegable: bool = False
     signals: tuple[AlertSignalSpec, ...] = field(default_factory=_default_alert_signals)
+    # LimitAlertConditionDescriptor/MaxLimits: how far the limits may ever move. None falls
+    # back to the limit itself, so an alarm made without them cannot be widened.
+    max_lower_limit: Decimal | None = None
+    max_upper_limit: Decimal | None = None
+    # AlertConditionState/@ActualPriority. None means the descriptor's priority applies.
+    actual_priority: AlertPriority | None = None
 
     def __post_init__(self) -> None:
         self.validate_text()
@@ -803,6 +869,8 @@ class AlertSpec:
         # here so every entry point gets the same treatment.
         self.kind = _coerce_enum(AlertKind, self.kind, "kind")
         self.priority = _coerce_enum(AlertPriority, self.priority, "priority")
+        if self.actual_priority is not None:
+            self.actual_priority = _coerce_enum(AlertPriority, self.actual_priority, "actual_priority")
         self.signals = tuple(self.signals)
         if not self.signals:
             msg = "an alarm needs at least one signal"
@@ -811,7 +879,7 @@ class AlertSpec:
             msg = "signals must be AlertSignalSpec values"
             raise TypeError(msg)
 
-        for name in ("lower_limit", "upper_limit"):
+        for name in ("lower_limit", "upper_limit", "max_lower_limit", "max_upper_limit"):
             limit = getattr(self, name)
             if limit is not None and not isinstance(limit, Decimal):
                 msg = f"{name} must be a Decimal, never a float"
@@ -824,6 +892,16 @@ class AlertSpec:
             and self.lower_limit > self.upper_limit
         ):
             msg = f"lower_limit {self.lower_limit} is above upper_limit {self.upper_limit}"
+            raise ValueError(msg)
+        if (self.max_lower_limit is not None or self.max_upper_limit is not None) and not self.has_limits:
+            msg = "max limits need a lower or upper limit"
+            raise ValueError(msg)
+        max_lower, max_upper = self.effective_max_limits()
+        if any(
+            limit is not None and ((max_lower is not None and limit < max_lower) or (max_upper is not None and limit > max_upper))
+            for limit in (self.lower_limit, self.upper_limit)
+        ):
+            msg = f"limits {self.lower_limit}..{self.upper_limit} leave the max limits {max_lower}..{max_upper}"
             raise ValueError(msg)
         if not self.label.strip():
             msg = "an alarm needs a label"
@@ -840,6 +918,13 @@ class AlertSpec:
     def slug(self) -> str:
         """Slug used to build handles."""
         return slugify(self.label)
+
+    def effective_max_limits(self) -> tuple[Decimal | None, Decimal | None]:
+        """How far the limits may move: the max limits, or the limits themselves."""
+        return (
+            self.max_lower_limit if self.max_lower_limit is not None else self.lower_limit,
+            self.max_upper_limit if self.max_upper_limit is not None else self.upper_limit,
+        )
 
     @property
     def has_limits(self) -> bool:
@@ -1047,11 +1132,11 @@ DEFAULT_PATIENT = PatientInfo(
     date_of_birth="1990-01-01",
     height=PatientMeasurement(
         value=Decimal("170"),
-        unit=Coding(code="264184", system="mdc", label="cm"),
+        unit=Coding(code="263441", system="mdc", label="cm"),
     ),
     weight=PatientMeasurement(
         value=Decimal("70"),
-        unit=Coding(code="266016", system="mdc", label="kg"),
+        unit=Coding(code="263875", system="mdc", label="kg"),
     ),
 )
 
@@ -1105,6 +1190,75 @@ def patient_info_from_biceps(core_data: Any) -> PatientInfo:
         weight=patient_measurement_from_biceps(getattr(core_data, "Weight", None)),
         race=coding_from_biceps(getattr(core_data, "Race", None)),
     )
+
+
+@dataclass(frozen=True)
+class CardSettings:
+    """How one metric's card looks. Toolbox only: an MDIB export with toolbox behaviour
+    stores it, the published MDIB never carries it.
+
+    `control` names the control class; None means whatever the factory picks first.
+    """
+
+    control: str | None = None
+    # Number input
+    small_steps: bool = True
+    large_steps: bool = True
+    # Slider: "release" sends when the knob is let go, "change" while it is dragged.
+    update_on: str = "release"
+    show_ranges: bool = True
+    # Waveform and distribution
+    legend: bool = True
+    seconds_per_width: Decimal = Decimal(10)
+    # Text
+    split: bool = False
+    multiline: bool = False
+
+    def to_attributes(self) -> dict[str, str]:
+        """The settings that differ from the defaults, as XML attribute values."""
+        defaults = CardSettings()
+        result = {}
+        for name, attribute in CARD_ATTRIBUTES.items():
+            value = getattr(self, name)
+            if value != getattr(defaults, name):
+                result[attribute] = str(value).lower() if isinstance(value, bool) else str(value)
+        return result
+
+    @classmethod
+    def from_attributes(cls, attributes: dict[str, str]) -> CardSettings:
+        """Read what to_attributes() wrote; a value of the wrong form raises ValueError."""
+        defaults = cls()
+        values: dict[str, Any] = {}
+        for name, attribute in CARD_ATTRIBUTES.items():
+            raw = attributes.get(attribute)
+            if raw is None:
+                continue
+            default = getattr(defaults, name)
+            if isinstance(default, bool):
+                if raw not in ("true", "false"):
+                    raise ValueError(f"{attribute} must be true or false, not {raw!r}")
+                values[name] = raw == "true"
+            elif isinstance(default, Decimal):
+                try:
+                    number = Decimal(raw)
+                except InvalidOperation:
+                    number = Decimal("NaN")
+                if not number.is_finite() or number <= 0:
+                    raise ValueError(f"{attribute} must be a positive number, not {raw!r}")
+                values[name] = number
+            else:
+                values[name] = raw
+        if values.get("update_on", defaults.update_on) not in ("release", "change"):
+            raise ValueError(f"UpdateOn must be release or change, not {values['update_on']!r}")
+        return cls(**values)
+
+
+# CardSettings field -> attribute name in a toolbox behaviour export.
+CARD_ATTRIBUTES = {
+    "control": "Control", "small_steps": "SmallSteps", "large_steps": "LargeSteps", "update_on": "UpdateOn",
+    "show_ranges": "ShowRanges", "legend": "Legend", "seconds_per_width": "SecondsPerWidth",
+    "split": "Split", "multiline": "Multiline",
+}
 
 
 @dataclass
@@ -1201,6 +1355,8 @@ class RemoteAlert:
     # the current limits above. Appended to preserve positional snapshot construction.
     max_lower_limit: Decimal | None = None
     max_upper_limit: Decimal | None = None
+    # Manifestation -> AlertSignalState/@Presence, for the Signals icons.
+    signal_presences: dict[str, str] = field(default_factory=dict)
 
     def limit_text(self) -> str:
         """The monitored limits, or an empty string when there are none."""

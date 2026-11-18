@@ -14,15 +14,15 @@ from decimal import Decimal
 from html import escape
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QSignalBlocker, Qt
+from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
-    QSplitter,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -35,32 +35,45 @@ from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types import pm_types
 from lxml import etree
 
+from ..handlers import ACTIVATIONS, ANSWER_DELAYS_MS, MODES, NO_FAULT, VALIDITIES, MetricFault, what_consumers_see
 from ..model import MetricKind
-from ..mdib_io import mdib_bytes
+from ..mdib_explain import explain
+from ..mdib_io import live_entities, mdib_bytes
+from .activity_log import MdibActivity, activity_log
+from .collapsible import CollapsibleSection
 from .context_dialog import ContextDialog
 from .decimal_input import DecimalInputError, parse_decimal_input
+from .edit_dialogs import EditAlertDialog, EditSourceDialog
 from .helpers import (
     sample_count_text,
     select_table_row,
     selected_table_value,
     value_text,
 )
+from .new_action_dialog import NewActionDialog
 from .new_alert_dialog import NewAlertDialog
 from .new_metric_dialog import NewMetricDialog
 from .no_wheel import NoWheelComboBox
 from .qt_bridge import MdibBridge
+from .signal_icons import SIGNALS_ROLE, SignalIconsDelegate, tooltip
 from .styling import (
     apply_row_selection_style,
     constrain_dynamic_label,
     mute,
     muted_colour,
+    set_button_kind,
+    token,
 )
 from .table_columns import TableColumns
 from .widgets import WidgetBoard, from_spec
+from .widgets.base import CardSettings
 from .widgets.controls import show_choice_value
 
 if TYPE_CHECKING:
     from ..provider_service import ProviderService
+
+# How the activity log names this instance's own device; matches the tab title.
+OWN_DEVICE = "My device"
 
 COLUMNS = ["Handle", "Label", "Kind", "Value", "Range", "Unit", "Remote control"]
 COL_HANDLE, COL_LABEL, COL_KIND, COL_VALUE, COL_RANGE, COL_UNIT, COL_CONTROL = range(len(COLUMNS))
@@ -76,6 +89,12 @@ ALERT_COLUMNS = ["Handle", "Label", "Watches", "Raise when", "Kind", "Priority",
     ACOL_STATE,
     ACOL_SIGNALS,
 ) = range(len(ALERT_COLUMNS))
+
+FAULT_COLUMNS = ["Handle", "Label", "Activation", "Validity", "Mode", "What consumers see"]
+FCOL_HANDLE, FCOL_LABEL, FCOL_ACTIVATION, FCOL_VALIDITY, FCOL_MODE, FCOL_SEEN = range(len(FAULT_COLUMNS))
+# Each dropdown column: the MetricFault part it sets and the values it offers.
+FAULT_CHOICES = {FCOL_ACTIVATION: ("activation", ACTIVATIONS), FCOL_VALIDITY: ("validity", VALIDITIES),
+                 FCOL_MODE: ("mode", MODES)}
 
 EDITOR_TEXT = 0
 EDITOR_CHOICE = 1
@@ -99,12 +118,18 @@ ALERT_DESCRIPTOR_TYPES = frozenset(
 class ProviderPane(QWidget):
     """Everything the user does to the device they are publishing."""
 
+    # A remote consumer's write or action, reported on the SCO thread and queued to the GUI thread.
+    _remote_control = Signal(str)
+
     def __init__(self, service: ProviderService, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.service = service
         # Guards against the table's own updates being mistaken for user clicks.
         self._refreshing = False
         self._editor_definition = None
+        self._pending_rebuilds: list = []
+        # Advanced mode shows the Faults section and the fault chips on the cards.
+        self.advanced = False
 
         self._build_ui()
 
@@ -117,11 +142,14 @@ class ProviderPane(QWidget):
         self.bridge.descriptors_updated.connect(self._on_descriptors_changed, Qt.QueuedConnection)
         self.bridge.descriptors_deleted.connect(self._on_descriptors_changed, Qt.QueuedConnection)
         self.bridge.operations_changed.connect(self._on_operations_changed, Qt.QueuedConnection)
-        self.bridge.alerts_changed.connect(lambda _: self.refresh_alerts())
-        self.bridge.contexts_changed.connect(lambda _: self.refresh_contexts())
+        self.bridge.alerts_changed.connect(lambda _: self._schedule(self.refresh_alerts))
+        self.bridge.contexts_changed.connect(lambda _: self._schedule(self.refresh_contexts))
         # Waveforms travel as a WaveformStream, not an EpisodicMetricReport, so they
         # never reach metrics_changed.
         self.bridge.waveforms_changed.connect(self._on_waveforms_changed)
+        self._activity = MdibActivity(self.bridge, service.mdib, OWN_DEVICE, structure=False)
+        self._remote_control.connect(self._log_remote_control)
+        service.on_remote_control = self._remote_control.emit
 
         self.refresh()
         self.refresh_alerts()
@@ -144,20 +172,33 @@ class ProviderPane(QWidget):
 
         # The same metrics, shown either as a control each or as one row each. Both are
         # always built; the View menu decides which is on top.
-        self.board = WidgetBoard(deletable=not self.service.native_mode)
+        self.board = WidgetBoard(deletable=True)
+        # Cards look as the device's file says; _set_card_settings() keeps the service current.
+        for handle, settings in self.service.card_settings.items():
+            self.board.set_card_settings(handle, settings)
         self.board.value_requested.connect(self._on_widget_value_requested)
         self.board.delete_requested.connect(self._on_card_delete_requested)
+        self.board.edit_requested.connect(self._edit_source)
+        self.board.card_rebuilt.connect(lambda _handle: self._refresh_board())
         self.metric_stack = QStackedWidget()
         self.metric_stack.addWidget(self.board)
         self.metric_stack.addWidget(self.table)
 
         self.new_button = QPushButton("New data source\u2026")
+        set_button_kind(self.new_button, "highlight")
         self.new_button.clicked.connect(self._on_new)
         self.remove_button = QPushButton("Remove")
         self.remove_button.clicked.connect(self._on_remove)
         self.remove_button.setEnabled(False)
+        self.edit_button = QPushButton("Edit…")
+        self.edit_button.setToolTip("Change what may change while the device runs")
+        self.edit_button.clicked.connect(lambda: self._edit_source(self.selected_handle()))
+        self.edit_button.setEnabled(False)
         self.context_button = QPushButton("Patient and location\u2026")
         self.context_button.clicked.connect(self._on_edit_contexts)
+        set_button_kind(self.context_button, "highlight-outline")
+        for button in (self.edit_button, self.remove_button):
+            set_button_kind(button, "design-outline")
         self.context_label = QLabel("")
         constrain_dynamic_label(self.context_label, max_lines=3)
         self.context_label.setTextInteractionFlags(Qt.NoTextInteraction)
@@ -168,6 +209,7 @@ class ProviderPane(QWidget):
 
         buttons = QHBoxLayout()
         buttons.addWidget(self.new_button)
+        buttons.addWidget(self.edit_button)
         buttons.addWidget(self.remove_button)
         buttons.addWidget(self.context_button)
         buttons.addStretch(1)
@@ -178,6 +220,10 @@ class ProviderPane(QWidget):
         self.actions_row = QHBoxLayout()
         self.actions_label = QLabel("Actions")
         self.actions_row.addWidget(self.actions_label)
+        self.new_action_button = QPushButton("New action…")
+        set_button_kind(self.new_action_button, "highlight")
+        self.new_action_button.clicked.connect(self._on_new_action)
+        self.actions_row.addWidget(self.new_action_button)
         self.actions_row.addStretch(1)
         self.action_buttons: dict[str, QPushButton] = {}
         self.actions_widget = QWidget()
@@ -193,11 +239,14 @@ class ProviderPane(QWidget):
         self._alert_columns = TableColumns(self.alert_table, flexible=ACOL_LABEL)
         self.alert_table.itemSelectionChanged.connect(self._on_alert_selection_changed)
         apply_row_selection_style(self.alert_table)
+        self.alert_table.setItemDelegateForColumn(ACOL_SIGNALS, SignalIconsDelegate(self.alert_table))
 
         self.new_alert_button = QPushButton("New alarm\u2026")
         self.new_alert_button.clicked.connect(self._on_new_alert)
         self.remove_alert_button = QPushButton("Remove alarm")
         self.remove_alert_button.clicked.connect(self._on_remove_alert)
+        self.edit_alert_button = QPushButton("Edit alarm…")
+        self.edit_alert_button.clicked.connect(self._on_edit_alert)
         self.toggle_alert_button = QPushButton("Raise")
         self.toggle_alert_button.clicked.connect(self._on_toggle_alert)
         self.acknowledge_button = QPushButton("Acknowledge")
@@ -207,15 +256,20 @@ class ProviderPane(QWidget):
         self.delegate_button = QPushButton("Remote*")
         self.delegate_button.clicked.connect(self._on_delegate)
 
-        alert_buttons = QHBoxLayout()
-        alert_buttons.addWidget(QLabel("Alarms"))
+        # Creating and changing alarms first, then what you do to a running one.
+        alert_buttons = self.alert_toolbar = QHBoxLayout()
+        for button, kind in ((self.new_alert_button, "highlight"),
+                             (self.edit_alert_button, "highlight-outline"),
+                             (self.remove_alert_button, "highlight-outline"),
+                             (self.toggle_alert_button, "design-outline"),
+                             (self.acknowledge_button, "design-outline"),
+                             (self.stop_latched_button, "design-outline"),
+                             (self.delegate_button, "design-outline")):
+            set_button_kind(button, kind)
+            alert_buttons.addWidget(button)
+            if button is self.remove_alert_button:
+                alert_buttons.addSpacing(16)
         alert_buttons.addStretch(1)
-        alert_buttons.addWidget(self.toggle_alert_button)
-        alert_buttons.addWidget(self.acknowledge_button)
-        alert_buttons.addWidget(self.stop_latched_button)
-        alert_buttons.addWidget(self.delegate_button)
-        alert_buttons.addWidget(self.new_alert_button)
-        alert_buttons.addWidget(self.remove_alert_button)
 
         alert_box = QWidget()
         alert_layout = QVBoxLayout(alert_box)
@@ -245,23 +299,23 @@ class ProviderPane(QWidget):
         self.editor_widget.setLayout(editor)
         self._set_editor_enabled(enabled=False)
 
-        self._views = QSplitter(Qt.Vertical)
-        self._views.addWidget(self.metric_stack)
-        self._views.addWidget(alert_box)
-        self._views.setStretchFactor(0, 3)
-        self._views.setStretchFactor(1, 2)
+        self.metrics_section = CollapsibleSection("Metrics", self.metric_stack)
+        self.alarms_section = CollapsibleSection("Alarms", alert_box, expanded=False)
+        self.faults_section = CollapsibleSection("Faults", self._build_faults(), expanded=False)
+        self.faults_section.setVisible(False)
+        self.structure_section = None
         self.native_tree = None
         self._native_items = {}
         self._native_state_items = {}
-        if self.service.native_mode:
+        if self.service.from_mdib_file:
             self.native_tree = QTreeWidget()
             self.native_tree.setHeaderLabels(["Handle", "Descriptor", "Current state"])
             self.native_tree.setUniformRowHeights(True)
-            self.native_tree.setAccessibleName("Native MDIB containment")
-            self._views.insertWidget(0, self.native_tree)
-            for button in (self.new_button, self.context_button, self.new_alert_button):
-                button.setEnabled(False)
-                button.setToolTip("Native snapshots preserve their imported graph and context history")
+            self.native_tree.setAccessibleName("MDIB containment")
+            self.structure_section = CollapsibleSection("MDIB structure", self.native_tree, expanded=False)
+            self.structure_section.set_hint("Descriptor tree with handles. Point at an element to read what it is.")
+            self.structure_section.set_chips(["Advanced"])
+            self.structure_section.setVisible(False)  # Advanced mode only
 
         layout = QVBoxLayout(self)
         # TitledPanel already pads both panels. Without this the style's own 9px lands on
@@ -271,19 +325,145 @@ class ProviderPane(QWidget):
         layout.addLayout(buttons)
         layout.addWidget(self.transport_label)
         layout.addWidget(self.context_label)
-        if self.service.native_mode:
-            hint = QLabel("Native MDIB snapshot: scalar edits only. Alarms and samples retain their supplied state; "
-                          "generators and action behaviour are not inferred. Hover containment entries for XML.")
+        if self.service.from_mdib_file:
+            hint = QLabel("Loaded from an MDIB file and editable like any device. Its alarms keep their supplied "
+                          "state until their source changes.")
             hint.setWordWrap(True)
             layout.addWidget(hint)
-        layout.addWidget(self.views, 1)
+        for section in (self.structure_section, self.metrics_section, self.alarms_section, self.faults_section):
+            if section is not None:
+                layout.addWidget(section, 1)
         layout.addWidget(self.actions_widget)
         layout.addWidget(self.editor_widget)
 
-    @property
-    def views(self) -> QSplitter:
-        """Metrics above, alarms below, with a divider between them."""
-        return self._views
+    def _build_faults(self) -> QWidget:
+        """The Faults section: device-wide faults as buttons, and each metric's state in a table."""
+        self.delay_button = QPushButton()
+        self.delay_button.setToolTip("Wait before answering Set, Activate and Get requests")
+        delay_menu = QMenu(self.delay_button)
+        for milliseconds in ANSWER_DELAYS_MS:
+            action = delay_menu.addAction(f"{milliseconds} ms" if milliseconds else "off")
+            action.triggered.connect(lambda _checked=False, ms=milliseconds: self._set_device_faults(answer_delay_ms=ms))
+        self.delay_button.setMenu(delay_menu)
+        self.refuse_button = QPushButton("Refuse every write")
+        self.refuse_button.setToolTip("Answer every set and action request with Fail, saying it is a simulated fault")
+        self.refuse_button.clicked.connect(lambda checked: self._set_device_faults(refuse_writes=checked))
+        self.pause_button = QPushButton("Pause reports")
+        self.pause_button.setToolTip("Send no state or waveform reports; switched off, consumers get the current state")
+        self.pause_button.clicked.connect(lambda checked: self._set_device_faults(pause_reports=checked))
+        self.drop_button = QPushButton("Drop subscriptions")
+        self.drop_button.setToolTip("Forget every subscription now without telling the subscribers")
+        self.drop_button.clicked.connect(self._on_drop_subscriptions)
+        self.silent_button = QPushButton("Leave without Bye")
+        self.silent_button.setToolTip("Vanish like a crashed device: no Bye, no answers. Off brings the device back")
+        self.silent_button.clicked.connect(lambda checked: self._set_device_faults(silent=checked))
+        self.reset_faults_button = QPushButton("Reset all faults")
+        self.reset_faults_button.clicked.connect(self._on_reset_faults)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        for button in (self.delay_button, self.refuse_button, self.pause_button, None,
+                       self.drop_button, self.silent_button, self.reset_faults_button):
+            if button is None:
+                row.addSpacing(16)
+                continue
+            set_button_kind(button, "design-outline")
+            if button not in (self.drop_button, self.reset_faults_button):
+                button.setProperty("role", "fault-toggle")
+                button.setCheckable(button is not self.delay_button)
+            row.addWidget(button)
+        row.addStretch(1)
+
+        self.fault_table = QTableWidget(0, len(FAULT_COLUMNS))
+        self.fault_table.setHorizontalHeaderLabels(FAULT_COLUMNS)
+        self.fault_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.fault_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.fault_table.verticalHeader().setVisible(False)
+        self._fault_columns = TableColumns(self.fault_table, flexible=FCOL_SEEN)
+
+        box = QWidget()
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addLayout(row)
+        layout.addWidget(self.fault_table)
+        return box
+
+    def set_advanced(self, enabled: bool) -> None:  # noqa: FBT001 - matches the Qt signal
+        """Show or hide what only Advanced mode shows: the Faults section and the cards' fault chips."""
+        self.advanced = enabled
+        self.faults_section.setVisible(enabled)
+        if self.structure_section is not None:
+            self.structure_section.setVisible(enabled)
+        self._refresh_board()
+
+    def refresh_faults(self) -> None:
+        """Show the device-wide faults on their buttons and every metric's state in the table."""
+        faults = self.service.faults
+        delay = faults.answer_delay_ms
+        self.delay_button.setText(f"Answer after {delay} ms" if delay else "Answer after … ms")
+        self.delay_button.setProperty("on", delay > 0)
+        self.delay_button.style().unpolish(self.delay_button)
+        self.delay_button.style().polish(self.delay_button)
+        for button, on in ((self.refuse_button, faults.refuse_writes), (self.pause_button, faults.pause_reports),
+                           (self.silent_button, faults.silent)):
+            button.setChecked(on)
+
+        specs = self.service.list_metrics()
+        overrides = self.service.metric_faults()
+        # Dropping the rows first deletes the old dropdowns; replacing a cell widget left them drawn.
+        self.fault_table.setRowCount(0)
+        self.fault_table.setRowCount(len(specs))
+        for row, (handle, spec) in enumerate(sorted(specs.items())):
+            own = overrides.get(handle, NO_FAULT)
+            told = self.service.metric_fault(handle)
+            self.fault_table.setItem(row, FCOL_HANDLE, QTableWidgetItem(handle))
+            self.fault_table.setItem(row, FCOL_LABEL, QTableWidgetItem(spec.label))
+            for column, (part, choices) in FAULT_CHOICES.items():
+                box = NoWheelComboBox()
+                box.addItems(choices)
+                box.setCurrentText(getattr(told, part))
+                box.setAccessibleName(f"{part.capitalize()} of {handle}")
+                # Changed from what the toolbox normally publishes: the accent colour says so.
+                box.setProperty("faulted", getattr(own, part) is not None)
+                box.textActivated.connect(lambda text, handle=handle, part=part: self._set_metric_fault(handle, part, text))
+                self.fault_table.setCellWidget(row, column, box)
+            seen = MetricFault(own.activation or (None if spec.active else "Off"), own.validity, own.mode)
+            item = QTableWidgetItem(what_consumers_see(seen, sample_array=spec.is_sample_array))
+            item.setForeground(muted_colour(self))
+            self.fault_table.setItem(row, FCOL_SEEN, item)
+        self._fault_columns.refit()
+        count = self.service.faults_on
+        self.faults_section.set_chips(["Advanced", f"{count} fault{'s' if count != 1 else ''} on" if count else "none on"])
+
+    def _set_metric_fault(self, handle: str, part: str, value: str) -> None:
+        try:
+            self.service.set_metric_fault(handle, **{part: value})
+        except (KeyError, ValueError) as exc:
+            QMessageBox.warning(self, "Could not change the fault", str(exc))
+        # Not now: this runs inside the dropdown's own signal, and refresh replaces the dropdown.
+        self._schedule(self.refresh)
+
+    def _set_device_faults(self, **changes: object) -> None:
+        try:
+            self.service.set_device_faults(**changes)
+        except (RuntimeError, ValueError) as exc:
+            QMessageBox.warning(self, "Could not change the fault", str(exc))
+        self.refresh_faults()
+
+    def _on_drop_subscriptions(self) -> None:
+        try:
+            dropped = self.service.drop_subscriptions()
+        except RuntimeError as exc:
+            QMessageBox.warning(self, "Could not change the fault", str(exc))
+            return
+        activity_log().add(OWN_DEVICE, f"dropped {dropped} subscription(s) without telling the subscribers")
+
+    def _on_reset_faults(self) -> None:
+        try:
+            self.service.reset_faults()
+        except (KeyError, RuntimeError, ValueError) as exc:
+            QMessageBox.warning(self, "Could not change the fault", str(exc))
+        self.refresh()
 
     # -- widgets or table ----------------------------------------------------------
 
@@ -299,6 +479,7 @@ class ProviderPane(QWidget):
         # In widget mode each card carries its own control and its own bin, so an editor
         # and a Remove button down here would only ever be disabled and confusing.
         self.remove_button.setVisible(not enabled)
+        self.edit_button.setVisible(not enabled)
         self.editor_widget.setVisible(not enabled)
         if enabled:
             self._refresh_board()
@@ -308,14 +489,16 @@ class ProviderPane(QWidget):
         specs = self.service.list_metrics()
         waveform_cards = {handle: self.board.card(handle) for handle, spec in specs.items()
                           if spec.kind is MetricKind.WAVEFORM}
+        overrides = self.service.metric_faults() if self.advanced else {}
         self.board.set_metrics(
             [
-                from_spec(handle, spec, editable=True)
+                from_spec(handle, spec, editable=True,
+                          fault=" \u00b7 ".join(overrides.get(handle, NO_FAULT).parts))
                 for handle, spec in sorted(specs.items())
             ],
         )
         self.board.show_values({handle: self._displayable(handle, spec) for handle, spec in specs.items()})
-        if self.service.native_mode:
+        if self.service.from_mdib_file:
             # Native snapshots have no incoming stream to seed a newly created waveform card.
             self.board.append_samples({handle: self.service.get_samples(handle) for handle, card in waveform_cards.items()
                                        if card is not self.board.card(handle)})
@@ -361,15 +544,13 @@ class ProviderPane(QWidget):
                     item = QTableWidgetItem(text)
                     if column == COL_VALUE:
                         item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    if not spec.active:
+                        item.setForeground(muted_colour(self))
+                        item.setToolTip("Switched off: no generation, no remote sets, no alarms")
                     self.table.setItem(row, column, item)
 
                 control = QTableWidgetItem()
-                if self.service.native_mode:
-                    control.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-                    operation = self.service.operation_handle_for(handle)
-                    control.setText("enabled" if operation and self._control_enabled(handle) else "disabled" if operation else "n/a")
-                    control.setToolTip("Imported operation state; use the MDIB definition to change capabilities")
-                elif spec.kind.controllable:
+                if spec.kind.controllable:
                     enabled = self._control_enabled(handle)
                     control.setFlags(control.flags() | Qt.ItemIsUserCheckable)
                     control.setCheckState(Qt.Checked if enabled else Qt.Unchecked)
@@ -391,17 +572,29 @@ class ProviderPane(QWidget):
             blocker.unblock()
 
         self._on_selection_changed()
+        self.metrics_section.set_chips([str(len(specs))])
         self._columns.refit()
         self._refresh_board()
+        self.refresh_faults()
         if self.native_tree is not None:
             self._refresh_native_tree()
 
     def _refresh_native_tree(self) -> None:
         """Keep every imported entity inspectable, including ones without a metric card."""
         self.native_tree.clear()
-        entities = dict(self.service.mdib.entities.items())
+        mdib = self.service.mdib
+        with mdib.mdib_lock:
+            # Handles, types and state handles only, read in place rather than copied.
+            entities = {
+                entity.handle: (entity.node_type.localname, entity.parent_handle, [
+                    (getattr(state, "Handle", None) or entity.handle, state.NODETYPE.localname)
+                    for state in (entity.states if entity.descriptor.is_context_descriptor else [entity.state])
+                    if state is not None
+                ])
+                for entity in live_entities(mdib, include_contexts=True)
+            }
+            snapshot = etree.fromstring(mdib_bytes(mdib))[0]
         specs = self.service.list_metrics()
-        snapshot = etree.fromstring(mdib_bytes(self.service.mdib))[0]
         descriptor_nodes = {}
 
         def collect_descriptors(parent):
@@ -414,12 +607,15 @@ class ProviderPane(QWidget):
         state_nodes = {node.get("Handle") or node.get("DescriptorHandle"): node for node in snapshot.find(pm.MdState)}
         self._native_state_items = {}
         self._native_items = {
-            handle: QTreeWidgetItem([handle, entity.node_type.localname, ""])
-            for handle, entity in entities.items()
+            handle: QTreeWidgetItem([handle, node_type, ""])
+            for handle, (node_type, _parent, _states) in entities.items()
         }
-        for handle, entity in entities.items():
+        for handle, (node_type, parent_handle, states) in entities.items():
             item = self._native_items[handle]
-            parent = self._native_items.get(entity.parent_handle)
+            # Column 1 shows the descriptor's XML instead.
+            for column in (0, 2):
+                item.setToolTip(column, explain(node_type, handle))
+            parent = self._native_items.get(parent_handle)
             if parent is None:
                 self.native_tree.addTopLevelItem(item)
             else:
@@ -427,11 +623,9 @@ class ProviderPane(QWidget):
             descriptor_node = descriptor_nodes.get(handle)
             if descriptor_node is not None:
                 item.setToolTip(1, f"<pre>{escape(etree.tostring(descriptor_node, encoding='unicode'))}</pre>")
-            states = entity.states.values() if hasattr(entity, "states") else [entity.state]
-            for state in states:
-                state_handle = getattr(state, "Handle", handle)
+            for state_handle, state_type in states:
                 node = state_nodes[state_handle]
-                child = QTreeWidgetItem([state_handle, state.NODETYPE.localname, ""])
+                child = QTreeWidgetItem([state_handle, state_type, ""])
                 child.setToolTip(1, f"<pre>{escape(etree.tostring(node, encoding='unicode'))}</pre>")
                 item.addChild(child)
                 self._native_state_items[state_handle] = child
@@ -530,18 +724,36 @@ class ProviderPane(QWidget):
             for descriptor in descriptors_by_handle.values()
         }
         if node_types & (METRIC_DESCRIPTOR_TYPES | SET_OPERATION_DESCRIPTOR_TYPES):
-            self.refresh()
+            self._schedule(self.refresh)
         if node_types & ALERT_DESCRIPTOR_TYPES:
-            self.refresh_alerts()
+            self._schedule(self.refresh_alerts)
         if pm.ActivateOperationDescriptor in node_types:
-            self.refresh_actions()
+            self._schedule(self.refresh_actions)
+
+    def _schedule(self, rebuild) -> None:  # noqa: ANN001
+        """Rebuild a view once the current burst of MDIB signals has been delivered.
+
+        Importing a profile changes hundreds of descriptors and operations, each arriving as
+        its own signal. Rebuilding the pane for every one left the window "Not Responding".
+        """
+        if not self._pending_rebuilds:
+            QTimer.singleShot(0, self, self._run_scheduled)
+        if rebuild not in self._pending_rebuilds:
+            self._pending_rebuilds.append(rebuild)
+
+    def _run_scheduled(self) -> None:
+        pending, self._pending_rebuilds = self._pending_rebuilds, []
+        if not self.service.running:
+            return  # queued by a signal from just before the provider stopped
+        for rebuild in pending:
+            rebuild()
 
     def _on_operations_changed(self, states_by_handle: dict) -> None:
         """Follow operation modes in metric controls and local action availability."""
         changed_handles = set(states_by_handle)
         action_handles = set(self.service.list_actions())
         if changed_handles & action_handles:
-            self.refresh_actions()
+            self._schedule(self.refresh_actions)
 
         metric_operation_handles = {
             operation_handle
@@ -549,7 +761,7 @@ class ProviderPane(QWidget):
             if (operation_handle := self.service.operation_handle_for(metric_handle)) is not None
         }
         if changed_handles & metric_operation_handles:
-            self.refresh()
+            self._schedule(self.refresh)
 
     # -- alarms --------------------------------------------------------------------
 
@@ -559,27 +771,38 @@ class ProviderPane(QWidget):
         selected = self.selected_alert_handle()
 
         self.alert_table.setRowCount(len(alerts))
+        active = 0
         for row, (handle, spec) in enumerate(sorted(alerts.items())):
             present = self.service.alert_present(handle)
+            active += present
             signals = self.service.signal_states(handle)
+            presences = {str(signal.manifestation): str(signal.presence) for signal in signals}
             cells = {
                 ACOL_HANDLE: handle,
                 ACOL_LABEL: spec.label,
                 ACOL_SOURCE: spec.source_handle,
                 ACOL_WHEN: spec.limit_text() or "by hand",
                 ACOL_KIND: spec.kind.value,
-                ACOL_PRIORITY: spec.priority.value,
-                ACOL_STATE: "PRESENT" if present else "clear",
-                ACOL_SIGNALS: "  ".join(signal.summary() for signal in signals),
+                ACOL_PRIORITY: (spec.actual_priority or spec.priority).value,
+                ACOL_STATE: "active" if present else "clear",
+                ACOL_SIGNALS: "",
             }
             for column, text in cells.items():
                 item = QTableWidgetItem(text)
                 if column == ACOL_STATE and not present:
                     item.setForeground(muted_colour(self))
+                if column == ACOL_STATE and present:
+                    item.setForeground(token("text/error"))
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
                 if column == ACOL_WHEN and not spec.has_limits:
                     item.setToolTip("No limits, so this alarm only moves when you raise or clear it")
                 if column == ACOL_SIGNALS:
+                    item.setData(SIGNALS_ROLE, presences)
+                    item.setData(Qt.UserRole, "  ".join(signal.summary() for signal in signals))
                     item.setToolTip(
+                        tooltip(presences) + "\n\n"
                         "How each signal is announcing the condition. Ack means it has been\n"
                         "acknowledged; the condition itself is still present. ->Rem is a\n"
                         "simulated remote location, not a delegation handoff. Latch means a signal\n"
@@ -590,6 +813,7 @@ class ProviderPane(QWidget):
                 self.alert_table.setItem(row, column, item)
 
         self._alert_columns.refit()
+        self.alarms_section.set_chips([str(len(alerts)), f"{active} active" if active else "none active"])
         if selected is not None:
             self.select_alert_handle(selected)
         self._on_alert_selection_changed()
@@ -606,6 +830,7 @@ class ProviderPane(QWidget):
         handle = self.selected_alert_handle()
         spec = self.service.list_alerts().get(handle) if handle else None
         self.remove_alert_button.setEnabled(spec is not None)
+        self.edit_alert_button.setEnabled(spec is not None)
         # An alarm with limits is computed from its source, so raising it by hand would only
         # be undone by the next value change. Offer the button only where it means something.
         can_toggle = spec is not None and not spec.has_limits
@@ -623,11 +848,6 @@ class ProviderPane(QWidget):
             self.toggle_alert_button.setText("Clear" if present else "Raise")
             self.toggle_alert_button.setToolTip("")
         self._update_signal_buttons(handle, spec)
-        if self.service.native_mode:
-            for button in (self.remove_alert_button, self.toggle_alert_button, self.acknowledge_button,
-                           self.stop_latched_button, self.delegate_button):
-                button.setEnabled(False)
-                button.setToolTip("Imported alarm state has no toolbox simulation rule")
 
     def _update_signal_buttons(self, handle: str | None, spec: object | None) -> None:
         """Signal controls follow the selected alarm's current state and capabilities."""
@@ -695,6 +915,30 @@ class ProviderPane(QWidget):
             return
         self.refresh_alerts()
         self.select_alert_handle(handle)
+
+    def _edit_source(self, handle: str | None) -> None:
+        if handle is None or handle not in self.service.list_metrics():
+            return
+        card = self.board.card(handle)
+        dialog = EditSourceDialog(self.service, handle, self,
+                                  card=None if card is None else (card.spec, self.board.card_settings(handle)))
+        if dialog.exec():
+            if dialog.card_settings() is not None:
+                self._set_card_settings(handle, dialog.card_settings())
+            self.refresh()
+            self.refresh_alerts()
+
+    def _set_card_settings(self, handle: str, settings: CardSettings) -> None:
+        """Change a card, and the service's copy an MDIB export with toolbox behaviour stores."""
+        self.service.card_settings[handle] = settings
+        self.board.set_card_settings(handle, settings)
+
+    def _on_edit_alert(self) -> None:
+        handle = self.selected_alert_handle()
+        if handle is None:
+            return
+        if EditAlertDialog(self.service, handle, self).exec():
+            self.refresh_alerts()
 
     def _on_remove_alert(self) -> None:
         handle = self.selected_alert_handle()
@@ -772,6 +1016,7 @@ class ProviderPane(QWidget):
             button = self.action_buttons.get(handle)
             if button is None:
                 button = QPushButton(spec.label)
+                set_button_kind(button, "design-outline")
                 button.clicked.connect(lambda _=False, h=handle: self._on_run_action(h))
                 # Before the stretch, so buttons stay left and the row does not jump about
                 # as actions come and go.
@@ -781,8 +1026,32 @@ class ProviderPane(QWidget):
             button.setEnabled(self._operation_enabled(handle))
             button.setToolTip(f"{spec.note}\n{handle}: {spec.summary()}".strip())
 
-        # A device with no actions should not show an empty toolbar saying "Actions".
-        self.actions_widget.setVisible(bool(specs))
+    def _on_new_action(self) -> None:
+        metrics = self.service.list_metrics()
+        if not metrics:
+            QMessageBox.information(self, "Nothing to act on", "Create a data source first. An action acts on one.")
+            return
+        dialog = NewActionDialog(metrics, self)
+        if dialog.exec() != NewActionDialog.Accepted or dialog.spec() is None:
+            return
+        try:
+            self.service.add_action(dialog.spec())
+        except (KeyError, ValueError, TypeError) as exc:
+            QMessageBox.warning(self, "Could not create action", str(exc))
+            return
+        self.refresh_actions()
+
+    def _log_remote_control(self, handle: str) -> None:
+        action = self.service.list_actions().get(handle)
+        if action is not None:
+            activity_log().add(OWN_DEVICE, f"Action run by a consumer: {action.label} ({handle})")
+            return
+        spec = self.service.list_metrics().get(handle)
+        if spec is None:
+            return
+        name = f"{spec.label} ({handle})" if spec.label else handle
+        value = value_text(self._displayable(handle, spec))
+        activity_log().add(OWN_DEVICE, f"Remote control by a consumer: {name} is now {value}")
 
     def _on_run_action(self, handle: str) -> None:
         try:
@@ -831,7 +1100,8 @@ class ProviderPane(QWidget):
         if self._refreshing:
             return
         handle = self.selected_handle()
-        self.remove_button.setEnabled(handle is not None and not self.service.native_mode)
+        self.remove_button.setEnabled(handle is not None)
+        self.edit_button.setEnabled(handle is not None)
         if handle is None:
             self._editor_definition = None
             self.editor_label.setText("Select a data source to change its value")
@@ -862,7 +1132,7 @@ class ProviderPane(QWidget):
             self.value_edit.setPlaceholderText(spec.range_text() if spec.has_range else "")
         if spec.has_range:
             self.editor_label.setText(f"{spec.label} ({spec.range_text()}):")
-        self._set_editor_enabled(enabled=not (self.service.native_mode and spec.is_sample_array))
+        self._set_editor_enabled(enabled=True)
 
     def _set_editor_enabled(self, *, enabled: bool) -> None:
         self.editor_stack.setEnabled(enabled)
@@ -882,6 +1152,8 @@ class ProviderPane(QWidget):
         except (ValueError, TypeError, KeyError) as exc:
             QMessageBox.warning(self, "Could not create data source", str(exc))
             return
+        if dialog.card_control():
+            self._set_card_settings(handle, CardSettings(control=dialog.card_control()))
         self.refresh()
         self.select_handle(handle)
 
@@ -981,8 +1253,9 @@ class ProviderPane(QWidget):
 
     def _operation_enabled(self, handle: str) -> bool:
         """Whether an operation is currently available, including its BICEPS default."""
-        entity = self.service.mdib.entities.by_handle(handle)
-        if entity is None:
+        # Read in place: the library's entity getter deep-copies, and this runs for every row.
+        state = self.service.mdib.states.descriptor_handle.get_one(handle, allow_none=True)
+        if state is None:
             return False
-        mode = getattr(entity.state, "OperatingMode", None)
+        mode = getattr(state, "OperatingMode", None)
         return mode is None or mode == pm_types.OperatingMode.ENABLED

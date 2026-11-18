@@ -23,11 +23,17 @@ from PySide6.QtGui import QPainter, QPalette, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget
 
 from ...model import MAX_DECIMAL_WIRE_CHARS
-from ..styling import muted_colour
+from ..styling import muted_colour, token
 
-# How many samples a scrolling plot keeps. At the default 0.1s period that is half a minute
-# of history, which is enough to see a shape without making the repaint expensive.
+# How many samples a scrolling plot keeps when it does not know the sample period.
 HISTORY = 300
+
+# How much signal a paced trace spans, in seconds. Fixed, so every waveform scrolls at the
+# same width per second and a finer sample period only adds resolution, as on a monitor.
+PLOT_SECONDS = 10.0
+# shortcut: periods under PLOT_SECONDS / MAX_WINDOW_SAMPLES (2 ms) show a shorter window;
+# decimate instead if such rates ever matter.
+MAX_WINDOW_SAMPLES = 5000
 
 PLOT_HEIGHT = 76
 
@@ -48,6 +54,14 @@ MAX_BACKLOG_SECONDS = 1.5
 # interval blocks arrive at, so the move finishes and settles rather than being permanently
 # chased by the next one.
 TWEEN_MS = 180
+
+
+def _number(value: Decimal) -> str:
+    """A bound as a short label: no exponent, no trailing zeros."""
+    text = format(value.normalize(), "f") if value == value.to_integral() else format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
 
 
 class SamplePlot(QWidget):
@@ -78,19 +92,24 @@ class SamplePlot(QWidget):
         minimum: Decimal | None = None,
         maximum: Decimal | None = None,
         sample_period: Decimal | None = None,
+        show_legend: bool = False,
+        plot_seconds: float = PLOT_SECONDS,
     ) -> None:
         super().__init__(parent)
         self.scrolling = scrolling
+        # An axis column with the maximum, 0 and the minimum, and a dashed zero line.
+        self.show_legend = show_legend
+        # Seconds of signal across the width; resizing changes resolution, not speed.
+        self._plot_seconds = plot_seconds if plot_seconds > 0 else PLOT_SECONDS
         self.setMinimumHeight(PLOT_HEIGHT)
         self.setAutoFillBackground(False)
 
         self._fixed_low = minimum if minimum is not None and minimum.is_finite() else None
         self._fixed_high = maximum if maximum is not None and maximum.is_finite() else None
-        self._samples: deque[Decimal] = deque(maxlen=HISTORY if scrolling else None)
-
         # Seconds between two samples, from the descriptor. Without it there is no way to
         # know how fast to reveal, so a plot that has none shows blocks as they arrive.
         self._sample_period = float(sample_period) if sample_period else 0.0
+        self._samples: deque[Decimal] = deque(maxlen=self._window() if scrolling else None)
         self._pending: deque[Decimal] = deque()
         # Fractional samples carried between frames, so a rate that does not divide evenly
         # into the frame interval does not round down to nothing every time.
@@ -124,6 +143,33 @@ class SamplePlot(QWidget):
     def target(self) -> list[float]:
         """The block a distribution's bars are moving towards."""
         return [float(sample) for sample in self._target]
+
+    def _window(self) -> int:
+        if self._sample_period <= 0:
+            return HISTORY
+        if self._sample_period < self._plot_seconds / MAX_WINDOW_SAMPLES:
+            return MAX_WINDOW_SAMPLES
+        return max(2, round(self._plot_seconds / self._sample_period))
+
+    @property
+    def window_samples(self) -> int | None:
+        """How many samples the trace spans."""
+        return self._samples.maxlen
+
+    def trace_x(self, width: int) -> list[float]:
+        """Where each kept sample is drawn.
+
+        A paced trace places samples by time: the newest at the right edge and each older one
+        a fixed distance further left, so it moves at the same speed from its first sample on.
+        Without a period there is no time base, so the samples are spread across the width.
+        """
+        count = len(self._samples)
+        if self.paced:
+            step = (width - 1) / self._samples.maxlen
+            right = MARGIN + width - 1
+            return [right - (count - 1 - index) * step for index in range(count)]
+        step = (width - 1) / max(1, count - 1) if count > 1 else 0.0
+        return [MARGIN + index * step for index in range(count)]
 
     @property
     def paced(self) -> bool:
@@ -283,6 +329,15 @@ class SamplePlot(QWidget):
 
     # -- painting ------------------------------------------------------------------
 
+    def legend_texts(self) -> list[str]:
+        """The axis labels, top to bottom: maximum, 0 where it lies inside, minimum."""
+        low, high = self._bounds()
+        texts = [_number(high)]
+        if low < 0 < high:
+            texts.append("0")
+        texts.append(_number(low))
+        return texts
+
     def _bounds(self) -> tuple[Decimal, Decimal]:
         """The vertical extent to draw, preferring the declared range over the data.
 
@@ -314,8 +369,17 @@ class SamplePlot(QWidget):
 
         width = self.width() - 2 * MARGIN
         height = self.height() - 2 * MARGIN
+        gutter = 0
+        if self.show_legend and self._samples:
+            font = painter.font()
+            font.setPixelSize(10)
+            painter.setFont(font)
+            gutter = max(painter.fontMetrics().horizontalAdvance(text) for text in self.legend_texts()) + 6
+            width -= gutter
         if width <= 0 or height <= 0:
             return
+        # The legend sits in a column to the left; everything else moves over to make room.
+        painter.translate(gutter, 0)
 
         painter.setPen(QPen(frame, 1))
         painter.drawRect(MARGIN, MARGIN, width - 1, height - 1)
@@ -336,11 +400,25 @@ class SamplePlot(QWidget):
             # Screen y grows downwards, so the top of the box is the high value.
             return MARGIN + (1.0 - fraction) * (height - 1)
 
-        # A line at the middle of the range, so a flat trace still has something to sit
-        # against and an eye can judge amplitude.
-        painter.setPen(QPen(frame, 1, Qt.DotLine))
-        middle = y_for(0.5)
-        painter.drawLine(QPointF(MARGIN, middle), QPointF(MARGIN + width - 1, middle))
+        if gutter:
+            labels = self.legend_texts()
+            places = [MARGIN + 5, None, MARGIN + height - 1]
+            if len(labels) == 3:  # noqa: PLR2004 - a zero line between max and min
+                zero = float(-low / span)
+                places[1] = y_for(zero)
+                painter.setPen(QPen(token("plot/grid"), 1, Qt.DashLine))
+                painter.drawLine(QPointF(MARGIN, places[1]), QPointF(MARGIN + width - 1, places[1]))
+            painter.setPen(QPen(frame, 1))
+            ascent = painter.fontMetrics().ascent()
+            for text, y in zip(labels, [p for p in places if p is not None] if len(labels) == 2 else places,  # noqa: PLR2004
+                               strict=True):
+                painter.drawText(QPointF(MARGIN - gutter, min(max(y + ascent / 2 - 1, MARGIN + ascent), MARGIN + height)), text)
+        else:
+            # A line at the middle of the range, so a flat trace still has something to sit
+            # against and an eye can judge amplitude.
+            painter.setPen(QPen(frame, 1, Qt.DotLine))
+            middle = y_for(0.5)
+            painter.drawLine(QPointF(MARGIN, middle), QPointF(MARGIN + width - 1, middle))
 
         count = len(self._samples)
         step = (width - 1) / max(1, count - 1) if count > 1 else 0.0
@@ -348,7 +426,7 @@ class SamplePlot(QWidget):
 
         if self.scrolling:
             polygon = QPolygonF(
-                [QPointF(MARGIN + index * step, y_for(fraction)) for index, fraction in enumerate(fractions)],
+                [QPointF(x, y_for(fraction)) for x, fraction in zip(self.trace_x(width), fractions, strict=True)],
             )
             painter.drawPolyline(polygon)
         else:

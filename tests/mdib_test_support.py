@@ -59,3 +59,82 @@ def original_mdib() -> bytes:
         </pm:MdState>
       </msg:Mdib>
     </msg:GetMdibResponse>'''.encode()
+
+
+def adoption_mdib() -> bytes:
+    """The fixture with an active alert system, an imported limit alarm and a paused present alarm.
+
+    demo.paused is present although paused. Nothing the user does to other alarms may "correct"
+    it: loading keeps the file's state, and only a change to that alarm itself re-derives it.
+    """
+    data = original_mdib().replace(
+        b'<pm:State DescriptorHandle="demo.alerts" xsi:type="pm:AlertSystemState" ActivationState="Psd"/>',
+        b'<pm:State DescriptorHandle="demo.alerts" xsi:type="pm:AlertSystemState" ActivationState="On"/>'
+        b'<pm:State DescriptorHandle="demo.limit" xsi:type="pm:LimitAlertConditionState" ActivationState="On"'
+        b' Presence="false" MonitoredAlertLimits="All"><pm:Limits Lower="5" Upper="40"/></pm:State>'
+        b'<pm:State DescriptorHandle="demo.limit.signal" xsi:type="pm:AlertSignalState" ActivationState="On" Presence="Off"/>'
+        b'<pm:State DescriptorHandle="demo.paused" xsi:type="pm:AlertConditionState" ActivationState="Psd" Presence="true"/>',
+    )
+    return data.replace(
+        b'<pm:AlertSignal Handle="demo.signal"',
+        b'<pm:AlertCondition Handle="demo.limit" xsi:type="pm:LimitAlertConditionDescriptor" Kind="Phy" Priority="Hi">'
+        b'<pm:Type Code="demo-limit" CodingSystem="urn:sdc-testing-toolbox:private"><pm:ConceptDescription>Rate limit</pm:ConceptDescription></pm:Type>'
+        b'<pm:Source>demo.rate</pm:Source><pm:MaxLimits Lower="0" Upper="50"/></pm:AlertCondition>'
+        b'<pm:AlertCondition Handle="demo.paused" Kind="Tec" Priority="Lo"><pm:Source>demo.mode</pm:Source></pm:AlertCondition>'
+        b'<pm:AlertSignal Handle="demo.limit.signal" ConditionSignaled="demo.limit" Manifestation="Aud" Latching="false"/>'
+        b'<pm:AlertSignal Handle="demo.signal"',
+    )
+
+
+class _Lookup(dict):
+    def get_one(self, key, allow_none=False):  # noqa: ANN001, ANN201, ARG002, FBT002 - sdc11073 lookup shape
+        return self.get(key)
+
+
+class _NoContexts(dict):
+    def by_node_type(self, _node_type):  # noqa: ANN001, ANN201
+        return []
+
+
+class _Descriptor:
+    """Reads through to the entity, so a test may swap its descriptor or node type later."""
+
+    is_context_descriptor = False
+
+    def __init__(self, handle: str, entity) -> None:  # noqa: ANN001
+        self.Handle = handle
+        self._entity = entity
+
+    @property
+    def NODETYPE(self):  # noqa: ANN201, N802 - sdc11073 attribute name
+        return self._entity.node_type
+
+    @property
+    def parent_handle(self):  # noqa: ANN201
+        return getattr(self._entity, "parent_handle", None)
+
+    def __getattr__(self, name: str):  # noqa: ANN204
+        return getattr(self._entity.descriptor, name)
+
+
+class _States:
+    def __init__(self, entities: dict) -> None:
+        self._entities = entities
+
+    def get_one(self, handle, allow_none=False):  # noqa: ANN001, ANN201, ARG002, FBT002
+        return getattr(self._entities.get(handle), "state", None)
+
+
+def fake_consumer_mdib(entities: dict | None = None):  # noqa: ANN201
+    """A stand-in ConsumerMdib holding single-state entities, read where RemoteDevice reads them."""
+    import threading
+    from types import SimpleNamespace
+
+    entities = entities if entities is not None else {}
+    descriptors = _Lookup({handle: _Descriptor(handle, entity) for handle, entity in entities.items()})
+    return SimpleNamespace(
+        entities=_NoContexts(entities),
+        mdib_lock=threading.RLock(),
+        descriptions=SimpleNamespace(objects=list(descriptors.values()), handle=descriptors),
+        states=SimpleNamespace(descriptor_handle=_States(entities)),
+    )

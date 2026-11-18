@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -22,9 +23,189 @@ from sdc11073.xml_types import pm_types
 from sdc11073.xml_types.dataconverters import TimestampConverter
 
 from .config import ConfigError, write_atomically
+from .model import ActionSpec, CardSettings, DistributionShape, MetricKind, MetricSpec, WaveformShape
 
 if TYPE_CHECKING:
     from .provider_service import ProviderService
+
+# Toolbox behaviour BICEPS has no place for: how a sample array is generated and what an
+# action does. Written only into an export that asks for it, never into the live MDIB.
+BEHAVIOUR_NS = "urn:sdc-testing-toolbox:behaviour"
+_MUST_UNDERSTAND = ns.EXT.tag("MustUnderstand")
+
+
+@dataclass(frozen=True)
+class LiveEntity:
+    handle: str
+    node_type: object
+    descriptor: object
+    state: object
+    parent_handle: str | None
+    # A context descriptor's states; empty for single-state descriptors.
+    states: tuple = ()
+
+
+def live_entities(mdib, handles=None, *, include_contexts: bool = False) -> list[LiveEntity]:  # noqa: ANN001
+    """Descriptors with their states, read in place.
+
+    sdc11073's entity getters deep-copy every entity they return, which made whole-MDIB walks
+    the slowest part of loading files and drawing views. Callers hold ``mdib.mdib_lock`` while
+    reading these, copy only immutable values out, and never change them.
+    """
+    if handles is None:
+        descriptors = list(mdib.descriptions.objects)
+    else:
+        lookup = mdib.descriptions.handle
+        descriptors = [d for handle in handles if (d := lookup.get_one(handle, allow_none=True)) is not None]
+    states = mdib.states.descriptor_handle
+    result = []
+    for d in descriptors:
+        if d.is_context_descriptor:
+            if include_contexts:
+                context_states = tuple(mdib.context_states.descriptor_handle.get(d.Handle, ()))
+                result.append(LiveEntity(d.Handle, d.NODETYPE, d, None, d.parent_handle, context_states))
+            continue
+        result.append(LiveEntity(d.Handle, d.NODETYPE, d, states.get_one(d.Handle, allow_none=True), d.parent_handle))
+    return result
+
+
+def _tb(name: str) -> str:
+    return f"{{{BEHAVIOUR_NS}}}{name}"
+
+
+# DeviceInfo fields DPWS announces but BICEPS MetaData has no place for, by attribute name.
+DEVICE_ATTRIBUTES = {"friendly_name": "FriendlyName", "firmware_version": "FirmwareVersion",
+                     "manufacturer_url": "ManufacturerUrl"}
+
+
+def mds_elements(device: dict[str, str], preset: dict[str, str] | None) -> list:
+    """The toolbox elements for an MDS: identity MetaData cannot hold, and a preset's menu entry."""
+    result = []
+    attributes = {DEVICE_ATTRIBUTES[key]: value for key, value in device.items() if value}
+    if attributes:
+        result.append(etree.Element(_tb("Device"), attributes))
+    if preset:
+        result.append(etree.Element(_tb("Preset"), {"Name": preset["name"], "Description": preset.get("description", "")}))
+    return result
+
+
+def _read_behaviour(element, handle: str) -> dict:
+    """One toolbox element as plain values; anything malformed names the descriptor."""
+    name = etree.QName(element).localname
+    try:
+        if name == "Generator":
+            # Without the attribute, as older exports wrote it, the element means "generate".
+            if element.get("Generate", "true") not in ("true", "false"):
+                raise ValueError(f"Generate must be true or false, not {element.get('Generate')!r}")
+            result = {"generate": element.get("Generate", "true") == "true"}
+            if element.get("Shape") is not None:
+                result["shape"] = WaveformShape(element.get("Shape"))
+            if element.get("CycleSeconds") is not None:
+                result["cycle_seconds"] = Decimal(element.get("CycleSeconds"))
+                if not result["cycle_seconds"].is_finite() or result["cycle_seconds"] <= 0:
+                    raise ValueError("CycleSeconds must be positive")
+            elif element.get("CycleSamples") is not None:
+                # Older exports counted the cycle in samples; the reader turns it into a duration.
+                result["cycle_samples"] = int(element.get("CycleSamples"))
+                if result["cycle_samples"] < 1:
+                    raise ValueError("CycleSamples must be positive")
+            if element.get("DistributionShape") is not None:
+                result["distribution_shape"] = DistributionShape(element.get("DistributionShape"))
+            return result
+        if name == "Action":
+            effects = {}
+            for effect in element:
+                if not isinstance(effect.tag, str):
+                    continue
+                target, value = effect.get("Target"), effect.get("Value")
+                if effect.tag != _tb("Effect") or target is None or value is None:
+                    raise ValueError("every effect needs a Target and a Value")
+                effects[target] = value
+            return {"note": element.get("Note", ""), "effects": effects}
+        if name == "Device":
+            return {"device": {key: element.get(attribute) for key, attribute in DEVICE_ATTRIBUTES.items()
+                               if element.get(attribute)}}
+        if name == "Preset":
+            if not element.get("Name"):
+                raise ValueError("a preset needs a Name")
+            return {"preset": {"name": element.get("Name"), "description": element.get("Description", "")}}
+        if name == "Card":
+            return {"card": CardSettings.from_attributes(dict(element.attrib))}
+    except (ValueError, InvalidOperation) as exc:
+        raise ValueError(f"toolbox behaviour of {handle!r}: {exc}") from exc
+    raise ValueError(f"toolbox behaviour of {handle!r}: unknown element {name!r}")
+
+
+def _strip_behaviour(mdib_node) -> dict[str, dict]:
+    """Take toolbox behaviour out of a graph before it goes live; other extensions stay."""
+    result: dict[str, dict] = {}
+    for element in list(mdib_node.iter(_tb("*"))):
+        extension = element.getparent()
+        if extension is None or extension.tag != ns.EXT.tag("Extension"):
+            continue
+        owner = extension.getparent()
+        handle = owner.get("Handle") if owner is not None else None
+        if handle is None:
+            raise ValueError("toolbox behaviour may only extend a descriptor")
+        result.setdefault(handle, {}).update(_read_behaviour(element, handle))
+        extension.remove(element)
+        if not any(isinstance(child.tag, str) for child in extension):
+            owner.remove(extension)
+    return result
+
+
+def behaviour_elements(specs: dict[str, MetricSpec], actions: dict[str, ActionSpec],
+                       generated: set[str] = frozenset(),
+                       cards: dict[str, CardSettings] | None = None) -> dict[str, list]:
+    """The toolbox elements to attach per descriptor handle; default settings are left out.
+
+    Every sample array in ``generated`` gets a Generator element, even with default settings,
+    because its presence is what makes a reload start the generator for it. Any other sample
+    array with a non-default curve gets one with Generate="false", so the curve is kept but
+    the reload leaves its samples alone. A metric whose card differs from the default gets a
+    Card element.
+    """
+    defaults = MetricSpec("defaults", MetricKind.NUMBER)
+    result: dict[str, list] = {}
+    for handle, spec in specs.items():
+        attributes = {}
+        if spec.kind is MetricKind.WAVEFORM:
+            if spec.shape is not defaults.shape:
+                attributes["Shape"] = spec.shape.value
+            if spec.cycle_seconds != defaults.cycle_seconds:
+                attributes["CycleSeconds"] = str(spec.cycle_seconds)
+        elif spec.kind is MetricKind.DISTRIBUTION and spec.distribution_shape is not defaults.distribution_shape:
+            attributes["DistributionShape"] = spec.distribution_shape.value
+        if handle in generated:
+            result[handle] = [etree.Element(_tb("Generator"), attributes)]
+        elif attributes:
+            result[handle] = [etree.Element(_tb("Generator"), {"Generate": "false", **attributes})]
+        card = (cards or {}).get(handle)
+        if card is not None and card.to_attributes():
+            result.setdefault(handle, []).append(etree.Element(_tb("Card"), card.to_attributes()))
+    for handle, action in actions.items():
+        # Written even without effects, so a reload knows the toolbox may run this action.
+        element = etree.Element(_tb("Action"), {"Note": action.note} if action.note else {})
+        for target, value in action.effects.items():
+            etree.SubElement(element, _tb("Effect"), Target=target, Value=str(value))
+        result[handle] = [element]
+    return result
+
+
+def _attach_behaviour(node, behaviour: dict[str, list]) -> None:
+    extension_tag = ns.EXT.tag("Extension")
+    for descriptor in node.find(pm.MdDescription).iter():
+        elements = behaviour.get(descriptor.get("Handle")) if isinstance(descriptor.tag, str) else None
+        if not elements:
+            continue
+        first = descriptor[0] if len(descriptor) else None
+        if first is None or first.tag != extension_tag:
+            first = etree.Element(extension_tag)
+            descriptor.insert(0, first)
+        for element in elements:
+            marked = deepcopy(element)
+            marked.set(_MUST_UNDERSTAND, "false")
+            first.append(marked)
 
 
 @dataclass(frozen=True)
@@ -169,6 +350,7 @@ def parse_mdib(data: bytes) -> ProviderMdib:
     """Validate a combined snapshot and retain its supplied states, including history."""
     try:
         _, node, description, states_node = _combined_root(data)
+        behaviour = _strip_behaviour(node)
         descriptors, states = _reader().read_get_mdib_payload(node)
         _validate_graph(descriptors, states)
         # from_string() resets alarm presence and operation modes even for supplied states.
@@ -186,6 +368,9 @@ def parse_mdib(data: bytes) -> ProviderMdib:
         if next(node.iter(ns.EXT.tag("Extension")), None) is not None:
             if _extension_signatures(node) != _extension_signatures(_snapshot_node(mdib)):
                 raise ValueError("a nested extension cannot be preserved by sdc11073 3.0.0")
+        # shortcut: carried on the library object so every start(parse_mdib(...)) caller gets it
+        # without a second return value; move to NativeMdibConfig if more metadata ever rides along.
+        mdib.toolbox_behaviour = behaviour
         return mdib
     except (etree.LxmlError, ValueError, TypeError, LookupError, AttributeError) as exc:
         raise ConfigError(f"cannot load native MDIB: {exc}") from exc
@@ -223,9 +408,15 @@ def _snapshot_node(mdib: ProviderMdib):
     return node
 
 
-def mdib_bytes(mdib: ProviderMdib) -> bytes:
-    """Serialize one coherent description/state graph, including context history."""
+def mdib_bytes(mdib: ProviderMdib, behaviour: dict[str, list] | None = None) -> bytes:
+    """Serialize one coherent description/state graph, including context history.
+
+    :param behaviour: toolbox elements per descriptor handle, from behaviour_elements(), to
+        add as extensions. None writes plain BICEPS.
+    """
     node = _snapshot_node(mdib)
+    if behaviour:
+        _attach_behaviour(node, behaviour)
     response = etree.Element(msg.GetMdibResponse, nsmap=mdib.nsmapper.ns_map)
     for key in ("MdibVersion", "SequenceId", "InstanceId"):
         if key in node.attrib:
@@ -235,11 +426,11 @@ def mdib_bytes(mdib: ProviderMdib) -> bytes:
     return etree.tostring(response, encoding="UTF-8", xml_declaration=True, pretty_print=True)
 
 
-def save_mdib(service: ProviderService, path: str | Path) -> Path:
-    """Atomically export both description and state to one file."""
+def save_mdib(service: ProviderService, path: str | Path, *, behaviour: bool = False) -> Path:
+    """Atomically export both description and state to one file, with toolbox behaviour on request."""
     target = Path(path)
     try:
-        payload = mdib_bytes(service.mdib)
+        payload = mdib_bytes(service.mdib, service.behaviour_extensions() if behaviour else None)
     except (etree.LxmlError, ValueError, TypeError) as exc:
         raise ConfigError(f"cannot serialize native MDIB: {exc}") from exc
     write_atomically(target, payload)

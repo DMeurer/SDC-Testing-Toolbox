@@ -60,6 +60,21 @@ def metric_dialog_checks(report: Report) -> None:
     finally:
         dialog.deleteLater()
 
+    wave = NewMetricDialog()
+    try:
+        select_kind(wave, MetricKind.WAVEFORM)
+        wave.label_edit.setText("Pleth")
+        wave.sample_period_edit.setText("0.02")
+        wave.cycle_edit.setText("1.5")
+        report.check(wave.rate_hint.text() == "= 40/min", "the cycle length hint says how fast it beats",
+                     wave.rate_hint.text())
+        wave._on_accept()
+        spec = wave.spec()
+        report.check(spec is not None and spec.cycle_seconds == Decimal("1.5"),
+                     "a waveform's cycle is a length in seconds", str(spec and spec.cycle_seconds))
+    finally:
+        wave.deleteLater()
+
     for value in ("NaN", "Infinity", "-Infinity"):
         invalid = NewMetricDialog()
         try:

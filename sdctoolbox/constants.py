@@ -18,17 +18,17 @@ BOOTSTRAP_MDIB_PATH = pathlib.Path(__file__).with_name("mdib_bootstrap.xml")
 # Ready-made configs shipped with the tool. The File menu builds its preset list from here.
 PRESET_DIR = pathlib.Path(__file__).resolve().parent.parent / "presets"
 SHIPPED_PRESET_FILES = {
-    "endoscopic-camera.json",
-    "hf-generator.json",
-    "infusion-pump.json",
-    "mdib-demo-monitor.xml",
-    "mdib-demo-infusion-pump.xml",
-    "insufflator.json",
-    "operating-table.json",
-    "patient-monitor.json",
-    "surgical-microscope.json",
-    "ventilation-pressure.json",
-    "ventilator.json",
+    "endoscopic-camera.xml",
+    "hf-generator.xml",
+    "infusion-pump.xml",
+    "demo-monitor.xml",
+    "demo-infusion-pump.xml",
+    "insufflator.xml",
+    "operating-table.xml",
+    "patient-monitor.xml",
+    "surgical-microscope.xml",
+    "ventilation-pressure.xml",
+    "ventilator.xml",
 }
 
 # Handles that exist in the bootstrap MDIB and are referenced by the services.
@@ -53,6 +53,8 @@ ACTION_HANDLE_PREFIX = "act."
 # published from a preset has a containment tree with parts rather than one flat channel.
 VMD_HANDLE_PREFIX = "vmd."
 CHANNEL_HANDLE_PREFIX = "ch."
+# Where an unsectioned metric goes in a loaded graph that has no channel of its own.
+DEFAULT_SECTION = "Default"
 
 # An alert condition and the signals that announce it. One condition can drive several
 # signals, which is the distinction BICEPS draws and the reason they are separate objects.
@@ -63,13 +65,18 @@ SIGNAL_HANDLE_PREFIX = "sig."
 # Coded values
 # --------------------------------------------------------------------------------------
 
-# The default nomenclature of IEEE 11073-10101.
-CODING_SYSTEM_MDC = "urn:oid:1.2.840.10004.1.1.1.0.0.1"
+# IEEE 11073-10101:2020 (nomenclature version 3), named as IEEE 11073-10700 TR1840/TR1842 ask.
+CODING_SYSTEM_MDC = "urn:oid:1.3.111.2.11073.10101.3"
+# The 10101:2004 OID that older devices (and BICEPS's default) use; read as MDC, never written.
+CODING_SYSTEM_MDC_LEGACY = "urn:oid:1.2.840.10004.1.1.1.0.0.1"
 
 # Our own coding system. Everything we invent lives here rather than pretending to be MDC.
 # This is the "semantic gap" the thesis comparison table lists as an SDC weakness: without
 # device specialisations there is no agreed vocabulary for what we model.
 CODING_SYSTEM_PRIVATE = "urn:sdc-testing-toolbox:private"
+
+# Root of the made-up patient IDs the toolbox gives each patient it associates (10700 TR1304).
+PATIENT_ID_ROOT = "urn:sdc-testing-toolbox:patient"
 
 # MDC_DIM_DIMLESS - the real 11073-10101 code for "no unit".
 CODE_DIMENSIONLESS = "262656"
@@ -87,6 +94,9 @@ DEFAULT_IP = "127.0.0.1"
 # Every port peers connect to (HTTP listeners, the WS-Discovery reply socket) is bound in this
 # range, so the shipped firewall definitions can open exactly it. Discovery itself stays on 3702.
 PORT_RANGE = range(21073, 21173)
+
+# --mcp without a port listens here (loopback only). The number is the standard's, easy to remember.
+MCP_DEFAULT_PORT = 11073
 
 # EPRs are derived from this namespace plus an instance name, so restarting an instance
 # with the same name keeps its identity.
@@ -131,6 +141,8 @@ FIRMWARE_VERSION = "0.1"
 # StartupWMClass, and that entry's file name, so the dock shows the icon.
 APP_NAME = "SDC-Testing-Toolbox"
 DESKTOP_ID = "sdc-testing-toolbox"
+# Where QSettings keeps what the window remembers between runs, with APP_NAME as the application.
+SETTINGS_ORGANISATION = "SDC-Testing-Toolbox"
 
 
 def epr_for(instance_name: str) -> uuid.UUID:

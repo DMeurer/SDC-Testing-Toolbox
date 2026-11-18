@@ -70,7 +70,8 @@ from sdctoolbox.gui.provider_pane import (  # noqa: E402
     COL_VALUE,
 )
 from sdctoolbox.gui.startup_dialog import LINK_LOCAL_PREFIX, StartupDialog  # noqa: E402
-from sdctoolbox.gui.styling import mute  # noqa: E402
+from sdctoolbox.gui.no_wheel import NoWheelComboBox, NoWheelSlider  # noqa: E402
+from sdctoolbox.gui.styling import mute, token  # noqa: E402
 from sdctoolbox.gui.widgets import WidgetSpec  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
     AlertKind,
@@ -229,7 +230,10 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         pane = window.provider_pane
 
         print("\n1. Window layout")
-        report.check(window.split_view_enabled, "starts split")
+        report.check(not window.split_view_enabled, "starts as tabs")
+        window.split_view_action.setChecked(True)
+        pump(app)
+        report.check(window.split_view_enabled, "split view can be switched on")
         report.check(window.splitter.count() == 2, "two panels", str(window.splitter.count()))  # noqa: PLR2004
         report.check(
             window.splitter.orientation() == Qt.Horizontal,
@@ -276,9 +280,9 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         report.check(menu_bar.isVisible(), "the menu bar is on screen by default")
         report.check(window.always_show_menu, "because Always show menu bar starts on")
         report.check(
-            "Alt" not in window.statusBar().currentMessage(),
+            "Alt" not in window.status_hint.text(),
             "so the status bar does not mention Alt",
-            window.statusBar().currentMessage()[-40:],
+            window.status_hint.text()[-40:],
         )
         titles = [action.text() for action in menu_bar.actions()]
         report.check(titles == ["&File", "&View"], "File and View menus", str(titles))
@@ -286,8 +290,8 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         view_items = [a.text() for a in menu_bar.actions()[1].menu().actions() if a.text()]
         report.check(
             [t for t in file_items if t]
-            == ["&Import config\u2026", "&Export config\u2026", "Load &preset", "E&xit"],
-            "File has import, export, presets and exit",
+            == ["&Import config\u2026", "&Export config\u2026", "&Check MDIB\u2026", "Load &preset", "E&xit"],
+            "File has import, export, the MDIB check, presets and exit",
             str(file_items),
         )
         preset_items = [a.text() for a in window.presets_menu.actions()]
@@ -297,8 +301,16 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             "and every entry is loadable, so none of the shipped presets is broken",
         )
         report.check(
-            view_items == ["Always show &menu bar", "Use &widgets if possible", "&Split view", "&Dark mode"],
-            "View has all four toggles, including the theme",
+            view_items
+            == [
+                "Always show &menu bar",
+                "Use &widgets if possible",
+                "&Split view",
+                "&Fullscreen",
+                "&Dark mode",
+                "&Advanced mode",
+            ],
+            "View has all its toggles, including the theme and Advanced mode",
             str(view_items),
         )
         report.check(
@@ -318,7 +330,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         pump(app)
         report.check(not menu_bar.isVisible(), "unpinning hides it")
         report.check(
-            "Alt" in window.statusBar().currentMessage(),
+            "Alt" in window.status_hint.text(),
             "and the status bar says how to get it back",
         )
         window.toggle_menu_bar()
@@ -340,7 +352,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
 
         print("\n1c. Switching layout")
         report.check(window.split_view_action.isCheckable(), "split view is a checkbox")
-        report.check(window.split_view_action.isChecked(), "and starts on")
+        report.check(window.split_view_action.isChecked(), "and is ticked while split")
 
         window.split_view_action.setChecked(False)
         pump(app)
@@ -433,6 +445,15 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         fill_dialog(dialog, kind=MetricKind.NUMBER, label="Zoom", minimum="100", maximum="1")
         dialog._on_accept()  # noqa: SLF001
         report.check(dialog.spec() is None, "minimum above maximum is refused")
+
+        fill_dialog(dialog, kind=MetricKind.NUMBER, label="Zoom", minimum="1")
+        dialog._on_accept()  # noqa: SLF001
+        report.check(
+            dialog.spec() is None and "range" in dialog.error_label.text()
+            and dialog.maximum_edit.placeholderText() == "required",
+            "a number needs both ends of its range (10701 TR0239)",
+            dialog.error_label.text(),
+        )
 
         fill_dialog(dialog, kind=MetricKind.NUMBER, label="Zoom level", unit="steps", minimum="1", maximum="100")
         report.check(
@@ -737,11 +758,13 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
             "and the network panel follows the same rule",
         )
         # The result of a write is not part of the editor. In widget mode a card is what
-        # sends it, so hiding whether the peer accepted would take the answer away with
-        # the question.
+        # sends it, so the answer goes to the status bar, which no mode hides.
+        consumer_pane.invocation_changed.emit("smoke: accepted (Fin)")
+        pump(app)
         report.check(
-            not consumer_pane.invocation_label.isHidden(),
-            "but the invocation result stays, because a card still writes",
+            window.statusBar().currentMessage() == "smoke: accepted (Fin)",
+            "but the invocation result still reaches the status bar, because a card still writes",
+            window.statusBar().currentMessage(),
         )
 
         window.set_use_widgets(False)
@@ -766,8 +789,8 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         mode_input = mode_card.control.box
         zoom_input = zoom_card.control.slider
         report.check(
-            type(mode_input).__name__ == "NoWheelComboBox"
-            and type(zoom_input).__name__ == "NoWheelSlider",
+            isinstance(mode_input, NoWheelComboBox)
+            and isinstance(zoom_input, NoWheelSlider),
             "the cards are built from the wheel-proof controls",
             f"{type(mode_input).__name__}, {type(zoom_input).__name__}",
         )
@@ -1292,7 +1315,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         def signals_cell(handle: str = acked) -> str:
             for row in range(pane.alert_table.rowCount()):
                 if pane.alert_table.item(row, ACOL_HANDLE).text() == handle:
-                    return pane.alert_table.item(row, ACOL_SIGNALS).text()
+                    return pane.alert_table.item(row, ACOL_SIGNALS).data(Qt.UserRole)
             return ""
 
         # zoom sits at 100 from the range section above, so the alarm is already raised.
@@ -1418,12 +1441,15 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         # Peer labels are untrusted text. The Network pane must show markup-looking content
         # literally and must not let it dictate the splitter's minimum width.
         consumer = window.network_pane
-        consumer_minimum_before = consumer.minimumSizeHint().width()
         consumer.remote = RemoteDevice(
             SimpleNamespace(stop_all=lambda **_kwargs: None),
             SimpleNamespace(entities={}),
             "foreign-context-view",
         )
+        # The connection's sections only show once there is a peer, so measure with them.
+        consumer.connection_widget.setVisible(True)
+        pump(app)
+        consumer_minimum_before = consumer.minimumSizeHint().width()
         consumer.remote.patient_contexts = lambda: {
             "PC.foreign": PatientInfo(
                 given_name="<b>Foreign</b>",
@@ -1640,8 +1666,8 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         report.check("outline: 0" in qss, "focus ring suppressed")
         report.check("border: 0px" in qss, "per-cell borders suppressed")
         report.check(
-            "palette(highlight)" in qss and "palette(highlighted-text)" in qss,
-            "selection colours come from the palette, not hard-coded",
+            token("accent/tint").name() in qss,
+            "selection uses the design tint of the current mode, not a fixed colour",
         )
         report.check(
             ":selected:!active" in qss,
@@ -1696,6 +1722,21 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                 report.check(consumer.tree.topLevelItemCount() > 0, "the MDIB tree is populated")
                 report.check(consumer.table.rowCount() >= 4, "metrics are listed", str(consumer.table.rowCount()))  # noqa: PLR2004
                 report.check(consumer.disconnect_button.isEnabled(), "disconnect becomes available")
+                first = consumer.tree.topLevelItem(0)
+                report.check(first.text(0) in first.toolTip(0) and "A consumer " in first.toolTip(0),
+                             "pointing at a tree element explains it", first.toolTip(0))
+                report.check(wait_for(app, lambda: consumer.messages_section.chip_texts()[-1:] not in ([], ["0"], ["Advanced"]), timeout=10),
+                             "the Messages section counts the connection's messages", consumer.messages_section.chip_texts())
+                report.check(consumer.test_button.isVisible(), "Test this device… shows once connected")
+                consumer.test_button.click()
+                test_window = window.test_window
+                report.check(test_window is not None and test_window.isVisible(), "Test this device… opens the Device test")
+                report.check(wait_for(app, lambda: test_window.tree.topLevelItemCount() == 6, timeout=60),
+                             "the Device test lists six results", test_window.summary_label.text())
+                failed = [test_window.tree.topLevelItem(i).text(2) for i in range(test_window.tree.topLevelItemCount())
+                          if test_window.tree.topLevelItem(i).text(0) == "Failed"]
+                report.check(not failed, "the toolbox's own device passes its Device test", "; ".join(failed))
+                test_window.close()
                 report.check(
                     wait_for(app, lambda: "height 170.5 cm" in consumer.context_label.text(), timeout=20),
                     "peer patient demographics are shown",
@@ -1848,7 +1889,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
         print("\n10c. Export and import from the File menu")
         with tempfile.TemporaryDirectory(prefix="sdctoolbox-gui-") as raw_workdir:
             workdir = Path(raw_workdir)
-            preset = workdir / "preset.json"
+            preset = workdir / "preset.xml"
 
             # The file dialogs would block with nobody to answer them.
             QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (str(preset), ""))  # noqa: ARG005
@@ -1881,13 +1922,14 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                 "and so are the alarms",
                 str(sorted(service.list_alerts())),
             )
+            # An MDIB import restarts the provider, and the window builds a new pane for it.
             report.check(
-                pane.table.rowCount() == len(before_metrics),
+                window.provider_pane.table.rowCount() == len(before_metrics),
                 "the table was refreshed by the import",
-                str(pane.table.rowCount()),
+                str(window.provider_pane.table.rowCount()),
             )
 
-            preset.write_text('{"metrics": [{"label": "broken"}]}', encoding="utf-8")
+            preset.write_text("<Mdib><broken", encoding="utf-8")
             shown_warnings.clear()
             report.check(not window.import_config(), "a broken file is refused")
             report.check(
@@ -2020,7 +2062,7 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                 str(startup.chosen_config()),
             )
 
-        startup.config_box.setCurrentText(str(ROOT / "presets" / "insufflator.json"))
+        startup.config_box.setCurrentText(str(ROOT / "presets" / "insufflator.xml"))
         startup.verbose_box.setChecked(True)
         startup._on_accept()  # noqa: SLF001
         chosen = startup.settings()

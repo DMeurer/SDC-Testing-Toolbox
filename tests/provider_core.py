@@ -31,6 +31,7 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.parse import urlparse
 
 from lxml import etree
 
@@ -38,7 +39,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from script_support import Report  # noqa: E402
-from mdib_test_support import PM, original_mdib  # noqa: E402
+from mdib_test_support import PM, fake_consumer_mdib, original_mdib  # noqa: E402
 from sdc11073 import observableproperties  # noqa: E402
 from sdc11073.consumer.consumerimpl import SdcConsumer  # noqa: E402
 from sdc11073.definitions_sdc import SdcV1Definitions  # noqa: E402
@@ -194,10 +195,10 @@ def check_sample_arrays(report: Report, service: ProviderService) -> None:
     cycle_before_phase = dict(service._sample_generator.phases)  # noqa: SLF001
     cycle_before_pinned = set(service._sample_generator.pinned)  # noqa: SLF001
     cycle_before_generator = service.generator_running
-    invalid_cycles = (None, Decimal("40"), True, 1)
+    invalid_cycles = (None, 40, True, Decimal("0.01"), Decimal("NaN"))
     cycle_rejections = 0
     for invalid_cycle in invalid_cycles:
-        mutated_cycle.cycle_samples = invalid_cycle
+        mutated_cycle.cycle_seconds = invalid_cycle
         try:
             service.add_metric(mutated_cycle)
         except ValueError:
@@ -3280,17 +3281,17 @@ def check_presets(report: Report) -> None:
 
     with tempfile.TemporaryDirectory(prefix="sdctoolbox-presets-") as raw:
         folder = Path(raw)
-        (folder / "broken.json").write_text("{ not json", encoding="utf-8")
-        (folder / "invalid.json").write_text('{"metrics": [{"label": "x"}]}', encoding="utf-8")
-        (folder / "malformed-shape.json").write_text('{"metrics": 1}', encoding="utf-8")
-        (folder / "good.json").write_text(
-            '{"name": "Good one", "metrics": [{"label": "v", "kind": "number"}]}',
+        (folder / "broken.xml").write_text("<Mdib><broken", encoding="utf-8")
+        (folder / "invalid.xml").write_text("<NotAnMdib/>", encoding="utf-8")
+        (folder / "profile.json").write_text(
+            '{"name": "Old profile", "metrics": [{"label": "v", "kind": "number"}]}',
             encoding="utf-8",
         )
+        (folder / "good.xml").write_bytes((constants.PRESET_DIR / "insufflator.xml").read_bytes())
         found = config.list_presets(folder)
         report.check(
-            [preset.name for preset in found] == ["Good one"],
-            "unreadable and malformed presets are skipped rather than breaking the list",
+            [preset.name for preset in found] == ["Insufflator"],
+            "unreadable, malformed and JSON files are skipped rather than breaking the list",
             str([preset.name for preset in found]),
         )
 
@@ -3421,6 +3422,22 @@ def check_foreign_consumer_operations(report: Report) -> None:
         mdib.entities = entities
         for handle in client.states:
             mdib.states.add_object(entities[handle].state)
+        fake = fake_consumer_mdib(entities)
+        mdib.descriptions = fake.descriptions
+
+        class States:
+            """The real table, which set_value reconciles, plus the fakes' operation states."""
+
+            def __init__(self, real) -> None:
+                self.real = real
+                self.descriptor_handle = SimpleNamespace(get_one=lambda handle, allow_none=False: (  # noqa: ARG005
+                    real.descriptor_handle.get_one(handle, allow_none=True)
+                    or fake.states.descriptor_handle.get_one(handle)))
+
+            def __getattr__(self, name):  # noqa: ANN001, ANN204
+                return getattr(self.real, name)
+
+        mdib.states = States(mdib.states)
         client.mdib = mdib
         remote = RemoteDevice(consumer, mdib, "urn:provider-core:foreign-operations")
         return remote, client
@@ -3701,7 +3718,7 @@ def check_foreign_consumer_operations(report: Report) -> None:
         "signal.equal": SimpleNamespace(
             node_type=copied_qname(pm.AlertSignalDescriptor),
             descriptor=SimpleNamespace(ConditionSignaled=condition, Manifestation=pm_types.AlertSignalManifestation.VIS),
-            state=SimpleNamespace(),
+            state=SimpleNamespace(Presence=pm_types.AlertSignalPresence.LATCH),
         ),
         "signal.wrong": SimpleNamespace(
             node_type=copied_qname(pm.AlertSignalDescriptor, "urn:not-biceps"),
@@ -3715,6 +3732,7 @@ def check_foreign_consumer_operations(report: Report) -> None:
         set(alerts) == {condition, limit_condition}
         and alerts[condition].priority == pm_types.AlertConditionPriority.HIGH.value
         and alerts[condition].signals == {"signal.equal": pm_types.AlertSignalManifestation.VIS.value}
+        and alerts[condition].signal_presences == {"Vis": "Latch"}
         and alerts[limit_condition].source_handles == ("metric.source",)
         and (alerts[limit_condition].lower_limit, alerts[limit_condition].upper_limit)
         == (Decimal("10"), Decimal("20"))
@@ -3752,7 +3770,7 @@ def check_remote_metadata(report: Report) -> None:
             MetricValue=SimpleNamespace(Value=value, MetricQuality=SimpleNamespace(Validity=pm_types.MeasurementValidity.INVALID)),
         ),
     )
-    remote = RemoteDevice(SimpleNamespace(), SimpleNamespace(entities={"pressure": entity}), "urn:metadata")
+    remote = RemoteDevice(SimpleNamespace(), fake_consumer_mdib({"pressure": entity}), "urn:metadata")
     metric = remote.metrics()["pressure"]
     report.check(
         getattr(metric, "unit_code", missing) == "266048"
@@ -4068,6 +4086,53 @@ def check_missing_single_states(report: Report) -> None:
     )
 
 
+def check_unreachable_subscriber_at_shutdown(report: Report) -> None:
+    """Stopping while a subscriber's host is gone is expected, not an error.
+
+    The provider says goodbye with a SubscriptionEnd. When nothing answers the subscriber's
+    address the connect times out, which sdc11073 logged as an error with a traceback.
+    """
+    print("\n13. A subscriber that is gone when the provider stops")
+
+    class Collector(logging.Handler):
+        def __init__(self) -> None:
+            super().__init__(logging.DEBUG)
+            self.records: list[logging.LogRecord] = []
+
+        def emit(self, record: logging.LogRecord) -> None:
+            self.records.append(record)
+
+    collector = Collector()
+    subscription_log = logging.getLogger("sdc.device.subscrMgr")
+    previous_level = subscription_log.level
+    subscription_log.setLevel(logging.INFO)
+    subscription_log.addHandler(collector)
+    service = ProviderService(instance_name="provider-core-gone-subscriber")
+    service.start()
+    consumer = SdcConsumer(provider_address=service._provider.get_xaddrs()[0],  # noqa: SLF001 - loopback fixture
+                           sdc_definitions=SdcV1Definitions, ssl_context_container=None)
+    try:
+        consumer.start_all()
+        # The subscriber's host went away: nothing answers this non-routable address, so the connect hangs.
+        gone = urlparse("http://10.255.255.1:9/gone")
+        for manager in service._provider._subscriptions_managers.values():  # noqa: SLF001
+            for subscription in manager._subscriptions.objects:  # noqa: SLF001
+                subscription.notify_to_url = subscription._end_to_url = gone  # noqa: SLF001
+        service.stop()
+    finally:
+        consumer.stop_all(unsubscribe=False)
+        service.stop()
+        subscription_log.removeHandler(collector)
+        subscription_log.setLevel(previous_level)
+
+    errors = [record.getMessage().strip().splitlines()[-1] for record in collector.records if record.levelno >= logging.ERROR]
+    report.check(not errors, "a SubscriptionEnd nobody receives is not logged as an error", str(errors)[:70])
+    report.check(
+        any("did not answer" in record.getMessage() for record in collector.records if record.levelno == logging.INFO),
+        "it is noted in one info line instead",
+    )
+
+
 def main() -> int:
     basic_logging_setup(level=logging.ERROR)
     report = Report()
@@ -4109,6 +4174,7 @@ def main() -> int:
         check_missing_single_states(report)
     finally:
         service.stop()
+    check_unreachable_subscriber_at_shutdown(report)
 
     print()
     return report.summary()

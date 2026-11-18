@@ -42,6 +42,7 @@ from sdc11073.xml_types import msg_types, pm_types  # noqa: E402
 
 from sdctoolbox import config, constants  # noqa: E402
 from sdctoolbox.consumer_service import RemoteDevice  # noqa: E402
+from sdctoolbox.mdib_io import NativeMdibConfig  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
     ActionSpec,
     AlertKind,
@@ -97,12 +98,15 @@ def snapshot(service: ProviderService) -> dict:
                 "initial_value": None if spec.is_sample_array else service.get_value(handle),
                 "sample_period": spec.sample_period,
                 "shape": spec.shape.value,
-                "cycle_samples": spec.cycle_samples,
+                "cycle_seconds": spec.cycle_seconds,
                 "domain_unit_label": spec.domain_unit_label,
                 "domain_unit_coding": coding_snapshot(spec.domain_unit_coding),
                 "domain_minimum": spec.domain_minimum,
                 "domain_maximum": spec.domain_maximum,
                 "distribution_shape": spec.distribution_shape.value,
+                "allowed_range": spec.effective_allowed_range(),
+                "operation_values": spec.operation_values,
+                "active": spec.active,
             }
             for handle, spec in service.list_metrics().items()
         },
@@ -120,6 +124,8 @@ def snapshot(service: ProviderService) -> dict:
                 "lower_limit": spec.lower_limit,
                 "upper_limit": spec.upper_limit,
                 "delegable": spec.delegable,
+                "max_limits": service._max_limits(spec),  # noqa: SLF001 - what MaxLimits carries
+                "actual_priority": spec.actual_priority,
             }
             for handle, spec in service.list_alerts().items()
         },
@@ -358,7 +364,7 @@ def build_reference(service: ProviderService) -> None:
             maximum=Decimal("100"),
             sample_period=Decimal("0.05"),
             shape=WaveformShape.SQUARE,
-            cycle_samples=37,
+            cycle_seconds=Decimal("1.85"),
         ),
     )
     service.add_metric(
@@ -389,6 +395,12 @@ def build_reference(service: ProviderService) -> None:
         ),
     )
     service.add_alert(AlertSpec(label="Service due", source_handle="m.zoom_level"))
+    # Runtime states, edited after creation, survive the file too.
+    service.set_allowed_range("m.zoom_level", Decimal("5"), Decimal("50"))
+    service.set_allowed_values("m.mode", ["IDLE", "RUN"])
+    service.set_metric_active("m.patient_note", active=False)
+    service.set_alert_limits("al.zoom_high", Decimal("3"), Decimal("80"))
+    service.set_alert_priority("al.service_due", AlertPriority.LOW)
     service.add_action(
         ActionSpec(
             label="Set inspection mode",
@@ -1606,10 +1618,16 @@ def check_metric_handle_resolution(report: Report, service: ProviderService) -> 
     report.check(existing not in service.list_metrics(), "successful replacement removes the prior metric")
 
 
+def write_profile(service: ProviderService, path: Path) -> Path:
+    """Write a JSON profile the way earlier versions exported one; export itself writes MDIB only."""
+    path.write_text(json.dumps(config.to_dict(service), indent=2) + "\n", encoding="utf-8")
+    return path
+
+
 def check_atomic_save(report: Report, service: ProviderService, workdir: Path) -> None:
-    """A partial ENOSPC write or failed replacement must not damage the old profile."""
-    target = workdir / "atomic.sdcprofile.json"
-    old_bytes = b'{"version": 1, "name": "previous"}\n'
+    """A partial ENOSPC write or failed replacement must not damage the old export."""
+    target = workdir / "atomic.xml"
+    old_bytes = b"<previous/>\n"
     target.write_bytes(old_bytes)
     before_files = set(workdir.iterdir())
     real_open = io.open
@@ -1632,7 +1650,7 @@ def check_atomic_save(report: Report, service: ProviderService, workdir: Path) -
             written_paths.append(Path(self.name))
             self.stream.write(text[:12])
             self.stream.flush()
-            raise OSError(errno.ENOSPC, "injected disk full after JSON prefix")
+            raise OSError(errno.ENOSPC, "injected disk full after the first bytes")
 
     with patch.object(io, "open", lambda *args, **kwargs: FullDiskFile(real_open(*args, **kwargs))):
         try:
@@ -1663,10 +1681,18 @@ def check_atomic_save(report: Report, service: ProviderService, workdir: Path) -
     )
     result = config.save(service, target)
     report.check(
-        result == target and json.loads(target.read_text(encoding="utf-8")) == config.to_dict(service)
+        result == target and isinstance(config.load_file(target), NativeMdibConfig)
         and set(workdir.iterdir()) == before_files,
-        "a successful atomic save returns the requested Path and valid JSON without temporary files",
+        "a successful atomic save returns the requested Path and a valid MDIB without temporary files",
     )
+    json_target = workdir / "atomic.json"
+    try:
+        config.save(service, json_target)
+    except config.ConfigError:
+        refused = True
+    else:
+        refused = False
+    report.check(refused and not json_target.exists(), "export refuses to write JSON")
 
 
 def check_xml_profile_preflight(report: Report, service: ProviderService) -> None:
@@ -1944,7 +1970,7 @@ def check_mutated_waveform_preflight(report: Report, service: ProviderService) -
     try:
         cases = (
             *[("sample_period", value) for value in (None, Decimal("0"), Decimal("-0.1"), Decimal("NaN"), Decimal("1E-100"), 0.1)],
-            *[("cycle_samples", value) for value in (None, Decimal("40"), True, 1)],
+            *[("cycle_seconds", value) for value in (None, 40, True, Decimal("0.01"))],
         )
         for replace in (True, False):
             for field, invalid in cases:
@@ -1959,6 +1985,26 @@ def check_mutated_waveform_preflight(report: Report, service: ProviderService) -
                 )
     finally:
         service.remove_metric(witness)
+
+
+def check_cycle_seconds(report: Report) -> None:
+    """A cycle is a duration; old profiles that counted samples keep their speed."""
+    legacy = config.parse({"metrics": [
+        {"label": "Old wave", "kind": "waveform", "sample_period": "0.02", "cycle_samples": 50},
+        {"label": "Old default", "kind": "waveform", "cycle_samples": 30},
+    ]})
+    report.check([spec.cycle_seconds for spec in legacy.metrics] == [Decimal("1.00"), Decimal("3.0")],
+                 "cycle_samples from an older profile becomes the same duration",
+                 str([spec.cycle_seconds for spec in legacy.metrics]))
+    entry = config.metric_to_dict("m.old_wave", legacy.metrics[0])
+    report.check(entry.get("cycle_seconds") == "1.00" and "cycle_samples" not in entry,
+                 "profiles are written with cycle_seconds", str(entry))
+    try:
+        config.parse({"metrics": [{"label": "Both", "kind": "waveform", "cycle_samples": 50, "cycle_seconds": "1"}]})
+        both = False
+    except config.ConfigError:
+        both = True
+    report.check(both, "a profile may not give the cycle both ways")
 
 
 def check_derived_step_preflight(report: Report, service: ProviderService) -> None:
@@ -2512,14 +2558,6 @@ def check_import_edge_cases(report: Report, workdir: Path) -> None:
             "a file that starts with a UTF-8 byte order mark is read",
         )
 
-    presets = workdir / "bom-presets"
-    presets.mkdir()
-    (presets / "bom.json").write_bytes(signed.read_bytes())
-    report.check(
-        [preset.name for preset in config.list_presets(presets)] == ["From a BOM file"],
-        "a preset that starts with a UTF-8 byte order mark is listed",
-    )
-
 
 def check_refused_create_is_not_retried(report: Report, service: ProviderService, workdir: Path) -> None:
     """Saving where files cannot be created must fail at once, not retry for days.
@@ -2539,7 +2577,7 @@ def check_refused_create_is_not_retried(report: Report, service: ProviderService
         return opener
 
     before = set(workdir.iterdir())
-    for suffix in (config.FILE_SUFFIX, ".xml"):
+    for suffix in (".xml",):
         target = workdir / f"refused{suffix}"
         attempts.clear()
         # bounded, or the unfixed code would go on for about 2 billion attempts
@@ -2563,7 +2601,7 @@ def check_refused_create_is_not_retried(report: Report, service: ProviderService
 
 
 def run_checks(report: Report, workdir: Path) -> None:
-    path = workdir / f"reference{config.FILE_SUFFIX}"
+    path = workdir / "reference.sdcprofile.json"
 
     print("=" * 74)
     print("Config round trip")
@@ -2575,7 +2613,7 @@ def run_checks(report: Report, workdir: Path) -> None:
     try:
         build_reference(source)
         before = snapshot(source)
-        config.save(source, path)
+        write_profile(source, path)
         report.check(path.exists(), "the file is written", f"{path.stat().st_size} bytes")
         data = json.loads(path.read_text(encoding="utf-8"))
         report.check(
@@ -2653,7 +2691,7 @@ def run_checks(report: Report, workdir: Path) -> None:
         else:
             report.check(False, "programmatic float measurements are refused", "it was accepted")  # noqa: FBT003
         source.set_value("m.zoom_level", Decimal("42"))
-        config.save(source, workdir / "with-values.json")
+        write_profile(source, workdir / "with-values.json")
         with_values = json.loads((workdir / "with-values.json").read_text(encoding="utf-8"))
         zoom = next(m for m in with_values["metrics"] if m["handle"] == "m.zoom_level")
         report.check(
@@ -2699,57 +2737,6 @@ def run_checks(report: Report, workdir: Path) -> None:
         )
 
         check_config_versions(report, workdir)
-
-        preset_round_trips = []
-        preset_paths = sorted((ROOT / "presets").glob("*.json"))
-        preset_files = {preset_path.name for preset_path in preset_paths}
-        json_preset_files = {name for name in constants.SHIPPED_PRESET_FILES if name.endswith(".json")}
-        for preset_path in preset_paths:
-            preset_data = json.loads(preset_path.read_text(encoding="utf-8"))
-            preset = config.parse(preset_data)
-            preset_service = ProviderService(instance_name=preset.instance_name, device=preset.device)
-            preset_service.start()
-            try:
-                config.apply_to(preset_service, preset)
-                serialized = config.to_dict(preset_service)
-                source_contexts = preset_data.get("contexts", {})
-                current_contexts = serialized.get("contexts", {})
-                retained_contexts = {
-                    name: current_contexts[name]
-                    for name in ("location", "patient")
-                    if name in source_contexts
-                }
-                if retained_contexts:
-                    serialized["contexts"] = retained_contexts
-                else:
-                    serialized.pop("contexts", None)
-                round_tripped = config.parse(serialized)
-                signals_preserved = all(
-                    serialized_alert["signals"]
-                    == [
-                        {"manifestation": signal.manifestation.value, "latching": signal.latching}
-                        for signal in alert.signals
-                    ]
-                    for alert, serialized_alert in zip(
-                        sorted(preset.alerts, key=lambda item: item.handle or ""),
-                        serialized["alerts"],
-                        strict=True,
-                    )
-                )
-                preset_round_trips.append(
-                    preset_data.get("version") == config.CONFIG_VERSION
-                    and serialized.get("version") == config.CONFIG_VERSION
-                    and signals_preserved
-                    and device_config_snapshot(round_tripped) == device_config_snapshot(preset)
-                )
-            finally:
-                preset_service.stop()
-        report.check(
-            preset_files == json_preset_files and all(preset_round_trips),
-            "canonical presets round-trip at the current version with version-3 signals intact",
-            f"{sum(preset_round_trips)} of {len(json_preset_files)}; "
-            f"files {sorted(preset_files)}",
-        )
 
         print("\n3. Import replaces rather than appends")
         metrics, _ = config.load_into(target, path)
@@ -2858,6 +2845,7 @@ def run_checks(report: Report, workdir: Path) -> None:
         check_control_capability_roundtrip(report, regressions)
         check_descriptor_text_preflight(report, regressions)
         check_mutated_waveform_preflight(report, regressions)
+        check_cycle_seconds(report)
         check_xml_profile_preflight(report, regressions)
         check_derived_step_preflight(report, regressions)
         check_derived_sample_range_preflight(report, regressions)

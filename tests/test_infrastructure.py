@@ -146,8 +146,8 @@ def manifest_checks(report: Report) -> None:
     report.check(
         by_id["network-acceptance"]["resources"] == ["ws-discovery", "acceptance-epr"]
         and by_id["acceptance-provider"]["role"] == "fixture"
-        and by_id["gui-smoke"]["role"] == "manual",
-        "network locks, fixtures, and manual suites remain explicitly classified",
+        and by_id["gui-smoke"]["role"] == "network",
+        "network locks, fixtures, and the live-peer GUI smoke test remain explicitly classified",
     )
 
     workflow = (ROOT / ".github" / "workflows" / "build-app.yml").read_text(
@@ -204,19 +204,20 @@ def manifest_checks(report: Report) -> None:
                     and f"path: {suite_id}.log" in expanded,
                     f"CI {label} retains its own failure output",
                 )
-                if suite_id == "connection-loss":
+                if suite_id in ("connection-loss", "gui-smoke"):
                     report.check(
                         "QT_QPA_PLATFORM: offscreen" in job and "apt-get install -y libegl1" in job,
-                        "connection-loss CI installs its Qt runtime and uses offscreen rendering",
+                        f"{suite_id} CI installs its Qt runtime and uses offscreen rendering",
                     )
     report.check(
         sorted(deterministic_platforms) == ["linux", "windows"],
         "CI selects manifest-driven deterministic/policy suites on both platforms",
     )
-    expected_network = {"network-acceptance", "tls-acceptance", "passive-discovery", "operation-subscription", "connection-loss"}
+    expected_network = {"network-acceptance", "tls-acceptance", "passive-discovery", "operation-subscription", "connection-loss",
+                        "mdib-network", "gui-smoke"}
     report.check(
         {suite_id for selected in network_jobs.values() for suite_id in selected} == expected_network,
-        "CI selects all five intended network suites in isolated jobs", repr(network_jobs),
+        "CI selects all seven intended network suites in isolated jobs", repr(network_jobs),
     )
 
 

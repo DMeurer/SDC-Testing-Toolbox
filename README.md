@@ -202,7 +202,7 @@ Give it any argument and it starts straight away instead, which is what you want
 
 ```powershell
 .venv\Scripts\python.exe run_toolbox.py --name alpha
-.venv\Scripts\python.exe run_toolbox.py --name beta --config presets\insufflator.json
+.venv\Scripts\python.exe run_toolbox.py --name beta --config presets\insufflator.xml
 ```
 
 Use `--theme light` or `--theme dark` to select the initial colours; otherwise normal mode
@@ -212,6 +212,11 @@ uses the platform default. `--fullscreen` opens the main window fullscreen. For 
 .venv\Scripts\python.exe run_toolbox.py --name monitor --ip 192.168.1.20 --theme dark --fullscreen
 ```
 
+`--friendly-name TEXT` sets the name the device announces, overriding whatever the config
+file says; the startup dialog has the same optional field. Without it an MDIB preset uses the
+friendly name stored in its toolbox behaviour, or `--name` unchanged if it stores none; a JSON
+profile uses its own `device.friendly_name` (or `Toolbox <name>`).
+
 When launching over SSH, the application still needs access to a graphical desktop:
 use the correct display/session environment and authorization (for example, `DISPLAY`
 and X11 authorization), or graphical forwarding. Startup options do not create a display
@@ -220,12 +225,19 @@ server. `--ip` is the discovery interface on the machine running the application
 Start it twice under different names to have two devices find each other. The name decides the EPR, so restarting under the same name keeps that device's identity on the network — and two instances must not share one.
 
 The **My device** panel is the device you publish. *New data source…* creates a number, text, choice, waveform or distribution.
+A number needs its range, lowest and highest value: IEEE 11073-10701 TR0239 requires a TechnicalRange with both ends on every
+numeric metric. A waveform or distribution takes the range of the samples the toolbox generates when you leave it empty.
 The remote-control checkbox is offered only for number, text and choice sources. The value column is live — it updates whether you edit it here or somebody changes it over the network.
 *Patient and location…* edits the two contexts, and the line beside it shows what they currently say.
 
-The **Network** panel is everybody else's. *Scan* finds providers, *Connect* loads one, and you get its containment tree above and its metrics below.
+The **Network** panel is everybody else's. *Scan* finds providers, *Connect* loads one, and you get its metrics and alarms (and, in Advanced mode, its containment tree).
 Rows the device will accept writes for are marked writable; select one and the editor underneath adapts to it — a combo box for a choice, a plain field with the permitted range for a number.
 The result of a write is reported as the provider's own `InvocationState`, followed by the error code and text the provider gave when it refused.
+Point at an element in the MDIB structure tree (here or in My device) to read what that kind of element is, what a consumer does with it, and which rules the MDIB check applies to it.
+
+In Advanced mode, the folded **Messages** section between Alarms and Actions lists every SOAP message exchanged with that device, newest last: the request, the response, every report, with its MdibVersion.
+Select one to read its XML (drag the bar between the list and the XML to give either more room); *Show* hides waveforms or keeps only reports, *Copy XML* copies the selected one, *Save all…* writes them to a text file, and *Pause* holds the list still while you read.
+The newest 500 messages per connection are kept.
 
 Each Network tab is an independent connection. Use **+** (**Ctrl+T**) to add one, then
 Scan/Connect in that tab. The tab's close button (or **Ctrl+W** while focused inside
@@ -242,6 +254,119 @@ The menu bar is on screen by default.\
 *View → Use widgets if possible* (F9) swaps the metric tables for a control per metric.\
 *View → Fullscreen* (**F11**) toggles fullscreen and restores the previous normal/maximized window.\
 *View → Dark mode* switches between dark (checked) and light (unchecked) colours for this session.
+
+## Remote control for agents (MCP)
+
+`--mcp` lets an AI agent such as Claude Code drive the toolbox: build and change My device,
+connect to other devices and read or write them, change how the window looks, and explain
+what the window shows. It is meant to make the start easier ("make me an infusion pump with an
+occlusion alarm", "what does the crossed-out speaker mean?") and to make writing an MDIB a
+matter of describing the device.
+
+```powershell
+.venv\Scripts\python.exe run_toolbox.py --mcp                       # with the window, port 11073
+.venv\Scripts\python.exe run_toolbox.py --mcp 12000 --config presetsentilator.xml
+.venv\Scripts\python.exe run_toolbox.py --headless --mcp            # no window, until Ctrl+C
+```
+
+Then tell the agent where it is, for Claude Code:
+
+```powershell
+claude mcp add --transport http sdc-toolbox http://127.0.0.1:11073/mcp
+```
+
+The status line shows the address too (*MCP on ...*). With a window, every change an agent
+makes goes through the same path a click does, so the window follows it: cards appear, alarms
+light up, connections open as Network tabs, and each change is listed in the activity log as
+*MCP: ...*. Without a window (`--headless`, which needs `--mcp`) the same tools work, except
+the ones about the window.
+
+What the tools cover:
+
+| Area | Tools |
+|------|-------|
+| Getting started | `overview`, `explain_gui` (panels, columns, buttons, icons, card controls, menus), `explain_sdc` (the SDC concept behind them) |
+| My device | `search_codes` (MDC codes by name, for a type or unit), `list_metrics`, `add_metric`, `update_metric`, `set_value`, `remove_metric`; `list_alarms`, `add_alarm`, `update_alarm` (limits, priority, raise, acknowledge, stop latched, delegate), `remove_alarm`; `list_actions`, `add_action`, `run_action`, `remove_action`; `set_contexts`, `set_generator` |
+| Whole devices and MDIB | `build_device` (a whole device in one validated step), `check_mdib` (see [Checking an MDIB](#checking-an-mdib), for My device or a connection), `fix_mdib`, `get_mdib`, `export_mdib`, `load_mdib`, `list_presets`, `load_preset` |
+| Network | `scan`, `connect`, `list_connections`, `disconnect`, `read_metrics`, `read_alarms`, `read_actions`, `remote_set_value`, `remote_run_action`, `remote_mdib`, `test_device` (see [Testing a device](#testing-a-device)), `read_messages` (a connection's SOAP messages) |
+| The window | `get_view`, `set_view` (tab, split view, widgets or tables, dark mode, activity log), `get_card_settings`, `set_card_settings` (on My device or a connection), `read_activity_log` |
+
+Data sources, alarms and actions are described in the same shape as a toolbox profile, so an
+agent's input gets the validation a loaded file gets, and numbers are read as decimals, never
+floats. The GUI guide is also offered as MCP resources (`toolbox://guide/...`).
+
+The server speaks MCP over streamable HTTP with plain JSON responses and is built on the
+standard library, so packaged builds carry no extra dependency. It listens on 127.0.0.1 only
+and refuses requests from web pages (a foreign `Origin`). There is no authentication: any
+program on this machine can control the device while `--mcp` runs.
+
+## Checking an MDIB
+
+An MDIB the schema accepts can still leave a consumer guessing: a metric with no code, a value
+with no time stamp, a setting with no allowed range. *File > Check MDIB...* (Ctrl+K) opens a
+window beside the main one that lists these for My device or for any open connection, and says
+for each what is wrong and what a consumer loses by it. The *MDIB check* button in the status
+bar shows My device's result (*MDIB check: 2 errors*, else the warnings, else *OK*) and is kept
+up to date after every change; a connection is checked when you ask. Double-click a finding to
+see its card, row, alarm or MDIB structure entry. Agents get the same list from the MCP tool
+`check_mdib`, and are told to run it before exporting.
+
+Some findings on My device can be fixed for you: the **Fix** column says what would change, and
+**Fix** makes that change for the selected finding. There are three: a private or non-numeric code
+becomes the MDC code its description names outright (*Use MDC_PULS_RATE* for a source described as
+"Pulse rate"), an outdated or missing MDC coding system becomes `urn:oid:1.3.111.2.11073.10101.3`, and
+a high-priority alarm without an audible signal gets one. A code is only offered when the description
+matches the term's name; a near match stays a "perhaps" in the finding, for you to pick. A connection's
+MDIB belongs to the peer, so it has no Fix column. Agents make the same fixes with the MCP tool
+`fix_mdib`, which only makes a fix the check offers.
+
+| Level | Meaning |
+|-------|---------|
+| error | breaks a "shall" requirement, or points at an element that does not exist |
+| warning | breaks a "should" requirement or an MDC coding rule |
+| hint | a toolbox convention: not required, but leaving it out costs a consumer something |
+
+Where the rules come from, with the requirement ID shown next to each finding:
+
+- **IEEE 11073-10700** (SDC base provider): coded values (TR1814, TR1840, TR1842 name the
+  current 10101 nomenclature as `urn:oid:1.3.111.2.11073.10101.3` or later; TR1358 private
+  codes need a Translation), language of descriptions (TR0277), MetaData (TR0251), clock safety
+  class (TR1590), connector numbers for look-alike metrics (TR1438) and context association
+  bookkeeping (TR1304, TR1636 to TR1639, TR1959).
+- **IEEE 11073-10701** (SDC metric provider): values, time stamps and validity (TR0674,
+  TR0675, TR0214, TR0216, TR0187, TR0128), availability and determination period (TR0204,
+  TR0136), demo values (TR0199), technical ranges (TR0239), unique allowed values (TR0487),
+  life time and delay of medical metrics (TR0210, TR0682) and switched-off channels (TR1075).
+- **MDC coding**: a type on every metric, alarm and operation; MDC codes rather than private
+  coding systems where IEEE 11073-10101 has a term (BICEPS R0008); numeric MDC codes.
+- **Toolbox conventions**: a resolution on numbers, an allowed range on set operations, a
+  serial number, an audible signal on high-priority alarms, an alert signal on every alarm.
+
+Only what one snapshot of the MDIB shows is checked, never behaviour over time. The alert
+(-10702) and remote control (-10703) participant key purposes are not covered yet. The
+default My device and every shipped preset pass without errors; they still have warnings and
+hints, mostly private codes for things the MDC nomenclature has no term for.
+
+## Testing a device
+
+*Test this device…*, at the right of a connection's status lines, opens the **Device test** window and runs a
+few checks against that device, the way a consumer would use it. Each row says what happened in
+plain words and which standard the check follows:
+
+| Test | Passes when |
+|------|-------------|
+| Discovery | the device answers a WS-Discovery probe with its addresses and scopes (IEEE 11073-20702) |
+| Read the MDIB | GetMdib returns descriptors and an MdibVersion (IEEE 11073-20701) |
+| Versions go up | the MdibVersion of each report type never goes back (IEEE 11073-10207) |
+| Set a value out of range | the device refuses a value above a settable number's maximum (IEEE 11073-10207) |
+| Renew a subscription | the device grants a renewal for every subscription (IEEE 11073-20702) |
+| Switch an alarm signal | the device accepts SetAlertState with a signal's current state (IEEE 11073-10207) |
+
+A test the device gives no chance for, such as a number without a range, is *Skipped*. If a device
+accepts the out-of-range value, the test puts the old value back. It still changes values on the
+device, so run it on a test device only. This is not a conformance test: it only shows how the
+device answers these few questions. The console's `test` command and the MCP tool `test_device`
+run the same test.
 
 ## Widgets
 
@@ -313,7 +438,14 @@ There is also a console provider, if you would rather have both sides in text:
 .venv\Scripts\python.exe examples\console.py provider
 ```
 
-It covers the core provider and consumer workflows in text, but does not mirror every GUI view or action button.
+It covers the provider and consumer workflows in text, without the window's views and cards:
+
+| Shell | Beyond data sources, alarms, patient, location, presets, import and export |
+|-------|------|
+| `provider>` | `action` and `actions`, `run`; `fault` and `faults` (the simulated faults of Advanced mode); `check` and `fix` (the MDIB check); `codes` (MDC codes); `tool`, which runs any MCP tool, such as `tool update_metric {"handle": "m.pressure", "unit": {"code": "266016"}}` |
+| `consumer>` | several connections (`connections`, `use`, `disconnect`); `actions`, `run`; `check`; `test` (the Device test); `messages` and `message` (the SOAP messages); `codes` |
+
+`help <command>` explains each one.
 It is the quickest way to watch an acknowledgement not clear an alarm:
 
 ```
@@ -336,22 +468,42 @@ provider> where HOSP/Surgery/2/OR1/1/Table
 provider> patient Ada Lovelace F Ad 1815-12-10
   Ada Lovelace (F, Ad, 1815-12-10)
 provider> presets
-  Insufflator        9 data source(s), 3 alarm(s)
+  Insufflator        MDIB; 9 data source(s), 3 alarm(s)
       Laparoscopic insufflator: nine metrics for gas flow, pressure control, and related alarms. One metric larger than the infusion pump, and the first preset this project had.
 ```
 
 ## Presets
 
-### Native MDIB snapshots (XML)
+### MDIB presets (XML)
 
-Presets can also be native BICEPS MDIB XML files. Choose a `[MDIB]` preset, import an
-`.xml` file, or start with `--config presets/mdib-demo-monitor.xml`. The two original
-synthetic XML presets are **MDIB demo monitor** and **MDIB demo infusion pump**;
-existing JSON presets remain available.
+Every shipped preset is a BICEPS MDIB XML file: the seven devices and two focused examples
+below, plus two small synthetic files, **Demo monitor** (`demo-monitor.xml`) and **Demo infusion
+pump** (`demo-infusion-pump.xml`), which store no toolbox behaviour. Choose a preset, import an `.xml` file, or start with
+`--config presets/patient-monitor.xml`. JSON profiles from earlier versions still import
+(see *Older JSON profiles* below), but export writes MDIB files only.
+
+The device presets are saved with toolbox behaviour, so they load as complete devices: their
+generators run, their actions work, and they announce themselves as the machine they describe.
+Each one stores the name and description it is listed under, and the made-up default
+location and patient (*Alex Example*). Manufacturer, model name and model number sit in the
+MDS `MetaData`; the friendly name, firmware version and manufacturer URL, which `MetaData`
+has no field for, are toolbox behaviour.
 
 An XML export is **one file containing both `MdDescription` and `MdState`**, including
-current sample blocks and all context states/history. Select **Native MDIB (*.xml)**
-in *File → Export config*, or use `export snapshot.xml` in the console. Combined
+current sample blocks and all context states/history. *File → Export config* offers two
+choices: **MDIB with toolbox behaviour (*.xml)**, the default, stores what BICEPS has no place for (which waveforms and
+distributions the generator drives and their shapes, action effects and notes, and how each
+of your own data sources' cards looks: control type, step buttons, slider updates, ranges,
+legend, playback speed and text layout) as
+`ext:Extension` elements in the `urn:sdc-testing-toolbox:behaviour` namespace with
+`MustUnderstand="false"`, so the device loads back complete: the generator starts for the
+marked sample arrays, and unmarked ones keep the samples from the file. It also stores the
+friendly name, firmware version and manufacturer URL, and the preset name of a device loaded
+from a preset. **MDIB (*.xml)** leaves the toolbox behaviour out and writes plain BICEPS, a
+minimal file for other tools. A device the toolbox builds publishes its manufacturer, model
+name and model number in the MDS `MetaData`, so both export forms carry those. The console's
+`export snapshot.xml` writes the form with behaviour and `export --plain snapshot.xml` the
+plain one. Combined
 `GetMdibResponse`, message `Mdib`, and participant `MdibContainer` inputs are accepted.
 Separate description/state files are not supported. Invalid XML, unsafe DTD/entity
 declarations, broken references and content the pinned library cannot preserve are
@@ -359,47 +511,56 @@ rejected before provider replacement; failed writes preserve an existing export 
 Duration fields must use the pinned library's SDPi-compatible hour/minute/second syntax
 (for example `PT5S`); calendar/day duration forms are currently rejected rather than changed.
 
-Native import replaces the whole MDIB and **restarts the provider**. Connected consumers
-must reconnect. The instance name/EPR, network binding and TLS settings remain local;
-imported patient/location states are not overwritten by toolbox defaults. A failed
-activation attempts to restore the previous provider and reports any recovery failure.
+Loading an MDIB replaces the whole device and **restarts the provider**. Connected
+consumers must reconnect. The instance name/EPR, network binding and TLS settings remain
+local. **Loading changes nothing in the file's data**: no name prefix, no default patient or
+location, no recomputed alarms and no generator unless the file's toolbox behaviour marks
+sample arrays as generated; only the SequenceId and version counters
+are runtime values. The announced manufacturer, model and serial number come from the MDS
+`MetaData` when present, and the friendly name, firmware version and manufacturer URL from
+stored toolbox behaviour. The shipped presets store no serial number, so each instance keeps
+the one its name gives it. Toolbox behaviour extensions are read on load and kept out of the
+published MDIB, so consumers never see them; extensions in other namespaces stay as they are.
+A failed activation attempts to restore the previous provider and reports any recovery failure.
 
-The provider containment tree exposes the imported entities, with XML on hover. Supported
-scalar values can be edited locally, and compatible numeric/string set operations retain
-their own enabled state and allowed ranges/values. Other operations fail explicitly:
-an MDIB does not supply executable machinery/action logic. Alarms and sample blocks are
-snapshots; generators, automatic alarm rules, and action effects are **not inferred**.
-Graph-changing and context/alarm simulation controls are disabled in native mode. Load
-a JSON preset to return to the managed simulation workflow. Native snapshots cannot be
-exported through the reduced JSON profile format; use XML to avoid losing content.
+An MDIB device is then edited like any other: add and remove metrics, alarms, actions and
+sections, switch remote control, set the patient and location, run the generator, and
+append an older JSON profile. Edits use the file's own MDS, SCO, alert system, channels and
+contexts, and create one only when an edit needs it (for example a SCO for the first
+controllable metric of a file without one). A channel from the file is a section named by
+its label. Imported limit alarms follow their source metric once that metric changes;
+imported alarms otherwise keep their supplied state until something happens to them.
+Imported set operations keep their own enabled state and allowed ranges/values; imported
+Activate operations without stored toolbox behaviour fail explicitly. The containment tree
+shows every entity with XML on hover (Advanced mode).
 
 **Privacy:** full MDIB exports may include patient-identifying data and context history.
-Review them before sharing. Shipped XML demos contain no patient data. Development-only
+Review them before sharing. The shipped device presets contain only the toolbox's made-up
+default patient, and the two demos no patient at all. Development-only
 reference files are not presets and are not part of the application bundle.
 
-### Managed profiles (JSON)
+### Older JSON profiles
 
-*File → Export config* writes device metadata, data-source definitions and scalar current values, alarm and action definitions, and currently associated patient/location contexts to a JSON file.
-It is not a full live-device snapshot: sample blocks, alert/signal state, control mode, generator state and context history are not exported.
-*File → Import config* validates descriptor references and generated section containment before changing the provider. Replacement removes tracked metrics, alarms and actions before rebuilding them; `replace=False` appends the profile while retaining the existing graph.
+Earlier versions exported a JSON profile: device metadata, data-source definitions and scalar values, alarm and action definitions, and the associated patient/location contexts.
+Export now writes MDIB files only, but these profiles still load, with `--config` or with *File → Import config* (choose *All files*).
+Import validates descriptor references and generated section containment before changing the provider. Replacement removes tracked metrics, alarms and actions before rebuilding them; `replace=False` appends the profile while retaining the existing graph.
 It is not a whole-MDIB replacement. In either mode, omitting `device` metadata leaves the running identity unchanged, while supplied metadata also cannot change an already running provider. Omitting `contexts.patient` or `contexts.location` leaves that currently associated context unchanged. An explicit patient block is associated, including an empty block to detach the current patient; an explicit empty location is rejected because a published location needs at least one detail.
 Both `replace=True` replacement and `replace=False` append are transactional for operational failures: the provider restores its prior managed metrics, alarms, actions, sections and associated contexts, publishing compensating transactions so connected consumers can recover the same graph. Append compensation removes only appended descriptors and restores contexts the failed import touched; it does not recreate unchanged pre-existing descriptors. This is recovery, not external atomicity: a subscribed consumer can observe temporary changes before the compensation, and a rollback failure is reported together with the import failure rather than hidden. Successful compensation keeps provider and consumer MDIB, descriptor, state and context-state versions monotonic; it advances versions instead of rewinding them.
 
 *File → Load preset* lists the ready-made devices in `presets/`, so the ones that ship with the tool need no file dialog.
-The same list appears in the startup window. Loading a profile with malformed field types or other schema errors raises `ConfigError`; `list_presets` catches those strict validation failures, invalid JSON and unreadable files and skips those entries, so one malformed preset does not interrupt discovery.
-Explicit profile versions must be JSON integers from 1 through the current format version, 3; preset discovery skips files outside that range. Profiles without a version predate versioning and are intentionally read with legacy version 1 semantics.
-The seven realistic-device presets and two focused examples are canonical current-schema profiles, not legacy compatibility fixtures. They are kept at profile format version 3 with explicit alert signal definitions where alarms are present. Tests for older readable formats use synthetic profile data instead of holding a shipped preset back on an earlier schema.
+The same list appears in the startup window. It lists the `.xml` files in `presets/`; `list_presets` skips files that are unreadable or not a valid MDIB, so one broken preset does not interrupt discovery.
+A JSON profile with malformed field types or other schema errors raises `ConfigError`. Explicit profile versions must be JSON integers from 1 through format version 3. Profiles without a version predate versioning and are intentionally read with legacy version 1 semantics.
 
-Any of them can also be loaded at startup:
+Any preset or profile can also be loaded at startup:
 
 ```powershell
-.venv\Scripts\python.exe run_toolbox.py --config presets\patient-monitor.json
-.venv\Scripts\python.exe examples\console.py provider --config presets\ventilator.json
+.venv\Scripts\python.exe run_toolbox.py --config presets\patient-monitor.xml
+.venv\Scripts\python.exe examples\console.py provider --config presets\ventilator.xml
 ```
 
 Load it at startup rather than importing it afterwards if you want the device to announce that model.
-DPWS `ThisModel` and `ThisDevice` metadata is fixed when the provider is constructed. Startup loading reads the profile's `device` block before construction and then applies its live graph after startup; importing into an already running provider applies the graph but cannot change that provider's manufacturer, model, firmware, friendly name or other construction-time device metadata.
-The startup name still decides the EPR and serial number; a saved `device.instance_name` does not override it.
+DPWS `ThisModel` and `ThisDevice` metadata is fixed when the provider is constructed. Startup loading reads the identity (an MDIB's `MetaData` and stored behaviour, or a profile's `device` block) before construction; importing into an already running provider applies the graph but cannot change that provider's manufacturer, model, firmware, friendly name or other construction-time device metadata.
+The startup name still decides the EPR, and the serial number unless an MDIB's `MetaData` names one; a saved `device.instance_name` does not override it.
 
 For a profile that imports successfully, recorded handles make its defined metrics, alerts and actions addressable under stable names. They do not reproduce an identical live MDIB or provider identity.
 
@@ -420,33 +581,33 @@ For a profile that imports successfully, recorded handles make its defined metri
 Two smaller profiles complement the seven realistic devices above. Both publish read-only
 numeric measurements with coded units and declared containment, without alarms or actions:
 
-- **Operating Table** (`operating-table.json`): Height **780 mm** (500–1100 mm, resolution 1 mm),
-  Trendelenburg **−8°** and Lateral Angle **7.6°** (both −30° to 30°, resolution 0.1°).
+- **Operating table** (`operating-table.xml`): Height **780 mm** (500–1100 mm, resolution 1 mm),
+  Trendelenburg **−8°** and Lateral angle **7.6°** (both −30° to 30°, resolution 0.1°).
   The table metric types use the toolbox's private coding namespace; their units use MDC codes.
-- **Ventilation Pressure** (`ventilation-pressure.json`): **18 cmH₂O** (0–40 cmH₂O,
+- **Ventilation pressure** (`ventilation-pressure.xml`): **18 cmH₂O** (0–40 cmH₂O,
   resolution 1 cmH₂O), with MDC pressure type and unit codes.
 
 Select either name in the startup config dropdown or *File → Load preset*, or load it directly:
 
 ```powershell
-.venv\Scripts\python.exe run_toolbox.py --config presets\operating-table.json
-.venv\Scripts\python.exe run_toolbox.py --config presets\ventilation-pressure.json
+.venv\Scripts\python.exe run_toolbox.py --config presets\operating-table.xml
+.venv\Scripts\python.exe run_toolbox.py --config presets\ventilation-pressure.xml
 ```
 
 ### What the presets are actually demonstrating
 
-Every metric carries a **coded value**, because a label is not semantics. `"unit": "mmHg"` alone publishes a dimensionless number with a human comment attached; another device can do nothing with it.
-The shipped metric profiles use two coding-system aliases:
+Every metric carries a **coded value**, because a label is not semantics. A unit written only as "mmHg" publishes a dimensionless number with a human comment attached; another device can do nothing with it.
+The shipped device presets use two coding systems:
 
-- **`mdc`** — IEEE 11073-10101, for parameters that genuinely have a standard term.
+- **`mdc`** — IEEE 11073-10101:2020 (`urn:oid:1.3.111.2.11073.10101.3`; the older `urn:oid:1.2.840.10004.1.1.1.0.0.1` is still read as MDC), for parameters that genuinely have a standard term.
 - **`private`** — `urn:sdc-testing-toolbox:private`, for everything that does not.
 
 Which is which is the interesting part, and `tests/presets.py` counts it:
 
 ```
-patient-monitor         24 mdc,   2 private  (92% standard)
-ventilator              23 mdc,   1 private  (96% standard)
-infusion-pump           13 mdc,   3 private  (81% standard)
+ventilator              24 mdc,   0 private  (100% standard)
+patient-monitor         25 mdc,   1 private  (96% standard)
+infusion-pump           15 mdc,   1 private  (94% standard)
 insufflator             10 mdc,   9 private  (53% standard)
 hf-generator            11 mdc,  10 private  (52% standard)
 surgical-microscope     15 mdc,  20 private  (43% standard)
@@ -461,6 +622,44 @@ The `mdc` entries use the decimal context-free numeric codes defined by IEEE 110
 and its published amendments. Concepts and units for which those sources provide no direct
 match remain explicitly `private`; the presets do not derive or invent MDC codes.
 
+### Picking MDC codes yourself
+
+*New data source* has a **Measures** row and a **Unit** row, each with a **Pick…** button.
+It opens *Pick an MDC code*: choose what to look for (what is measured, units, alarm codes or
+everything), type a few words such as `pulse rate` or `mmHg`, and double-click the term. The
+data source then carries that IEEE 11073-10101 code as its type or unit instead of a private
+code made from its label. A unit typed by hand still works and stays a plain label.
+
+Picking the unit after the measure offers only that measure's usual units, for example bpm,
+pulses/min and 1/min for a pulse rate; untick **Only units for …** to see them all. The
+toolbox's own pick covers its shipped measures and was checked against the units NIST RTMMS
+lists; other measures offer every unit, unless a loaded file names their units (below).
+
+The toolbox ships about 300 common terms: every code the presets use and the usual vital
+signs, blood pressure, temperature, ventilation, gas, infusion, alert and unit codes. Each code
+was checked against IEEE 11073-10101:2020 and its amendments; the short terms are written in
+the toolbox's own words, because the standard's descriptions are copyrighted.
+
+For the rest of the nomenclature, export your own copy of the standard with
+`helpers/Coding Systems/export_11073_tables.py` and choose the resulting `codes.csv` with
+**Load codes…**. Its codes join the search for the session and the file loads again next
+time; a file that cannot be used is reported and ignored. The export is made from your licensed
+copy of the standard: keep it to yourself, and never commit or share a `codes.csv`.
+
+[NIST RTMMS](https://rtmms.nist.gov) also lists which units each measure may use. With a free
+account, download the base term file under *Download Term Files* and turn it into `rtmms.csv`,
+a codes.csv with units:
+
+```powershell
+.venv\Scripts\python.exe "helpers\Coding Systems\rtmms_to_codes_csv.py" rtmms_base_terms.xlsx
+```
+
+Loaded with **Load codes…**, it adds RTMMS's terms to the search and its units to **Only units
+for …**, after the toolbox's own pick.
+
+Agents do the same over MCP with `search_codes` and pass a result's `{code, system, label}` as
+the `type` or `unit` of `add_metric`.
+
 ## Actions
 
 Not everything a device does is a value you can write. *Home the axes*, *give a bolus*, *white balance now* — there is nothing to type and nothing to read back, only something to invoke.
@@ -468,19 +667,20 @@ BICEPS models that with an `ActivateOperation`, which is a different operation k
 
 They appear as a row of buttons on both panels. Network buttons follow the peer operation's `OperatingMode`.
 My device buttons run their declared effects and do not currently mirror a locally changed operation mode.
-What one does here is apply declared effects to metrics:
+What one does here is apply declared effects to metrics, stored as toolbox behaviour on the operation:
 
-```json
-{
-	"label": "Home axes",
-	"target": "vmd.motion",
-	"effects": {
-		"m.axis_x": "0",
-		"m.axis_y": "0",
-		"m.axis_z": "300",
-		"m.motion_mode": "LOCKED"
-	}
-}
+```xml
+<dom:Operation Handle="act.home_axes" xsi:type="dom:ActivateOperationDescriptor" OperationTarget="vmd.motion">
+  <ext:Extension>
+    <tb:Action ext:MustUnderstand="false">
+      <tb:Effect Target="m.axis_x" Value="0"/>
+      <tb:Effect Target="m.axis_y" Value="0"/>
+      <tb:Effect Target="m.axis_z" Value="300"/>
+      <tb:Effect Target="m.motion_mode" Value="LOCKED"/>
+      <!-- ... -->
+    </tb:Action>
+  </ext:Extension>
+</dom:Operation>
 ```
 
 That stands in for machinery a real device would have behind homing an axis, and it is deliberately visible: an action whose result cannot be seen cannot be checked, and here the result is exactly the values it moved.
@@ -582,11 +782,11 @@ Clearing every patient field detaches the patient rather than attaching a namele
 
 The patient editor supports name, sex, patient type, date of birth, height, weight and race from `pm:PatientDemographicsCoreData`. The Network panel and consumer console show associated peer patient contexts read-only.
 
-Height and weight are BICEPS `Measurement` values: each needs a Decimal value and a coded measurement unit. Fresh providers start with Alex Example, a 170 cm height and a 70 kg weight, using MDC metric units. Race is a BICEPS `CodedValue`, not free text. The editor and JSON profile therefore require a code and coding system for each of those values. Use `mdc`, `private`, or an explicit coding-system URI, and use verified terminology when testing interoperability. The fields are informational demographics; a device's own measured height or weight should be modelled as a metric when quality and timing matter.
+Height and weight are BICEPS `Measurement` values: each needs a Decimal value and a coded measurement unit. Fresh providers start with Alex Example, a 170 cm height and a 70 kg weight, using MDC metric units. Race is a BICEPS `CodedValue`, not free text. The editor and a JSON profile therefore require a code and coding system for each of those values. Use `mdc`, `private`, or an explicit coding-system URI, and use verified terminology when testing interoperability. The fields are informational demographics; a device's own measured height or weight should be modelled as a metric when quality and timing matter.
 
-New exports use profile format version 3. Earlier profiles without these demographic fields or alert signal definitions remain readable.
+An MDIB export stores the patient as a `PatientContextState`. Older JSON profiles use format version 3; earlier ones without these demographic fields or alert signal definitions remain readable.
 
-An exported patient block has this shape:
+A patient block in a JSON profile has this shape:
 
 ```json
 {
@@ -607,6 +807,36 @@ An exported patient block has this shape:
 }
 ```
 
+## Advanced mode and faults
+
+The toolbox starts in **Simple** mode. **Advanced** mode (View > Advanced mode, or the
+*Simple | Advanced* switch at the right of the tab strip; remembered between runs) adds
+controls for testing your own SDC consumer: a **Faults** section under Alarms on My device,
+and a chip on each card whose metric has a fault. It also shows the parts for looking under the
+hood: the **MDIB structure** sections (My device, when loaded from an MDIB file, and every
+connection) and each connection's **Messages**.
+
+Device-wide faults are runtime only and never saved:
+
+| Button | What the device does | Limits |
+|--------|----------------------|--------|
+| Answer after ... ms | Waits 250 to 5000 ms before answering Set, Activate, GetMdib, GetMdState and GetMdDescription. | Other requests (contexts, metadata, eventing) answer at once. |
+| Refuse every write | Answers every remote set and activate with `Fail`, error `Oth`, and a reason saying it is simulated. | Local edits and actions run from the window still work. |
+| Pause reports | Sends no episodic state reports and no waveforms. Switched off, every current state is reported once so consumers catch up. | Descriptor changes and OperationInvokedReports still go out. |
+| Drop subscriptions | Forgets every subscription at once without a SubscriptionEnd; the consumer finds out when its Renew fails. | |
+| Leave without Bye | Vanishes like a crashed device: no Bye, no answer to Probe or Resolve, every HTTP request dropped unanswered, subscriptions forgotten. Switched off, it comes back with a Hello. | The listening port stays open and the MDIB keeps its SequenceId. |
+| Reset all faults | Ends every fault, device-wide and per metric. | |
+
+Per metric, the table sets the BICEPS values a consumer reads: **Activation**
+(`ActivationState`: On, StndBy, NotRdy, Fail, Off, Shtdn), **Validity** (`MetricQuality/@Validity`:
+Vld, Vldated, Ong, Qst, Calib, Inv, Oflw, Uflw, NA) and **Mode** (`MetricQuality/@Mode`: Real,
+Test, Demo), and says in plain words what a consumer sees. They are MDIB state: they stay on
+every later value (a local edit, a remote write, an action or the generator), a generated
+waveform stops while its sensor is not On, and they are saved in MDIB exports and come back
+when the file is loaded. On and Off are the ordinary switch from the Edit dialog. The MCP
+tools `get_faults`, `set_metric_fault`, `set_device_faults` and `reset_faults` do the same,
+with or without a window.
+
 ## Not Supported at the Moment - What might cause Problems
 
 This is a focused SDC learning fixture, not an IEEE 11073 conformance claim. IEEE 11073-10207 (BICEPS) defines a wider information and service model than one device must use; IEEE 11073-20701 and IEEE 11073-20702 define the surrounding SDC architecture and medical-device web-services profile. `sdc11073` supplies much of the DPWS/BICEPS wire plumbing, but a library capability is not automatically an end-to-end toolbox feature.
@@ -624,7 +854,7 @@ This is a focused SDC learning fixture, not an IEEE 11073 conformance claim. IEE
 | **Will cause problems** | Remote control covers `SetValueOperation`, `SetStringOperation`, and argumentless `ActivateOperation` only. The consumer cannot send `SetContextState`, `SetAlertState`, `SetMetricState` or `SetComponentState`; a provider built from an imported MDIB that declares one publishes it but refuses every request with a failed invocation (`Fail`, error `Oth`). | Valid state-changing workflows, actions requiring arguments, remote context association, and remote alert handling cannot be exercised end to end. |
 | **Might cause problems** | Contexts cover patient and location only. The Network panel shows associated peer patients read-only, but ensemble, workflow, means and operator contexts are not modelled or shown. | Tests involving care-team, workflow or multi-device context coordination need another fixture or direct access to the raw MDIB. |
 | **Might cause problems** | The locally published alert model has one source metric per condition, local acknowledgement/delegation, and automatic limits only for decimal scalar values. Signals can use every standard manifestation and latching option. The consumer still displays peer source handles and signal manifestations. | Remote alert control, interoperable delegation, and limit conditions on text or choice sources cannot be exercised correctly. |
-| **Might cause problems** | The provider is a small MDIB model: scalar writes set `Validity=Valid` and `ActivationState=On`, with no controls for quality, component state or lifecycle transitions. | It cannot simulate many degraded, unavailable, inactive or quality-qualified states a consumer may need to handle. |
+| **Might cause problems** | The provider is a small MDIB model. Advanced mode sets each metric's activation state, validity and mode and a few device-wide faults (see [Advanced mode and faults](#advanced-mode-and-faults)), but there are no lifecycle transitions: a metric does not go through `NotRdy` to `On` by itself, and components (MDS, VMD, channel) have no fault controls. | Degraded states have to be set by hand or over MCP; timed or component-level failure sequences cannot be simulated. |
 | **Might cause problems** | Sample arrays have no waveform annotations and use one non-real-time generator thread. | It is useful for basic streaming and display tests, not for timing or annotation conformance tests. |
 | **Might cause problems** | Network tabs keep independent peers active. When a peer changes MDIB sequence or instance identity, only its tab disconnects and requires a manual reconnect. | Automatic restart/reload recovery is not covered. |
 | **Might cause problems** | A provider drops a consumer that does not accept a notification within 2 s (`constants.NOTIFICATION_TIMEOUT_SECONDS`), so that one silent or stalled consumer cannot hold up every other request. | A consumer on a very slow link, or one paused in a debugger, loses its subscriptions, shows the connection as lost and has to reconnect. |
@@ -667,10 +897,12 @@ Linux and once on Windows through `tests/run_suites.py`. Qt jobs use
 | `tests/application_defaults.py` | shared application defaults and distinct acceptance identity |
 | `tests/console_commands.py` | rejected console writes stay interactive; text and choice values keep leading zeros |
 | `tests/coding_export.py` | PDF text-row separation and missing-text diagnostics without optional PDF dependencies |
+| `tests/nomenclature.py` | MDC code search and lookup, codes.csv loading, the code picker and coded New data source results |
 | `tests/import_bootstrap.py` | direct test imports under unrelated package shadowing |
 | `tests/licensing.py` | project licensing, notices and build legal-payload sources |
 | `tests/provider_core.py` | provider descriptors, values, alarms, contexts and rollback |
 | `tests/presets.py` | every shipped preset built as a working device |
+| `tests/mdib_check.py` | each MDIB check rule on a small MDIB, the fixes it offers, the check window and its status bar button |
 | `tests/config_roundtrip.py` | versioned export/import, validation and transactional replacement/append |
 | `tests/widget_controls.py` | widget selection and real control interactions |
 | `tests/gui_dialogs.py` | metric, alarm, context and startup validation |
@@ -709,7 +941,7 @@ Run the same default set that continuous integration runs locally with:
 
 `tests/acceptance_core.py` and `tests/tls_acceptance.py` are Linux-only network acceptance suites. CI runs each in an isolated job on every pull request, version tag, manual workflow dispatch and weekly schedule. The TLS suite generates a temporary self-signed test CA and participant certificates, then verifies HTTPS discovery, mutual authentication, MDIB retrieval and remote control without storing credentials in the repository. These checks exercise this implementation; they are not interoperability testing against an independent SDC stack or product.
 
-`tests/gui_smoke.py` remains a manual broad regression script because it is intentionally long and duplicates the focused GUI suites while also starting a live peer. Run it when changing interactions that cross several GUI areas; it uses the offscreen backend and needs no display.
+`tests/gui_smoke.py` is a broad regression script: it opens every window once and starts a live peer to find on the network. CI runs it in its own Linux job, like the acceptance suites, so it cannot go stale unnoticed. Run it locally when changing interactions that cross several GUI areas; it uses the offscreen backend and needs no display.
 
 The packaging jobs separately launch each built Windows and Linux application with `--smoke-test`. The `install-packages` jobs run `packaging/linux/install_test.sh` on each Linux package in a clean container: install, smoke-test offscreen and under X11 with the GTK theme, then check the native packages' firewall definitions are present but not enabled, uninstall them and check that a firewalld zone using the service stays valid. AppImage tests first install the expected host libraries and run without FUSE. Run it locally as root in a matching container, for example `sh packaging/linux/install_test.sh dist/<package>`. `tests/acceptance_provider.py` is a subprocess fixture used by acceptance scripts, not a standalone suite.
 
@@ -733,7 +965,9 @@ One self-signed test CA issuing a certificate for each toolbox process is the re
 offline test setup. A directly self-signed participant certificate also works if it is put in
 the other participant's trusted CA bundle. Self-signed does not mean accepting arbitrary
 certificates: trust must remain explicit. Use `--tls-peer-fingerprint` to additionally pin
-one expected SHA-256 leaf certificate.
+one expected SHA-256 leaf certificate. The pin is checked on the connections this toolbox
+opens (as a consumer, and as a provider delivering reports); a consumer connecting to the
+provider is checked by the trust settings only.
 
 Three options relax this for lab setups, each also available as a startup-dialog field:
 
@@ -744,7 +978,9 @@ Three options relax this for lab setups, each also available as a startup-dialog
   presents a currently valid self-signed certificate, plus anything the CA bundle or folder
   issued. Python cannot hook chain validation, so the check happens right after the handshake
   on the consumer side, and the provider **stops requesting client certificates**. Peers are
-  not authenticated. Combine it with `--tls-peer-fingerprint` if identity matters.
+  not authenticated. A fingerprint pin then still protects the consumer side, but the
+  provider accepts **any** consumer, with or without a certificate, including its set
+  operations. Use it only on a network you trust.
 - **Skip hostname/IP check** (`--tls-no-hostname-check`): the peer certificate no longer has
   to name the advertised host or IP. The chain is still validated.
 

@@ -39,6 +39,7 @@ from ..model import (
     PatientMeasurement,
     patient_measurement_wire_value,
 )
+from .kind_sections import style_dialog_buttons
 from .no_wheel import NoWheelComboBox
 from .styling import constrain_dynamic_label, mark_as_error, mute
 
@@ -168,6 +169,7 @@ class ContextDialog(QDialog):
         self.error_label.hide()
 
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        style_dialog_buttons(self.buttons)
         self.buttons.accepted.connect(self._on_accept)
         self.buttons.rejected.connect(self.reject)
 

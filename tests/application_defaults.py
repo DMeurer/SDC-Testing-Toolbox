@@ -242,6 +242,12 @@ def check_gui_startup_reuses_profile(*, interactive: bool) -> None:
         def close(self) -> None:
             events.append("close")
 
+        # What run_toolbox.remember_view touches; the remembered mode is not this test's concern.
+        advanced_mode_changed = SimpleNamespace(connect=lambda _slot: None)
+
+        def set_advanced_mode(self, _enabled: bool) -> None:
+            pass
+
     originals = (
         run_toolbox.QApplication,
         run_toolbox.ProviderService,
@@ -307,7 +313,8 @@ def check_gui_startup_reuses_profile(*, interactive: bool) -> None:
     )
     check(
         provider_arguments
-        == [{"ip": "127.0.0.1", "instance_name": authority, "device": device, "tls_config": None}],
+        == [{"ip": "127.0.0.1", "instance_name": authority, "friendly_name": None, "device": device,
+             "tls_config": None, "serial_number": None}],
         f"{mode} GUI startup uses snapshot metadata without overriding its instance name",
     )
     check(
@@ -337,6 +344,7 @@ def check_startup_dialog_retains_profile() -> None:
         dialog = SimpleNamespace(
             error_label=SimpleNamespace(hide=lambda: None),
             name_edit=SimpleNamespace(text=lambda: "dialog-authority"),
+            friendly_name_edit=SimpleNamespace(text=lambda: ""),
             chosen_ip=lambda: "127.0.0.1",
             chosen_config=lambda: str(source),
             verbose_box=SimpleNamespace(isChecked=lambda: True),
@@ -538,7 +546,8 @@ def check_console_startup_reuses_profile() -> None:
     )
     check(
         provider_arguments
-        == [{"ip": "127.0.0.1", "instance_name": "console-authority", "device": device}],
+        == [{"ip": "127.0.0.1", "instance_name": "console-authority", "device": device,
+             "friendly_name": None, "serial_number": None}],
         "console startup uses snapshot metadata without overriding its instance name",
     )
     check(
@@ -799,6 +808,7 @@ def check_ctrl_c_closes_the_toolbox(*, in_startup_dialog: bool) -> None:
         patch.object(run_toolbox, "StartupDialog", Dialog),
         patch.object(run_toolbox, "ProviderService", FakeProvider),
         patch.object(run_toolbox, "MainWindow", Window),
+        patch.object(run_toolbox, "remember_view", lambda _window, _settings: None),
         patch.object(run_toolbox, "basic_logging_setup", lambda **_kwargs: None),
     ):
         try:

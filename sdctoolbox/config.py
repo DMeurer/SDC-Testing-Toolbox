@@ -30,6 +30,7 @@ from .constants import (
     VMD_HANDLE_PREFIX,
 )
 from .model import (
+    DEFAULT_SAMPLE_PERIOD,
     ActionSpec,
     AlertKind,
     AlertManifestation,
@@ -61,10 +62,12 @@ if TYPE_CHECKING:
 CONFIG_VERSION = 3
 LEGACY_CONFIG_VERSION = 1
 
-FILE_SUFFIX = ".sdcprofile.json"
-JSON_FILE_FILTER = "SDC toolbox config (*.json)"
-MDIB_FILE_FILTER = "Native MDIB (*.xml)"
-FILE_FILTER = f"{JSON_FILE_FILTER};;{MDIB_FILE_FILTER};;All files (*)"
+MDIB_FILE_FILTER = "MDIB (*.xml)"
+MDIB_BEHAVIOUR_FILE_FILTER = "MDIB with toolbox behaviour (*.xml)"
+# Opening a file: MDIB first. Older JSON profiles still read, through "All files".
+FILE_FILTER = f"{MDIB_FILE_FILTER};;All files (*)"
+# Exporting: the first entry is the default, and only the behaviour form loads back complete.
+EXPORT_FILE_FILTER = f"{MDIB_BEHAVIOUR_FILE_FILTER};;{MDIB_FILE_FILTER}"
 
 _TOP_LEVEL_KEYS = {"version", "name", "description", "device", "metrics", "alerts", "actions", "contexts"}
 _METRIC_KEYS = {
@@ -82,11 +85,17 @@ _METRIC_KEYS = {
     "initial_value",
     "sample_period",
     "shape",
+    "cycle_seconds",
+    # Older profiles counted the cycle in samples; read only, as a duration at their period.
     "cycle_samples",
     "domain_unit",
     "domain_minimum",
     "domain_maximum",
     "distribution_shape",
+    "allowed_minimum",
+    "allowed_maximum",
+    "operation_values",
+    "active",
 }
 _ALERT_KEYS = {
     "handle",
@@ -97,6 +106,9 @@ _ALERT_KEYS = {
     "signals",
     "lower_limit",
     "upper_limit",
+    "max_lower_limit",
+    "max_upper_limit",
+    "actual_priority",
     "delegable",
 }
 _ACTION_KEYS = {"handle", "label", "target", "type", "note", "effects"}
@@ -119,7 +131,7 @@ class ConfigError(Exception):
 def export_path(filename: str | Path, selected_filter: str) -> Path:
     """Respect an explicit export format without silently changing a conflicting suffix."""
     target = Path(filename)
-    suffix = {JSON_FILE_FILTER: ".json", MDIB_FILE_FILTER: ".xml"}.get(selected_filter)
+    suffix = {MDIB_FILE_FILTER: ".xml", MDIB_BEHAVIOUR_FILE_FILTER: ".xml"}.get(selected_filter)
     if suffix is not None:
         if target.suffix and target.suffix.lower() != suffix:
             raise ConfigError(f"filename suffix {target.suffix!r} conflicts with the selected {suffix} format")
@@ -197,7 +209,7 @@ class Preset:
     def summary(self) -> str:
         """What the file contains, for a menu entry or a dropdown."""
         parts = [f"{self.metrics} data source(s)", f"{self.alerts} alarm(s)"]
-        return ("Native MDIB; " if self.path.suffix.lower() == ".xml" else "") + ", ".join(parts)
+        return ("MDIB; " if self.path.suffix.lower() == ".xml" else "") + ", ".join(parts)
 
 
 def list_presets(directory: str | Path | None = None) -> list[Preset]:
@@ -212,23 +224,8 @@ def list_presets(directory: str | Path | None = None) -> list[Preset]:
         return []
 
     found = []
-    for path in sorted(folder.glob("*.json")):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8-sig"), parse_float=Decimal)
-            device = parse(data)
-        except (OSError, UnicodeError, ValueError, RecursionError, ConfigError):
-            continue
-        found.append(
-            Preset(
-                path=path,
-                name=str(data.get("name") or path.stem),
-                description=str(data.get("description") or ""),
-                metrics=len(device.metrics),
-                alerts=len(device.alerts),
-            ),
-        )
     from .mdib_io import parse_mdib
-    from .native_mdib import label
+    from .native_mdib import label, preset_info
 
     for path in sorted(folder.glob("*.xml")):
         try:
@@ -237,8 +234,10 @@ def list_presets(directory: str | Path | None = None) -> list[Preset]:
             continue
         descriptors = list(mdib.descriptions.objects)
         root = next(descriptor for descriptor in descriptors if descriptor.parent_handle is None)
+        stored = preset_info(mdib.toolbox_behaviour) or {}
         found.append(Preset(
-            path=path, name=f"{label(root)} [MDIB]", description="Native combined MDIB snapshot; loading restarts the provider.",
+            path=path, name=stored.get("name") or label(root),
+            description=stored.get("description") or "Native combined MDIB snapshot; loading restarts the provider.",
             metrics=sum(descriptor.is_metric_descriptor for descriptor in descriptors),
             alerts=sum(descriptor.is_alert_condition_descriptor for descriptor in descriptors),
         ))
@@ -351,7 +350,7 @@ def metric_to_dict(handle: str, spec: MetricSpec) -> dict[str, Any]:
     if spec.kind is MetricKind.WAVEFORM:
         entry["sample_period"] = str(spec.sample_period)
         entry["shape"] = spec.shape.value
-        entry["cycle_samples"] = spec.cycle_samples
+        entry["cycle_seconds"] = str(spec.cycle_seconds)
     if spec.kind is MetricKind.DISTRIBUTION:
         domain_unit = _coding_to_json(spec.domain_unit_coding, spec.domain_unit_label)
         if domain_unit is not None:
@@ -359,6 +358,15 @@ def metric_to_dict(handle: str, spec: MetricSpec) -> dict[str, Any]:
         entry["domain_minimum"] = str(spec.domain_minimum)
         entry["domain_maximum"] = str(spec.domain_maximum)
         entry["distribution_shape"] = spec.distribution_shape.value
+    # Runtime states, only when they differ from what the descriptor alone would give.
+    if spec.allowed_minimum is not None:
+        entry["allowed_minimum"] = str(spec.allowed_minimum)
+    if spec.allowed_maximum is not None:
+        entry["allowed_maximum"] = str(spec.allowed_maximum)
+    if spec.operation_values:
+        entry["operation_values"] = list(spec.operation_values)
+    if not spec.active:
+        entry["active"] = False
     return entry
 
 
@@ -379,6 +387,12 @@ def alert_to_dict(handle: str, spec: AlertSpec) -> dict[str, Any]:
         entry["lower_limit"] = str(spec.lower_limit)
     if spec.upper_limit is not None:
         entry["upper_limit"] = str(spec.upper_limit)
+    if spec.max_lower_limit is not None:
+        entry["max_lower_limit"] = str(spec.max_lower_limit)
+    if spec.max_upper_limit is not None:
+        entry["max_upper_limit"] = str(spec.max_upper_limit)
+    if spec.actual_priority is not None and spec.actual_priority is not spec.priority:
+        entry["actual_priority"] = spec.actual_priority.value
     if spec.delegable:
         entry["delegable"] = True
     return entry
@@ -504,7 +518,7 @@ def to_dict(service: ProviderService, *, include_values: bool = True) -> dict[st
     :param include_values: record each metric's current value as its initial_value, so that
         reloading the file reproduces what is on screen rather than an empty device.
     """
-    if getattr(service, "native_mode", False):
+    if getattr(service, "from_mdib_file", False):
         raise ConfigError("native MDIB state cannot be exported as a JSON profile; export an .xml MDIB instead")
     metrics = []
     for handle, spec in sorted(service.list_metrics().items()):
@@ -560,16 +574,18 @@ def write_atomically(target: Path, data: str | bytes) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def save(service: ProviderService, path: str | Path, *, include_values: bool = True) -> Path:
-    """Atomically replace a profile, preserving the old file if writing fails."""
-    target = Path(path)
-    if target.suffix.lower() == ".xml":
-        from .mdib_io import save_mdib
+def save(service: ProviderService, path: str | Path, *, behaviour: bool = False) -> Path:
+    """Atomically write this device as an MDIB file, preserving the old file if writing fails.
 
-        return save_mdib(service, target)
-    payload = json.dumps(to_dict(service, include_values=include_values), indent=2) + "\n"
-    write_atomically(target, payload)
-    return target
+    :param behaviour: also write the toolbox behaviour as extensions, so the file loads back complete.
+    """
+    target = Path(path)
+    if target.suffix.lower() != ".xml":
+        msg = f"exports are MDIB files; name {target.name!r} with an .xml suffix"
+        raise ConfigError(msg)
+    from .mdib_io import save_mdib
+
+    return save_mdib(service, target, behaviour=behaviour)
 
 
 # --------------------------------------------------------------------------------------
@@ -598,6 +614,8 @@ def metric_from_dict(entry: dict[str, Any]) -> MetricSpec:
             "shape": str,
             "cycle_samples": int,
             "distribution_shape": str,
+            "operation_values": list,
+            "active": bool,
         },
         field,
     )
@@ -615,9 +633,21 @@ def metric_from_dict(entry: dict[str, Any]) -> MetricSpec:
     elif initial is not None:
         initial = _expect_type(initial, str, f"metrics[{label}].initial_value")
 
+    sample_period = _decimal_or_none(entry.get("sample_period"), f"metrics[{label}].sample_period")
+    cycle_seconds = _decimal_or_none(entry.get("cycle_seconds"), f"metrics[{label}].cycle_seconds")
+    if "cycle_samples" in entry:
+        if cycle_seconds is not None:
+            msg = f"metrics[{label}]: give cycle_seconds or the older cycle_samples, not both"
+            raise ConfigError(msg)
+        period = sample_period if sample_period is not None else DEFAULT_SAMPLE_PERIOD
+        cycle_seconds = Decimal(entry["cycle_samples"]) * period
+
     allowed_values = entry.get("allowed_values", [])
     for index, value in enumerate(allowed_values):
         _expect_type(value, str, f"metrics[{label}].allowed_values[{index}]")
+    operation_values = entry.get("operation_values", [])
+    for index, value in enumerate(operation_values):
+        _expect_type(value, str, f"metrics[{label}].operation_values[{index}]")
 
     unit_coding, unit_label = _coding_from_json(entry.get("unit"), f"metrics[{label}].unit")
     type_coding, _ = _coding_from_json(entry.get("type"), f"metrics[{label}].type")
@@ -641,14 +671,14 @@ def metric_from_dict(entry: dict[str, Any]) -> MetricSpec:
             controllable=entry.get("controllable", False),
             handle=entry.get("handle") or None,
             initial_value=initial,
-            sample_period=_decimal_or_none(entry.get("sample_period"), f"metrics[{label}].sample_period"),
+            sample_period=sample_period,
             shape=_enum_or_default(
                 WaveformShape,
                 entry.get("shape"),
                 WaveformShape.SINE,
                 f"metrics[{label}].shape",
             ),
-            cycle_samples=entry.get("cycle_samples", 40),
+            **({"cycle_seconds": cycle_seconds} if cycle_seconds is not None else {}),
             distribution_shape=_enum_or_default(
                 DistributionShape,
                 entry.get("distribution_shape"),
@@ -659,6 +689,10 @@ def metric_from_dict(entry: dict[str, Any]) -> MetricSpec:
             domain_unit_coding=domain_coding,
             domain_minimum=_decimal_or_none(entry.get("domain_minimum"), f"metrics[{label}].domain_minimum"),
             domain_maximum=_decimal_or_none(entry.get("domain_maximum"), f"metrics[{label}].domain_maximum"),
+            allowed_minimum=_decimal_or_none(entry.get("allowed_minimum"), f"metrics[{label}].allowed_minimum"),
+            allowed_maximum=_decimal_or_none(entry.get("allowed_maximum"), f"metrics[{label}].allowed_maximum"),
+            operation_values=tuple(operation_values),
+            active=entry.get("active", True),
         )
     except (ValueError, TypeError) as exc:
         msg = f"metrics[{label}]: {exc}"
@@ -702,6 +736,7 @@ def alert_from_dict(entry: dict[str, Any]) -> AlertSpec:
             "watches": str,
             "kind": str,
             "priority": str,
+            "actual_priority": str,
             "signals": list,
             "delegable": bool,
         },
@@ -735,6 +770,11 @@ def alert_from_dict(entry: dict[str, Any]) -> AlertSpec:
             ),
             lower_limit=_decimal_or_none(entry.get("lower_limit"), f"alerts[{label}].lower_limit"),
             upper_limit=_decimal_or_none(entry.get("upper_limit"), f"alerts[{label}].upper_limit"),
+            max_lower_limit=_decimal_or_none(entry.get("max_lower_limit"), f"alerts[{label}].max_lower_limit"),
+            max_upper_limit=_decimal_or_none(entry.get("max_upper_limit"), f"alerts[{label}].max_upper_limit"),
+            actual_priority=_enum_or_default(
+                AlertPriority, entry.get("actual_priority"), None, f"alerts[{label}].actual_priority",
+            ),
             handle=entry.get("handle") or None,
             delegable=entry.get("delegable", False),
             **({"signals": signals} if signals is not None else {}),

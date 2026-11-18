@@ -5,7 +5,7 @@ so scripts and shortcuts keep working unattended:
 
     .venv/Scripts/python.exe run_toolbox.py
     .venv/Scripts/python.exe run_toolbox.py --name alpha
-    .venv/Scripts/python.exe run_toolbox.py --name beta --config presets/insufflator.json
+    .venv/Scripts/python.exe run_toolbox.py --name beta --config presets/insufflator.xml
 
 Use --theme {light,dark} and --fullscreen; F11 toggles fullscreen later.
 SSH launches need access to a desktop display/session or graphical forwarding.
@@ -26,15 +26,16 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Literal
 
-from PySide6.QtCore import QCoreApplication, QTimer
+from PySide6.QtCore import QCoreApplication, QSettings, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 from sdc11073.loghelper import basic_logging_setup
 
-from sdctoolbox import config, constants
-from sdctoolbox.gui.main_window import MainWindow
+from sdctoolbox import config, constants, native_mdib
+from sdctoolbox.gui.main_window import MainWindow, remember_view
 from sdctoolbox.gui.startup_dialog import StartupDialog, StartupSettings
-from sdctoolbox.gui.styling import set_dark_mode
+from sdctoolbox.gui.icons import app_icon
+from sdctoolbox.gui.styling import apply_theme_style, set_dark_mode
 from sdctoolbox.model import validate_xml_text
 from sdctoolbox.network import normalize_ipv4
 from sdctoolbox.provider_service import ProviderService
@@ -59,6 +60,26 @@ def instance_name_argument(value: str) -> str:
     return value
 
 
+def port_argument(value: str) -> int:
+    """A TCP port, 1 to 65535."""
+    try:
+        port = int(value)
+    except ValueError:
+        port = 0
+    if not 0 < port < 65536:  # noqa: PLR2004 - the TCP port range
+        raise argparse.ArgumentTypeError(f"{value!r} is not a port number (1 to 65535)")
+    return port
+
+
+def friendly_name_argument(value: str) -> str:
+    """Refuse a friendly name XML cannot carry, like the instance name."""
+    try:
+        validate_xml_text(value, "friendly name")
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    return value
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
@@ -73,6 +94,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=instance_name_argument,
         help="instance name, decides the EPR",
     )
+    parser.add_argument(
+        "--friendly-name",
+        type=friendly_name_argument,
+        help="name the device announces; overrides the config file (default: the name the preset stores, otherwise --name)",
+    )
     parser.add_argument("--config", help="config file to load on startup")
     parser.add_argument("--theme", choices=("light", "dark"), help="initial GUI colour theme")
     parser.add_argument("--fullscreen", action="store_true", help="start fullscreen; F11 restores the window")
@@ -80,7 +106,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--tls-cert", help="local PEM certificate or certificate chain")
     parser.add_argument("--tls-key", help="local PEM private key")
     parser.add_argument("--tls-ca", help="trusted PEM CA certificate bundle")
-    parser.add_argument("--tls-peer-fingerprint", help="optional SHA-256 pin for connected peers")
+    parser.add_argument("--tls-peer-fingerprint", help="optional SHA-256 pin, checked on the connections this toolbox opens")
     parser.add_argument("--tls-server-name", help="optional local DNS name to advertise for the provider and event callbacks")
     parser.add_argument("--tls-trusted-dir", help="folder of trusted PEM certificates, self-signed ones included")
     parser.add_argument(
@@ -93,6 +119,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="do not require the peer certificate to name the advertised host or IP",
     )
+    parser.add_argument(
+        "--mcp",
+        nargs="?",
+        const=constants.MCP_DEFAULT_PORT,
+        type=port_argument,
+        metavar="PORT",
+        help=f"serve MCP for agents on 127.0.0.1 (default port {constants.MCP_DEFAULT_PORT})",
+    )
+    parser.add_argument("--headless", action="store_true", help="run without a window; needs --mcp")
     parser.add_argument("--smoke-test", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
@@ -126,8 +161,36 @@ def settings_from_args(args: argparse.Namespace) -> StartupSettings:
         name=args.name,
         ip=args.ip,
         config_path=args.config,
+        friendly_name=args.friendly_name or None,
         verbose=args.verbose,
         tls_config=tls_config,
+    )
+
+
+def make_service(
+    settings: StartupSettings,
+    device_config: config.DeviceConfig | NativeMdibConfig | None,
+) -> ProviderService:
+    """Build the provider with the identity the settings and the config file give it.
+
+    Who made an MDIB preset comes from its own MDS MetaData, and its friendly name, firmware
+    and URL from its stored toolbox behaviour. Without a stored friendly name it is announced
+    exactly as named on the command line: no prefix is added.
+    """
+    serial_number = None
+    friendly_name = settings.friendly_name
+    if isinstance(device_config, NativeMdibConfig):
+        device, serial_number = native_mdib.device_identity(parse_mdib(device_config.xml))
+        friendly_name = friendly_name or device.friendly_name or settings.name
+    else:
+        device = device_config.device if device_config is not None else None
+    return ProviderService(
+        ip=settings.ip,
+        instance_name=settings.name,
+        friendly_name=friendly_name,
+        device=device,
+        tls_config=settings.tls_config,
+        serial_number=serial_number,
     )
 
 
@@ -179,8 +242,11 @@ def closing_on_ctrl_c() -> Iterator[None]:
 def create_application(theme: Literal["light", "dark"] | None) -> QApplication:
     """Apply an explicit theme before any dialog or main window is constructed."""
     app = QApplication(sys.argv)
+    QGuiApplication.setWindowIcon(app_icon())
     if theme is not None:
         set_dark_mode(theme == "dark")
+    else:
+        apply_theme_style()
     return app
 
 
@@ -200,6 +266,9 @@ def main(argv: list[str] | None = None) -> int:
         if settings is None:
             return 0
     else:
+        if args.headless and args.mcp is None:
+            print("error: --headless needs --mcp, or nothing could control the device", file=sys.stderr)
+            return 2
         try:
             settings = settings_from_args(args)
             if settings.tls_config is not None:
@@ -207,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
         except TlsConfigError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
-        app = create_application(args.theme)
+        app = None if args.headless else create_application(args.theme)
 
     basic_logging_setup(level=logging.INFO if settings.verbose else logging.WARNING)
 
@@ -223,20 +292,18 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     native_config = isinstance(device_config, NativeMdibConfig)
-    device = device_config.device if device_config is not None and not native_config else None
-    service = ProviderService(
-        ip=settings.ip,
-        instance_name=settings.name,
-        device=device,
-        tls_config=settings.tls_config,
-    )
+    service = make_service(settings, device_config)
+    if args.headless:
+        return run_headless(service, device_config, args.mcp)
     window = None
+    mcp_server = None
     try:
         if native_config:
             service.start(parse_mdib(device_config.xml))
         else:
             service.start()
         window = MainWindow(service)
+        remember_view(window, QSettings(constants.SETTINGS_ORGANISATION, constants.APP_NAME))
         if settings.config_path and device_config is not None and not native_config:
             if not window.apply_config(device_config, settings.config_path):
                 return 2
@@ -244,8 +311,10 @@ def main(argv: list[str] | None = None) -> int:
             window.fullscreen_action.trigger()
         else:
             window.show()
+        if args.mcp is not None:
+            mcp_server = start_window_mcp(window, args.mcp)
         if args.smoke_test:
-            bundled_files = {path.name for path in constants.PRESET_DIR.iterdir() if path.suffix.lower() in (".json", ".xml")}
+            bundled_files = {path.name for path in constants.PRESET_DIR.iterdir() if path.suffix.lower() == ".xml"}
             if bundled_files != constants.SHIPPED_PRESET_FILES:
                 msg = f"packaged presets differ: found {sorted(bundled_files)}"
                 raise RuntimeError(msg)
@@ -275,10 +344,66 @@ def main(argv: list[str] | None = None) -> int:
         raise
     finally:
         try:
+            if mcp_server is not None:
+                mcp_server.stop()
             if window is not None:
                 window.close()
         finally:
             service.stop()
+
+
+def start_window_mcp(window: MainWindow, port: int):  # noqa: ANN201 - McpHttpServer | None
+    """Serve MCP for the window; a port already in use is reported, and the window carries on."""
+    from sdctoolbox.gui.mcp_bridge import start_mcp_server
+
+    try:
+        server = start_mcp_server(window, port)
+    except OSError as exc:
+        QMessageBox.warning(window, "Could not start the MCP server", f"Port {port}: {exc}")
+        return None
+    print(f"MCP server: {server.url}", flush=True)
+    return server
+
+
+def run_headless(
+    service: ProviderService,
+    device_config: config.DeviceConfig | NativeMdibConfig | None,
+    port: int,
+) -> int:
+    """Publish the device with no window and let an agent drive it over MCP until Ctrl+C."""
+    from sdctoolbox.mcp.server import McpApplication, McpHttpServer
+    from sdctoolbox.mcp.tools import Hooks, Network, ToolboxTools
+
+    network = server = None
+    try:
+        if isinstance(device_config, NativeMdibConfig):
+            service.start(parse_mdib(device_config.xml))
+        else:
+            service.start()
+            if device_config is not None:
+                config.apply_to(service, device_config)
+        network = Network(service)
+        tools = ToolboxTools(service, network, Hooks(service))
+        application = McpApplication(tools.tools(), tools.resources(), instructions=tools.instructions())
+        try:
+            server = McpHttpServer(application, port)
+        except OSError as exc:
+            print(f"error: cannot serve MCP on port {port}: {exc}", file=sys.stderr)
+            return 2
+        print(f"Publishing {service.friendly_name} on {service.ip}, EPR {service.epr.urn}", flush=True)
+        print(f"MCP server: {server.url}  (Ctrl+C stops)", flush=True)
+        with contextlib.suppress(KeyboardInterrupt):
+            server.serve_forever()
+        return 0
+    except config.ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        if server is not None:
+            server.stop()
+        if network is not None:
+            network.close()
+        service.stop()
 
 
 if __name__ == "__main__":

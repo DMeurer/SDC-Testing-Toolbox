@@ -34,8 +34,9 @@ from ..mdib_io import NativeMdibConfig
 from ..model import validate_xml_text
 from ..network import normalize_ipv4
 from ..security import TlsConfig, TlsConfigError
+from .kind_sections import style_dialog_buttons
 from .no_wheel import NoWheelComboBox
-from .styling import constrain_dynamic_label, mark_as_error, mute
+from .styling import constrain_dynamic_label, mark_as_error, mute, set_button_kind
 
 CONFIG_FILE_FILTER = config.FILE_FILTER
 
@@ -53,6 +54,8 @@ class StartupSettings:
     verbose: bool
     device_config: config.DeviceConfig | NativeMdibConfig | None = None
     tls_config: TlsConfig | None = None
+    # None keeps the default: the preset's own name, or the device name for an MDIB.
+    friendly_name: str | None = None
 
 
 def available_ipv4() -> list[tuple[str, str]]:
@@ -96,6 +99,13 @@ class StartupDialog(QDialog):
             "identity on the network. Two instances must not share a name.",
         )
 
+        self.friendly_name_edit = QLineEdit()
+        self.friendly_name_edit.setPlaceholderText("optional")
+        self.friendly_name_edit.setToolTip(
+            "The name other devices show for this one. Overrides the config file.\n"
+            "Left empty, a preset uses the name it stores, otherwise the device name.",
+        )
+
         self.ip_box = NoWheelComboBox()
         self.ip_box.setEditable(True)
         for address, adapter in available_ipv4():
@@ -122,7 +132,8 @@ class StartupDialog(QDialog):
             "A preset that ships with the tool, or any exported config file.\n"
             "Loading one replaces whatever the device would otherwise start with.",
         )
-        browse = QPushButton("Browse\u2026")
+        browse = self.config_browse_button = QPushButton("Browse\u2026")
+        set_button_kind(browse, "design-outline")
         browse.clicked.connect(self._on_browse)
         config_row = QHBoxLayout()
         config_row.setContentsMargins(0, 0, 0, 0)
@@ -139,6 +150,8 @@ class StartupDialog(QDialog):
             "Use HTTPS with mutual TLS for SDC services and event callbacks. "
             "Discovery remains unsecured UDP multicast.",
         )
+        # Like the fields beside them, these only matter once TLS is required.
+        self.tls_browse_buttons: list[QPushButton] = []
         self.tls_cert_edit = QLineEdit()
         self.tls_key_edit = QLineEdit()
         self.tls_ca_edit = QLineEdit()
@@ -147,6 +160,10 @@ class StartupDialog(QDialog):
         self.tls_fingerprint_edit = QLineEdit()
         self.tls_server_name_edit = QLineEdit()
         self.tls_fingerprint_edit.setPlaceholderText("optional SHA-256 pin")
+        self.tls_fingerprint_edit.setToolTip(
+            "Checked on the connections this toolbox opens: to a provider, and to a consumer it\n"
+            "sends reports to. A consumer connecting to My device is checked by the trust settings only.",
+        )
         self.tls_server_name_edit.setPlaceholderText("optional local DNS name")
         self.tls_ca_edit.setPlaceholderText("optional when a trusted folder is given")
         self.tls_folder_edit = QLineEdit()
@@ -159,7 +176,8 @@ class StartupDialog(QDialog):
         self.tls_self_signed_box.setToolTip(
             "Accept any peer presenting a valid self-signed certificate. Peers are then no\n"
             "longer authenticated, and the provider stops requesting client certificates.\n"
-            "Lab use only; prefer a trusted folder or a fingerprint pin.",
+            "Lab use only; prefer a trusted folder. A fingerprint pin does not help here:\n"
+            "the provider then accepts any consumer, with or without a certificate.",
         )
         self.tls_lenient_box = QCheckBox("Skip hostname/IP check of the peer certificate")
         self.tls_lenient_box.setToolTip(
@@ -198,12 +216,14 @@ class StartupDialog(QDialog):
 
         form = QFormLayout()
         form.addRow("Device name", self.name_edit)
+        form.addRow("Friendly name", self.friendly_name_edit)
         form.addRow("Bind to", self.ip_box)
         form.addRow("Config file", config_widget)
         form.addRow("", self.verbose_box)
 
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.buttons.button(QDialogButtonBox.Ok).setText("Start")
+        style_dialog_buttons(self.buttons)
         self.buttons.accepted.connect(self._on_accept)
         self.buttons.rejected.connect(self.reject)
 
@@ -255,6 +275,8 @@ class StartupDialog(QDialog):
 
     def _path_picker(self, field: QLineEdit, title: str) -> QWidget:
         browse = QPushButton("Browse\u2026")
+        set_button_kind(browse, "design-outline")
+        self.tls_browse_buttons.append(browse)
         browse.clicked.connect(lambda: self._browse_path(field, title))
         layout = QHBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -271,6 +293,8 @@ class StartupDialog(QDialog):
 
     def _folder_picker(self, field: QLineEdit, title: str) -> QWidget:
         browse = QPushButton("Browse…")
+        set_button_kind(browse, "design-outline")
+        self.tls_browse_buttons.append(browse)
         browse.clicked.connect(lambda: self._browse_folder(field, title))
         layout = QHBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -296,6 +320,7 @@ class StartupDialog(QDialog):
             self.tls_server_name_edit,
             self.tls_self_signed_box,
             self.tls_lenient_box,
+            *self.tls_browse_buttons,
         ):
             field.setEnabled(enabled)
 
@@ -315,6 +340,14 @@ class StartupDialog(QDialog):
         except ValueError as exc:
             self._fail(str(exc))
             return
+
+        friendly_name = self.friendly_name_edit.text().strip() or None
+        if friendly_name is not None:
+            try:
+                validate_xml_text(friendly_name, "friendly name")
+            except ValueError as exc:
+                self._fail(str(exc))
+                return
 
         try:
             ip = normalize_ipv4(self.chosen_ip())
@@ -362,5 +395,6 @@ class StartupDialog(QDialog):
             verbose=self.verbose_box.isChecked(),
             device_config=device_config,
             tls_config=tls_config,
+            friendly_name=friendly_name,
         )
         self.accept()

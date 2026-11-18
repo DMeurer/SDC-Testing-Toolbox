@@ -80,7 +80,10 @@ class Tracker:
 
 
 class FakeMdib:
-    pass
+    def __init__(self) -> None:
+        # Just the bootstrap MDS, so startup can write its MetaData before the provider fails.
+        mds = SimpleNamespace(MetaData=None)
+        self.descriptions = SimpleNamespace(handle=SimpleNamespace(get_one=lambda _handle: mds))
 
 
 def check(condition: bool, message: str) -> None:
@@ -135,12 +138,12 @@ def assert_provider_reset(service: ProviderService, discovery: Tracker, provider
 
 def provider_dependencies(discovery: Tracker, provider: Tracker | None = None):
     patches = [
-        patch.object(provider_module, "RangeWSDiscovery", lambda _ip: discovery),
+        patch.object(provider_module, "RangeWSDiscovery", lambda _ip, **_kwargs: discovery),
         patch.object(provider_module, "make_set_handler", lambda *_args, **_kwargs: object()),
         patch.object(provider_module, "make_activate_handler", lambda *_args, **_kwargs: object()),
     ]
     if provider is not None:
-        patches.append(patch.object(provider_module, "SdcProvider", lambda **_kwargs: provider))
+        patches.append(patch.object(provider_module, "FaultableProvider", lambda **_kwargs: provider))
     return patches
 
 
