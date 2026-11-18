@@ -5,16 +5,16 @@ This folder is the SDC Testing Toolbox documentation. GitHub Pages builds it wit
 
 ## Publishing
 
-In the repository's *Settings > Pages*, choose *Deploy from a branch*, the branch `main` and the
-folder `/docs`. Every push to `main` then updates the site at
-<https://dmeurer.github.io/SDC-Testing-Toolbox/>.
+GitHub Pages deploys the branch `develop`, folder `/docs` (*Settings > Pages*), to
+<https://sdc.d-meurer.com/>. Every push to `develop` updates the site. `CNAME` holds the custom
+domain; GitHub writes it when the domain changes in the settings, so leave it in place.
 
 ## Previewing locally
 
 With Docker, from the repository root:
 
 ```powershell
-docker run --rm -it -p 4000:4000 -v "${PWD}/docs:/site" -w /site ruby:3.3 sh -c "bundle install && bundle exec jekyll serve --host 0.0.0.0 --baseurl ''"
+docker run --rm -it -p 4000:4000 -v "${PWD}/docs:/site" -w /site ruby:3.3 sh -c "bundle install && bundle exec jekyll serve --host 0.0.0.0"
 ```
 
 Then open <http://localhost:4000>. The first start installs the gems and takes a few minutes.

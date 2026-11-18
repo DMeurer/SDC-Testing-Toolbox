@@ -3,8 +3,8 @@
 
 title: SDC Testing Toolbox
 description: A desktop tool for learning and testing IEEE 11073 SDC devices.
-url: https://dmeurer.github.io
-baseurl: /SDC-Testing-Toolbox
+url: https://sdc.d-meurer.com
+baseurl: ""
 
 remote_theme: just-the-docs/just-the-docs@v0.10.1
 plugins:
