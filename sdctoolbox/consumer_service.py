@@ -844,8 +844,8 @@ class RemoteDevice:
                     validity=_enum_value(getattr(getattr(metric_value, "MetricQuality", None), "Validity", None)),
                     activation=_enum_value(getattr(state, "ActivationState", None)),
                     unit_code=getattr(unit, "Code", None),
-                    unit_coding_system=(
-                        constants.CODING_SYSTEM_MDC if unit is not None and unit_system is None else unit_system
+                    unit_coding_system=(  # an omitted CodingSystem is BICEPS's default, not the current MDC URI
+                        constants.CODING_SYSTEM_MDC_LEGACY if unit is not None and unit_system is None else unit_system
                     ),
                 )
             return result
@@ -1107,10 +1107,14 @@ class RemoteDevice:
         return descriptors, states, response.mdib_version_group.mdib_version
 
     def renew_subscriptions(self) -> list[float]:
-        """Renew every subscription now; the seconds each one was granted (0.0: refused)."""
+        """Renew every subscription the peer granted now; the seconds each one was granted (0.0: refused).
+
+        A Subscribe the peer refused stays in sdc11073's list without a response; it was never
+        granted, so there is nothing to renew (its reports come from the one-at-a-time retry).
+        """
         manager = self._consumer.subscription_mgr
         with manager._subscriptions_lock:  # noqa: SLF001 - sdc11073 keeps no public copy
-            subscriptions = list(manager.subscriptions.values())
+            subscriptions = [s for s in manager.subscriptions.values() if s.subscribe_response is not None]
         return [subscription.renew() for subscription in subscriptions]
 
     def set_alert_state(self, operation_handle: str, state: Any, timeout: float = 10.0) -> msg_types.InvocationState:

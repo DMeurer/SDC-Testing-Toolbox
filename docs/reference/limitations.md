@@ -42,7 +42,6 @@ wire plumbing, but a library feature is not automatically a toolbox feature.
 |---|---|---|
 | **Might cause problems** | No per-certificate, per-operation authorization or invoker identity. | TLS admits or rejects a participant, but cannot give certificates different rights. |
 | **Might cause problems** | The `/Get` service answers WS-MetadataExchange `GetMetadata` with a WS-Transfer `GetResponse`; the device root rejects `GetMetadata`. | Peers relying on `GetMetadata` may fail to read metadata. |
-| **Might cause problems** | An unknown operation handle is answered with error `Inv`; BICEPS says `Unkn`. | A peer may misclassify the failure. |
 | **Might cause problems** | A slow but responsive consumer can block the bounded notification dispatcher. | One slow consumer can slow reports to the others. |
 | **Might cause problems** | Once, the sudden death of a backlogged subscriber froze the provider, and stopping it hung. | A provider may need a process restart. |
 | **Might cause problems** | The consumer keeps historic context states. | Many patient changes grow a long-running consumer's memory. |

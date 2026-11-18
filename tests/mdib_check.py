@@ -196,6 +196,12 @@ class RuleTests(unittest.TestCase):
         self.assertTrue(any("not an MDC code" in f.text for f in symbolic), symbolic)
         private_unit = check((HR_UNIT, '<pm:Unit Code="bpm" CodingSystem="urn:example:units"/>'))
         self.assertTrue(any("perhaps MDC_DIM_BEAT_PER_MIN (264864)" in f.text for f in private_unit), private_unit)
+        flow = check(('<pm:Type Code="147842" ' + MDC + '><pm:ConceptDescription Lang="en">Heart rate',
+                      '<pm:Type Code="flow" CodingSystem="urn:example:types"><pm:ConceptDescription Lang="en">Flow rate'),
+                     (HR_UNIT, f'<pm:Unit Code="265216" {MDC}/>'))
+        flow_hints = [f.text for f in flow if f.handle == "hr" and "perhaps" in f.text]
+        self.assertFalse(any("MDC_AWAY_RESP_RATE" in text for text in flow_hints),
+                         "a flow in L/min is not offered a term whose usual units are breaths per minute")
         both = check((HR_UNIT, '<pm:Unit Code="264864"/>'), ('<pm:Type Code="147842" ' + MDC, '<pm:Type Code="147842"'))
         self.assertEqual([f.text.startswith("Its type and unit") for f in both if f.rule == "10700 TR1842"], [True],
                          "one finding names both codes of one element")

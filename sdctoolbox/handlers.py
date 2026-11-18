@@ -324,7 +324,20 @@ class ReasonedSetService(SetService):
 
     def _handle_operation_request(self, request_data, request, set_response):  # noqa: ANN001, ANN202
         _answer_delay(self._sdc_device)
-        return super()._handle_operation_request(request_data, request, set_response)
+        handle = request.OperationHandleRef
+        if self._sdc_device.get_operation_by_handle(handle) is not None:
+            return super()._handle_operation_request(request_data, request, set_response)
+        # BICEPS answers an unknown operation HANDLE with Unkn; sdc11073 would say Inv.
+        with self._mdib.mdib_lock:
+            set_response.MdibVersion = self._mdib.mdib_version
+            set_response.SequenceId = self._mdib.sequence_id
+            set_response.InstanceId = self._mdib.instance_id
+        info = set_response.InvocationInfo
+        info.TransactionId = self._sdc_device.generate_transaction_id()
+        info.InvocationState = msg_types.InvocationState.FAILED
+        info.InvocationError = msg_types.InvocationError.UNKNOWN_OPERATION
+        info.add_error_message(f'the device has no operation "{handle}"')
+        return self._sdc_device.msg_factory.mk_reply_soap_message(request_data, set_response)
 
     def notify_operation(  # noqa: PLR0913 - the signature is sdc11073's
         self,

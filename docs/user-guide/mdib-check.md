@@ -47,7 +47,8 @@ Some findings on My device can be fixed for you. The **Fix** column says what wo
 **Fix** makes that change for the selected finding:
 
 - a private or non-numeric code becomes the MDC code its description names outright, such as
-  *Use MDC_PULS_RATE* for a metric described as "Pulse rate". A near match stays a "perhaps" in the
+  *Use MDC_PULS_RATE* for a metric described as "Pulse rate". A term measured in other units than the metric's MDC
+  unit is not offered. A near match stays a "perhaps" in the
   finding, for you to decide;
 - an outdated or missing MDC coding system becomes `urn:oid:1.3.111.2.11073.10101.3`;
 - a high-priority alarm without an audible signal gets one.

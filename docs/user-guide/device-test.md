@@ -27,7 +27,7 @@ connection; **Run again** repeats the test.
 | Read the MDIB | GetMdib returns descriptors and an MdibVersion | IEEE 11073-20701 |
 | Versions go up | the MdibVersion of each kind of report never goes back | IEEE 11073-10207 |
 | Set a value out of range | the device refuses a value above a settable number's maximum | IEEE 11073-10207 |
-| Renew a subscription | the device grants a renewal for every subscription | IEEE 11073-20702 |
+| Renew a subscription | the device grants a renewal for every subscription it granted | IEEE 11073-20702 |
 | Switch an alarm signal | the device accepts SetAlertState with a signal's current state | IEEE 11073-10207 |
 
 Each row is **Passed**, **Failed** (in bold) or **Skipped**. A test the device gives no chance for,

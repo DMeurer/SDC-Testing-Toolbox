@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from lxml import etree
+from sdc11073.httpserver.httpreader import HTTPReader
+from sdc11073.pysoap import soapclient
 
 SENT, RECEIVED = "sent", "received"
 # Logger name -> direction. Responses this toolbox sends and discovery are not per connection.
@@ -47,7 +49,7 @@ class Message:
     @property
     def kind(self) -> str:
         """request, response or report: what the Show filter picks by."""
-        if self.action.endswith("Response") or self.action == "Fault":
+        if self.action.endswith("Response") or self.action.lower() == "fault":  # WS-Addressing's .../addressing/fault
             return "response"
         return "report" if self.direction == RECEIVED else "request"
 
@@ -172,6 +174,17 @@ class _Recorder(logging.Handler):
         log.add(Message(next(self._numbers), record.created or time.time(), LOGGERS[record.name], action, detail, data))
 
 
+class _RefusalLoggingReader(HTTPReader):
+    """sdc11073 logs a response only when its HTTP status is a success; this also logs a refusal's body."""
+
+    @classmethod
+    def read_response_body(cls, http_response, supported_encodings=None):  # noqa: ANN001, ANN206 - sdc11073's signature
+        content = super().read_response_body(http_response, supported_encodings)
+        if http_response.status >= 300:  # noqa: PLR2004 - sdc11073's own test; it raises before logging these
+            logging.getLogger("sdc_comm.soap.response.in").debug(content, extra={"http_method": "POST"})
+        return content
+
+
 _recorder: _Recorder | None = None
 _install_lock = threading.Lock()
 
@@ -188,6 +201,7 @@ def watch(log: MessageLog, *, addresses: list[str] = (), prefixes: list[str] = (
                 logger.setLevel(logging.DEBUG)
                 # Every message would otherwise reach the console's handlers as a DEBUG line.
                 logger.propagate = False
+            soapclient.HTTPReader = _RefusalLoggingReader  # the consumer's requests; a Fault is what Messages is for
     log.addresses.update(addresses)
     log.prefixes.update(prefixes)
     _recorder.watch(log)

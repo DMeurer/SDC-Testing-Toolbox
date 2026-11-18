@@ -414,6 +414,12 @@ def check_failed_operations_say_why(report: Report) -> None:
                 "an operation that left the MDIB fails with Unkn and its handle in the text",
                 f"{state} {error} {message}",
             )
+            state, error, message = _final_outcome(client.set_numeric_value("op.never_there", 2))
+            report.check(
+                state is FAILED and error is msg_types.InvocationError.UNKNOWN_OPERATION and "op.never_there" in message,
+                "a handle the device never had fails with Unkn and the handle in the text",
+                f"{state} {error} {message}",
+            )
     finally:
         service.stop()
 

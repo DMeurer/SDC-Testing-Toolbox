@@ -73,7 +73,8 @@ can produce; **Writable** says whether the device offers an enabled operation fo
 ## Messages
 
 In Advanced mode, the folded **Messages** section lists every SOAP message exchanged with this
-device, newest last: each request, its response, and every report.
+device, newest last: each request, its response (or the SOAP Fault the device answers with), and
+every report.
 
 ![A Network connection in Advanced mode, with the Messages section](../assets/screenshots/network-advanced.png){: .only-light }
 ![A Network connection in Advanced mode, with the Messages section](../assets/screenshots/network-advanced-dark.png){: .only-dark }

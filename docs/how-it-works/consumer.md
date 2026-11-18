@@ -65,6 +65,9 @@ The library writes every SOAP message it sends or receives to its `sdc_comm.*` l
 - its response by the thread that sent the request,
 - a report by the consumer's own notification path.
 
+The library does not log a response that comes with an HTTP error status, so `message_log.py`
+logs those bodies itself; that is how a device's SOAP Fault reaches Messages.
+
 Each connection keeps its newest 500 messages. Messages of no connection, such as My device's own
 traffic, are dropped unread. The XML is parsed with entity resolution, DTDs and network access
 switched off.

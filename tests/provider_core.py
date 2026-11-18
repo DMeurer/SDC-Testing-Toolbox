@@ -3774,7 +3774,7 @@ def check_remote_metadata(report: Report) -> None:
     metric = remote.metrics()["pressure"]
     report.check(
         getattr(metric, "unit_code", missing) == "266048"
-        and getattr(metric, "unit_coding_system", missing) == constants.CODING_SYSTEM_MDC
+        and getattr(metric, "unit_coding_system", missing) == constants.CODING_SYSTEM_MDC_LEGACY
         and getattr(metric, "validity", missing) == "Inv"
         and getattr(metric, "activation", missing) == "StndBy"
         and metric.value == value,
@@ -3784,7 +3784,7 @@ def check_remote_metadata(report: Report) -> None:
         (SimpleNamespace(Code="foreign", CodingSystem="urn:foreign:units"), "foreign", "urn:foreign:units"),
         (SimpleNamespace(Code="raw", CodingSystem="not a URI"), "raw", "not a URI"),
         (SimpleNamespace(Code="", CodingSystem=""), "", ""),
-        (SimpleNamespace(Code="omitted"), "omitted", constants.CODING_SYSTEM_MDC),
+        (SimpleNamespace(Code="omitted"), "omitted", constants.CODING_SYSTEM_MDC_LEGACY),
         (None, None, None),
     ):
         entity.descriptor.Unit = unit

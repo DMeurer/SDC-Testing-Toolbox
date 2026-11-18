@@ -22,7 +22,7 @@ from dataclasses import dataclass
 
 from sdc11073.xml_types import pm_qnames as pm
 
-from . import nomenclature
+from . import constants, nomenclature
 from .mdib_io import live_entities
 from .native_mdib import label
 
@@ -88,14 +88,25 @@ def summary(findings: list[Finding]) -> str:
     return " · ".join(f"{n} {level}{'' if n == 1 else 's'}" for level, n in counts(findings).items())
 
 
+def _is_mdc(value) -> bool:  # noqa: ANN001 - a CodedValue
+    """Whether a CodedValue names an MDC code: its system is MDC (or left out) and its code a number."""
+    system = value.CodingSystem
+    return (value.Code or "").isdigit() and (system in (None, LEGACY_MDC_SYSTEM) or system.startswith(MDC_SYSTEM_PREFIX))
+
+
 def _match(value, what: str, descriptor) -> nomenclature.Term | None:  # noqa: ANN001
     """The MDC term that best matches the element's description or code, if any."""
     texts = [text.text for text in value.ConceptDescription or () if text.text] + [value.Code or ""]
     kind = "unit" if what == "unit" else "alert" if descriptor.is_alert_condition_descriptor else "measurement"
+    unit_value = getattr(descriptor, "Unit", None) if kind == "measurement" else None
+    unit = unit_value.Code if unit_value is not None and _is_mdc(unit_value) else None
+    unit = None if unit == constants.CODE_DIMENSIONLESS else unit  # the default when no unit was picked
     for text in texts:
-        hits = nomenclature.search(text, kind, 1) if text.strip() else []
-        if hits:
-            return hits[0]
+        for hit in nomenclature.search(text, kind) if text.strip() else []:
+            usual = nomenclature.units_for(hit.code)
+            # A term measured in other units is the wrong thing ("Flow rate" in L/min is no respiration rate).
+            if not unit or not usual or unit in usual:
+                return hit
     return None
 
 

@@ -150,6 +150,41 @@ def check_restricted_provider(report: Report) -> None:
         provider.stop()
 
 
+def check_renew_after_refused_combined_subscription(report: Report) -> None:
+    """A peer that refuses combined filters leaves no false Renew failure."""
+    original_subscribe = SubscriptionsManagerBase.on_subscribe_request
+
+    def single_action_subscribe(self, request):  # noqa: ANN001, ANN202
+        subscription = eventing_types.Subscribe.from_node(request.message_data.p_msg.msg_node)
+        if len(subscription.Filter.text.split()) > 1:
+            raise ValueError("one action per subscription")
+        return original_subscribe(self, request)
+
+    provider = ProviderService(instance_name="single-action-provider")
+    consumer = ConsumerService()
+    remote = None
+    try:
+        with patch.object(SubscriptionsManagerBase, "on_subscribe_request", single_action_subscribe):
+            provider.start()
+            provider.add_metric(MetricSpec(label="Renewed", kind=MetricKind.NUMBER, initial_value=Decimal("1")))
+            consumer.start()
+            device = next((d for d in consumer.scan(timeout=10, expected=99) if d.epr == provider.epr.urn), None)
+            report.require(device is not None, "single-action provider is discoverable")
+            remote = consumer.connect(device)
+            granted = remote.renew_subscriptions()
+            report.check(bool(granted) and all(seconds > 0 for seconds in granted),
+                         "only granted subscriptions are renewed, and all of them renew", str(granted))
+            answers = [m for m in remote.messages.messages() if m.action.lower() == "fault"]
+            report.check(bool(answers) and all(m.kind == "response" and m.direction == "received" for m in answers),
+                         "Messages shows the refusal's SOAP Fault as a received response",
+                         str([(m.action, m.kind, m.detail) for m in remote.messages.messages() if "ubscribe" in m.action or "ault" in m.action]))
+    finally:
+        if remote is not None:
+            remote.close()
+        consumer.stop()
+        provider.stop()
+
+
 def check_partial_metric_feed_loss(report: Report) -> None:
     """Use actual SubscriptionEnd messages and a surviving periodic SOAP notification."""
     provider = ProviderService(instance_name="partial-metric-feed-provider")
@@ -441,6 +476,7 @@ def main() -> int:
         consumer.stop()
         provider.stop()
     check_restricted_provider(report)
+    check_renew_after_refused_combined_subscription(report)
     check_partial_metric_feed_loss(report)
     check_waveform_operation_naming(report)
     check_waveform_without_determination_time(report)
