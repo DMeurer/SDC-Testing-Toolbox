@@ -143,7 +143,7 @@ def provider_dependencies(discovery: Tracker, provider: Tracker | None = None):
         patch.object(provider_module, "make_activate_handler", lambda *_args, **_kwargs: object()),
     ]
     if provider is not None:
-        patches.append(patch.object(provider_module, "SdcProvider", lambda **_kwargs: provider))
+        patches.append(patch.object(provider_module, "FaultableProvider", lambda **_kwargs: provider))
     return patches
 
 
