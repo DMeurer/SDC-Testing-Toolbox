@@ -26,7 +26,8 @@ codes that look official would be worse.
 
 *New data source* has a **Measures** row and a **Unit** row, each with a **Pick…** button:
 
-![The Pick an MDC code dialog](../assets/screenshots/code-picker.png)
+![The Pick an MDC code dialog](../assets/screenshots/code-picker.png){: .only-light }
+![The Pick an MDC code dialog](../assets/screenshots/code-picker-dark.png){: .only-dark }
 
 - **Look for**: what is measured, units, alarm codes or everything.
 - **Search**: type a name, a reference ID or a code, such as `pulse rate`, `MDC_DIM_MMHG` or

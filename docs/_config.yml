@@ -1,7 +1,7 @@
 # The documentation site, built by GitHub Pages from this folder.
 # Preview it locally: see docs/README.md.
 
-title: SDC Testing Toolbox
+title: SDC Toolbox
 description: A desktop tool for learning and testing IEEE 11073 SDC devices.
 url: https://sdc.d-meurer.com
 baseurl: ""
@@ -16,6 +16,7 @@ relative_links:
   enabled: true
   collections: false
 
+color_scheme: toolbox
 search_enabled: true
 heading_anchors: true
 back_to_top: true

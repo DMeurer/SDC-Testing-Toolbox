@@ -28,7 +28,15 @@ Then open <http://localhost:4000>. The first start installs the gems and takes a
 
 ## Screenshots
 
-`assets/screenshots/` is made by the real application. After a GUI change, take them again:
+`assets/screenshots/` is made by the real application, each picture in light (`name.png`) and
+dark mode (`name-dark.png`). A page shows both, and each mode hides the other:
+
+```markdown
+![The Network tab](../assets/screenshots/network.png){: .only-light }
+![The Network tab](../assets/screenshots/network-dark.png){: .only-dark }
+```
+
+After a GUI change, take them again:
 
 ```powershell
 .venv\Scripts\python.exe helpers\docs_screenshots.py

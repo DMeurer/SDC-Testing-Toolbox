@@ -13,7 +13,8 @@ toolbox, sees exactly what this tab shows.
 1. TOC
 {:toc}
 
-![The My device tab with a patient monitor](../assets/screenshots/my-device.png)
+![The My device tab with a patient monitor](../assets/screenshots/my-device.png){: .only-light }
+![The My device tab with a patient monitor](../assets/screenshots/my-device-dark.png){: .only-dark }
 
 ## What the tab shows
 
@@ -34,7 +35,8 @@ From the top:
 
 A *data source* is one metric of the device. **New data source…** creates one:
 
-![The New data source dialog](../assets/screenshots/new-data-source.png)
+![The New data source dialog](../assets/screenshots/new-data-source.png){: .only-light }
+![The New data source dialog](../assets/screenshots/new-data-source-dark.png){: .only-dark }
 
 The dialog is split in two parts, marked by their chips: **MDIB** is what goes into the device's
 description and every consumer sees; **Toolbox** is how this toolbox shows it.
@@ -104,7 +106,8 @@ scrolls the page; it never changes a value by accident.
 
 **Patient and location…** edits the two contexts the device publishes:
 
-![The Patient and location dialog](../assets/screenshots/patient-and-location.png)
+![The Patient and location dialog](../assets/screenshots/patient-and-location.png){: .only-light }
+![The Patient and location dialog](../assets/screenshots/patient-and-location-dark.png){: .only-dark }
 
 - **Patient**: given and family name, sex, patient type, date of birth, height, weight and race.
   Height and weight need a value and a coded unit; race is a code, not free text. A new device

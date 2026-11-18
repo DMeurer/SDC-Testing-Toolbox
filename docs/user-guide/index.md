@@ -10,4 +10,5 @@ Everything the window can do, part by part. The pages follow the window: first t
 itself, then **My device** (the device you publish), then **Network** (everybody else's), then the
 tools that check devices, and finally files and security.
 
-![The My device tab in dark mode](../assets/screenshots/my-device-dark.png)
+![The My device tab with a patient monitor](../assets/screenshots/my-device.png){: .only-light }
+![The My device tab with a patient monitor](../assets/screenshots/my-device-dark.png){: .only-dark }

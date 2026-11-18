@@ -14,7 +14,8 @@ An MDIB the XML schema accepts can still leave a consumer guessing: a metric wit
 with no time stamp, a setting with no allowed range, an alarm nobody hears. The MDIB check lists
 these and says for each what is wrong and what a consumer loses by it.
 
-![The MDIB check window](../assets/screenshots/mdib-check.png)
+![The MDIB check window](../assets/screenshots/mdib-check.png){: .only-light }
+![The MDIB check window](../assets/screenshots/mdib-check-dark.png){: .only-dark }
 
 ## Opening it
 

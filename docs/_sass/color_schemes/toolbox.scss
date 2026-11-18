@@ -1,0 +1,18 @@
+// The toolbox's design colours (sdctoolbox/gui/styling.py): the accent blue for links, the
+// sidebar and everything the theme would otherwise draw in purple; the highlight purple only
+// for primary buttons such as "Get started".
+@import "./color_schemes/light";
+
+$accent: #0078d4;
+$accent-text: #005a9e;
+$accent-tint: #e6f0fa;
+$highlight: #7b3fe4;
+
+// The theme draws focus rings, search hits and the active page in its purple palette.
+$purple-000: $accent;
+$purple-100: $accent-text;
+$purple-200: #004578;
+$purple-300: #003358;
+
+$link-color: $accent-text;
+$btn-primary-color: $highlight;

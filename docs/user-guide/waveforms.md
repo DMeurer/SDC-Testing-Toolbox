@@ -42,7 +42,9 @@ broken device. So a new waveform or distribution starts generating at once.
 - **Distributions** get a bell that drifts across the domain.
 
 Samples go out in blocks of a quarter of a second. Setting a distribution's samples yourself takes
-it off the generator, so what you set stays.
+it off the generator, so what you set stays. A distribution has 32 samples across a domain of
+positive width. Its `StepWidth` is how far apart two samples sit along the domain; it is not
+`Resolution`, which is how finely one sample value is measured.
 
 A sensor that is not *On* (see [Advanced mode](advanced-mode.md)) generates nothing.
 

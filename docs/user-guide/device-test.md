@@ -10,7 +10,8 @@ The [MDIB check](mdib-check.md) reads a description. The Device test asks a **ru
 questions the way a consumer would, and says in plain words what happened and which standard the
 question comes from. It is meant for someone building their first SDC device.
 
-![The Device test window](../assets/screenshots/device-test.png)
+![The Device test window](../assets/screenshots/device-test.png){: .only-light }
+![The Device test window](../assets/screenshots/device-test-dark.png){: .only-dark }
 
 ## Running it
 

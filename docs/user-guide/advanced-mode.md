@@ -23,7 +23,8 @@ Advanced mode hides nothing that Simple mode shows. It adds:
 
 Sections that belong to Advanced mode carry an *Advanced* chip.
 
-![My device in Advanced mode, with the Alarms and Faults sections open](../assets/screenshots/my-device-advanced.png)
+![My device in Advanced mode, with the Alarms and Faults sections open](../assets/screenshots/my-device-advanced.png){: .only-light }
+![My device in Advanced mode, with the Alarms and Faults sections open](../assets/screenshots/my-device-advanced-dark.png){: .only-dark }
 
 ## Faults
 

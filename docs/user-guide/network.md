@@ -14,7 +14,8 @@ shows what it does not understand instead of hiding it.
 1. TOC
 {:toc}
 
-![The Network tab connected to an infusion pump](../assets/screenshots/network.png)
+![The Network tab connected to an infusion pump](../assets/screenshots/network.png){: .only-light }
+![The Network tab connected to an infusion pump](../assets/screenshots/network-dark.png){: .only-dark }
 
 ## Discovery
 
@@ -74,7 +75,8 @@ can produce; **Writable** says whether the device offers an enabled operation fo
 In Advanced mode, the folded **Messages** section lists every SOAP message exchanged with this
 device, newest last: each request, its response, and every report.
 
-![A Network connection in Advanced mode, with the Messages section](../assets/screenshots/network-advanced.png)
+![A Network connection in Advanced mode, with the Messages section](../assets/screenshots/network-advanced.png){: .only-light }
+![A Network connection in Advanced mode, with the Messages section](../assets/screenshots/network-advanced-dark.png){: .only-dark }
 
 | Column | Shows |
 |---|---|

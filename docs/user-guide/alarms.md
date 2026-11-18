@@ -26,7 +26,8 @@ than flags on one. The toolbox gives a new alarm a visual and an audible signal 
 
 Open the **Alarms** section on My device and press **New alarm…**:
 
-![The New alarm dialog](../assets/screenshots/new-alarm.png)
+![The New alarm dialog](../assets/screenshots/new-alarm.png){: .only-light }
+![The New alarm dialog](../assets/screenshots/new-alarm-dark.png){: .only-dark }
 
 - **Watches**: the metric the alarm is about.
 - **Label**, **Kind** (*Phy* physiological, *Tec* technical, *Oth* other) and **Priority** (*Lo*,

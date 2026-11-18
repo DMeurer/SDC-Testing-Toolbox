@@ -1,0 +1,19 @@
+<script>
+  // Light or dark before the page is drawn: the reader's last choice, else the system's.
+  (function () {
+    var theme = null;
+    try { theme = localStorage.getItem("toolbox-theme"); } catch (e) {}
+    if (theme !== "light" && theme !== "dark") {
+      theme = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    }
+    if (theme === "dark") {
+      var dark = "{{ '/assets/css/just-the-docs-toolbox-dark.css' | relative_url }}";
+      // The theme switch reads and swaps this first stylesheet.
+      document.querySelector('[rel="stylesheet"]').setAttribute("href", dark);
+      // A swapped href does not hold back the first paint, so the page flashed white;
+      // a stylesheet written by the parser does. It goes once the page has loaded.
+      document.write('<link rel="stylesheet" href="' + dark + '" id="theme-boot">');
+      window.addEventListener("load", function () { document.getElementById("theme-boot").remove(); });
+    }
+  })();
+</script>

@@ -94,6 +94,9 @@ schedule and by hand. It runs the test suites on Linux and Windows, the network 
 suites, both builds with a smoke test of the built program, a license check of every artifact, and
 installs each Linux package on six distributions. The artifacts are kept for 90 days.
 
+The install test is `packaging/linux/install_test.sh`. Run it as root in a clean container of the
+matching distribution: `sh packaging/linux/install_test.sh dist/<package>`.
+
 ## Releases
 
 The version is `__version__` in `sdctoolbox/__init__.py`; the builds and the Linux packages read it

@@ -5,8 +5,8 @@ Run it again whenever the GUI changes, so the pictures in the docs stay true:
     .venv\\Scripts\\python.exe helpers\\docs_screenshots.py
 
 It starts two devices on 127.0.0.1 (a patient monitor shown in the window and an infusion
-pump to connect to), opens each window and dialog the docs show, saves it as a PNG, and
-closes everything again. A window appears on screen for a short while; do not click it.
+pump to connect to), opens each window and dialog the docs show, saves it as a PNG in light
+mode (name.png) and in dark mode (name-dark.png), and closes everything again. A window appears on screen for a short while; do not click it.
 """
 
 from __future__ import annotations
@@ -54,11 +54,21 @@ def wait_for(condition, timeout: float = 30.0) -> bool:  # noqa: ANN001
     return False
 
 
-def save(widget: QWidget, name: str) -> None:
-    pump(0.6)
-    path = OUT / f"{name}.png"
-    widget.grab().save(str(path))
-    print(f"wrote {path.relative_to(ROOT)}")
+def save(widget: QWidget, name: str, redraw=None) -> None:  # noqa: ANN001
+    """The widget once in light mode and once in dark mode; the docs show the one that fits.
+
+    `redraw`, when given, runs after each switch, for content that keeps the colours it was
+    made with.
+    """
+    for dark in (False, True):
+        set_dark_mode(dark)
+        if redraw is not None:
+            redraw()
+        pump(0.6)
+        path = OUT / f"{name}{'-dark' if dark else ''}.png"
+        widget.grab().save(str(path))
+        print(f"wrote {path.relative_to(ROOT)}")
+    set_dark_mode(False)
 
 
 def dialog(widget: QWidget, name: str) -> None:
@@ -146,19 +156,19 @@ def main() -> int:
         check.close()
 
         test = window.show_device_test(pane_net)
-        wait_for(lambda: test.again_button.isEnabled() and test.tree.topLevelItemCount() > 0, 60)
-        save(test, "device-test")
+
+        def run_test() -> None:
+            test.run()
+            wait_for(lambda: test.again_button.isEnabled() and test.tree.topLevelItemCount() > 0, 60)
+
+        wait_for(lambda: test.again_button.isEnabled(), 60)
+        save(test, "device-test", run_test)
         test.close()
 
         log = window.show_activity_log()
         save(log, "activity-log")
         log.close()
 
-        set_dark_mode(True)
-        window.tabs.setCurrentIndex(0)
-        pump(1.0)
-        save(window, "my-device-dark")
-        set_dark_mode(False)
     finally:
         window.close()
         pump(0.5)

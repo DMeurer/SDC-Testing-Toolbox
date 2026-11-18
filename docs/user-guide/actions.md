@@ -19,7 +19,8 @@ the device says the operation is enabled.
 
 On My device, press **New action…**:
 
-![The New action dialog](../assets/screenshots/new-action.png)
+![The New action dialog](../assets/screenshots/new-action.png){: .only-light }
+![The New action dialog](../assets/screenshots/new-action-dark.png){: .only-dark }
 
 - **Label**: the button's text.
 - **Acts on**: the part of the device it acts on: the device, a unit (VMD) or a channel.

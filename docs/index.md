@@ -28,7 +28,8 @@ With the toolbox you can:
 [Download a release](https://github.com/DMeurer/SDC-Testing-Toolbox/releases){: .btn .mr-2 }
 [View it on GitHub](https://github.com/DMeurer/SDC-Testing-Toolbox){: .btn }
 
-![The My device tab of the toolbox, showing a patient monitor with waveforms and sliders](assets/screenshots/my-device.png)
+![The My device tab of the toolbox, showing a patient monitor with waveforms and sliders](assets/screenshots/my-device.png){: .only-light }
+![The My device tab of the toolbox, showing a patient monitor with waveforms and sliders](assets/screenshots/my-device-dark.png){: .only-dark }
 
 {: .warning }
 This is a learning and testing tool, **not a medical device**. Its SDC library,

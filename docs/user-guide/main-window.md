@@ -36,7 +36,8 @@ many alarms are active, how many faults are on, or that the section belongs to A
 - **Tables**: one row per metric with its handle, label, kind, value, range, unit and whether it
   can be written. Tables show every detail at once.
 
-![My device with metrics as a table](../assets/screenshots/my-device-tables.png)
+![My device with metrics as a table](../assets/screenshots/my-device-tables.png){: .only-light }
+![My device with metrics as a table](../assets/screenshots/my-device-tables-dark.png){: .only-dark }
 
 ## The status bar
 
@@ -49,7 +50,8 @@ network. At its right:
   actions they ran, alarms raised, acknowledged and cleared, and connected devices changing their
   structure, on My device and on every connection.
 
-![The activity log window](../assets/screenshots/activity-log.png)
+![The activity log window](../assets/screenshots/activity-log.png){: .only-light }
+![The activity log window](../assets/screenshots/activity-log-dark.png){: .only-dark }
 
 Values that change by themselves, such as a running waveform, are left out of the activity log on
 purpose; they would bury everything else.

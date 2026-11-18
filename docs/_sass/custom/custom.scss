@@ -1,0 +1,52 @@
+// Primary buttons: the highlight colour with the text colour the scheme gives it.
+.btn-primary,
+.btn-primary:hover,
+.btn-primary:active {
+  color: $btn-primary-text-color;
+}
+
+// The light/dark switch in the header.
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  align-self: center;
+  margin-right: $sp-2;
+  padding: $sp-1;
+  border: 1px solid $border-color;
+  border-radius: $border-radius;
+  background: transparent;
+  color: $body-text-color;
+  cursor: pointer;
+
+  &:hover {
+    color: $link-color;
+    border-color: $link-color;
+  }
+
+  &:focus-visible {
+    outline: 2px solid $link-color;
+    outline-offset: 2px;
+  }
+
+  svg {
+    width: 1.1rem;
+    height: 1.1rem;
+  }
+}
+
+// Screenshots come as a light and a dark copy; each mode shows its own.
+@if $color-scheme == dark {
+  .only-light { display: none !important; }
+} @else {
+  .only-dark { display: none !important; }
+}
+
+// The app icon before the site name, top left.
+.site-title::before {
+  content: "";
+  flex: none;
+  width: 2rem;
+  height: 2rem;
+  margin-right: $sp-3;
+  background: url("/assets/images/app-icon.svg") center / contain no-repeat;
+}
