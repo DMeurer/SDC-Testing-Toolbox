@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QApplication, QAbstractItemView, QLabel, QSizePolicy, QTableWidget, QWidget
+from PySide6.QtWidgets import QApplication, QAbstractItemView, QHeaderView, QLabel, QSizePolicy, QTableWidget, QWidget
 
 # The design's colour tokens as (light, dark). Every coloured part of the interface names one.
 TOKENS: dict[str, tuple[str, str]] = {
@@ -95,6 +95,14 @@ def theme_style_sheet(dark: bool) -> str:  # noqa: FBT001
         f'QStatusBar QLabel {{ color: {t["text/on-accent"]}; }}',
         f'QStatusBar QToolButton {{ color: {t["text/on-accent"]}; border: 1px solid {t["text/on-accent"]};'
         " border-radius: 3px; padding: 0 6px; margin: 1px 2px; }",
+        # The slider as the design draws it; the native one draws its track off the groove rect.
+        f'QSlider::groove:horizontal {{ height: 4px; border-radius: 2px; background: {t["border/underline"]}; }}',
+        f'QSlider::sub-page:horizontal {{ border-radius: 2px; background: {t["accent"]}; }}',
+        f'QSlider::add-page:horizontal {{ border-radius: 2px; background: {t["border/underline"]}; }}',
+        "QSlider::handle:horizontal { width: 16px; margin: -7px 0; border-radius: 9px;"
+        f' background: {t["accent"]}; border: 1px solid {t["bg/field"]}; }}',
+        "QSlider::sub-page:horizontal:disabled, QSlider::handle:horizontal:disabled"
+        f' {{ background: {t["text/disabled"]}; }}',
         "QTabBar::tab { padding: 6px 18px; border: none; border-top: 2px solid transparent;"
         f' background: transparent; color: {t["text/muted"]}; }}',
         f'QTabBar::tab:selected {{ border-top: 2px solid {t["accent"]}; color: {t["accent/text"]}; font-weight: bold; }}',
@@ -116,7 +124,18 @@ def theme_style_sheet(dark: bool) -> str:  # noqa: FBT001
 def apply_theme_style() -> None:
     """Install the token style sheet for the application's current mode."""
     app = QApplication.instance()
+    app.setPalette(_header_palette(app.palette()), "QHeaderView")
     app.setStyleSheet(theme_style_sheet(app_is_dark()))
+
+
+def _header_palette(base: QPalette) -> QPalette:
+    """Table and tree headers paint with Button; the design gives them their own shade.
+
+    Call it after the application palette is in place: the token follows the current mode.
+    """
+    header = QPalette(base)
+    header.setColor(QPalette.ColorRole.Button, token("bg/header"))
+    return header
 
 
 def set_button_kind(button: QWidget, kind: str) -> None:
@@ -204,7 +223,7 @@ def set_dark_mode(enabled: bool) -> None:
     for part, name in ((role.Base, "bg/surface"), (role.AlternateBase, "bg/hover"),
                        (role.Window, "bg/window"), (role.Button, "bg/button"),
                        (role.WindowText, "text/primary"), (role.Text, "text/primary"),
-                       (role.ButtonText, "text/primary"), (role.Highlight, "accent"),
+                       (role.ButtonText, "text/primary"), (role.Highlight, "accent"), (role.Accent, "accent"),
                        (role.Link, "accent"), (role.HighlightedText, "text/on-accent"),
                        (role.ToolTipBase, "bg/field"), (role.ToolTipText, "text/primary"),
                        (role.PlaceholderText, "text/muted")):
@@ -212,10 +231,14 @@ def set_dark_mode(enabled: bool) -> None:
     for part in (role.WindowText, role.Text, role.ButtonText):
         palette.setColor(QPalette.ColorGroup.Disabled, part, token("text/disabled", enabled))
     app.setPalette(palette)
+    header_palette = _header_palette(palette)
+    app.setPalette(header_palette, "QHeaderView")
     app.setStyleSheet(theme_style_sheet(enabled))
     for widget in app.allWidgets():
         # QSS gives views/headers explicit palettes that no longer inherit app changes.
-        if isinstance(widget, QAbstractItemView):
+        if isinstance(widget, QHeaderView):
+            widget.setPalette(header_palette)
+        elif isinstance(widget, QAbstractItemView):
             widget.setPalette(palette)
             widget.viewport().setPalette(palette)
             if widget.property("_toolboxRowSelection"):

@@ -9,7 +9,7 @@ from __future__ import annotations
 from decimal import Decimal, localcontext
 from typing import Any
 
-from PySide6.QtCore import QEvent, QObject, QSignalBlocker, Qt
+from PySide6.QtCore import QEvent, QObject, QRectF, QSignalBlocker, Qt
 from PySide6.QtGui import QColor, QPainter, QPalette
 from PySide6.QtWidgets import (
     QComboBox,
@@ -193,9 +193,15 @@ class _RangeSlider(NoWheelSlider):
         colour = QColor(token("state/blocked"))
         colour.setAlphaF(0.55)
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        track = QRectF(groove)
         for start, end in self.blocked:
-            left = groove.left() + start * groove.width()
-            painter.fillRect(int(left), groove.center().y() - 2, max(1, int((end - start) * groove.width())), 4, colour)
+            part = QRectF(track.left() + start * track.width(), track.top(), max(1.0, (end - start) * track.width()), track.height())
+            # As in the design: the tint sits on the card, not on the blue fill beneath.
+            for fill in (token("bg/surface"), colour):
+                painter.setBrush(fill)
+                painter.drawRoundedRect(part, 2, 2)
         painter.end()
 
 
