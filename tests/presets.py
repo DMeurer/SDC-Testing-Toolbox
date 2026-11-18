@@ -53,7 +53,7 @@ def check_native_preset(report: Report, path: Path) -> None:
             {handle for handle, _ in restored.entities.items()} == {handle for handle, _ in service.mdib.entities.items()},
             "exports and reloads description and state together without losing entities",
         )
-        if path.name == "mdib-demo-infusion-pump.xml":
+        if path.name == "demo-infusion-pump.xml":
             operation = service._provider.get_operation_by_handle("pump.set-rate")
             result = operation.execute_operation(None, SimpleNamespace(argument=Decimal("3.5")))
             report.check(result.invocation_state == msg_types.InvocationState.FINISHED
@@ -69,15 +69,15 @@ EXPECTED_PRESET_FILES = {
     "hf-generator.xml",
     "infusion-pump.xml",
     "insufflator.xml",
-    "mdib-demo-infusion-pump.xml",
-    "mdib-demo-monitor.xml",
+    "demo-infusion-pump.xml",
+    "demo-monitor.xml",
     "operating-table.xml",
     "patient-monitor.xml",
     "surgical-microscope.xml",
     "ventilation-pressure.xml",
     "ventilator.xml",
 }
-DEMOS = {"mdib-demo-infusion-pump.xml", "mdib-demo-monitor.xml"}
+DEMOS = {"demo-infusion-pump.xml", "demo-monitor.xml"}
 
 
 def check_focused_profile(report: Report, path: Path, service: ProviderService) -> None:
@@ -87,12 +87,12 @@ def check_focused_profile(report: Report, path: Path, service: ProviderService) 
         expected = [
             ("m.height", "Height", "780", "500", "1100", "1", "263442", "mm", "table_height", constants.CODING_SYSTEM_PRIVATE),
             ("m.trendelenburg", "Trendelenburg", "-8", "-30", "30", "0.1", "262880", "°", "table_trendelenburg", constants.CODING_SYSTEM_PRIVATE),
-            ("m.lateral_angle", "Lateral Angle", "7.6", "-30", "30", "0.1", "262880", "°", "table_lateral_angle", constants.CODING_SYSTEM_PRIVATE),
+            ("m.lateral_angle", "Lateral angle", "7.6", "-30", "30", "0.1", "262880", "°", "table_lateral_angle", constants.CODING_SYSTEM_PRIVATE),
         ]
     elif path.stem == "ventilation-pressure":
         section, channel, vmd = "Pressure", "ch.pressure", "vmd.pressure"
         expected = [
-            ("m.ventilation_pressure", "Ventilation Pressure", "18", "0", "40", "1", "266048", "cmH₂O", "151956", constants.CODING_SYSTEM_MDC),
+            ("m.ventilation_pressure", "Ventilation pressure", "18", "0", "40", "1", "266048", "cmH₂O", "151956", constants.CODING_SYSTEM_MDC),
         ]
     else:
         return

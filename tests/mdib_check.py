@@ -94,6 +94,23 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(found[0].level, level)
         self.assertTrue(found[0].text.endswith("."), found[0].text)
 
+    def test_explanations_name_real_types_and_the_checks_rules(self) -> None:
+        import re
+
+        from sdc11073.xml_types import pm_qnames
+
+        from sdctoolbox.mdib_explain import EXPLANATIONS, explain
+
+        source = (ROOT / "sdctoolbox" / "mdib_check.py").read_text(encoding="utf-8")
+        for node_type, (_what, _consumer, rules) in EXPLANATIONS.items():
+            self.assertTrue(hasattr(pm_qnames, node_type), node_type)
+            for rule in re.findall(r"(?:TR|R)\d{4}", rules):
+                self.assertIn(rule, source, f"{node_type} cites {rule}, which the MDIB check does not apply")
+        tip = explain("NumericMetricDescriptor", "m.<rate>")
+        self.assertIn("NumericMetricDescriptor · m.&lt;rate&gt;", tip)
+        self.assertIn("Rules: 10701 TR0239", tip)
+        self.assertIn("A NoSuchDescriptor element", explain("NoSuchDescriptor", "x"))
+
     def test_a_clean_mdib_has_no_findings(self) -> None:
         self.assertEqual(check(), [])
         self.assertEqual(mdib_check.summary([]), "No findings")

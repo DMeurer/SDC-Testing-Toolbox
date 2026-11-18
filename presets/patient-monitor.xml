@@ -238,7 +238,7 @@
               <dom:Unit Code="262656" CodingSystem="urn:oid:1.3.111.2.11073.10101.3"/>
             </dom:Metric>
             <dom:Metric Handle="m.alarm_volume" xsi:type="dom:EnumStringMetricDescriptor" MetricCategory="Set" MetricAvailability="Intr">
-              <dom:Type Code="monitor_alarm_volume" CodingSystem="urn:sdc-testing-toolbox:private">
+              <dom:Type Code="184960" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">Alarm volume</dom:ConceptDescription>
               </dom:Type>
               <dom:Unit Code="262656" CodingSystem="urn:oid:1.3.111.2.11073.10101.3"/>

@@ -120,7 +120,8 @@ def _v(value: object) -> object:
     return getattr(value, "value", value)
 
 
-def _has_value(metric_value: object) -> bool:
+def has_value(metric_value: object) -> bool:
+    """Whether a metric value carries a value or samples."""
     return getattr(metric_value, "Value", None) is not None or bool(getattr(metric_value, "Samples", None))
 
 
@@ -246,19 +247,19 @@ class _Checker:
         activation = self._activation(entity)
         category, availability = _v(d.MetricCategory), _v(d.MetricAvailability)
         validity = _v(getattr(getattr(value, "MetricQuality", None), "Validity", None))
-        has_value = _has_value(value)
+        valued = has_value(value)
         missing_value = False
         if activation == "On" and value is None:
             missing_value = True
             self.add("error", "Metric", entity, "Is switched on but has no MetricValue, so a consumer has nothing "
                      "to show and cannot tell a missing value from a lost report.", "10701 TR0674")
-        if validity in ("Vld", "Vldated") and not has_value:
+        if validity in ("Vld", "Vldated") and not valued:
             missing_value = True
             self.add("error", "Metric", entity, "Says its value is valid but carries no value.", "10701 TR0675")
-        if category in ("Set", "Preset") and activation in ("On", "StndBy") and not has_value and not missing_value:
+        if category in ("Set", "Preset") and activation in ("On", "StndBy") and not valued and not missing_value:
             self.add("error", "Metric", entity, "Is a setting but has no value, so a consumer cannot show what "
                      "is set.", "10701 TR0128")
-        if has_value and value.DeterminationTime is None:
+        if valued and value.DeterminationTime is None:
             self.add("error", "Metric", entity, "Has a value without a DeterminationTime, so a consumer cannot tell "
                      "how old it is.", "10701 TR0214")
         if validity == "Ong" and value.StartTime is None:

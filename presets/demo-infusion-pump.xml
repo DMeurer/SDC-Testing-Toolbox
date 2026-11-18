@@ -9,7 +9,7 @@
     <pm:MdDescription>
       <pm:Mds Handle="pump">
         <pm:Type Code="demo-infusion-pump" CodingSystem="urn:sdc-testing-toolbox:private">
-          <pm:ConceptDescription Lang="en">MDIB demo infusion pump</pm:ConceptDescription>
+          <pm:ConceptDescription Lang="en">Demo infusion pump</pm:ConceptDescription>
         </pm:Type>
         <pm:AlertSystem Handle="pump.alerts" SelfCheckPeriod="PT30S">
           <pm:AlertCondition Handle="pump.demo-occlusion" Kind="Tec" Priority="Me">

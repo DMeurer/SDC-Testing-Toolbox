@@ -9,7 +9,7 @@
     <pm:MdDescription>
       <pm:Mds Handle="monitor">
         <pm:Type Code="demo-monitor" CodingSystem="urn:sdc-testing-toolbox:private">
-          <pm:ConceptDescription Lang="en">MDIB demo monitor</pm:ConceptDescription>
+          <pm:ConceptDescription Lang="en">Demo monitor</pm:ConceptDescription>
         </pm:Type>
         <pm:AlertSystem Handle="monitor.alerts" SelfCheckPeriod="PT30S">
           <pm:AlertCondition Handle="monitor.demo-event" Kind="Tec" Priority="Lo">

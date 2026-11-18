@@ -236,7 +236,7 @@ def list_presets(directory: str | Path | None = None) -> list[Preset]:
         root = next(descriptor for descriptor in descriptors if descriptor.parent_handle is None)
         stored = preset_info(mdib.toolbox_behaviour) or {}
         found.append(Preset(
-            path=path, name=stored.get("name") or f"{label(root)} [MDIB]",
+            path=path, name=stored.get("name") or label(root),
             description=stored.get("description") or "Native combined MDIB snapshot; loading restarts the provider.",
             metrics=sum(descriptor.is_metric_descriptor for descriptor in descriptors),
             alerts=sum(descriptor.is_alert_condition_descriptor for descriptor in descriptors),

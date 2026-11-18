@@ -106,7 +106,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--tls-cert", help="local PEM certificate or certificate chain")
     parser.add_argument("--tls-key", help="local PEM private key")
     parser.add_argument("--tls-ca", help="trusted PEM CA certificate bundle")
-    parser.add_argument("--tls-peer-fingerprint", help="optional SHA-256 pin for connected peers")
+    parser.add_argument("--tls-peer-fingerprint", help="optional SHA-256 pin, checked on the connections this toolbox opens")
     parser.add_argument("--tls-server-name", help="optional local DNS name to advertise for the provider and event callbacks")
     parser.add_argument("--tls-trusted-dir", help="folder of trusted PEM certificates, self-signed ones included")
     parser.add_argument(

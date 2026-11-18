@@ -268,6 +268,7 @@ _TABLE: tuple[tuple[str, ...], ...] = (
     ("68024", "MDC_ATTR_CAPAC_BATT_REMAIN", "Battery charge left"),
     ("67976", "MDC_ATTR_TIME_BATT_REMAIN", "Battery time left"),
     ("68021", "MDC_ATTR_BATT_VOLTAGE", "Battery voltage"),
+    ("184960", "MDC_ALERT_AUDIO_VOLUME", "Alert audio volume"),
     # -- units: plain numbers
     ("262656", "MDC_DIM_DIMLESS", "no unit, a plain number", "1"),
     ("262688", "MDC_DIM_PERCENT", "percent", "%"),

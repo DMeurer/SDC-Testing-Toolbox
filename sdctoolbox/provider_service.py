@@ -45,6 +45,7 @@ from .handlers import (
 )
 from .http_server import configure_request_handler
 from . import mdib_io
+from .mdib_check import has_value
 from .mdib_io import NativeMdibConfig, mdib_bytes, parse_mdib
 from . import native_mdib as native
 from .ports import PROVIDER_ACTIONS, RangeWSDiscovery
@@ -209,10 +210,6 @@ def _fault_value(enum: type, value: str, what: str) -> str:
         raise ValueError(msg) from None
 
 
-def _has_value(value) -> bool:  # noqa: ANN001 - an sdc11073 metric value
-    return getattr(value, "Value", None) is not None or bool(getattr(value, "Samples", None))
-
-
 def _stamp_determination_times(mdib: ProviderMdib, now: float) -> None:
     """Date a loaded file's values and alert conditions to the load, not to when the file was written."""
     for state in mdib.states.objects:
@@ -228,7 +225,7 @@ def _loaded_fault(state, spec: MetricSpec) -> MetricFault:  # noqa: ANN001 - an 
     activation = state.ActivationState
     quality = getattr(getattr(state, "MetricValue", None), "MetricQuality", None)
     validity = getattr(quality, "Validity", None)
-    if validity == pm_types.MeasurementValidity.NA and not _has_value(state.MetricValue):
+    if validity == pm_types.MeasurementValidity.NA and not has_value(state.MetricValue):
         validity = None  # "no value yet", how the toolbox writes a metric before its first value
     mode = getattr(quality, "Mode", None)
     return MetricFault(

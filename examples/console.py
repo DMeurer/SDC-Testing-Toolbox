@@ -8,12 +8,14 @@ Two modes. Open a terminal for each:
 The provider shell creates data sources and changes their values. The consumer shell finds
 providers on the network, lists what they expose and remote-controls the parts that allow it.
 
-Type `help` in either shell for the command list.
+Type `help` in either shell for the command list. The provider shell's `tool` command runs any
+of the toolbox's MCP tools, so whatever an agent can do to My device can be typed here too.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import shlex
 import sys
@@ -27,8 +29,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sdc11073.loghelper import basic_logging_setup  # noqa: E402
 from sdc11073.xml_types import msg_types  # noqa: E402
 
-from sdctoolbox import config, constants, native_mdib  # noqa: E402
+from sdctoolbox import config, constants, device_test, mdib_check, native_mdib, nomenclature  # noqa: E402
 from sdctoolbox.consumer_service import ConsumerService  # noqa: E402
+from sdctoolbox.mcp.server import EXPECTED_ERRORS  # noqa: E402
+from sdctoolbox.mcp.tools import Hooks, ToolboxTools, plain  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
     AlertSpec,
     Coding,
@@ -70,6 +74,66 @@ def show(value: object) -> str:
     return "-" if value is None else str(value)
 
 
+def print_findings(findings: list[mdib_check.Finding]) -> None:
+    """The MDIB check's findings, as the MDIB check window lists them."""
+    print(f"  {mdib_check.summary(findings)}")
+    for finding in findings:
+        print(f"  {finding.level:<8} {finding.area:<15} {finding.where}")
+        rule = f"  [{finding.rule}]" if finding.rule else ""
+        print(f"      {finding.text}{rule}")
+        if finding.fix is not None:
+            print(f"      fix: {finding.fix.label}")
+
+
+def print_codes(line: str) -> None:
+    """MDC codes by name, number or reference id, as Pick an MDC code finds them."""
+    kind, parts = _take_option(shlex.split(line), "--kind")
+    if not parts:
+        print("usage: codes <text> [--kind K]")
+        return
+    try:
+        found = nomenclature.search(" ".join(parts), kind, 25)
+    except ValueError as exc:
+        print(f"rejected: {exc}")
+        return
+    for term in found:
+        print(f"  {term.code:<8} {term.ref_id:<34} {term.label}")
+    if not found:
+        print("  no code matches")
+
+
+def key_values(parts: list[str]) -> dict[str, str] | None:
+    """name=value pairs; None (after saying so) when one has no '='."""
+    bad = [part for part in parts if "=" not in part]
+    if bad:
+        print(f"expected name=value, found {' '.join(bad)}")
+        return None
+    return dict(part.partition("=")[::2] for part in parts)
+
+
+def on_off(value: str) -> bool:
+    if value.lower() in ("on", "true", "yes", "1"):
+        return True
+    if value.lower() in ("off", "false", "no", "0"):
+        return False
+    msg = f"{value!r} is not on or off"
+    raise ValueError(msg)
+
+
+def call(function, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN201
+    """Run a tool function; a refusal is printed and gives None."""
+    try:
+        return function(*args, **kwargs)
+    except EXPECTED_ERRORS as exc:
+        print(f"rejected: {exc.args[0] if isinstance(exc, KeyError) and exc.args else exc}")
+        return None
+
+
+def print_result(result: object) -> None:
+    if result is not None:
+        print(result if isinstance(result, str) else json.dumps(plain(result), indent=2, ensure_ascii=False))
+
+
 class ProviderShell(Cmd):
     """Commands for the device we publish ourselves."""
 
@@ -78,6 +142,7 @@ class ProviderShell(Cmd):
     def __init__(self, service: ProviderService) -> None:
         super().__init__()
         self.service = service
+        self.tools = ToolboxTools(service, None, Hooks(service))
         self.intro = (
             f"\nPublishing as {service.friendly_name!r} on {service.ip}\n"
             f"EPR {service.epr.urn}\n\n"
@@ -297,13 +362,16 @@ class ProviderShell(Cmd):
             print(f"rejected: {exc}")
 
     def do_remove(self, line: str) -> None:
-        """remove <handle>  -  delete a data source and its dependencies."""
+        """remove <handle>  -  delete a data source and its dependencies, or an action."""
         handle = line.strip()
         if not handle:
             print("usage: remove <handle>")
             return
         try:
-            self.service.remove_metric(handle)
+            if handle in self.service.list_actions():
+                self.service.remove_action(handle)
+            else:
+                self.service.remove_metric(handle)
         except KeyError:
             print(f"no such handle: {handle}")
             return
@@ -648,6 +716,114 @@ class ProviderShell(Cmd):
             return
         print(f"loaded {metrics} data source(s) and {alarms} alarm(s)")
 
+    def do_actions(self, _line: str) -> None:
+        """actions  -  list our actions (activate operations) and what each sets."""
+        actions = self.service.list_actions()
+        if not actions:
+            print("no actions yet, try: action Reset zoom m.zoom_level=1")
+            return
+        for handle, spec in sorted(actions.items()):
+            effects = ", ".join(f"{h}={v}" for h, v in sorted(spec.effects.items())) or "nothing"
+            print(f"  {handle:<24} {spec.label:<20} on {spec.target_handle}, sets {effects}")
+
+    def do_action(self, line: str) -> None:
+        """action <label...> [handle=value ...] [--target HANDLE]  -  add an action that sets values when run.
+
+            action Reset zoom m.zoom_level=1
+            action Park m.mode=IDLE m.zoom_level=0 --target vmd0
+
+        The target is what it acts on; the MDS when left out.
+        """
+        target, parts = _take_option(shlex.split(line), "--target")
+        label = " ".join(part for part in parts if "=" not in part)
+        effects = key_values([part for part in parts if "=" in part])
+        if not label or effects is None:
+            print("usage: action <label...> [handle=value ...] [--target HANDLE]")
+            return
+        target = target or self.service._anchor_mds()  # noqa: SLF001 - where the window adds actions too
+        print_result(call(self.tools.add_action, {"label": label, "target": target, "effects": effects}))
+
+    def do_run(self, line: str) -> None:
+        """run <action handle>  -  run one of our actions, as its button does."""
+        print_result(call(self.tools.run_action, line.strip()))
+
+    def do_faults(self, line: str) -> None:
+        """faults [reset]  -  show the simulated faults (Advanced mode in the window), or end them all."""
+        result = call(self.tools.reset_faults if line.strip() == "reset" else self.tools.get_faults)
+        if result is None:
+            return
+        print("  device: " + ", ".join(f"{name}={value}" for name, value in result["device"].items()))
+        for metric in result["metrics"]:
+            mark = "*" if metric["faulted"] else " "
+            print(f" {mark}{metric['handle']:<24} {metric['activation']:<8} {metric['validity']:<6} "
+                  f"{metric['mode']:<6} {metric['consumers_see']}")
+
+    def do_fault(self, line: str) -> None:
+        """fault <handle> [activation=X] [validity=Y] [mode=Z]  -  fake a sensor state or value quality.
+        fault device [answer_delay_ms=N] [refuse_writes=on] [pause_reports=on] [leave_without_bye=on] [drop_subscriptions=on]
+
+            fault m.pressure validity=Inv
+            fault m.pressure activation=Fail
+            fault device answer_delay_ms=2000 refuse_writes=on
+
+        `faults` shows them, `faults reset` ends them all.
+        """
+        target, *rest = shlex.split(line) or [""]
+        settings = key_values(rest)
+        if not target or settings is None:
+            print("usage: fault <handle|device> name=value ...")
+            return
+        if target != "device":
+            print_result(call(self.tools.set_metric_fault, target, **settings))
+            return
+        try:
+            device = {name: int(value) if name == "answer_delay_ms" else on_off(value)
+                      for name, value in settings.items()}
+        except ValueError as exc:
+            print(f"rejected: {exc}")
+            return
+        print_result(call(self.tools.set_device_faults, **device))
+
+    def do_check(self, _line: str) -> None:
+        """check  -  check our MDIB against the SDC standards, as the MDIB check window does."""
+        print_findings(mdib_check.check(self.service.mdib))
+
+    def do_fix(self, line: str) -> None:
+        """fix <handle> [fix label...]  -  make a fix `check` offers, e.g. fix m.pulse Use MDC_PULS_RATE."""
+        handle, _, label = line.strip().partition(" ")
+        if not handle:
+            print("usage: fix <handle> [fix label]")
+            return
+        print_result(call(self.tools.fix_mdib, handle, label.strip() or None))
+
+    def do_codes(self, line: str) -> None:
+        """codes <text> [--kind K]  -  search the MDC codes, e.g. codes pulse rate."""
+        print_codes(line)
+
+    def do_tool(self, line: str) -> None:
+        """tool [name] [JSON arguments]  -  run any of the toolbox's MCP tools; `tool` alone lists them.
+
+            tool update_metric {"handle": "m.zoom_level", "unit": {"code": "262688"}}
+            tool set_contexts {"patient": {"given_name": "Ada"}}
+        """
+        name, _, raw = line.strip().partition(" ")
+        tools = {tool.name: tool for tool in self.tools.tools()}
+        if name not in tools:
+            if name:
+                print(f"no tool {name!r}")
+            for tool in tools.values():
+                print(f"  {tool.name:<20} {tool.description.split('. ')[0]}")
+            return
+        try:
+            arguments = json.loads(raw) if raw.strip() else {}
+        except json.JSONDecodeError as exc:
+            print(f"the arguments are not JSON: {exc}")
+            return
+        if not isinstance(arguments, dict):
+            print("the arguments are a JSON object, such as {\"handle\": \"m.zoom_level\"}")
+            return
+        print_result(call(tools[name].function, **arguments))
+
     def do_quit(self, _line: str) -> bool:
         """quit  -  stop the provider and exit."""
         return True
@@ -667,7 +843,8 @@ class ConsumerShell(Cmd):
         super().__init__()
         self.service = service
         self.devices: list = []
-        self.remote = None
+        self.remotes: dict[int, object] = {}  # connection number -> RemoteDevice, numbered like the window's tabs
+        self.current: int | None = None
         self.updates: list[str] = []
         self.intro = (
             f"\nDiscovery on {service.ip}\n\n"
@@ -675,6 +852,7 @@ class ConsumerShell(Cmd):
             "      connect 0\n"
             "      list\n"
             "      set m.zoom_level 9\n"
+            "      test\n"
             "Type help for everything else, quit to stop.\n"
         )
 
@@ -693,8 +871,12 @@ class ConsumerShell(Cmd):
             print(f"  [{index}] {device.epr}")
             print(f"      {location}")
 
+    @property
+    def remote(self):  # noqa: ANN201 - the RemoteDevice commands act on
+        return self.remotes.get(self.current)
+
     def do_connect(self, line: str) -> None:
-        """connect <index>  -  connect to a provider from the last scan."""
+        """connect <index>  -  connect to a provider from the last scan; earlier connections stay open."""
         if not self.devices:
             print("run scan first")
             return
@@ -704,16 +886,136 @@ class ConsumerShell(Cmd):
             print(f"usage: connect <0..{len(self.devices) - 1}>")
             return
 
-        if self.remote is not None:
-            self.remote.close()
-        self.remote = self.service.connect(device)
-        self.updates.clear()
-        self.remote.bind(
-            metrics_by_handle=self._on_metrics,
-            new_descriptors_by_handle=self._on_new_descriptors,
+        for number, remote in self.remotes.items():
+            if remote.epr == device.epr:
+                self.current = number
+                print(f"already connected as connection {number}, now using it")
+                return
+        remote = self.service.connect(device)
+        number = max(self.remotes, default=0) + 1
+        self.remotes[number], self.current = remote, number
+        remote.bind(
+            metrics_by_handle=lambda metrics: self._on_metrics(number, metrics),
+            new_descriptors_by_handle=lambda descriptors: self._on_new_descriptors(number, descriptors),
         )
-        print(f"connected to {device.epr}")
-        print(f"{len(self.remote.mdib.entities)} entities in its MDIB")
+        print(f"connection {number}: {device.epr}")
+        print(f"{len(remote.mdib.entities)} entities in its MDIB")
+
+    def do_connections(self, _line: str) -> None:
+        """connections  -  list the open connections; * marks the one commands act on."""
+        if not self.remotes:
+            print("no connections, run scan and then connect")
+        for number, remote in sorted(self.remotes.items()):
+            print(f" {'*' if number == self.current else ' '}{number}  {remote.friendly_name or '?'}  {remote.epr}")
+
+    def do_use(self, line: str) -> None:
+        """use <connection>  -  make commands act on another open connection."""
+        try:
+            number = int(line.strip())
+        except ValueError:
+            number = None
+        if number not in self.remotes:
+            print(f"usage: use <{'|'.join(map(str, sorted(self.remotes))) or 'connection'}>")
+            return
+        self.current = number
+        print(f"using connection {number}")
+
+    def do_disconnect(self, line: str) -> None:
+        """disconnect [connection]  -  close a connection, the current one by default."""
+        try:
+            number = int(line.strip()) if line.strip() else self.current
+        except ValueError:
+            number = None
+        remote = self.remotes.pop(number, None)
+        if remote is None:
+            print("usage: disconnect [connection]")
+            return
+        remote.close()
+        if self.current == number:
+            self.current = max(self.remotes, default=None)
+        print(f"closed connection {number}")
+
+    def do_actions(self, _line: str) -> None:
+        """actions  -  the peer's actions (activate operations)."""
+        if not self._require_connection():
+            return
+        actions = self.remote.actions()
+        if not actions:
+            print("the peer publishes no actions")
+        for handle, action in sorted(actions.items()):
+            state = "enabled" if action.enabled else "disabled"
+            print(f"  {handle:<24} {(action.label or '?'):<24} on {action.target_handle or '?'}  {state}")
+
+    def do_run(self, line: str) -> None:
+        """run <action handle>  -  ask the peer to run one of its actions."""
+        if not self._require_connection():
+            return
+        handle = line.strip()
+        if not handle:
+            print("usage: run <action handle>")
+            return
+        state = call(self.remote.run_action, handle)
+        if state in (msg_types.InvocationState.FINISHED, msg_types.InvocationState.FINISHED_MOD):
+            print("accepted")
+        elif state is not None:
+            print(f"refused by the provider ({state})")
+
+    def do_check(self, _line: str) -> None:
+        """check  -  check the peer's MDIB against the SDC standards."""
+        if self._require_connection():
+            print_findings(mdib_check.check(self.remote.mdib))
+
+    def do_test(self, _line: str) -> None:
+        """test  -  run the Device test against the peer. It changes values, so use a test device only."""
+        if not self._require_connection():
+            return
+        print("testing ...")
+        results = device_test.run(self.service, self.remote)
+        for result in results:
+            print(f"  {result.result:<8} {result.test:<26} {result.happened}")
+            print(f"           {result.standard}")
+        print(f"  {device_test.summary(results)}")
+
+    def do_messages(self, line: str) -> None:
+        """messages [count] [--kind request|response|report] [--xml]  -  the SOAP messages with the peer, newest last.
+
+        message <number> shows one message's XML.
+        """
+        if not self._require_connection():
+            return
+        parts = shlex.split(line)
+        kind, parts = _take_option(parts, "--kind")
+        xml = "--xml" in parts
+        parts = [part for part in parts if part != "--xml"]
+        try:
+            count = int(parts[0]) if parts else 20
+        except ValueError:
+            print("usage: messages [count] [--kind request|response|report] [--xml]")
+            return
+        log = self.remote.messages
+        picked = [m for m in log.messages() if kind in (None, m.kind)] if log is not None else []
+        for message in picked[-count:] if count > 0 else []:
+            moment = time.strftime("%H:%M:%S", time.localtime(message.time))
+            print(f"  {message.number:>6} {moment} {message.direction:<8} {message.kind:<8} "
+                  f"{message.summary}  ({message.size})")
+            if xml:
+                print(message.pretty())
+        print(f"  {log.total if log is not None else 0} message(s) so far")
+
+    def do_message(self, line: str) -> None:
+        """message <number>  -  one message's XML, by the number `messages` lists."""
+        if not self._require_connection():
+            return
+        log = self.remote.messages
+        found = next((m for m in (log.messages() if log else []) if str(m.number) == line.strip()), None)
+        if found is None:
+            print("usage: message <number>, as messages lists it")
+            return
+        print(found.pretty())
+
+    def do_codes(self, line: str) -> None:
+        """codes <text> [--kind K]  -  search the MDC codes, e.g. codes pulse rate."""
+        print_codes(line)
 
     def do_list(self, _line: str) -> None:
         """list  -  show the peer's metrics and which of them we may write."""
@@ -812,8 +1114,8 @@ class ConsumerShell(Cmd):
 
     def do_quit(self, _line: str) -> bool:
         """quit  -  disconnect and exit."""
-        if self.remote is not None:
-            self.remote.close()
+        for remote in self.remotes.values():
+            remote.close()
         return True
 
     do_EOF = do_quit  # noqa: N815 - Cmd looks for this exact name
@@ -829,15 +1131,15 @@ class ConsumerShell(Cmd):
             return False
         return True
 
-    def _on_metrics(self, metrics_by_handle: dict) -> None:
+    def _on_metrics(self, number: int, metrics_by_handle: dict) -> None:
         # Runs on an sdc11073 thread. Only append to a list; printing happens in `watch`.
         for handle, state in metrics_by_handle.items():
             value = getattr(getattr(state, "MetricValue", None), "Value", None)
-            self.updates.append(f"{handle} = {show(value)}")
+            self.updates.append(f"[{number}] {handle} = {show(value)}")
 
-    def _on_new_descriptors(self, descriptors_by_handle: dict) -> None:
+    def _on_new_descriptors(self, number: int, descriptors_by_handle: dict) -> None:
         for handle in descriptors_by_handle:
-            self.updates.append(f"NEW {handle}")
+            self.updates.append(f"[{number}] NEW {handle}")
 
 
 def run_provider(args: argparse.Namespace) -> int:

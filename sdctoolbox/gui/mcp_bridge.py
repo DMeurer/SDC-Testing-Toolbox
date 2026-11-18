@@ -142,6 +142,9 @@ class GuiNetwork:
     def status(self, number: int) -> str:
         return self.on_gui(lambda: self._pane(number).status_label.text())
 
+    def consumer_for(self, number: int):  # noqa: ANN201 - the pane's ConsumerService
+        return self.on_gui(lambda: self._pane(number).service)
+
     def disconnect(self, number: int) -> None:
         def work() -> None:
             pane = self._pane(number)

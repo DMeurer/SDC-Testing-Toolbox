@@ -38,7 +38,8 @@ Message boxes are standard `QMessageBox`es and are not drawn in the design. Thes
 | Warning | Could not load codes | Pick an MDC code (Load codes…, or a remembered file that no longer loads) |
 | Warning | Could not fix | MDIB check window (Fix) |
 | Warning | Could not start the MCP server | startup with `--mcp` when the port is taken |
+| Warning | Could not save messages | Network tab Messages section (Save all…) |
 
 Native file pickers (Import config, Export config, Choose a config file, PEM file, certificate
-folder, Choose codes.csv) are drawn by the operating system and are not in the design either.
+folder, Choose codes.csv, Save messages) are drawn by the operating system and are not in the design either.
 Keep this list current when message boxes change.

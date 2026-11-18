@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 from sdc11073.xml_types import msg_types
 
 from ..consumer_service import BACKGROUND_PROBE_SECONDS, ConsumerError, ConsumerService
+from ..mdib_explain import explain
 from ..model import MetricKind
 from .async_call import AsyncCall
 from .collapsible import CollapsibleSection
@@ -66,6 +67,7 @@ from .styling import (
     set_button_kind,
     token,
 )
+from .messages_view import MessagesView
 from .table_columns import TableColumns
 from .activity_log import MdibActivity, activity_log
 from .widgets import WidgetBoard, from_remote_metric
@@ -205,6 +207,8 @@ class ConsumerPane(QWidget):
     invocation_changed = Signal(str)
     # A device to open in another tab: Connect on a pane that already shows a connection.
     connect_elsewhere = Signal(object)
+    # Test this device…: the main window opens the Device test for this pane.
+    test_requested = Signal()
 
     def __init__(
         self,
@@ -268,6 +272,10 @@ class ConsumerPane(QWidget):
         constrain_dynamic_label(self.context_label, max_lines=3)
         self.context_label.setTextInteractionFlags(Qt.NoTextInteraction)
         mute(self.context_label)
+        self.test_button = QPushButton("Test this device…")
+        set_button_kind(self.test_button, "design-outline")
+        self.test_button.setToolTip("Run a few checks against this device and say which rule each one follows")
+        self.test_button.clicked.connect(self.test_requested)
 
         # Most users close the tab to disconnect, so Connect leads and the rest follow.
         top = self.discovery_row = QHBoxLayout()
@@ -354,9 +362,20 @@ class ConsumerPane(QWidget):
         self.metric_stack.addWidget(self.table)
 
         self.structure_section = CollapsibleSection("MDIB structure", self.tree, expanded=False)
-        self.structure_section.set_hint("Descriptor tree with handles")
+        self.structure_section.set_hint("Descriptor tree with handles. Point at an element to read what it is.")
         self.metrics_section = CollapsibleSection("Metrics", self.metric_stack)
         self.alarms_section = CollapsibleSection("Alarms", alert_box, expanded=False)
+        self.messages_view = MessagesView()
+        self.messages_section = CollapsibleSection("Messages", self.messages_view, expanded=False)
+        self.messages_section.set_hint("The SOAP messages of this connection, and their XML")
+        self.messages_view.count_changed.connect(
+            lambda count: self.messages_section.set_chips(["Advanced", str(count)]))
+        # The structure and the messages are for looking under the hood: Advanced mode only.
+        for section in (self.structure_section, self.messages_section):
+            section.set_chips(["Advanced"])
+        self.advanced = False
+        for section in (self.structure_section, self.messages_section):
+            section.setVisible(False)
 
         self.editor_label = QLabel("Connect to a device to control it")
         constrain_dynamic_label(self.editor_label, max_lines=2, max_width=MIN_PANEL_WIDTH)
@@ -405,15 +424,22 @@ class ConsumerPane(QWidget):
         connection.setContentsMargins(0, 0, 0, 0)
         connection.addWidget(self.security_label)
         connection.addWidget(self.context_label)
-        for section in (self.structure_section, self.metrics_section, self.alarms_section):
+        for section in (self.structure_section, self.metrics_section, self.alarms_section, self.messages_section):
             connection.addWidget(section, 1)
         connection.addWidget(self.actions_widget)
         connection.addLayout(editor)
 
+        # Test this device… sits at the right of the connection's info lines.
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.addWidget(self.status_label, 1)
+        status_row.addWidget(self.test_button, 0, Qt.AlignTop)
+        self.test_button.setVisible(False)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.discovery_section)
-        layout.addWidget(self.status_label)
+        layout.addLayout(status_row)
         layout.addWidget(self.empty_hint)
         layout.addWidget(self.connection_widget, 1)
         layout.addStretch(0)
@@ -646,6 +672,7 @@ class ConsumerPane(QWidget):
                 f"TLS peer: {common_name}; issuer {certificate.issuer}; "
                 f"SHA-256 {certificate.sha256_fingerprint}",
             )
+        self.messages_view.set_log(getattr(remote, "messages", None))
         self.refresh()
         self._update_buttons()
 
@@ -688,6 +715,7 @@ class ConsumerPane(QWidget):
         self.board.clear()
         self.context_label.clear()
         self.security_label.clear()
+        self.messages_view.set_log(None)
         self.refresh_actions()
 
         self.value_edit.setText("")
@@ -755,6 +783,8 @@ class ConsumerPane(QWidget):
             node_type = getattr(entity, "node_type", None)
             name = getattr(node_type, "localname", str(node_type))
             item = QTreeWidgetItem([name, handle])
+            for column in (0, 1):
+                item.setToolTip(column, explain(name, handle))
             if parent is None:
                 self.tree.addTopLevelItem(item)
             else:
@@ -888,6 +918,12 @@ class ConsumerPane(QWidget):
     def use_widgets(self) -> bool:
         """Whether the peer's metrics are shown as controls rather than as a table."""
         return self.metric_stack.currentWidget() is self.board
+
+    def set_advanced(self, enabled: bool) -> None:  # noqa: FBT001 - matches the Qt signal
+        """Show or hide what only Advanced mode shows: the MDIB structure and the messages."""
+        self.advanced = enabled
+        for section in (self.structure_section, self.messages_section):
+            section.setVisible(enabled)
 
     def set_use_widgets(self, enabled: bool) -> None:  # noqa: FBT001 - matches the Qt signal
         """Switch between a control per metric and the table."""
@@ -1245,6 +1281,7 @@ class ConsumerPane(QWidget):
             not self._shutdown and self.remote is not None,
         )
         self.connection_widget.setVisible(self.remote is not None)
+        self.test_button.setVisible(self.remote is not None)
         self.empty_hint.setVisible(self.remote is None and not connect_busy)
         self._set_editor_enabled(enabled=self.editor_stack.isEnabled())
         self.refresh_actions()

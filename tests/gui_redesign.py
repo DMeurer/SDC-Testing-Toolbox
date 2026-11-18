@@ -310,7 +310,33 @@ class NetworkTests(unittest.TestCase):
             self.assertFalse(section.isVisible())
         self.assertTrue(pane.metrics_section.expanded)
         self.assertFalse(pane.alarms_section.expanded or pane.structure_section.expanded)
-        self.assertEqual(pane.structure_section.hint.text(), "Descriptor tree with handles")
+        self.assertEqual(pane.structure_section.hint.text(),
+                         "Descriptor tree with handles. Point at an element to read what it is.")
+
+    def test_structure_and_messages_are_advanced_and_sit_above_actions(self) -> None:
+        pane = self.tabs.current_pane
+        pane.connection_widget.setVisible(True)  # as if connected
+        pump(self.app)
+        self.assertTrue(pane.metrics_section.isVisible())
+        for section in (pane.structure_section, pane.messages_section):
+            self.assertFalse(section.isVisible())
+        self.tabs.set_advanced(True)
+        pump(self.app)
+        for section in (pane.structure_section, pane.messages_section):
+            self.assertTrue(section.isVisible())
+            self.assertIn("Advanced", section.chip_texts())
+        self.assertFalse(self.tabs.add_connection().structure_section.isHidden(),
+                        "a new tab starts in the current mode")
+        layout = pane.connection_widget.layout()
+        order = [layout.indexOf(w) for w in (pane.alarms_section, pane.messages_section, pane.actions_widget)]
+        self.assertEqual(order, sorted(order), "Messages sits between Alarms and Actions")
+        self.tabs.setCurrentWidget(pane)
+        pane.test_button.setVisible(True)  # as if connected
+        pump(self.app)
+        status, button = pane.status_label.geometry(), pane.test_button.geometry()
+        self.assertTrue(status.right() < button.left() and status.top() == button.top(),
+                        f"Test this device… is at the right of the status line: {status} {button}")
+        self.assertEqual(pane.test_button.parentWidget(), pane, "it is not inside the connection's sections")
 
     def test_discovery_does_not_force_the_network_panel_wide(self) -> None:
         from sdctoolbox.gui.consumer_pane import MIN_PANEL_WIDTH

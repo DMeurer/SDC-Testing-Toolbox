@@ -61,8 +61,10 @@ network identity, `urn:uuid:...`). At its right:
   keep their supplied state until their source changes.
 
 **Sections** (click a heading to fold it)
-- *MDIB structure*: the device's description as a tree, with each element's handle.
-  Hovering an entry shows its XML.
+- *MDIB structure* (Advanced mode only, for a device loaded from an MDIB file; chip
+  *Advanced*): the device's description as a tree, with each element's handle.
+  Pointing at an entry's handle or value says what that kind of element is, what a consumer
+  does with it and which rules the MDIB check applies to it; pointing at its type shows its XML.
 - *Metrics* (the chip counts them): one card or table row per data source.
 - *Alarms* (chips: how many, and how many are active): the alarm table and its buttons.
 - *Faults* (Advanced mode only; chips: *Advanced* and how many faults are on): simulated
@@ -85,10 +87,28 @@ closes it; Ctrl+T adds an empty one.
 
 A connected device shows:
 - *Connected to <EPR>*, its transport and its patient.
-- *MDIB structure*, *Metrics* and *Alarms* sections like My device, but read from the device.
+- *Test this device...* at the right of those lines: opens the *Device test* window and runs it
+  on this connection (see below).
+- *MDIB structure* (Advanced mode only), *Metrics* and *Alarms* sections like My device, but read
+  from the device. Pointing at a tree entry says what that kind of element is.
   Metrics it will accept writes for have an editor; the others say *read-only*.
+- *Messages* (Advanced mode only, folded; chips: *Advanced* and how many): every SOAP message of
+  this connection, newest last, with *Time*, *Message* (its action and MdibVersion), *Direction*
+  (sent or received) and *Size*. *Show* filters them (all, without waveforms, requests and
+  responses, reports); select one to read its XML below. Drag the bar between the list and the
+  XML to give either more room. *Copy XML* copies it, *Save all...* writes every kept message to
+  a text file, *Pause* keeps the list still. The newest 500 are kept. Agents read them with
+  `read_messages`.
 - *Actions*: a button per action the device offers.
 - In table mode, an editor under the table: select a writable row, type, *Set on device*.
+
+**Device test** window: *Result*, *Test*, *What happened*, *Standard* for six checks: Discovery
+(answers a probe with addresses and scopes), Read the MDIB (GetMdib), Versions go up (MdibVersion
+never goes back within a report type), Set a value out of range (the device must refuse it),
+Renew a subscription, and Switch an alarm signal (SetAlertState with the signal's current state).
+A test the device gives no chance for is *Skipped*. It changes values on the device, so run it on
+a test device only. *Run again* repeats it; the box picks the connection. Agents run it with
+`test_device`.
 
 A write reports the device's own answer. *Fin* means done; *Fail* comes with the reason the
 device gave, such as a value outside its allowed range.
@@ -235,11 +255,15 @@ Over MCP, search_codes does the same search; pass a result's {code, system, labe
 
 The toolbox starts in **Simple** mode, for learning SDC. **Advanced** mode (View > Advanced
 mode, or the *Simple | Advanced* switch at the right of the tab strip) adds controls for
-people testing their own SDC consumer. Nothing Simple mode shows is hidden in Advanced mode.
+people testing their own SDC consumer, and the parts for looking under the hood. Nothing
+Simple mode shows is hidden in Advanced mode.
 
 It adds, on My device:
 - the **Faults** section under Alarms (see *faults*),
-- a chip next to a card's title naming its fault, such as *StndBy*, *Qst* or *Fail*.
+- a chip next to a card's title naming its fault, such as *StndBy*, *Qst* or *Fail*,
+- the **MDIB structure** section of a device loaded from an MDIB file.
+
+And on each Network connection: the **MDIB structure** and **Messages** sections.
 
 The mode is a view setting only: faults set over MCP work in either mode, and stay on when
 you switch back to Simple.

@@ -5,7 +5,7 @@
       <dom:Mds Handle="mds0">
         <ext:Extension>
           <tb:Device FriendlyName="Operating Table" ext:MustUnderstand="false"/>
-          <tb:Preset Name="Operating Table" Description="Read-only table height and signed positioning angles for the device monitor." ext:MustUnderstand="false"/>
+          <tb:Preset Name="Operating table" Description="Read-only table height and signed positioning angles for the device monitor." ext:MustUnderstand="false"/>
         </ext:Extension>
         <dom:Type Code="toolbox-mds" CodingSystem="urn:sdc-testing-toolbox:private">
           <dom:ConceptDescription Lang="en-US">SDC-testing-toolbox virtual device</dom:ConceptDescription>
@@ -31,7 +31,7 @@
             </dom:Type>
             <dom:Metric Handle="m.lateral_angle" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="0.1">
               <dom:Type Code="table_lateral_angle" CodingSystem="urn:sdc-testing-toolbox:private">
-                <dom:ConceptDescription Lang="en-US">Lateral Angle</dom:ConceptDescription>
+                <dom:ConceptDescription Lang="en-US">Lateral angle</dom:ConceptDescription>
               </dom:Type>
               <dom:Unit Code="262880" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">°</dom:ConceptDescription>

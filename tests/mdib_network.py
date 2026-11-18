@@ -24,7 +24,7 @@ from script_support import Report, wait_until  # noqa: E402
 from sdc11073.xml_types import msg_types  # noqa: E402
 
 import run_toolbox  # noqa: E402
-from sdctoolbox import config  # noqa: E402
+from sdctoolbox import config, device_test  # noqa: E402
 from sdctoolbox.consumer_service import ConsumerService  # noqa: E402
 from sdctoolbox.mdib_io import parse_mdib  # noqa: E402
 from sdctoolbox.model import (  # noqa: E402
@@ -152,6 +152,55 @@ def check_live_edits(report: Report, service, remote) -> None:  # noqa: ANN001
     service.remove_metric(rate)
 
 
+def check_device_test_and_messages(report: Report, service, consumer, remote, directory: Path) -> None:  # noqa: ANN001
+    """The Device test against a well-behaved device, and the Messages section of its connection."""
+    rate = service.add_metric(MetricSpec("Test rate", MetricKind.NUMBER, minimum=Decimal("0"), maximum=Decimal("100"),
+                                         controllable=True, initial_value=Decimal("30")))
+    report.check(wait_until(lambda: rate in remote.metrics() and remote.metrics()[rate].controllable_now, timeout=10),
+                 "a settable metric with a range reaches the consumer")
+    results = {result.test: result for result in device_test.run(consumer, remote)}
+    report.check([test for test, _, _ in device_test.TESTS] == list(results), "the Device test runs every test in order")
+    for test in ("Discovery", "Read the MDIB", "Versions go up", "Set a value out of range", "Renew a subscription"):
+        report.check(results[test].result == device_test.PASSED, f"Device test: {test} passes",
+                     f"{results[test].result}: {results[test].happened}")
+    report.check(results["Switch an alarm signal"].result == device_test.SKIPPED,
+                 "Device test: without a SetAlertState operation the alarm test is skipped", results["Switch an alarm signal"].happened)
+    report.check(service.get_value(rate) == Decimal("30"), "the out-of-range value did not stick", str(service.get_value(rate)))
+    service.remove_metric(rate)
+
+    log = remote.messages
+    actions = [message.action for message in log.messages()]
+    for action in ("GetMdib", "GetMdibResponse", "Subscribe", "SubscribeResponse", "RenewResponse"):
+        report.check(action in actions, f"the message log holds {action}", ", ".join(sorted(set(actions))))
+    kinds = {message.kind for message in log.messages()}
+    report.check(kinds == {"request", "response", "report"}, "the log tells requests, responses and reports apart", str(kinds))
+    answer = next(message for message in log.messages() if message.action == "GetMdibResponse")
+    report.check(answer.direction == "received" and answer.detail.startswith("MdibVersion "),
+                 "a GetMdibResponse is received and shows its MdibVersion", answer.summary)
+
+    from PySide6.QtWidgets import QApplication  # noqa: PLC0415 - only this check needs Qt
+
+    from sdctoolbox.gui.messages_view import SHOW, MessagesView  # noqa: PLC0415
+
+    app = QApplication.instance() or QApplication([])
+    view = MessagesView()
+    counts = []
+    view.count_changed.connect(counts.append)
+    view.set_log(log)
+    report.check(view.table.rowCount() == len(log.messages()) and counts[-1] == log.total,
+                 "the Messages section lists every kept message and counts them", f"{view.table.rowCount()} rows")
+    view.show_box.setCurrentIndex([caption for caption, _ in SHOW].index("Reports"))
+    report.check(0 < len(view._shown) and all(message.kind == "report" for message in view._shown),  # noqa: SLF001
+                 "Show Reports lists only reports")
+    view.table.selectRow(0)
+    report.check("<" in view.xml_view.toPlainText() and view.copy_button.isEnabled(), "a selected message shows its XML")
+    saved = directory / "messages.txt"
+    report.check(view.save(saved) == len(log.messages()) and "GetMdibResponse" in saved.read_text(encoding="utf-8"),
+                 "Save all writes every kept message")
+    view.set_log(None)
+    app.processEvents()
+
+
 def check_reload_generates(report: Report, service, consumer, directory: Path):  # noqa: ANN001, ANN201
     """A behaviour export reloaded in place, as the window's import does, keeps its waveforms moving."""
     wave = service.add_metric(MetricSpec("Pleth", MetricKind.WAVEFORM, minimum=Decimal("0"), maximum=Decimal("10")))
@@ -195,6 +244,7 @@ def main() -> int:
             check_operations(report, service, remotes[0])
             check_edits(report, service, remotes[0])
             check_live_edits(report, service, remotes[0])
+            check_device_test_and_messages(report, service, consumer, remotes[0], directory)
             remotes.append(check_reload_generates(report, service, consumer, directory))
         except AssertionError:
             pass

@@ -24,7 +24,7 @@ from sdctoolbox.gui.startup_dialog import StartupDialog
 from sdctoolbox.mdib_io import NativeMdibConfig, mdib_bytes, parse_mdib
 from sdctoolbox.provider_service import ProviderService
 
-PUMP = ROOT / "presets" / "mdib-demo-infusion-pump.xml"
+PUMP = ROOT / "presets" / "demo-infusion-pump.xml"
 VENTILATOR = ROOT / "presets" / "ventilator.xml"
 
 

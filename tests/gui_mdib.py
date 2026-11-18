@@ -183,7 +183,7 @@ class GuiMdibTests(unittest.TestCase):
         root = Path(__file__).resolve().parent.parent
         result = subprocess.run(
             [sys.executable, str(root / "run_toolbox.py"), "--name", "native-cli-smoke", "--config",
-             str(root / "presets" / "mdib-demo-infusion-pump.xml"), "--smoke-test"],
+             str(root / "presets" / "demo-infusion-pump.xml"), "--smoke-test"],
             cwd=root, capture_output=True, text=True, timeout=45,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

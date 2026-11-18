@@ -43,6 +43,7 @@ from ..mdib_io import NativeMdibConfig
 from .activity_log import ActivityLogWindow
 from .consumer_pane import ConsumerPane
 from .consumer_tabs import ConsumerTabs
+from .device_test_window import DeviceTestWindow
 from .mdib_check_window import MdibCheckWindow, status_text
 from .menu_keys import BareAltTracker
 from .no_wheel import NoWheelTabBar
@@ -193,6 +194,7 @@ class MainWindow(QMainWindow):
         self.statusBar().addWidget(self.status_hint, 1)
         self._show_status_hint()
         self.network_tabs.message.connect(lambda text: self.statusBar().showMessage(text, 8000))
+        self.network_tabs.test_requested.connect(self.show_device_test)
 
         # Stays in the status bar: a firewall that blocks the toolbox is easy to miss otherwise.
         self.port_warning_label = QLabel()
@@ -209,6 +211,7 @@ class MainWindow(QMainWindow):
         self.log_button.clicked.connect(self.show_activity_log)
         # The MDIB check sits left of it and shows My device's live result.
         self.check_window: MdibCheckWindow | None = None
+        self.test_window: DeviceTestWindow | None = None
         self.mdib_findings: list[mdib_check.Finding] = []
         self.check_button = QToolButton()
         self.check_button.clicked.connect(self.show_mdib_check)
@@ -241,6 +244,17 @@ class MainWindow(QMainWindow):
         self.check_window.raise_()
         self.check_window.activateWindow()
         return self.check_window
+
+    def show_device_test(self, pane) -> DeviceTestWindow:  # noqa: ANN001 - a ConsumerPane
+        """Open the Device test for this pane's connection and run it."""
+        if self.test_window is None:
+            self.test_window = DeviceTestWindow(self)
+        self.test_window.choose(pane.property("connectionNumber"))
+        self.test_window.show()
+        self.test_window.raise_()
+        self.test_window.activateWindow()
+        self.test_window.run()
+        return self.test_window
 
     def _watch_my_device(self) -> None:
         """Re-check My device after its MDIB changes; at most once per MDIB_CHECK_DELAY_MS."""
@@ -348,6 +362,7 @@ class MainWindow(QMainWindow):
         """Show or hide the controls for testing consumers; the menu and the switch follow."""
         changed = self.provider_pane.advanced != enabled
         self.provider_pane.set_advanced(enabled)
+        self.network_tabs.set_advanced(enabled)
         if self.advanced_mode_action.isChecked() != enabled:
             self.advanced_mode_action.setChecked(enabled)
         (self.mode_switch.advanced if enabled else self.mode_switch.simple).setChecked(True)

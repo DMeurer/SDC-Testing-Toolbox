@@ -234,6 +234,11 @@ class HeadlessTests(unittest.TestCase):
             urllib.request.urlopen(self.client.url, timeout=10)  # noqa: S310 - a local test URL
         self.assertEqual(caught.exception.code, 405)
         self.assertEqual(self.client.rpc("no/such")["error"]["code"], -32601)
+        port = int(self.client.url.split(":")[2].split("/")[0])
+        for length in ("abc", "-1"):  # once: no reply at all, and a thread waiting with no size cap
+            with socket.create_connection(("127.0.0.1", port), timeout=10) as raw:
+                raw.sendall(f"POST /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Length: {length}\r\n\r\n{{}}".encode())
+                self.assertEqual(raw.recv(200).split(b" ")[1], b"400", length)
 
     def test_headless_needs_mcp(self) -> None:
         result = subprocess.run([sys.executable, "run_toolbox.py", "--headless"], cwd=ROOT, capture_output=True,
@@ -344,6 +349,14 @@ class WindowTests(unittest.TestCase):
         checked = self.call("check_mdib", connection=number)
         self.assertEqual(checked["checked"], f"connection {number}")
         self.assertEqual(len(checked["findings"]), len(mdib_check.check(pane.remote.mdib)))
+        tested = self.call("test_device", connection=number)
+        self.assertEqual(len(tested["results"]), 6)
+        self.assertNotIn("Failed", [r["result"] for r in tested["results"]], tested)
+        messages = self.call("read_messages", connection=number, last=5, kind="response", xml=True)
+        self.assertEqual(len(messages["messages"]), 5)
+        self.assertEqual({m["kind"] for m in messages["messages"]}, {"response"})
+        self.assertIn("Envelope", messages["messages"][-1]["xml"])
+        self.assertGreaterEqual(messages["total"], 5)
         self.check_a_connection_in_the_window(pane)
         self.call("disconnect", connection=number)
         self.assertNotIn(pane, self.window.network_tabs.panes)

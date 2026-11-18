@@ -230,9 +230,14 @@ numeric metric. A waveform or distribution takes the range of the samples the to
 The remote-control checkbox is offered only for number, text and choice sources. The value column is live — it updates whether you edit it here or somebody changes it over the network.
 *Patient and location…* edits the two contexts, and the line beside it shows what they currently say.
 
-The **Network** panel is everybody else's. *Scan* finds providers, *Connect* loads one, and you get its containment tree above and its metrics below.
+The **Network** panel is everybody else's. *Scan* finds providers, *Connect* loads one, and you get its metrics and alarms (and, in Advanced mode, its containment tree).
 Rows the device will accept writes for are marked writable; select one and the editor underneath adapts to it — a combo box for a choice, a plain field with the permitted range for a number.
 The result of a write is reported as the provider's own `InvocationState`, followed by the error code and text the provider gave when it refused.
+Point at an element in the MDIB structure tree (here or in My device) to read what that kind of element is, what a consumer does with it, and which rules the MDIB check applies to it.
+
+In Advanced mode, the folded **Messages** section between Alarms and Actions lists every SOAP message exchanged with that device, newest last: the request, the response, every report, with its MdibVersion.
+Select one to read its XML (drag the bar between the list and the XML to give either more room); *Show* hides waveforms or keeps only reports, *Copy XML* copies the selected one, *Save all…* writes them to a text file, and *Pause* holds the list still while you read.
+The newest 500 messages per connection are kept.
 
 Each Network tab is an independent connection. Use **+** (**Ctrl+T**) to add one, then
 Scan/Connect in that tab. The tab's close button (or **Ctrl+W** while focused inside
@@ -283,7 +288,7 @@ What the tools cover:
 | Getting started | `overview`, `explain_gui` (panels, columns, buttons, icons, card controls, menus), `explain_sdc` (the SDC concept behind them) |
 | My device | `search_codes` (MDC codes by name, for a type or unit), `list_metrics`, `add_metric`, `update_metric`, `set_value`, `remove_metric`; `list_alarms`, `add_alarm`, `update_alarm` (limits, priority, raise, acknowledge, stop latched, delegate), `remove_alarm`; `list_actions`, `add_action`, `run_action`, `remove_action`; `set_contexts`, `set_generator` |
 | Whole devices and MDIB | `build_device` (a whole device in one validated step), `check_mdib` (see [Checking an MDIB](#checking-an-mdib), for My device or a connection), `fix_mdib`, `get_mdib`, `export_mdib`, `load_mdib`, `list_presets`, `load_preset` |
-| Network | `scan`, `connect`, `list_connections`, `disconnect`, `read_metrics`, `read_alarms`, `read_actions`, `remote_set_value`, `remote_run_action`, `remote_mdib` |
+| Network | `scan`, `connect`, `list_connections`, `disconnect`, `read_metrics`, `read_alarms`, `read_actions`, `remote_set_value`, `remote_run_action`, `remote_mdib`, `test_device` (see [Testing a device](#testing-a-device)), `read_messages` (a connection's SOAP messages) |
 | The window | `get_view`, `set_view` (tab, split view, widgets or tables, dark mode, activity log), `get_card_settings`, `set_card_settings` (on My device or a connection), `read_activity_log` |
 
 Data sources, alarms and actions are described in the same shape as a toolbox profile, so an
@@ -341,6 +346,27 @@ Only what one snapshot of the MDIB shows is checked, never behaviour over time. 
 (-10702) and remote control (-10703) participant key purposes are not covered yet. The
 default My device and every shipped preset pass without errors; they still have warnings and
 hints, mostly private codes for things the MDC nomenclature has no term for.
+
+## Testing a device
+
+*Test this device…*, at the right of a connection's status lines, opens the **Device test** window and runs a
+few checks against that device, the way a consumer would use it. Each row says what happened in
+plain words and which standard the check follows:
+
+| Test | Passes when |
+|------|-------------|
+| Discovery | the device answers a WS-Discovery probe with its addresses and scopes (IEEE 11073-20702) |
+| Read the MDIB | GetMdib returns descriptors and an MdibVersion (IEEE 11073-20701) |
+| Versions go up | the MdibVersion of each report type never goes back (IEEE 11073-10207) |
+| Set a value out of range | the device refuses a value above a settable number's maximum (IEEE 11073-10207) |
+| Renew a subscription | the device grants a renewal for every subscription (IEEE 11073-20702) |
+| Switch an alarm signal | the device accepts SetAlertState with a signal's current state (IEEE 11073-10207) |
+
+A test the device gives no chance for, such as a number without a range, is *Skipped*. If a device
+accepts the out-of-range value, the test puts the old value back. It still changes values on the
+device, so run it on a test device only. This is not a conformance test: it only shows how the
+device answers these few questions. The console's `test` command and the MCP tool `test_device`
+run the same test.
 
 ## Widgets
 
@@ -412,7 +438,14 @@ There is also a console provider, if you would rather have both sides in text:
 .venv\Scripts\python.exe examples\console.py provider
 ```
 
-It covers the core provider and consumer workflows in text, but does not mirror every GUI view or action button.
+It covers the provider and consumer workflows in text, without the window's views and cards:
+
+| Shell | Beyond data sources, alarms, patient, location, presets, import and export |
+|-------|------|
+| `provider>` | `action` and `actions`, `run`; `fault` and `faults` (the simulated faults of Advanced mode); `check` and `fix` (the MDIB check); `codes` (MDC codes); `tool`, which runs any MCP tool, such as `tool update_metric {"handle": "m.pressure", "unit": {"code": "266016"}}` |
+| `consumer>` | several connections (`connections`, `use`, `disconnect`); `actions`, `run`; `check`; `test` (the Device test); `messages` and `message` (the SOAP messages); `codes` |
+
+`help <command>` explains each one.
 It is the quickest way to watch an acknowledgement not clear an alarm:
 
 ```
@@ -444,8 +477,8 @@ provider> presets
 ### MDIB presets (XML)
 
 Every shipped preset is a BICEPS MDIB XML file: the seven devices and two focused examples
-below, plus two small synthetic files, **MDIB demo monitor** and **MDIB demo infusion
-pump**. Choose a preset, import an `.xml` file, or start with
+below, plus two small synthetic files, **Demo monitor** (`demo-monitor.xml`) and **Demo infusion
+pump** (`demo-infusion-pump.xml`), which store no toolbox behaviour. Choose a preset, import an `.xml` file, or start with
 `--config presets/patient-monitor.xml`. JSON profiles from earlier versions still import
 (see *Older JSON profiles* below), but export writes MDIB files only.
 
@@ -499,11 +532,11 @@ its label. Imported limit alarms follow their source metric once that metric cha
 imported alarms otherwise keep their supplied state until something happens to them.
 Imported set operations keep their own enabled state and allowed ranges/values; imported
 Activate operations without stored toolbox behaviour fail explicitly. The containment tree
-shows every entity with XML on hover.
+shows every entity with XML on hover (Advanced mode).
 
 **Privacy:** full MDIB exports may include patient-identifying data and context history.
 Review them before sharing. The shipped device presets contain only the toolbox's made-up
-default patient, and the two MDIB demos no patient at all. Development-only
+default patient, and the two demos no patient at all. Development-only
 reference files are not presets and are not part of the application bundle.
 
 ### Older JSON profiles
@@ -548,10 +581,10 @@ For a profile that imports successfully, recorded handles make its defined metri
 Two smaller profiles complement the seven realistic devices above. Both publish read-only
 numeric measurements with coded units and declared containment, without alarms or actions:
 
-- **Operating Table** (`operating-table.xml`): Height **780 mm** (500–1100 mm, resolution 1 mm),
-  Trendelenburg **−8°** and Lateral Angle **7.6°** (both −30° to 30°, resolution 0.1°).
+- **Operating table** (`operating-table.xml`): Height **780 mm** (500–1100 mm, resolution 1 mm),
+  Trendelenburg **−8°** and Lateral angle **7.6°** (both −30° to 30°, resolution 0.1°).
   The table metric types use the toolbox's private coding namespace; their units use MDC codes.
-- **Ventilation Pressure** (`ventilation-pressure.xml`): **18 cmH₂O** (0–40 cmH₂O,
+- **Ventilation pressure** (`ventilation-pressure.xml`): **18 cmH₂O** (0–40 cmH₂O,
   resolution 1 cmH₂O), with MDC pressure type and unit codes.
 
 Select either name in the startup config dropdown or *File → Load preset*, or load it directly:
@@ -572,9 +605,9 @@ The shipped device presets use two coding systems:
 Which is which is the interesting part, and `tests/presets.py` counts it:
 
 ```
-patient-monitor         24 mdc,   2 private  (92% standard)
-ventilator              23 mdc,   1 private  (96% standard)
-infusion-pump           13 mdc,   3 private  (81% standard)
+ventilator              24 mdc,   0 private  (100% standard)
+patient-monitor         25 mdc,   1 private  (96% standard)
+infusion-pump           15 mdc,   1 private  (94% standard)
 insufflator             10 mdc,   9 private  (53% standard)
 hf-generator            11 mdc,  10 private  (52% standard)
 surgical-microscope     15 mdc,  20 private  (43% standard)
@@ -779,7 +812,9 @@ A patient block in a JSON profile has this shape:
 The toolbox starts in **Simple** mode. **Advanced** mode (View > Advanced mode, or the
 *Simple | Advanced* switch at the right of the tab strip; remembered between runs) adds
 controls for testing your own SDC consumer: a **Faults** section under Alarms on My device,
-and a chip on each card whose metric has a fault.
+and a chip on each card whose metric has a fault. It also shows the parts for looking under the
+hood: the **MDIB structure** sections (My device, when loaded from an MDIB file, and every
+connection) and each connection's **Messages**.
 
 Device-wide faults are runtime only and never saved:
 
@@ -906,7 +941,7 @@ Run the same default set that continuous integration runs locally with:
 
 `tests/acceptance_core.py` and `tests/tls_acceptance.py` are Linux-only network acceptance suites. CI runs each in an isolated job on every pull request, version tag, manual workflow dispatch and weekly schedule. The TLS suite generates a temporary self-signed test CA and participant certificates, then verifies HTTPS discovery, mutual authentication, MDIB retrieval and remote control without storing credentials in the repository. These checks exercise this implementation; they are not interoperability testing against an independent SDC stack or product.
 
-`tests/gui_smoke.py` remains a manual broad regression script because it is intentionally long and duplicates the focused GUI suites while also starting a live peer. Run it when changing interactions that cross several GUI areas; it uses the offscreen backend and needs no display.
+`tests/gui_smoke.py` is a broad regression script: it opens every window once and starts a live peer to find on the network. CI runs it in its own Linux job, like the acceptance suites, so it cannot go stale unnoticed. Run it locally when changing interactions that cross several GUI areas; it uses the offscreen backend and needs no display.
 
 The packaging jobs separately launch each built Windows and Linux application with `--smoke-test`. The `install-packages` jobs run `packaging/linux/install_test.sh` on each Linux package in a clean container: install, smoke-test offscreen and under X11 with the GTK theme, then check the native packages' firewall definitions are present but not enabled, uninstall them and check that a firewalld zone using the service stays valid. AppImage tests first install the expected host libraries and run without FUSE. Run it locally as root in a matching container, for example `sh packaging/linux/install_test.sh dist/<package>`. `tests/acceptance_provider.py` is a subprocess fixture used by acceptance scripts, not a standalone suite.
 
@@ -930,7 +965,9 @@ One self-signed test CA issuing a certificate for each toolbox process is the re
 offline test setup. A directly self-signed participant certificate also works if it is put in
 the other participant's trusted CA bundle. Self-signed does not mean accepting arbitrary
 certificates: trust must remain explicit. Use `--tls-peer-fingerprint` to additionally pin
-one expected SHA-256 leaf certificate.
+one expected SHA-256 leaf certificate. The pin is checked on the connections this toolbox
+opens (as a consumer, and as a provider delivering reports); a consumer connecting to the
+provider is checked by the trust settings only.
 
 Three options relax this for lab setups, each also available as a startup-dialog field:
 
@@ -941,7 +978,9 @@ Three options relax this for lab setups, each also available as a startup-dialog
   presents a currently valid self-signed certificate, plus anything the CA bundle or folder
   issued. Python cannot hook chain validation, so the check happens right after the handshake
   on the consumer side, and the provider **stops requesting client certificates**. Peers are
-  not authenticated. Combine it with `--tls-peer-fingerprint` if identity matters.
+  not authenticated. A fingerprint pin then still protects the consumer side, but the
+  provider accepts **any** consumer, with or without a certificate, including its set
+  operations. Use it only on a network you trust.
 - **Skip hostname/IP check** (`--tls-no-hostname-check`): the peer certificate no longer has
   to name the advertised host or IP. The chain is still validated.
 

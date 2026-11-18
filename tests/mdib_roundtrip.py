@@ -376,7 +376,7 @@ class AdoptedMdibTests(unittest.TestCase):
     def test_loading_changes_nothing_but_runtime_counters(self) -> None:
         from mdib_test_support import adoption_mdib
 
-        for data in (original_mdib(), adoption_mdib(), (Path(__file__).resolve().parent.parent / "presets" / "mdib-demo-monitor.xml").read_bytes()):
+        for data in (original_mdib(), adoption_mdib(), (Path(__file__).resolve().parent.parent / "presets" / "demo-monitor.xml").read_bytes()):
             with self.subTest(size=len(data)):
                 service = ProviderService(instance_name=f"adopt-unchanged-{len(data)}")
                 service.start(self.io.parse_mdib(data))
@@ -434,7 +434,7 @@ class AdoptedMdibTests(unittest.TestCase):
         self.assertEqual(self.service.signal_states("demo.limit")[0].presence, str(pm_types.AlertSignalPresence.ACK))
 
 
-MONITOR = Path(__file__).resolve().parent.parent / "presets" / "mdib-demo-monitor.xml"
+MONITOR = Path(__file__).resolve().parent.parent / "presets" / "demo-monitor.xml"
 
 
 def bare_mds() -> bytes:
@@ -881,7 +881,7 @@ class ConfigMdibTests(unittest.TestCase):
         from sdctoolbox import config, constants, native_mdib
         from sdctoolbox.mdib_io import parse_mdib
 
-        expected = {"mdib-demo-monitor.xml", "mdib-demo-infusion-pump.xml"}
+        expected = {"demo-monitor.xml", "demo-infusion-pump.xml"}
         for name in expected:
             path = Path(__file__).resolve().parent.parent / "presets" / name
             self.assertTrue(path.is_file(), f"missing original native preset: {name}")
@@ -894,7 +894,7 @@ class ConfigMdibTests(unittest.TestCase):
             self.assertTrue(any("sdc.ctxt.loc:/" in scope for scope in native_mdib.scopes(mdib).text))
             identity, serial = native_mdib.device_identity(mdib)
             self.assertEqual((identity.manufacturer, serial), ("Toolbox", None))
-            if name == "mdib-demo-monitor.xml":
+            if name == "demo-monitor.xml":
                 self.assertEqual(mdib.entities.by_handle("monitor.pulse").state.MetricValue.Value, Decimal("72"))
                 self.assertEqual(len(mdib.entities.by_handle("monitor.trace").state.MetricValue.Samples), 8)
             else:
@@ -906,7 +906,7 @@ class ConfigMdibTests(unittest.TestCase):
 
         from sdctoolbox import config
 
-        path = Path(__file__).resolve().parent.parent / "presets" / "mdib-demo-monitor.xml"
+        path = Path(__file__).resolve().parent.parent / "presets" / "demo-monitor.xml"
         service = ProviderService(instance_name="preset-times")
         service.start()
         try:

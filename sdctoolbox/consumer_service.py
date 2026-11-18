@@ -32,7 +32,7 @@ from sdc11073.xml_types import eventing_types, msg_types, pm_types
 from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types.dpws_types import DeviceEventingFilterDialectURI
 
-from . import constants, ports
+from . import constants, message_log, ports
 from .http_server import configure_request_handler
 from .mdib_io import live_entities
 from .model import (
@@ -398,6 +398,12 @@ class _WsdlSdcConsumer(SdcConsumer):
         kwargs["components"] = replace(components, action_dispatcher_class=_StoppableDispatcher)
         super().__init__(*args, **kwargs)
         self.peer_end_statements: list[str] = []
+        # Recorded from the first request on, so the Messages section shows how the connection began.
+        self.message_log = message_log.watch(message_log.MessageLog(), prefixes=[self.path_prefix])
+
+    def _mk_soap_client(self, use_ssl: bool, netloc: str) -> Any:  # noqa: FBT001 - sdc11073's signature
+        message_log.watch(self.message_log, addresses=[netloc])
+        return super()._mk_soap_client(use_ssl, netloc)
 
     def stop_all(self, unsubscribe: bool = True) -> None:
         """Stop everything, the notification worker included: a stopped consumer is gone for good."""
@@ -405,6 +411,7 @@ class _WsdlSdcConsumer(SdcConsumer):
             super().stop_all(unsubscribe)
         finally:
             self._services_dispatcher.stop()
+            message_log.forget(self.message_log)
 
     def _on_subscription_end(self, request_data: Any) -> Any:
         # sdc11073 flags the subscription as ended before it stores the peer's status and reason,
@@ -738,6 +745,11 @@ class RemoteDevice:
             raise OperationReportsMissing(msg)
 
     # -- reading -------------------------------------------------------------------
+
+    @property
+    def messages(self) -> message_log.MessageLog | None:
+        """The SOAP messages exchanged with this peer, from the first request on."""
+        return getattr(self._consumer, "message_log", None)
 
     @property
     def mdib(self) -> ConsumerMdib:
@@ -1081,6 +1093,32 @@ class RemoteDevice:
                     logger.info("read back %s from GetMdState: %r", handle, actual.value)
         except Exception:  # noqa: BLE001 - readback cannot change a completed invocation's result
             logger.exception("could not read back metric %s after set", handle)
+
+    # -- for the Device test ---------------------------------------------------------
+
+    def get_mdib(self) -> tuple[list[Any], list[Any], int | None]:
+        """Ask the peer for its whole MDIB now (GetMdib): its descriptors, states and MdibVersion."""
+        client = self._consumer.client("Get")
+        if client is None:
+            msg = "the device has no GetService"
+            raise ConsumerError(msg)
+        response = client.get_mdib()
+        descriptors, states = response.result
+        return descriptors, states, response.mdib_version_group.mdib_version
+
+    def renew_subscriptions(self) -> list[float]:
+        """Renew every subscription now; the seconds each one was granted (0.0: refused)."""
+        manager = self._consumer.subscription_mgr
+        with manager._subscriptions_lock:  # noqa: SLF001 - sdc11073 keeps no public copy
+            subscriptions = list(manager.subscriptions.values())
+        return [subscription.renew() for subscription in subscriptions]
+
+    def set_alert_state(self, operation_handle: str, state: Any, timeout: float = 10.0) -> msg_types.InvocationState:
+        """Send SetAlertState with `state` and wait for the final InvocationState."""
+        client = self._consumer.set_service_client
+        report_part = self._send(lambda: client.set_alert_state(operation_handle, state), timeout)
+        self.last_invocation_detail = _failure_reason(report_part.InvocationInfo)
+        return report_part.InvocationInfo.InvocationState
 
     def actions(self) -> dict[str, RemoteAction]:
         """The things the peer says it can be told to do.

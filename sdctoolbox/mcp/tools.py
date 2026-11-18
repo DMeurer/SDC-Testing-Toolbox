@@ -19,7 +19,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .. import config, mdib_check, nomenclature
+from .. import config, device_test, mdib_check, message_log, nomenclature
 from ..consumer_service import ConsumerService, DiscoveredDevice, RemoteDevice
 from ..handlers import ACTIVATIONS, MODES, NO_FAULT, VALIDITIES, MetricFault, what_consumers_see
 from ..mdib_io import NativeMdibConfig, mdib_bytes, parse_mdib
@@ -146,6 +146,9 @@ class Network:
 
     def status(self, number: int) -> str:
         return "connected" if number in self.remotes else "not connected"
+
+    def consumer_for(self, _number: int) -> ConsumerService:
+        return self.consumer
 
     def close(self) -> None:
         for number in list(self.remotes):
@@ -386,6 +389,18 @@ class ToolboxTools:
               {"connection": CONNECTION, "handle": _string("Action (operation) handle.")}, ("connection", "handle")),
             t("remote_mdib", "A connected device's MDIB as XML.", self.remote_mdib,
               {"connection": CONNECTION}, ("connection",)),
+            t("test_device", "Run the Device test against a connected device (Test this device...): discovery, "
+                             "GetMdib, report versions, an out-of-range set, subscription renewal and an alert "
+                             "signal switch. It changes values on the device, so use a test device only.",
+              self.test_device, {"connection": CONNECTION}, ("connection",)),
+            t("read_messages", "The SOAP messages exchanged with a connected device (the Messages section), "
+                               f"newest last; the newest {message_log.KEEP} are kept.",
+              self.read_messages,
+              {"connection": CONNECTION,
+               "last": {"type": "integer", "description": "How many messages (default 20)."},
+               "kind": _string("Only this kind.", enum=["request", "response", "report"]),
+               "xml": _boolean("Include each message's XML (default false).")},
+              ("connection",)),
             # -- The window
             t("get_view", "How the window is set up: tab, split view, widgets or tables, dark mode, advanced mode, "
                           "menu bar.",
@@ -850,6 +865,24 @@ class ToolboxTools:
 
     def remote_mdib(self, connection: int) -> str:
         return mdib_bytes(self._remote(connection).mdib).decode("utf-8")
+
+    def test_device(self, connection: int) -> dict[str, Any]:
+        remote = self._remote(connection)
+        results = device_test.run(self.network.consumer_for(connection), remote)
+        return {"summary": device_test.summary(results), "results": [dataclasses.asdict(r) for r in results]}
+
+    def read_messages(self, connection: int, last: int = 20, kind: str | None = None,
+                      xml: bool = False) -> dict[str, Any]:  # noqa: FBT001, FBT002 - a tool argument
+        log = self._remote(connection).messages
+        if log is None:
+            raise ToolError(f"connection {connection} keeps no messages")
+        picked = [m for m in log.messages() if kind in (None, m.kind)]
+        picked = picked[-last:] if last > 0 else []
+        return {"total": log.total, "messages": [
+            {"number": m.number, "time": time.strftime("%H:%M:%S", time.localtime(m.time)), "direction": m.direction,
+             "kind": m.kind, "action": m.action, "detail": m.detail, "size": m.size, **({"xml": m.pretty()} if xml else {})}
+            for m in picked
+        ]}
 
     # -- The window (GUI hooks only) ---------------------------------------------------
 

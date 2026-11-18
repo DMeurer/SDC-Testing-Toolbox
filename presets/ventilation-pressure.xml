@@ -5,7 +5,7 @@
       <dom:Mds Handle="mds0">
         <ext:Extension>
           <tb:Device FriendlyName="Ventilation Pressure" ext:MustUnderstand="false"/>
-          <tb:Preset Name="Ventilation Pressure" Description="Read-only numeric ventilation pressure over a 0 to 40 cmH₂O technical range." ext:MustUnderstand="false"/>
+          <tb:Preset Name="Ventilation pressure" Description="Read-only numeric ventilation pressure over a 0 to 40 cmH₂O technical range." ext:MustUnderstand="false"/>
         </ext:Extension>
         <dom:Type Code="toolbox-mds" CodingSystem="urn:sdc-testing-toolbox:private">
           <dom:ConceptDescription Lang="en-US">SDC-testing-toolbox virtual device</dom:ConceptDescription>
@@ -31,7 +31,7 @@
             </dom:Type>
             <dom:Metric Handle="m.ventilation_pressure" xsi:type="dom:NumericMetricDescriptor" MetricCategory="Msrmt" MetricAvailability="Intr" Resolution="1">
               <dom:Type Code="151956" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
-                <dom:ConceptDescription Lang="en-US">Ventilation Pressure</dom:ConceptDescription>
+                <dom:ConceptDescription Lang="en-US">Ventilation pressure</dom:ConceptDescription>
               </dom:Type>
               <dom:Unit Code="266048" CodingSystem="urn:oid:1.3.111.2.11073.10101.3">
                 <dom:ConceptDescription Lang="en-US">cmH₂O</dom:ConceptDescription>

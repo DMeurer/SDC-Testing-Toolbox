@@ -37,6 +37,7 @@ from lxml import etree
 
 from ..handlers import ACTIVATIONS, ANSWER_DELAYS_MS, MODES, NO_FAULT, VALIDITIES, MetricFault, what_consumers_see
 from ..model import MetricKind
+from ..mdib_explain import explain
 from ..mdib_io import live_entities, mdib_bytes
 from .activity_log import MdibActivity, activity_log
 from .collapsible import CollapsibleSection
@@ -312,7 +313,9 @@ class ProviderPane(QWidget):
             self.native_tree.setUniformRowHeights(True)
             self.native_tree.setAccessibleName("MDIB containment")
             self.structure_section = CollapsibleSection("MDIB structure", self.native_tree, expanded=False)
-            self.structure_section.set_hint("Descriptor tree with handles")
+            self.structure_section.set_hint("Descriptor tree with handles. Point at an element to read what it is.")
+            self.structure_section.set_chips(["Advanced"])
+            self.structure_section.setVisible(False)  # Advanced mode only
 
         layout = QVBoxLayout(self)
         # TitledPanel already pads both panels. Without this the style's own 9px lands on
@@ -324,7 +327,7 @@ class ProviderPane(QWidget):
         layout.addWidget(self.context_label)
         if self.service.from_mdib_file:
             hint = QLabel("Loaded from an MDIB file and editable like any device. Its alarms keep their supplied "
-                          "state until their source changes. Hover containment entries for XML.")
+                          "state until their source changes.")
             hint.setWordWrap(True)
             layout.addWidget(hint)
         for section in (self.structure_section, self.metrics_section, self.alarms_section, self.faults_section):
@@ -389,6 +392,8 @@ class ProviderPane(QWidget):
         """Show or hide what only Advanced mode shows: the Faults section and the cards' fault chips."""
         self.advanced = enabled
         self.faults_section.setVisible(enabled)
+        if self.structure_section is not None:
+            self.structure_section.setVisible(enabled)
         self._refresh_board()
 
     def refresh_faults(self) -> None:
@@ -605,8 +610,11 @@ class ProviderPane(QWidget):
             handle: QTreeWidgetItem([handle, node_type, ""])
             for handle, (node_type, _parent, _states) in entities.items()
         }
-        for handle, (_node_type, parent_handle, states) in entities.items():
+        for handle, (node_type, parent_handle, states) in entities.items():
             item = self._native_items[handle]
+            # Column 1 shows the descriptor's XML instead.
+            for column in (0, 2):
+                item.setToolTip(column, explain(node_type, handle))
             parent = self._native_items.get(parent_handle)
             if parent is None:
                 self.native_tree.addTopLevelItem(item)

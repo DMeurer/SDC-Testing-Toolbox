@@ -226,7 +226,13 @@ class _Handler(BaseHTTPRequestHandler):
         if self._foreign_origin():
             self._send(HTTPStatus.FORBIDDEN, _error(None, INVALID_REQUEST, "requests from web pages are refused"))
             return
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length < 0:  # read(-1) would wait for the client to hang up, past the size cap
+            self._send(HTTPStatus.BAD_REQUEST, _error(None, INVALID_REQUEST, "Content-Length must be a byte count"))
+            return
         if length > MAX_BODY_BYTES:
             self._send(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, _error(None, INVALID_REQUEST, "request too large"))
             return

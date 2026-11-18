@@ -160,6 +160,10 @@ class StartupDialog(QDialog):
         self.tls_fingerprint_edit = QLineEdit()
         self.tls_server_name_edit = QLineEdit()
         self.tls_fingerprint_edit.setPlaceholderText("optional SHA-256 pin")
+        self.tls_fingerprint_edit.setToolTip(
+            "Checked on the connections this toolbox opens: to a provider, and to a consumer it\n"
+            "sends reports to. A consumer connecting to My device is checked by the trust settings only.",
+        )
         self.tls_server_name_edit.setPlaceholderText("optional local DNS name")
         self.tls_ca_edit.setPlaceholderText("optional when a trusted folder is given")
         self.tls_folder_edit = QLineEdit()
@@ -172,7 +176,8 @@ class StartupDialog(QDialog):
         self.tls_self_signed_box.setToolTip(
             "Accept any peer presenting a valid self-signed certificate. Peers are then no\n"
             "longer authenticated, and the provider stops requesting client certificates.\n"
-            "Lab use only; prefer a trusted folder or a fingerprint pin.",
+            "Lab use only; prefer a trusted folder. A fingerprint pin does not help here:\n"
+            "the provider then accepts any consumer, with or without a certificate.",
         )
         self.tls_lenient_box = QCheckBox("Skip hostname/IP check of the peer certificate")
         self.tls_lenient_box.setToolTip(

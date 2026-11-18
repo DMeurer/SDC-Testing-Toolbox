@@ -58,7 +58,8 @@ def reveal(pane, handle: str, tree: QTreeWidget | None, handle_column: int) -> b
             table.selectRow(row)
             table.scrollToItem(table.item(row, 0))
             return True
-    matches = tree.findItems(handle, Qt.MatchExactly | Qt.MatchRecursive, handle_column) if tree is not None else []
+    shown = tree is not None and pane.structure_section is not None and not pane.structure_section.isHidden()
+    matches = tree.findItems(handle, Qt.MatchExactly | Qt.MatchRecursive, handle_column) if shown else []
     if matches:
         pane.structure_section.set_expanded(True)
         tree.setCurrentItem(matches[0])

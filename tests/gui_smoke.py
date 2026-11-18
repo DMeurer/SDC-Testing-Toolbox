@@ -1722,6 +1722,21 @@ def main() -> int:  # noqa: PLR0915 - a linear test reads better in one piece
                 report.check(consumer.tree.topLevelItemCount() > 0, "the MDIB tree is populated")
                 report.check(consumer.table.rowCount() >= 4, "metrics are listed", str(consumer.table.rowCount()))  # noqa: PLR2004
                 report.check(consumer.disconnect_button.isEnabled(), "disconnect becomes available")
+                first = consumer.tree.topLevelItem(0)
+                report.check(first.text(0) in first.toolTip(0) and "A consumer " in first.toolTip(0),
+                             "pointing at a tree element explains it", first.toolTip(0))
+                report.check(wait_for(app, lambda: consumer.messages_section.chip_texts()[-1:] not in ([], ["0"], ["Advanced"]), timeout=10),
+                             "the Messages section counts the connection's messages", consumer.messages_section.chip_texts())
+                report.check(consumer.test_button.isVisible(), "Test this device… shows once connected")
+                consumer.test_button.click()
+                test_window = window.test_window
+                report.check(test_window is not None and test_window.isVisible(), "Test this device… opens the Device test")
+                report.check(wait_for(app, lambda: test_window.tree.topLevelItemCount() == 6, timeout=60),
+                             "the Device test lists six results", test_window.summary_label.text())
+                failed = [test_window.tree.topLevelItem(i).text(2) for i in range(test_window.tree.topLevelItemCount())
+                          if test_window.tree.topLevelItem(i).text(0) == "Failed"]
+                report.check(not failed, "the toolbox's own device passes its Device test", "; ".join(failed))
+                test_window.close()
                 report.check(
                     wait_for(app, lambda: "height 170.5 cm" in consumer.context_label.text(), timeout=20),
                     "peer patient demographics are shown",

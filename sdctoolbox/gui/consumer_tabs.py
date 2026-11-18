@@ -26,6 +26,8 @@ class ConsumerTabs(QTabWidget):
 
     # A write's progress or result in any tab, for the status bar.
     message = Signal(str)
+    # Test this device… in a tab: (pane).
+    test_requested = Signal(object)
 
     def __init__(self, ip: str, parent: QWidget | None = None, *, own_epr=None, tls_config=None) -> None:
         super().__init__(parent)
@@ -35,6 +37,7 @@ class ConsumerTabs(QTabWidget):
         # Every tab lists the same providers, so they share one discovery.
         self._discovery = SharedDiscovery(ip)
         self._use_widgets = True
+        self._advanced = False
         self._shutdown = False
         self._next_number = 1
         self.setTabBar(NoWheelTabBar())
@@ -70,10 +73,12 @@ class ConsumerTabs(QTabWidget):
         pane = ConsumerPane(self._ip, own_epr=self._own_epr, tls_config=self._tls_config, discovery=self._discovery)
         try:
             pane.set_use_widgets(self._use_widgets)
+            pane.set_advanced(self._advanced)
             pane.setProperty("connectionNumber", self._next_number)
             pane.status_changed.connect(self._on_status_changed)
             pane.invocation_changed.connect(self.message)
             pane.connect_elsewhere.connect(self._connect_in_new_tab)
+            pane.test_requested.connect(lambda pane=pane: self.test_requested.emit(pane))
             index = self.addTab(pane, "")
             self._update_title(pane, pane.status_label.text())
             self.setCurrentIndex(index)
@@ -186,6 +191,12 @@ class ConsumerTabs(QTabWidget):
         self._use_widgets = enabled
         for pane in self.panes:
             pane.set_use_widgets(enabled)
+
+    def set_advanced(self, enabled: bool) -> None:  # noqa: FBT001 - matches the Qt signal
+        """Advanced mode for existing pages, and remembered for new ones."""
+        self._advanced = enabled
+        for pane in self.panes:
+            pane.set_advanced(enabled)
 
     def shutdown(self) -> None:
         """Reach every session even if one retirement fails; retain pages for retry."""
