@@ -1,0 +1,59 @@
+# The documentation site, built by GitHub Pages from this folder.
+# Preview it locally: see docs/README.md.
+
+title: SDC Testing Toolbox
+description: A desktop tool for learning and testing IEEE 11073 SDC devices.
+url: https://dmeurer.github.io
+baseurl: /SDC-Testing-Toolbox
+
+remote_theme: just-the-docs/just-the-docs@v0.10.1
+plugins:
+  - jekyll-remote-theme
+  - jekyll-relative-links
+  - jekyll-seo-tag
+
+relative_links:
+  enabled: true
+  collections: false
+
+search_enabled: true
+heading_anchors: true
+back_to_top: true
+back_to_top_text: "Back to top"
+
+aux_links:
+  "SDC Testing Toolbox on GitHub": https://github.com/DMeurer/SDC-Testing-Toolbox
+aux_links_new_tab: true
+
+gh_edit_link: true
+gh_edit_link_text: "Edit this page on GitHub"
+gh_edit_repository: https://github.com/DMeurer/SDC-Testing-Toolbox
+gh_edit_branch: main
+gh_edit_source: docs
+gh_edit_view_mode: edit
+
+mermaid:
+  version: "10.9.1"
+
+callouts:
+  warning:
+    title: Warning
+    color: red
+  note:
+    title: Note
+    color: blue
+  tip:
+    title: Tip
+    color: green
+
+footer_content: >-
+  SDC Testing Toolbox is free software under the GNU General Public License version 3 only.
+  It is a learning and testing tool, not a medical device.
+
+# Notes for agents and the local-preview files are not pages of the site.
+exclude:
+  - superpowers
+  - README.md
+  - Gemfile
+  - Gemfile.lock
+  - vendor

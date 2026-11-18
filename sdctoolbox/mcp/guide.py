@@ -83,7 +83,8 @@ network identity, `urn:uuid:...`). At its right:
   open, a *Tab N* chip naming its connection tab.
 
 **Connection tabs** (*1 · Insufflator*): one per connected device, each independent. The X
-closes it; Ctrl+T adds an empty one.
+closes it (Ctrl+W too).
+Connecting to another device opens it in a new tab.
 
 A connected device shows:
 - *Connected to <EPR>*, its transport and its patient.

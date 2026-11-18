@@ -239,8 +239,8 @@ In Advanced mode, the folded **Messages** section between Alarms and Actions lis
 Select one to read its XML (drag the bar between the list and the XML to give either more room); *Show* hides waveforms or keeps only reports, *Copy XML* copies the selected one, *Save all…* writes them to a text file, and *Pause* holds the list still while you read.
 The newest 500 messages per connection are kept.
 
-Each Network tab is an independent connection. Use **+** (**Ctrl+T**) to add one, then
-Scan/Connect in that tab. The tab's close button (or **Ctrl+W** while focused inside
+Each Network tab is an independent connection. Connecting to a device opens it in its own
+tab, or brings its tab to the front if it is already open. The tab's close button (or **Ctrl+W** while focused inside
 Network) disconnects only that session; closing the last tab leaves an empty one ready
 to connect. Numbered tab titles identify the peer; hover for its connection status.
 Switching tabs or hiding Network never pauses backend connections, subscriptions or
